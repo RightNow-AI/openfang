@@ -55,20 +55,27 @@ pub fn verify_session_token(token: &str, secret: &str) -> Option<String> {
     }
 }
 
-/// Hash a password with SHA256 for config storage.
+/// Hash a password with Argon2id for config storage.
+///
+/// Returns a PHC-format string (e.g. `$argon2id$v=19$m=19456,t=2,p=1$...`).
 pub fn hash_password(password: &str) -> String {
-    use sha2::Digest;
-    hex::encode(Sha256::digest(password.as_bytes()))
+    use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+    let salt = SaltString::generate(&mut rand::thread_rng());
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .expect("Argon2 hashing should not fail with valid inputs")
+        .to_string()
 }
 
-/// Verify a password against a stored SHA256 hash (constant-time).
+/// Verify a password against a stored Argon2id hash (PHC string format).
 pub fn verify_password(password: &str, stored_hash: &str) -> bool {
-    let computed = hash_password(password);
-    use subtle::ConstantTimeEq;
-    if computed.len() != stored_hash.len() {
+    use argon2::{password_hash::PasswordHash, Argon2, PasswordVerifier};
+    let Ok(parsed) = PasswordHash::new(stored_hash) else {
         return false;
-    }
-    computed.as_bytes().ct_eq(stored_hash.as_bytes()).into()
+    };
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok()
 }
 
 #[cfg(test)]
@@ -78,8 +85,29 @@ mod tests {
     #[test]
     fn test_hash_and_verify_password() {
         let hash = hash_password("secret123");
+        assert!(
+            hash.starts_with("$argon2id$"),
+            "should produce Argon2id PHC string"
+        );
         assert!(verify_password("secret123", &hash));
         assert!(!verify_password("wrong", &hash));
+    }
+
+    #[test]
+    fn test_hash_produces_unique_salts() {
+        let h1 = hash_password("same");
+        let h2 = hash_password("same");
+        assert_ne!(h1, h2, "each hash should use a unique salt");
+        assert!(verify_password("same", &h1));
+        assert!(verify_password("same", &h2));
+    }
+
+    #[test]
+    fn test_rejects_non_argon2_hash() {
+        // A plain SHA256 hex string should no longer be accepted.
+        use sha2::Digest;
+        let sha256_hash = hex::encode(sha2::Sha256::digest(b"password"));
+        assert!(!verify_password("password", &sha256_hash));
     }
 
     #[test]
@@ -103,7 +131,14 @@ mod tests {
     }
 
     #[test]
-    fn test_password_hash_length_mismatch() {
+    fn test_rejects_garbage_input() {
         assert!(!verify_password("x", "short"));
+        assert!(!verify_password("x", ""));
+    }
+
+    #[test]
+    fn test_verify_malformed_argon2_hash() {
+        // Starts with $argon2 but is not a valid PHC string.
+        assert!(!verify_password("x", "$argon2id$garbage"));
     }
 }

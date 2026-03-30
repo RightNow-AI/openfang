@@ -38,6 +38,8 @@ hmac = { workspace = true }
 hex = { workspace = true }
 socket2 = { workspace = true }
 reqwest = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

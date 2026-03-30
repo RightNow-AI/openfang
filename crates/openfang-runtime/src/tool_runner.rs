@@ -3677,13 +3677,12 @@ mod tests {
             None, // process_manager
         )
         .await;
-        // Should NOT be the capability-check denial — it should normalize to file_write
-        // and pass the capability check. It may fail for other reasons (path validation,
-        // OS-level errors), but not the agent capability gate.
+        // Should NOT be the capability-enforcement "Permission denied" — it should
+        // normalize to file_write and pass the capability check.  It may still fail
+        // for filesystem reasons (e.g. OS "Permission denied (os error 13)"), so we
+        // check specifically for the capability-gate message.
         assert!(
-            !result
-                .content
-                .contains("does not have capability to use tool"),
+            !result.content.contains("Permission denied: agent"),
             "fs-write should normalize to file_write and pass capability check, got: {}",
             result.content
         );

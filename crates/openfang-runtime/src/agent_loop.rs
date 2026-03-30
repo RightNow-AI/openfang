@@ -62,8 +62,6 @@ fn tool_timeout_for(tool_name: &str) -> Duration {
 /// Raised from 3 to 5 to allow longer-form generation.
 const MAX_CONTINUATIONS: u32 = 5;
 
-/// Maximum message history size before auto-trimming to prevent context overflow.
-const MAX_HISTORY_MESSAGES: usize = 20;
 
 /// Detect when the LLM claims to have performed an action (sent, posted, emailed)
 /// without actually calling any tools. Prevents hallucinated completions.
@@ -84,6 +82,13 @@ fn phantom_action_detected(text: &str) -> bool {
     let has_action = action_verbs.iter().any(|v| lower.contains(v));
     let has_channel = channel_refs.iter().any(|c| lower.contains(c));
     has_action && has_channel
+}
+
+/// Returns true when the agent response text indicates an intentional silent completion.
+/// Matches `NO_REPLY` (exact) and `[SILENT]` (case-insensitive).
+fn is_silent_token(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed == "NO_REPLY" || trimmed.eq_ignore_ascii_case("[silent]")
 }
 
 /// Extra guidance injected after failed tool calls to prevent fabricated follow-up actions.
@@ -329,8 +334,9 @@ pub async fn run_agent_loop(
     // Safety valve: trim excessively long message histories to prevent context overflow.
     // The full compaction system handles sophisticated summarization, but this prevents
     // the catastrophic case where 200+ messages cause instant context overflow.
-    if messages.len() > MAX_HISTORY_MESSAGES {
-        let trim_count = messages.len() - MAX_HISTORY_MESSAGES;
+    let max_history = manifest.max_history_messages;
+    if messages.len() > max_history {
+        let trim_count = messages.len() - max_history;
         warn!(
             agent = %manifest.name,
             total_messages = messages.len(),
@@ -463,8 +469,9 @@ pub async fn run_agent_loop(
                     crate::reply_directives::parse_directives(&text);
                 let text = cleaned_text;
 
-                // NO_REPLY: agent intentionally chose not to reply
-                if text.trim() == "NO_REPLY" || parsed_directives.silent {
+                // NO_REPLY / [SILENT]: agent intentionally chose not to reply.
+                // [SILENT] must not be stored literally — it reinforces silence in future turns.
+                if is_silent_token(&text) || parsed_directives.silent {
                     debug!(agent = %manifest.name, "Agent chose NO_REPLY/silent — silent completion");
                     session
                         .messages
@@ -1491,8 +1498,9 @@ pub async fn run_agent_loop_streaming(
     let final_response;
 
     // Safety valve: trim excessively long message histories to prevent context overflow.
-    if messages.len() > MAX_HISTORY_MESSAGES {
-        let trim_count = messages.len() - MAX_HISTORY_MESSAGES;
+    let max_history = manifest.max_history_messages;
+    if messages.len() > max_history {
+        let trim_count = messages.len() - max_history;
         warn!(
             agent = %manifest.name,
             total_messages = messages.len(),
@@ -1641,8 +1649,9 @@ pub async fn run_agent_loop_streaming(
                     crate::reply_directives::parse_directives(&text);
                 let text = cleaned_text_s;
 
-                // NO_REPLY: agent intentionally chose not to reply
-                if text.trim() == "NO_REPLY" || parsed_directives_s.silent {
+                // NO_REPLY / [SILENT]: agent intentionally chose not to reply.
+                // [SILENT] must not be stored literally — it reinforces silence in future turns.
+                if is_silent_token(&text) || parsed_directives_s.silent {
                     debug!(agent = %manifest.name, "Agent chose NO_REPLY/silent (streaming) — silent completion");
                     session
                         .messages
@@ -3019,7 +3028,8 @@ mod tests {
 
     #[test]
     fn test_max_history_messages() {
-        assert_eq!(MAX_HISTORY_MESSAGES, 20);
+        let manifest = AgentManifest::default();
+        assert_eq!(manifest.max_history_messages, 20);
     }
 
     // --- Integration tests for empty response guards ---
@@ -3566,7 +3576,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_history_messages_constant() {
-        assert_eq!(MAX_HISTORY_MESSAGES, 20);
+        let manifest = AgentManifest::default();
+        assert_eq!(manifest.max_history_messages, 20);
     }
 
     #[tokio::test]
@@ -4647,5 +4658,37 @@ mod tests {
             events.push(ev);
         }
         assert!(!events.is_empty(), "Should have received stream events");
+    }
+
+    #[test]
+    fn test_silent_detection_uppercase() {
+        assert!(is_silent_token("[SILENT]"));
+    }
+
+    #[test]
+    fn test_silent_detection_lowercase() {
+        assert!(is_silent_token("[silent]"));
+    }
+
+    #[test]
+    fn test_silent_detection_mixed_case() {
+        assert!(is_silent_token("[Silent]"));
+    }
+
+    #[test]
+    fn test_silent_detection_with_whitespace() {
+        assert!(is_silent_token("  [SILENT]  "));
+    }
+
+    #[test]
+    fn test_silent_detection_no_reply() {
+        assert!(is_silent_token("NO_REPLY"));
+    }
+
+    #[test]
+    fn test_silent_detection_rejects_normal_text() {
+        assert!(!is_silent_token("Hello, how can I help?"));
+        assert!(!is_silent_token("SILENT"));
+        assert!(!is_silent_token(""));
     }
 }

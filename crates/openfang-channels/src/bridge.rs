@@ -521,6 +521,25 @@ fn default_output_format_for_channel(channel_type: &str) -> OutputFormat {
     }
 }
 
+async fn send_immediate_ack_if_needed(
+    adapter: &dyn ChannelAdapter,
+    user: &ChannelUser,
+    channel_type: &str,
+    thread_id: Option<&str>,
+    output_format: OutputFormat,
+) {
+    if channel_type == "dingtalk_stream" && thread_id.is_some() {
+        send_response(
+            adapter,
+            user,
+            "Received, please wait.".to_string(),
+            thread_id,
+            output_format,
+        )
+        .await;
+    }
+}
+
 /// Send a lifecycle reaction (best-effort, non-blocking for supported adapters).
 ///
 /// Silently ignores errors — reactions are non-critical UX polish.
@@ -635,7 +654,7 @@ async fn dispatch_message(
         .as_ref()
         .map(|o| o.lifecycle_reactions)
         .unwrap_or(true);
-    let thread_id = if threading_enabled {
+    let thread_id = if threading_enabled || ct_str == "dingtalk_stream" {
         message.thread_id.as_deref()
     } else {
         None
@@ -706,6 +725,8 @@ async fn dispatch_message(
         send_response(adapter, &message.sender, result, thread_id, output_format).await;
         return;
     }
+
+    send_immediate_ack_if_needed(adapter, &message.sender, ct_str, thread_id, output_format).await;
 
     // For images: download, base64 encode, and send as multimodal content blocks
     if let ChannelContent::Image {

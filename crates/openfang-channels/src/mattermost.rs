@@ -209,6 +209,19 @@ fn parse_mattermost_event(
         ChannelContent::Text(message.to_string())
     };
 
+    // Check if the bot was @mentioned. Mattermost includes a `mentions` JSON
+    // array in the event data containing the user IDs of mentioned users.
+    let mut metadata = HashMap::new();
+    if is_group {
+        if let Some(ref bid) = bot_user_id {
+            let mentions_str = event["data"]["mentions"].as_str().unwrap_or("[]");
+            let mentions: Vec<String> = serde_json::from_str(mentions_str).unwrap_or_default();
+            if mentions.iter().any(|m| m == bid) {
+                metadata.insert("was_mentioned".to_string(), serde_json::json!(true));
+            }
+        }
+    }
+
     Some(ChannelMessage {
         channel: ChannelType::Mattermost,
         platform_message_id: post_id,
@@ -222,7 +235,7 @@ fn parse_mattermost_event(
         timestamp: Utc::now(),
         is_group,
         thread_id,
-        metadata: HashMap::new(),
+        metadata,
     })
 }
 
@@ -691,6 +704,60 @@ mod tests {
             }
             other => panic!("Expected Command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_parse_mattermost_event_mention_detected() {
+        let post = serde_json::json!({
+            "id": "post-1",
+            "user_id": "user-456",
+            "channel_id": "ch-789",
+            "message": "@openfang-bot hello",
+            "root_id": ""
+        });
+
+        let event = serde_json::json!({
+            "event": "posted",
+            "data": {
+                "post": serde_json::to_string(&post).unwrap(),
+                "channel_type": "O",
+                "sender_name": "alice",
+                "mentions": serde_json::to_string(&["bot-123"]).unwrap()
+            }
+        });
+
+        let bot_id = Some("bot-123".to_string());
+        let msg = parse_mattermost_event(&event, &bot_id, &[]).unwrap();
+        assert!(msg.is_group);
+        assert_eq!(
+            msg.metadata.get("was_mentioned").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_parse_mattermost_event_no_mention() {
+        let post = serde_json::json!({
+            "id": "post-1",
+            "user_id": "user-456",
+            "channel_id": "ch-789",
+            "message": "just chatting",
+            "root_id": ""
+        });
+
+        let event = serde_json::json!({
+            "event": "posted",
+            "data": {
+                "post": serde_json::to_string(&post).unwrap(),
+                "channel_type": "O",
+                "sender_name": "alice"
+            }
+        });
+
+        let bot_id = Some("bot-123".to_string());
+        let msg = parse_mattermost_event(&event, &bot_id, &[]).unwrap();
+        assert!(msg.is_group);
+        assert!(!msg.metadata.contains_key("was_mentioned"));
     }
 
     #[test]

@@ -1028,6 +1028,7 @@
                 <div x-show="detailTab === 'config'">
                   <div class="form-group"><label>Name</label><input class="form-input" x-model="configForm.name"></div>
                   <div class="form-group"><label>System Prompt</label><textarea class="form-textarea" x-model="configForm.system_prompt" style="height:80px"></textarea></div>
+                  <div class="form-group"><label>Temperature</label><input type="number" class="form-input" x-model.number="configForm.temperature" min="0" max="2" step="0.05" style="width:100px"></div>
                   <div class="form-group"><label>Emoji</label>
                     <div class="emoji-grid">
                       <template x-for="em in emojiOptions" :key="em">

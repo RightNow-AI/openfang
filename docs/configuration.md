@@ -318,6 +318,37 @@ shared_secret = "my-cluster-secret"
 
 ---
 
+### `[auth]`
+
+Configures dashboard login with username/password authentication. Disabled by default.
+
+```toml
+[auth]
+enabled = true
+username = "admin"
+password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."  # generate with: openfang auth hash-password
+session_ttl_hours = 168
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable username/password authentication for the dashboard. |
+| `username` | string | `"admin"` | Admin username. |
+| `password_hash` | string | `""` (empty) | Argon2id password hash in PHC string format. Generate with `openfang auth hash-password`. |
+| `session_ttl_hours` | u64 | `168` (7 days) | Session token lifetime in hours. |
+
+**Generating a password hash:**
+
+```bash
+openfang auth hash-password
+```
+
+This prompts for a password and outputs an Argon2id PHC string to paste into `config.toml`.
+
+> **Breaking change (v0.5.0):** Password hashes must be in Argon2id format. Older SHA256 hex hashes from versions prior to v0.5.0 are no longer accepted. Re-run `openfang auth hash-password` to generate a new hash.
+
+---
+
 ### `[web]`
 
 Configures web search and web fetch capabilities used by agent tools.

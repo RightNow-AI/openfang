@@ -161,3 +161,39 @@ memory_write = ["self.*"]
     kernel.kill_agent(id2).unwrap();
     kernel.shutdown();
 }
+
+#[test]
+fn test_agent_manifest_skills_parsing() {
+    let toml_str = r#"
+name = "skills-test-agent"
+version = "0.1.0"
+description = "Test agent with skills"
+author = "test"
+module = "builtin:chat"
+
+skills = ["Productivity", "web-search"]
+mcp_servers = ["github"]
+
+[model]
+provider = "groq"
+model = "llama-3.3-70b-versatile"
+
+[capabilities]
+tools = ["file_read"]
+
+[resources]
+max_llm_tokens_per_hour = 100000
+"#;
+
+    let manifest: AgentManifest = toml::from_str(toml_str).unwrap();
+    assert_eq!(
+        manifest.skills,
+        vec!["Productivity", "web-search"],
+        "Skills should be parsed correctly (must be at top level, not after [capabilities])"
+    );
+    assert_eq!(
+        manifest.mcp_servers,
+        vec!["github"],
+        "MCP servers should be parsed correctly (must be at top level)"
+    );
+}
