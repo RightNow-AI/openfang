@@ -192,7 +192,8 @@ impl ChannelAdapter for DiscordAdapter {
                 info!("Discord gateway connected");
 
                 let (mut ws_tx, mut ws_rx) = ws_stream.split();
-                let mut _heartbeat_interval: Option<u64> = None;
+                let mut heartbeat_tick = tokio::time::interval(Duration::from_millis(45_000));
+                heartbeat_tick.reset();
 
                 // Inner message loop — returns true if we should reconnect
                 let should_reconnect = 'inner: loop {
@@ -204,6 +205,21 @@ impl ChannelAdapter for DiscordAdapter {
                                 let _ = ws_tx.close().await;
                                 return;
                             }
+                            continue;
+                        }
+                        _ = heartbeat_tick.tick() => {
+                            let seq = *sequence.read().await;
+                            let hb = serde_json::json!({ "op": opcode::HEARTBEAT, "d": seq });
+                            if let Err(e) = ws_tx
+                                .send(tokio_tungstenite::tungstenite::Message::Text(
+                                    serde_json::to_string(&hb).unwrap(),
+                                ))
+                                .await
+                            {
+                                error!("Discord: failed to send heartbeat: {e}");
+                                break 'inner true;
+                            }
+                            debug!("Discord heartbeat sent");
                             continue;
                         }
                     };
@@ -248,7 +264,9 @@ impl ChannelAdapter for DiscordAdapter {
                         opcode::HELLO => {
                             let interval =
                                 payload["d"]["heartbeat_interval"].as_u64().unwrap_or(45000);
-                            _heartbeat_interval = Some(interval);
+                            heartbeat_tick =
+                                tokio::time::interval(Duration::from_millis(interval));
+                            heartbeat_tick.reset();
                             debug!("Discord HELLO: heartbeat_interval={interval}ms");
 
                             // Try RESUME if we have a session, otherwise IDENTIFY
