@@ -1126,7 +1126,11 @@ impl OpenFangKernel {
                                             || disk_manifest.tool_allowlist
                                                 != entry.manifest.tool_allowlist
                                             || disk_manifest.tool_blocklist
-                                                != entry.manifest.tool_blocklist;
+                                                != entry.manifest.tool_blocklist
+                                            || disk_manifest.skills
+                                                != entry.manifest.skills
+                                            || disk_manifest.mcp_servers
+                                                != entry.manifest.mcp_servers;
                                         if changed {
                                             info!(
                                                 agent = %name,
@@ -3341,6 +3345,24 @@ impl OpenFangKernel {
                 other => KernelError::OpenFang(OpenFangError::Internal(other.to_string())),
             })?;
 
+        // Capture API-patched fields from the existing agent before manifest rebuild.
+        // The rebuild below overwrites everything from HAND.toml, so we save the live
+        // values here and reapply them after — making API changes durable across restarts.
+        let existing_agent = self
+            .registry
+            .list()
+            .into_iter()
+            .find(|e| e.name == def.agent.name);
+        let existing_tool_filters: (Vec<String>, Vec<String>) = existing_agent
+            .as_ref()
+            .map(|e| {
+                (
+                    e.manifest.tool_allowlist.clone(),
+                    e.manifest.tool_blocklist.clone(),
+                )
+            })
+            .unwrap_or_default();
+
         // Build an agent manifest from the hand definition.
         // If the hand declares provider/model as "default", inherit the kernel's configured LLM.
         let hand_provider = if def.agent.provider == "default" {
@@ -3353,6 +3375,21 @@ impl OpenFangKernel {
         } else {
             def.agent.model.clone()
         };
+
+        // Detect API-patched model config: compare the live agent's provider/model/temperature
+        // against what HAND.toml would produce. A difference means an API call changed it —
+        // preserve those values so they survive respawn.
+        let existing_model_override: Option<(String, String, f32)> = existing_agent.and_then(|e| {
+            let m = &e.manifest.model;
+            if m.provider != hand_provider
+                || m.model != hand_model
+                || (m.temperature - def.agent.temperature).abs() > f32::EPSILON
+            {
+                Some((m.provider.clone(), m.model.clone(), m.temperature))
+            } else {
+                None
+            }
+        });
 
         let mut manifest = AgentManifest {
             name: def.agent.name.clone(),
@@ -3416,6 +3453,25 @@ impl OpenFangKernel {
             },
             ..Default::default()
         };
+
+        // Restore API-patched tool filters so they survive respawn.
+        // Only apply if non-empty — an empty saved list means "no override set", not "block all".
+        let (saved_allowlist, saved_blocklist) = existing_tool_filters;
+        if !saved_allowlist.is_empty() {
+            manifest.tool_allowlist = saved_allowlist;
+        }
+        if !saved_blocklist.is_empty() {
+            manifest.tool_blocklist = saved_blocklist;
+        }
+
+        // Restore API-patched model config so provider/model/temperature survive respawn.
+        // system_prompt is intentionally excluded — it is assembled from HAND.toml + settings
+        // context by this function and must stay dynamic.
+        if let Some((provider, model, temperature)) = existing_model_override {
+            manifest.model.provider = provider;
+            manifest.model.model = model;
+            manifest.model.temperature = temperature;
+        }
 
         // Resolve hand settings → prompt block + env vars
         let resolved = openfang_hands::resolve_settings(&def.settings, &instance.config);

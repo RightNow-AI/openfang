@@ -160,6 +160,17 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Update an agent's sampling temperature.
+    pub fn update_temperature(&self, id: AgentId, temperature: f32) -> OpenFangResult<()> {
+        let mut entry = self
+            .agents
+            .get_mut(&id)
+            .ok_or_else(|| OpenFangError::AgentNotFound(id.to_string()))?;
+        entry.manifest.model.temperature = temperature;
+        entry.last_active = chrono::Utc::now();
+        Ok(())
+    }
+
     /// Update an agent's model AND provider together.
     pub fn update_model_and_provider(
         &self,

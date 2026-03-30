@@ -237,6 +237,9 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Dashboard authentication [*].
+    #[command(subcommand)]
+    Auth(AuthCommands),
     /// Security tools and audit trail [*].
     #[command(subcommand)]
     Security(SecurityCommands),
@@ -680,6 +683,12 @@ enum CronCommands {
 }
 
 #[derive(Subcommand)]
+enum AuthCommands {
+    /// Generate an Argon2id password hash for dashboard authentication.
+    HashPassword,
+}
+
+#[derive(Subcommand)]
 enum SecurityCommands {
     /// Show security status summary.
     Status {
@@ -1057,6 +1066,9 @@ fn main() {
         Some(Commands::Sessions { agent, json }) => cmd_sessions(agent.as_deref(), json),
         Some(Commands::Logs { lines, follow }) => cmd_logs(lines, follow),
         Some(Commands::Health { json }) => cmd_health(json),
+        Some(Commands::Auth(sub)) => match sub {
+            AuthCommands::HashPassword => cmd_auth_hash_password(),
+        },
         Some(Commands::Security(sub)) => match sub {
             SecurityCommands::Status { json } => cmd_security_status(json),
             SecurityCommands::Audit { limit, json } => cmd_security_audit(limit, json),
@@ -5983,6 +5995,28 @@ fn cmd_health(json: bool) {
             std::process::exit(1);
         }
     }
+}
+
+fn cmd_auth_hash_password() {
+    let password = prompt_input("Enter password: ");
+    if password.is_empty() {
+        ui::error("Empty password.");
+        std::process::exit(1);
+    }
+    let confirm = prompt_input("Confirm password: ");
+    if password != confirm {
+        ui::error("Passwords do not match.");
+        std::process::exit(1);
+    }
+    let hash = openfang_api::session_auth::hash_password(&password);
+    println!();
+    ui::success("Argon2id hash generated. Add this to your config.toml:");
+    println!();
+    println!("  [auth]");
+    println!("  enabled = true");
+    println!("  password_hash = \"{}\"", hash);
+    println!();
+    ui::hint("Restart the daemon after updating config.toml");
 }
 
 fn cmd_security_status(json: bool) {

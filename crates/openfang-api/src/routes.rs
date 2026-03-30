@@ -229,6 +229,7 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
                 "auth_status": auth_status,
                 "ready": ready,
                 "profile": e.manifest.profile,
+                "temperature": e.manifest.model.temperature,
                 "identity": {
                     "emoji": e.identity.emoji,
                     "avatar_url": e.identity.avatar_url,
@@ -1390,6 +1391,7 @@ pub async fn get_agent(
             "mcp_servers": entry.manifest.mcp_servers,
             "mcp_servers_mode": if entry.manifest.mcp_servers.is_empty() { "all" } else { "allowlist" },
             "fallback_models": entry.manifest.fallback_models,
+            "temperature": entry.manifest.model.temperature,
         })),
     )
 }
@@ -8723,6 +8725,7 @@ pub struct PatchAgentConfigRequest {
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
     pub fallback_models: Option<Vec<openfang_types::agent::FallbackModel>>,
+    pub temperature: Option<f32>,
 }
 
 /// PATCH /api/agents/{id}/config — Hot-update agent name, description, system prompt, and identity.
@@ -8931,6 +8934,27 @@ pub async fn patch_agent_config(
             .kernel
             .registry
             .update_fallback_models(agent_id, fallbacks)
+            .is_err()
+        {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            );
+        }
+    }
+
+    // Update temperature
+    if let Some(temp) = req.temperature {
+        if !(0.0..=2.0).contains(&temp) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Temperature must be between 0.0 and 2.0"})),
+            );
+        }
+        if state
+            .kernel
+            .registry
+            .update_temperature(agent_id, temp)
             .is_err()
         {
             return (
