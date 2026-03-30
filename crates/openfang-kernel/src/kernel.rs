@@ -1759,8 +1759,11 @@ impl OpenFangKernel {
 
         // Look up model's actual context window from the catalog
         let ctx_window = self.model_catalog.read().ok().and_then(|cat| {
-            cat.find_model(&entry.manifest.model.model)
-                .map(|m| m.context_window as usize)
+            cat.find_model_for_provider(
+                &entry.manifest.model.model,
+                &entry.manifest.model.provider,
+            )
+            .map(|m| m.context_window as usize)
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
@@ -2043,12 +2046,14 @@ impl OpenFangKernel {
 
                     // Persist usage to database (same as non-streaming path)
                     let model = &manifest.model.model;
-                    let cost = MeteringEngine::estimate_cost_with_catalog(
+                    let provider = &manifest.model.provider;
+                    let cost = MeteringEngine::estimate_cost_with_catalog_for_provider(
                         &kernel_clone
                             .model_catalog
                             .read()
                             .unwrap_or_else(|e| e.into_inner()),
                         model,
+                        provider,
                         result.total_usage.input_tokens,
                         result.total_usage.output_tokens,
                     );
@@ -2528,7 +2533,7 @@ impl OpenFangKernel {
 
         // Look up model's actual context window from the catalog
         let ctx_window = self.model_catalog.read().ok().and_then(|cat| {
-            cat.find_model(&manifest.model.model)
+            cat.find_model_for_provider(&manifest.model.model, &manifest.model.provider)
                 .map(|m| m.context_window as usize)
         });
 
@@ -2600,9 +2605,11 @@ impl OpenFangKernel {
 
         // Record usage in the metering engine (uses catalog pricing as single source of truth)
         let model = &manifest.model.model;
-        let cost = MeteringEngine::estimate_cost_with_catalog(
+        let provider = &manifest.model.provider;
+        let cost = MeteringEngine::estimate_cost_with_catalog_for_provider(
             &self.model_catalog.read().unwrap_or_else(|e| e.into_inner()),
             model,
+            provider,
             result.total_usage.input_tokens,
             result.total_usage.output_tokens,
         );
@@ -3094,9 +3101,11 @@ impl OpenFangKernel {
             .unwrap_or((0, 0));
 
         let model = &entry.manifest.model.model;
-        let cost = MeteringEngine::estimate_cost_with_catalog(
+        let provider = &entry.manifest.model.provider;
+        let cost = MeteringEngine::estimate_cost_with_catalog_for_provider(
             &self.model_catalog.read().unwrap_or_else(|e| e.into_inner()),
             model,
+            provider,
             input_tokens,
             output_tokens,
         );

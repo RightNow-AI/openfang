@@ -206,6 +206,25 @@ impl MeteringEngine {
         input_cost + output_cost
     }
 
+    /// Like `estimate_cost_with_catalog` but scopes the catalog lookup to `provider`.
+    ///
+    /// Prevents cross-provider pricing errors when multiple providers share the same
+    /// short model name (e.g. `minimax-m2.5` exists under both MiniMax and Volcengine).
+    pub fn estimate_cost_with_catalog_for_provider(
+        catalog: &openfang_runtime::model_catalog::ModelCatalog,
+        model: &str,
+        provider: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> f64 {
+        let (input_per_m, output_per_m) = catalog
+            .pricing_for_provider(model, provider)
+            .unwrap_or((1.0, 3.0));
+        let input_cost = (input_tokens as f64 / 1_000_000.0) * input_per_m;
+        let output_cost = (output_tokens as f64 / 1_000_000.0) * output_per_m;
+        input_cost + output_cost
+    }
+
     /// Clean up old usage records.
     pub fn cleanup(&self, days: u32) -> OpenFangResult<usize> {
         self.store.cleanup_old(days)
