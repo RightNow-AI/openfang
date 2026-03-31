@@ -13,7 +13,6 @@ pub fn bundled_skills() -> Vec<(&'static str, &'static str)> {
         ("github", include_str!("../bundled/github/SKILL.md")),
         ("docker", include_str!("../bundled/docker/SKILL.md")),
         ("web-search", include_str!("../bundled/web-search/SKILL.md")),
-        ("searxng", include_str!("../bundled/searxng/SKILL.md")),
         (
             "code-reviewer",
             include_str!("../bundled/code-reviewer/SKILL.md"),

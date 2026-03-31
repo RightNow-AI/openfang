@@ -36,7 +36,7 @@ Skills are installed to `~/.openfang/skills/` and made available to agents throu
 | `prompt_only` | Markdown | N/A | Expert knowledge injected into system prompt. No code execution. |
 | `builtin` | Rust | N/A | Compiled into the binary. For core tools only. |
 
-### 61 Bundled Skills
+### 60 Bundled Skills
 
 OpenFang includes 60 expert knowledge skills compiled into the binary (no installation needed):
 
