@@ -626,6 +626,7 @@ impl LlmDriver for BedrockDriver {
                             if !current_text.is_empty() {
                                 content.push(ContentBlock::Text {
                                     text: std::mem::take(&mut current_text),
+                                    provider_metadata: None,
                                 });
                             }
                             in_tool = true;
@@ -651,6 +652,7 @@ impl LlmDriver for BedrockDriver {
                                 id: current_tool_id.clone(),
                                 name: current_tool_name.clone(),
                                 input: input.clone(),
+                                provider_metadata: None,
                             });
                             tool_calls.push(ToolCall {
                                 id: std::mem::take(&mut current_tool_id),
@@ -677,6 +679,7 @@ impl LlmDriver for BedrockDriver {
             if !current_text.is_empty() {
                 content.push(ContentBlock::Text {
                     text: current_text,
+                    provider_metadata: None,
                 });
             }
 
@@ -750,7 +753,7 @@ fn convert_message(msg: &Message) -> ConverseMessage {
         MessageContent::Blocks(blocks) => blocks
             .iter()
             .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(ConverseContentBlock::Text {
+                ContentBlock::Text { text, .. } => Some(ConverseContentBlock::Text {
                     text: text.clone(),
                 }),
                 ContentBlock::Image { media_type, data } => {
@@ -767,7 +770,7 @@ fn convert_message(msg: &Message) -> ConverseMessage {
                         },
                     })
                 }
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse { id, name, input, .. } => {
                     Some(ConverseContentBlock::ToolUse {
                         tool_use: ConverseToolUse {
                             tool_use_id: id.clone(),
@@ -813,13 +816,14 @@ fn convert_response(resp: ConverseResponse) -> CompletionResponse {
     for block in resp.output.message.content {
         match block {
             ConverseResponseContent::Text { text } => {
-                content.push(ContentBlock::Text { text });
+                content.push(ContentBlock::Text { text, provider_metadata: None });
             }
             ConverseResponseContent::ToolUse { tool_use } => {
                 content.push(ContentBlock::ToolUse {
                     id: tool_use.tool_use_id.clone(),
                     name: tool_use.name.clone(),
                     input: tool_use.input.clone(),
+                    provider_metadata: None,
                 });
                 tool_calls.push(ToolCall {
                     id: tool_use.tool_use_id,
