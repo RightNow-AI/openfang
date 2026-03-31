@@ -816,6 +816,19 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         }
     }
 
+    async fn free_response_channels(&self, channel_type: &str) -> Vec<String> {
+        let channels = &self.kernel.config.channels;
+        match channel_type {
+            "discord" => channels
+                .discord
+                .as_ref()
+                .map(|c| c.free_response_channels.clone())
+                .unwrap_or_default(),
+            // Add other channel types here as needed (e.g., "telegram" => ...)
+            _ => Vec::new(),
+        }
+    }
+
     async fn authorize_channel_user(
         &self,
         channel_type: &str,
