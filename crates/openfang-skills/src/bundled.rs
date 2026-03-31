@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn test_bundled_skills_count() {
         let skills = bundled_skills();
-        assert_eq!(skills.len(), 61, "Expected 61 bundled skills");
+        assert_eq!(skills.len(), 60, "Expected 60 bundled skills");
     }
 
     #[test]
