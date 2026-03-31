@@ -506,7 +506,11 @@ mod tests {
         assert!(check_ssrf("http://169.254.169.254/latest/meta-data/", &allow).is_err());
         // Also verify hostname-based metadata blocks
         let allow2 = vec!["metadata.google.internal".to_string()];
-        assert!(check_ssrf("http://metadata.google.internal/computeMetadata/v1/", &allow2).is_err());
+        assert!(check_ssrf(
+            "http://metadata.google.internal/computeMetadata/v1/",
+            &allow2
+        )
+        .is_err());
     }
 
     #[test]
