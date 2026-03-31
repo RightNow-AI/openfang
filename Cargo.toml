@@ -63,6 +63,7 @@ clap_complete = "4"
 
 # HTTP client (for LLM drivers)
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "gzip", "deflate", "brotli"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # Async trait
 async-trait = "0.1"
