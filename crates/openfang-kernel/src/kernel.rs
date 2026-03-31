@@ -877,40 +877,77 @@ impl OpenFangKernel {
                         None
                     }
                 }
-            } else if std::env::var("OPENAI_API_KEY").is_ok() {
-                let model = if configured_model == "all-MiniLM-L6-v2" {
-                    default_embedding_model_for_provider("openai")
-                } else {
-                    configured_model.as_str()
-                };
-                let openai_url = config.provider_urls.get("openai").map(|s| s.as_str());
-                match create_embedding_driver("openai", model, "OPENAI_API_KEY", openai_url) {
-                    Ok(d) => {
-                        info!(model = %model, "Embedding driver auto-detected: OpenAI");
-                        Some(Arc::from(d))
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "OpenAI embedding auto-detect failed");
-                        None
-                    }
-                }
             } else {
-                // Try Ollama (local, no key needed)
-                let model = if configured_model == "all-MiniLM-L6-v2" {
-                    default_embedding_model_for_provider("ollama")
+                // Auto-detect embedding provider by checking API key env vars in
+                // priority order.  First match wins.
+                const API_KEY_PROVIDERS: &[(&str, &str)] = &[
+                    ("OPENAI_API_KEY",    "openai"),
+                    ("GROQ_API_KEY",      "groq"),
+                    ("MISTRAL_API_KEY",   "mistral"),
+                    ("TOGETHER_API_KEY",  "together"),
+                    ("FIREWORKS_API_KEY", "fireworks"),
+                    ("COHERE_API_KEY",    "cohere"),
+                ];
+
+                let detected_from_key = API_KEY_PROVIDERS
+                    .iter()
+                    .find(|(env_var, _)| std::env::var(env_var).is_ok())
+                    .and_then(|(env_var, provider)| {
+                        let model = if configured_model == "all-MiniLM-L6-v2" {
+                            default_embedding_model_for_provider(provider)
+                        } else {
+                            configured_model.as_str()
+                        };
+                        let custom_url = config.provider_urls.get(*provider).map(|s| s.as_str());
+                        match create_embedding_driver(provider, model, env_var, custom_url) {
+                            Ok(d) => {
+                                info!(provider = %provider, model = %model, "Embedding driver auto-detected via {}", env_var);
+                                Some(Arc::from(d))
+                            }
+                            Err(e) => {
+                                warn!(provider = %provider, error = %e, "Embedding auto-detect failed for {}", provider);
+                                None
+                            }
+                        }
+                    });
+
+                if detected_from_key.is_some() {
+                    detected_from_key
                 } else {
-                    configured_model.as_str()
-                };
-                let ollama_url = config.provider_urls.get("ollama").map(|s| s.as_str());
-                match create_embedding_driver("ollama", model, "", ollama_url) {
-                    Ok(d) => {
-                        info!(model = %model, "Embedding driver auto-detected: Ollama (local)");
-                        Some(Arc::from(d))
+                    // No API key found — try local providers in order:
+                    // Ollama, vLLM, LM Studio (no key needed).
+                    const LOCAL_PROVIDERS: &[&str] = &["ollama", "vllm", "lmstudio"];
+
+                    let mut local_result = None;
+                    for provider in LOCAL_PROVIDERS {
+                        let model = if configured_model == "all-MiniLM-L6-v2" {
+                            default_embedding_model_for_provider(provider)
+                        } else {
+                            configured_model.as_str()
+                        };
+                        let custom_url = config.provider_urls.get(*provider).map(|s| s.as_str());
+                        match create_embedding_driver(provider, model, "", custom_url) {
+                            Ok(d) => {
+                                info!(provider = %provider, model = %model, "Embedding driver auto-detected: {} (local)", provider);
+                                local_result = Some(Arc::from(d));
+                                break;
+                            }
+                            Err(e) => {
+                                debug!(provider = %provider, error = %e, "Local embedding provider {} not available", provider);
+                            }
+                        }
                     }
-                    Err(e) => {
-                        debug!("No embedding driver available (Ollama probe failed: {e}) — using text search fallback");
-                        None
+
+                    if local_result.is_none() {
+                        warn!(
+                            "No embedding provider available. Memory recall will use text search only. \
+                             Configure [memory] embedding_provider in config.toml or set an API key \
+                             (OPENAI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, TOGETHER_API_KEY, \
+                             FIREWORKS_API_KEY, COHERE_API_KEY)."
+                        );
                     }
+
+                    local_result
                 }
             }
         };
@@ -1089,7 +1126,11 @@ impl OpenFangKernel {
                                             || disk_manifest.tool_allowlist
                                                 != entry.manifest.tool_allowlist
                                             || disk_manifest.tool_blocklist
-                                                != entry.manifest.tool_blocklist;
+                                                != entry.manifest.tool_blocklist
+                                            || disk_manifest.skills
+                                                != entry.manifest.skills
+                                            || disk_manifest.mcp_servers
+                                                != entry.manifest.mcp_servers;
                                         if changed {
                                             info!(
                                                 agent = %name,
@@ -2889,20 +2930,16 @@ impl OpenFangKernel {
         model: &str,
         explicit_provider: Option<&str>,
     ) -> KernelResult<()> {
-        let catalog_entry = self
-            .model_catalog
-            .read()
-            .ok()
-            .and_then(|catalog| {
-                // When the caller specifies a provider, use provider-aware lookup
-                // so we resolve the model on the correct provider — not a builtin
-                // from a different provider that happens to share the same name (#833).
-                if let Some(ep) = explicit_provider {
-                    catalog.find_model_for_provider(model, ep).cloned()
-                } else {
-                    catalog.find_model(model).cloned()
-                }
-            });
+        let catalog_entry = self.model_catalog.read().ok().and_then(|catalog| {
+            // When the caller specifies a provider, use provider-aware lookup
+            // so we resolve the model on the correct provider — not a builtin
+            // from a different provider that happens to share the same name (#833).
+            if let Some(ep) = explicit_provider {
+                catalog.find_model_for_provider(model, ep).cloned()
+            } else {
+                catalog.find_model(model).cloned()
+            }
+        });
         let provider = if let Some(ep) = explicit_provider {
             // User explicitly set the provider — use it as-is
             Some(ep.to_string())
@@ -5663,7 +5700,10 @@ fn apply_budget_defaults(
 fn default_embedding_model_for_provider(provider: &str) -> &'static str {
     match provider {
         "openai" => "text-embedding-3-small",
+        "groq" => "nomic-embed-text",
         "mistral" => "mistral-embed",
+        "together" => "togethercomputer/m2-bert-80M-8k-retrieval",
+        "fireworks" => "nomic-ai/nomic-embed-text-v1.5",
         "cohere" => "embed-english-v3.0",
         // Local providers use nomic-embed-text as a good default
         "ollama" | "vllm" | "lmstudio" => "nomic-embed-text",

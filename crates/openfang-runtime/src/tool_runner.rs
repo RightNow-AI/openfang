@@ -2477,7 +2477,7 @@ async fn tool_a2a_discover(input: &serde_json::Value) -> Result<String, String> 
     let url = input["url"].as_str().ok_or("Missing 'url' parameter")?;
 
     // SSRF protection: block private/metadata IPs
-    if crate::web_fetch::check_ssrf(url).is_err() {
+    if crate::web_fetch::check_ssrf(url, &[]).is_err() {
         return Err("SSRF blocked: URL resolves to a private or metadata address".to_string());
     }
 
@@ -2500,7 +2500,7 @@ async fn tool_a2a_send(
     // Resolve agent URL: either directly provided or looked up by name
     let url = if let Some(url) = input["agent_url"].as_str() {
         // SSRF protection
-        if crate::web_fetch::check_ssrf(url).is_err() {
+        if crate::web_fetch::check_ssrf(url, &[]).is_err() {
             return Err("SSRF blocked: URL resolves to a private or metadata address".to_string());
         }
         url.to_string()
@@ -3677,13 +3677,12 @@ mod tests {
             None, // process_manager
         )
         .await;
-        // Should NOT be the capability-check denial — it should normalize to file_write
-        // and pass the capability check. It may fail for other reasons (path validation,
-        // OS-level errors), but not the agent capability gate.
+        // Should NOT be the capability-enforcement "Permission denied" — it should
+        // normalize to file_write and pass the capability check.  It may still fail
+        // for filesystem reasons (e.g. OS "Permission denied (os error 13)"), so we
+        // check specifically for the capability-gate message.
         assert!(
-            !result
-                .content
-                .contains("does not have capability to use tool"),
+            !result.content.contains("Permission denied: agent"),
             "fs-write should normalize to file_write and pass capability check, got: {}",
             result.content
         );

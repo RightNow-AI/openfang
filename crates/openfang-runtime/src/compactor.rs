@@ -1478,7 +1478,10 @@ mod tests {
             Message::assistant("Done reading."),
         ];
         let adjusted = adjust_split_for_tool_pairs(&messages, 2);
-        assert_eq!(adjusted, 1, "Should pull back split to keep ToolUse + ToolResult together");
+        assert_eq!(
+            adjusted, 1,
+            "Should pull back split to keep ToolUse + ToolResult together"
+        );
     }
 
     #[test]
@@ -1489,7 +1492,10 @@ mod tests {
             Message::user("c"),
         ];
         let adjusted = adjust_split_for_tool_pairs(&messages, 1);
-        assert_eq!(adjusted, 1, "Should not change split for plain text messages");
+        assert_eq!(
+            adjusted, 1,
+            "Should not change split for plain text messages"
+        );
     }
 
     #[test]

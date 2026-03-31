@@ -318,6 +318,37 @@ shared_secret = "my-cluster-secret"
 
 ---
 
+### `[auth]`
+
+Configures dashboard login with username/password authentication. Disabled by default.
+
+```toml
+[auth]
+enabled = true
+username = "admin"
+password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."  # generate with: openfang auth hash-password
+session_ttl_hours = 168
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable username/password authentication for the dashboard. |
+| `username` | string | `"admin"` | Admin username. |
+| `password_hash` | string | `""` (empty) | Argon2id password hash in PHC string format. Generate with `openfang auth hash-password`. |
+| `session_ttl_hours` | u64 | `168` (7 days) | Session token lifetime in hours. |
+
+**Generating a password hash:**
+
+```bash
+openfang auth hash-password
+```
+
+This prompts for a password and outputs an Argon2id PHC string to paste into `config.toml`.
+
+> **Breaking change (v0.5.0):** Password hashes must be in Argon2id format. Older SHA256 hex hashes from versions prior to v0.5.0 are no longer accepted. Re-run `openfang auth hash-password` to generate a new hash.
+
+---
+
 ### `[web]`
 
 Configures web search and web fetch capabilities used by agent tools.
@@ -337,10 +368,11 @@ cache_ttl_minutes = 15
 
 | Value | Description |
 |-------|-------------|
-| `auto` | Cascading fallback: tries Tavily, then Brave, then Perplexity, then DuckDuckGo, based on which API keys are available. |
+| `auto` | Cascading fallback: tries Tavily, then Brave, then Perplexity, then SearXNG, then DuckDuckGo, based on which API keys/configs are available. |
 | `brave` | Brave Search API. Requires `BRAVE_API_KEY`. |
 | `tavily` | Tavily AI-native search. Requires `TAVILY_API_KEY`. |
 | `perplexity` | Perplexity AI search. Requires `PERPLEXITY_API_KEY`. |
+| `searxng` | Self-hosted search engine aggregator. No API key required, just point to your SearXNG instance. |
 | `duck_duck_go` | DuckDuckGo HTML scraping. No API key needed. |
 
 #### `[web.brave]`
@@ -391,6 +423,19 @@ model = "sonar"
 |-------|------|---------|-------------|
 | `api_key_env` | string | `"PERPLEXITY_API_KEY"` | Environment variable name holding the Perplexity API key. |
 | `model` | string | `"sonar"` | Perplexity model to use for search queries. |
+
+#### `[web.searxng]`
+
+**SearXNG** — Self-hosted search engine aggregator. No API key required, just point to your SearXNG instance. Supports 30+ search categories (general, images, news, videos, etc.) and pagination.
+
+```toml
+[web.searxng]
+url = "https://searxng.example.com"    # SearXNG instance URL (required)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `url` | string | (required) | Full URL of your SearXNG instance (e.g., `https://searxng.example.com`). Must be accessible. |
 
 #### `[web.fetch]`
 

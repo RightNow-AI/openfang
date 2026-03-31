@@ -152,7 +152,10 @@ impl MqttAdapter {
     }
 
     /// Parse host:port string.
-    fn parse_host_port(s: &str, default_port: u16) -> Result<(String, u16), Box<dyn std::error::Error>> {
+    fn parse_host_port(
+        s: &str,
+        default_port: u16,
+    ) -> Result<(String, u16), Box<dyn std::error::Error>> {
         let s = s.trim();
         if let Some(colon_pos) = s.rfind(':') {
             let host = s[..colon_pos].to_string();
@@ -239,7 +242,8 @@ impl ChannelAdapter for MqttAdapter {
 
     async fn start(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = ChannelMessage> + Send>>, Box<dyn std::error::Error>> {
+    ) -> Result<Pin<Box<dyn Stream<Item = ChannelMessage> + Send>>, Box<dyn std::error::Error>>
+    {
         let options = self.build_mqtt_options()?;
         let (client, mut eventloop) = AsyncClient::new(options, 10);
 

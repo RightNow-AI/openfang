@@ -3753,90 +3753,92 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <button class="btn btn-sm" @click="editMode ? saveBudget() : startEdit()" :disabled="saving" x-text="editMode ? (saving ? 'Saving...' : 'Save') : 'Edit Limits'" style="white-space:nowrap"></button>
             </div>
             <div x-show="budgetLoading" class="loading-state"><div class="spinner"></div><span>Loading budget...</span></div>
-            <div x-show="!budgetLoading && budgetData">
-              <!-- Global budget meters -->
-              <div class="stats-row" style="margin-bottom:16px">
-                <div class="stat-card" style="flex:1">
-                  <div class="stat-label">Hourly</div>
-                  <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.hourly_spend || 0).toFixed(4)"></div>
-                  <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.hourly_limit)"></div>
-                  <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.hourly_limit > 0">
-                    <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.hourly_pct*100,100)+'%', background: pctColor(budgetData.hourly_pct)}"></div>
+            <template x-if="!budgetLoading && budgetData">
+              <div>
+                <!-- Global budget meters -->
+                <div class="stats-row" style="margin-bottom:16px">
+                  <div class="stat-card" style="flex:1">
+                    <div class="stat-label">Hourly</div>
+                    <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.hourly_spend || 0).toFixed(4)"></div>
+                    <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.hourly_limit)"></div>
+                    <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.hourly_limit > 0">
+                      <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.hourly_pct*100,100)+'%', background: pctColor(budgetData.hourly_pct)}"></div>
+                    </div>
+                  </div>
+                  <div class="stat-card" style="flex:1">
+                    <div class="stat-label">Daily</div>
+                    <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.daily_spend || 0).toFixed(4)"></div>
+                    <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.daily_limit)"></div>
+                    <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.daily_limit > 0">
+                      <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.daily_pct*100,100)+'%', background: pctColor(budgetData.daily_pct)}"></div>
+                    </div>
+                  </div>
+                  <div class="stat-card" style="flex:1">
+                    <div class="stat-label">Monthly</div>
+                    <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.monthly_spend || 0).toFixed(4)"></div>
+                    <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.monthly_limit)"></div>
+                    <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.monthly_limit > 0">
+                      <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.monthly_pct*100,100)+'%', background: pctColor(budgetData.monthly_pct)}"></div>
+                    </div>
                   </div>
                 </div>
-                <div class="stat-card" style="flex:1">
-                  <div class="stat-label">Daily</div>
-                  <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.daily_spend || 0).toFixed(4)"></div>
-                  <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.daily_limit)"></div>
-                  <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.daily_limit > 0">
-                    <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.daily_pct*100,100)+'%', background: pctColor(budgetData.daily_pct)}"></div>
-                  </div>
+                <div class="text-xs text-dim mb-1" x-show="budgetData.alert_threshold > 0 && !editMode">
+                  Alert threshold: <span x-text="(budgetData.alert_threshold * 100).toFixed(0) + '%'"></span> of any limit
                 </div>
-                <div class="stat-card" style="flex:1">
-                  <div class="stat-label">Monthly</div>
-                  <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.monthly_spend || 0).toFixed(4)"></div>
-                  <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.monthly_limit)"></div>
-                  <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.monthly_limit > 0">
-                    <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.monthly_pct*100,100)+'%', background: pctColor(budgetData.monthly_pct)}"></div>
-                  </div>
+                <div class="text-xs text-dim mb-3" x-show="!editMode">
+                  Hourly token limit (per agent): <span x-text="fmtTokens(budgetData.default_max_llm_tokens_per_hour || 0)"></span>
                 </div>
-              </div>
-              <div class="text-xs text-dim mb-1" x-show="budgetData.alert_threshold > 0 && !editMode">
-                Alert threshold: <span x-text="(budgetData.alert_threshold * 100).toFixed(0) + '%'"></span> of any limit
-              </div>
-              <div class="text-xs text-dim mb-3" x-show="!editMode">
-                Hourly token limit (per agent): <span x-text="fmtTokens(budgetData.default_max_llm_tokens_per_hour || 0)"></span>
-              </div>
 
-              <!-- Edit limits form -->
-              <div x-show="editMode" class="card" style="margin:12px 0;padding:12px;border:1px solid var(--accent);border-radius:6px">
-                <div class="stats-row" style="margin-bottom:8px;gap:8px">
-                  <div style="flex:1">
-                    <label class="text-xs text-dim">Hourly Limit ($)</label>
-                    <input type="number" step="0.1" min="0" x-model="editHourly" class="input" style="width:100%;margin-top:2px" placeholder="0 = unlimited">
+                <!-- Edit limits form -->
+                <div x-show="editMode" class="card" style="margin:12px 0;padding:12px;border:1px solid var(--accent);border-radius:6px">
+                  <div class="stats-row" style="margin-bottom:8px;gap:8px">
+                    <div style="flex:1">
+                      <label class="text-xs text-dim">Hourly Limit ($)</label>
+                      <input type="number" step="0.1" min="0" x-model="editHourly" class="input" style="width:100%;margin-top:2px" placeholder="0 = unlimited">
+                    </div>
+                    <div style="flex:1">
+                      <label class="text-xs text-dim">Daily Limit ($)</label>
+                      <input type="number" step="1" min="0" x-model="editDaily" class="input" style="width:100%;margin-top:2px" placeholder="0 = unlimited">
+                    </div>
+                    <div style="flex:1">
+                      <label class="text-xs text-dim">Monthly Limit ($)</label>
+                      <input type="number" step="1" min="0" x-model="editMonthly" class="input" style="width:100%;margin-top:2px" placeholder="0 = unlimited">
+                    </div>
+                    <div style="flex:0.6">
+                      <label class="text-xs text-dim">Alert (%)</label>
+                      <input type="number" step="5" min="0" max="100" x-model="editAlert" class="input" style="width:100%;margin-top:2px" placeholder="80">
+                    </div>
                   </div>
-                  <div style="flex:1">
-                    <label class="text-xs text-dim">Daily Limit ($)</label>
-                    <input type="number" step="1" min="0" x-model="editDaily" class="input" style="width:100%;margin-top:2px" placeholder="0 = unlimited">
+                  <div style="margin-bottom:8px">
+                    <label class="text-xs text-dim">Hourly Token Limit (per agent, 0 = use per-agent values)</label>
+                    <input type="number" step="100000" min="0" x-model="editTokenLimit" class="input" style="width:260px;margin-top:2px" placeholder="0 = per-agent default">
                   </div>
-                  <div style="flex:1">
-                    <label class="text-xs text-dim">Monthly Limit ($)</label>
-                    <input type="number" step="1" min="0" x-model="editMonthly" class="input" style="width:100%;margin-top:2px" placeholder="0 = unlimited">
-                  </div>
-                  <div style="flex:0.6">
-                    <label class="text-xs text-dim">Alert (%)</label>
-                    <input type="number" step="5" min="0" max="100" x-model="editAlert" class="input" style="width:100%;margin-top:2px" placeholder="80">
-                  </div>
+                  <div class="text-xs text-dim">Set to 0 for unlimited/per-agent default. Changes apply immediately (in-memory, not persisted to config.toml).</div>
+                  <button class="btn btn-sm mt-2" @click="editMode = false" style="margin-right:8px">Cancel</button>
                 </div>
-                <div style="margin-bottom:8px">
-                  <label class="text-xs text-dim">Hourly Token Limit (per agent, 0 = use per-agent values)</label>
-                  <input type="number" step="100000" min="0" x-model="editTokenLimit" class="input" style="width:260px;margin-top:2px" placeholder="0 = per-agent default">
-                </div>
-                <div class="text-xs text-dim">Set to 0 for unlimited/per-agent default. Changes apply immediately (in-memory, not persisted to config.toml).</div>
-                <button class="btn btn-sm mt-2" @click="editMode = false" style="margin-right:8px">Cancel</button>
-              </div>
 
-              <!-- Per-agent cost ranking -->
-              <h4 style="margin-top:16px;margin-bottom:8px">Top Spenders (Today)</h4>
-              <div class="table-wrap" x-show="agentRanking.length">
-                <table>
-                  <thead><tr><th>Agent</th><th>Today</th><th>Hourly Limit</th><th>Daily Limit</th><th>Monthly Limit</th><th>Token Limit/hr</th></tr></thead>
-                  <tbody>
-                    <template x-for="a in agentRanking" :key="a.agent_id">
-                      <tr>
-                        <td class="font-bold" x-text="a.name"></td>
-                        <td x-text="'$' + (a.daily_cost_usd || 0).toFixed(4)"></td>
-                        <td class="text-dim" x-text="fmtUsd(a.hourly_limit)"></td>
-                        <td class="text-dim" x-text="fmtUsd(a.daily_limit)"></td>
-                        <td class="text-dim" x-text="fmtUsd(a.monthly_limit)"></td>
-                        <td class="text-dim" x-text="fmtTokens(a.max_llm_tokens_per_hour || 0)"></td>
-                      </tr>
-                    </template>
-                  </tbody>
-                </table>
+                <!-- Per-agent cost ranking -->
+                <h4 style="margin-top:16px;margin-bottom:8px">Top Spenders (Today)</h4>
+                <div class="table-wrap" x-show="agentRanking.length">
+                  <table>
+                    <thead><tr><th>Agent</th><th>Today</th><th>Hourly Limit</th><th>Daily Limit</th><th>Monthly Limit</th><th>Token Limit/hr</th></tr></thead>
+                    <tbody>
+                      <template x-for="a in agentRanking" :key="a.agent_id">
+                        <tr>
+                          <td class="font-bold" x-text="a.name"></td>
+                          <td x-text="'$' + (a.daily_cost_usd || 0).toFixed(4)"></td>
+                          <td class="text-dim" x-text="fmtUsd(a.hourly_limit)"></td>
+                          <td class="text-dim" x-text="fmtUsd(a.daily_limit)"></td>
+                          <td class="text-dim" x-text="fmtUsd(a.monthly_limit)"></td>
+                          <td class="text-dim" x-text="fmtTokens(a.max_llm_tokens_per_hour || 0)"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="text-xs text-dim" x-show="!agentRanking.length">No spending recorded today.</div>
               </div>
-              <div class="text-xs text-dim" x-show="!agentRanking.length">No spending recorded today.</div>
-            </div>
+            </template>
           </div>
 
           <!-- Migration tab -->
@@ -3880,42 +3882,46 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               </div>
             </div>
 
-            <div x-show="migStep === 'preview' && scanResult">
-              <div class="card mb-4" style="border-left:3px solid var(--success, #22c55e)">
-                <div class="flex justify-between items-center mb-2">
-                  <div class="font-bold" style="font-size:14px">OpenClaw Workspace Found</div>
-                  <span class="badge badge-connected">Ready to Migrate</span>
+            <template x-if="migStep === 'preview' && scanResult">
+              <div>
+                <div class="card mb-4" style="border-left:3px solid var(--success, #22c55e)">
+                  <div class="flex justify-between items-center mb-2">
+                    <div class="font-bold" style="font-size:14px">OpenClaw Workspace Found</div>
+                    <span class="badge badge-connected">Ready to Migrate</span>
+                  </div>
+                  <div class="text-sm text-dim" style="font-family:monospace" x-text="scanResult.path"></div>
                 </div>
-                <div class="text-sm text-dim" style="font-family:monospace" x-text="scanResult.path"></div>
+                <div class="stats-row mb-4">
+                  <div class="stat-card"><div class="stat-value" x-text="scanResult.agents ? scanResult.agents.length : 0"></div><div class="stat-label">Agents</div></div>
+                  <div class="stat-card"><div class="stat-value" x-text="scanResult.channels ? scanResult.channels.length : 0"></div><div class="stat-label">Channels</div></div>
+                  <div class="stat-card"><div class="stat-value" x-text="scanResult.skills ? scanResult.skills.length : 0"></div><div class="stat-label">Skills</div></div>
+                </div>
+                <div class="flex gap-2 mb-4">
+                  <button class="btn btn-primary" @click="runMigration(false)" :disabled="migrating">
+                    <span x-show="!migrating">Migrate Now</span>
+                    <span x-show="migrating">Migrating...</span>
+                  </button>
+                  <button class="btn btn-ghost" @click="runMigration(true)" :disabled="migrating">Dry Run</button>
+                  <button class="btn btn-ghost" @click="migStep = 'intro'; scanResult = null">Start Over</button>
+                </div>
               </div>
-              <div class="stats-row mb-4">
-                <div class="stat-card"><div class="stat-value" x-text="scanResult.agents ? scanResult.agents.length : 0"></div><div class="stat-label">Agents</div></div>
-                <div class="stat-card"><div class="stat-value" x-text="scanResult.channels ? scanResult.channels.length : 0"></div><div class="stat-label">Channels</div></div>
-                <div class="stat-card"><div class="stat-value" x-text="scanResult.skills ? scanResult.skills.length : 0"></div><div class="stat-label">Skills</div></div>
-              </div>
-              <div class="flex gap-2 mb-4">
-                <button class="btn btn-primary" @click="runMigration(false)" :disabled="migrating">
-                  <span x-show="!migrating">Migrate Now</span>
-                  <span x-show="migrating">Migrating...</span>
-                </button>
-                <button class="btn btn-ghost" @click="runMigration(true)" :disabled="migrating">Dry Run</button>
-                <button class="btn btn-ghost" @click="migStep = 'intro'; scanResult = null">Start Over</button>
-              </div>
-            </div>
+            </template>
 
-            <div x-show="migStep === 'result' && migResult">
-              <div class="card mb-4" :style="'border-left:3px solid ' + (migResult.status === 'completed' ? 'var(--success, #22c55e)' : 'var(--error)')">
-                <div class="flex justify-between items-center mb-2">
-                  <div class="font-bold" style="font-size:14px" x-text="migResult.dry_run ? 'Dry Run Complete' : 'Migration Complete!'"></div>
-                  <span class="badge" :class="migResult.status === 'completed' ? 'badge-connected' : 'badge-crashed'" x-text="migResult.status === 'completed' ? 'SUCCESS' : 'FAILED'"></span>
+            <template x-if="migStep === 'result' && migResult">
+              <div>
+                <div class="card mb-4" :style="'border-left:3px solid ' + (migResult.status === 'completed' ? 'var(--success, #22c55e)' : 'var(--error)')">
+                  <div class="flex justify-between items-center mb-2">
+                    <div class="font-bold" style="font-size:14px" x-text="migResult.dry_run ? 'Dry Run Complete' : 'Migration Complete!'"></div>
+                    <span class="badge" :class="migResult.status === 'completed' ? 'badge-connected' : 'badge-crashed'" x-text="migResult.status === 'completed' ? 'SUCCESS' : 'FAILED'"></span>
+                  </div>
+                  <div class="text-sm text-dim" x-show="migResult.error" style="color:var(--error)" x-text="migResult.error"></div>
                 </div>
-                <div class="text-sm text-dim" x-show="migResult.error" style="color:var(--error)" x-text="migResult.error"></div>
+                <div class="flex gap-2">
+                  <button class="btn btn-primary" x-show="migResult.dry_run" @click="runMigration(false)" :disabled="migrating">Run Migration for Real</button>
+                  <button class="btn btn-ghost" @click="migStep = 'intro'; migResult = null; scanResult = null">Start New Migration</button>
+                </div>
               </div>
-              <div class="flex gap-2">
-                <button class="btn btn-primary" x-show="migResult.dry_run" @click="runMigration(false)" :disabled="migrating">Run Migration for Real</button>
-                <button class="btn btn-ghost" @click="migStep = 'intro'; migResult = null; scanResult = null">Start New Migration</button>
-              </div>
-            </div>
+            </template>
 
             <div class="card" x-show="migStep === 'not_found'" style="border-left:3px solid var(--warning, #f59e0b)">
               <div class="font-bold mb-2" style="font-size:14px">OpenClaw Not Found</div>

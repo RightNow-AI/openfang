@@ -25,6 +25,8 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 /// Telegram long-polling timeout (seconds) — sent as the `timeout` parameter to getUpdates.
 const LONG_POLL_TIMEOUT: u64 = 30;
+/// Bound startup control-plane calls so a flaky Local Bot API cannot block daemon boot forever.
+const STARTUP_API_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Default Telegram Bot API base URL.
 const DEFAULT_API_URL: &str = "https://api.telegram.org";
@@ -120,6 +122,7 @@ impl TelegramAdapter {
         let resp: serde_json::Value = self
             .client
             .post(&url)
+            .timeout(STARTUP_API_TIMEOUT)
             .json(&serde_json::json!({ "commands": commands }))
             .send()
             .await?
@@ -468,6 +471,7 @@ impl ChannelAdapter for TelegramAdapter {
                 .client
                 .post(&delete_url)
                 .json(&serde_json::json!({"drop_pending_updates": true}))
+                .timeout(STARTUP_API_TIMEOUT)
                 .send()
                 .await
             {

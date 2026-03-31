@@ -86,6 +86,13 @@ fn phantom_action_detected(text: &str) -> bool {
     has_action && has_channel
 }
 
+/// Returns true when the agent response text indicates an intentional silent completion.
+/// Matches `NO_REPLY` (exact) and `[SILENT]` (case-insensitive).
+fn is_silent_token(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed == "NO_REPLY" || trimmed.eq_ignore_ascii_case("[silent]")
+}
+
 /// Extra guidance injected after failed tool calls to prevent fabricated follow-up actions.
 const TOOL_ERROR_GUIDANCE: &str =
     "[System: One or more tool calls failed. Failed tools did not produce usable data. Do NOT invent missing results, cite nonexistent search results, or pretend failed tools succeeded. If your next steps depend on a failed tool, either retry with a materially different approach or explain the failure to the user and stop. Do not write files, store memory, or take downstream actions based on failed tool outputs.]";
@@ -463,8 +470,9 @@ pub async fn run_agent_loop(
                     crate::reply_directives::parse_directives(&text);
                 let text = cleaned_text;
 
-                // NO_REPLY: agent intentionally chose not to reply
-                if text.trim() == "NO_REPLY" || parsed_directives.silent {
+                // NO_REPLY / [SILENT]: agent intentionally chose not to reply.
+                // [SILENT] must not be stored literally — it reinforces silence in future turns.
+                if is_silent_token(&text) || parsed_directives.silent {
                     debug!(agent = %manifest.name, "Agent chose NO_REPLY/silent — silent completion");
                     session
                         .messages
@@ -1641,8 +1649,9 @@ pub async fn run_agent_loop_streaming(
                     crate::reply_directives::parse_directives(&text);
                 let text = cleaned_text_s;
 
-                // NO_REPLY: agent intentionally chose not to reply
-                if text.trim() == "NO_REPLY" || parsed_directives_s.silent {
+                // NO_REPLY / [SILENT]: agent intentionally chose not to reply.
+                // [SILENT] must not be stored literally — it reinforces silence in future turns.
+                if is_silent_token(&text) || parsed_directives_s.silent {
                     debug!(agent = %manifest.name, "Agent chose NO_REPLY/silent (streaming) — silent completion");
                     session
                         .messages
@@ -2140,6 +2149,7 @@ pub async fn run_agent_loop_streaming(
 /// 11. `Action: tool\nAction Input: {"key":"value"}` — ReAct-style (LM Studio, GPT-OSS)
 /// 12. `tool_name\n{"key":"value"}` — bare name + JSON on next line (Llama 4 Scout)
 /// 13. `<tool_use>{"name":"tool","arguments":{...}}</tool_use>` — Llama 3.1+ variant
+/// 14. `<function=tool><parameter=name>value</parameter></function>` — nested XML parameter style
 ///
 /// Validates tool names against available tools and returns synthetic `ToolCall` entries.
 fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Vec<ToolCall> {
@@ -2177,13 +2187,16 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
             continue;
         }
 
-        // Parse JSON input
+        // Parse JSON input, or fall back to nested XML parameter blocks.
         let input: serde_json::Value = match serde_json::from_str(json_body) {
             Ok(v) => v,
-            Err(e) => {
-                warn!(tool = tool_name, error = %e, "Failed to parse text-based tool call JSON — skipping");
-                continue;
-            }
+            Err(json_err) => match parse_xml_parameter_blocks(json_body) {
+                Some(v) => v,
+                None => {
+                    warn!(tool = tool_name, error = %json_err, "Failed to parse text-based tool call payload — skipping");
+                    continue;
+                }
+            },
         };
 
         info!(
@@ -2749,6 +2762,42 @@ fn parse_json_tool_call_object(
     };
 
     Some((name.to_string(), args))
+}
+
+fn unescape_xml_entities(text: &str) -> String {
+    text.replace("&quot;", "\"")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&apos;", "'")
+}
+
+fn parse_xml_parameter_blocks(text: &str) -> Option<serde_json::Value> {
+    use regex_lite::Regex;
+
+    let re = Regex::new(r#"(?s)<parameter=([A-Za-z0-9_.:-]+)>\s*(.*?)\s*</parameter>"#).unwrap();
+    let mut params = serde_json::Map::new();
+
+    for caps in re.captures_iter(text) {
+        let Some(name) = caps.get(1).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+
+        let raw_value = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
+        let value_text = unescape_xml_entities(raw_value).trim().to_string();
+        let value =
+            serde_json::from_str(&value_text).unwrap_or(serde_json::Value::String(value_text));
+        params.insert(name.to_string(), value);
+    }
+
+    if params.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(params))
+    }
 }
 
 /// Parse the custom arrow syntax used by some Ollama models:
@@ -3640,6 +3689,44 @@ mod tests {
     }
 
     #[test]
+    fn test_recover_text_tool_calls_xml_parameters() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = r#"<function=shell_exec><parameter=command>python3 "/tmp/run.py" --flag value</parameter></function>"#;
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell_exec");
+        assert_eq!(
+            calls[0].input["command"],
+            r#"python3 "/tmp/run.py" --flag value"#
+        );
+    }
+
+    #[test]
+    fn test_recover_text_tool_calls_xml_parameters_with_wrapper() {
+        let tools = vec![ToolDefinition {
+            name: "shell_exec".into(),
+            description: "Execute".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = r#"<tool_call>
+<function=shell_exec>
+<parameter=command>python3 "/tmp/poll.py" --job-id "abc123"</parameter>
+</function>
+</tool_call>"#;
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell_exec");
+        assert_eq!(
+            calls[0].input["command"],
+            r#"python3 "/tmp/poll.py" --job-id "abc123""#
+        );
+    }
+
+    #[test]
     fn test_recover_text_tool_calls_unknown_tool() {
         let tools = vec![ToolDefinition {
             name: "web_search".into(),
@@ -4405,6 +4492,56 @@ mod tests {
         }
     }
 
+    /// Mock driver that emits nested XML parameter-style tool calls as plain text.
+    struct NestedXmlTextToolCallDriver {
+        call_count: AtomicU32,
+    }
+
+    impl NestedXmlTextToolCallDriver {
+        fn new() -> Self {
+            Self {
+                call_count: AtomicU32::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmDriver for NestedXmlTextToolCallDriver {
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> Result<CompletionResponse, LlmError> {
+            let call = self.call_count.fetch_add(1, Ordering::Relaxed);
+            if call == 0 {
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "<tool_call><function=web_search><parameter=query>rust async</parameter></function></tool_call>".to_string(),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage {
+                        input_tokens: 18,
+                        output_tokens: 10,
+                    },
+                })
+            } else {
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "Recovered nested XML tool call successfully.".to_string(),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage {
+                        input_tokens: 24,
+                        output_tokens: 8,
+                    },
+                })
+            }
+        }
+    }
+
     #[async_trait]
     impl LlmDriver for TextToolCallDriver {
         async fn complete(
@@ -4515,6 +4652,81 @@ mod tests {
             result.response.contains("search results") || result.response.contains("Rust async"),
             "Expected final response text, got: {:?}",
             result.response
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nested_xml_text_tool_call_recovery_e2e() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(NestedXmlTextToolCallDriver::new());
+
+        let tools = vec![ToolDefinition {
+            name: "web_search".into(),
+            description: "Search the web".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"}
+                }
+            }),
+        }];
+
+        let result = run_agent_loop(
+            &manifest,
+            "Search for rust async programming",
+            &mut session,
+            &memory,
+            driver,
+            &tools,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("Agent loop should recover nested XML tool calls");
+
+        assert!(
+            !result.response.contains("<tool_call>"),
+            "Response should not contain raw tool_call tags, got: {:?}",
+            result.response
+        );
+        assert!(
+            !result.response.contains("<function="),
+            "Response should not contain raw function tags, got: {:?}",
+            result.response
+        );
+        assert!(
+            result
+                .response
+                .contains("Recovered nested XML tool call successfully."),
+            "Expected final response text, got: {:?}",
+            result.response
+        );
+        assert!(
+            result.iterations >= 2,
+            "Should have at least 2 iterations (tool call + final response), got: {}",
+            result.iterations
         );
     }
 
@@ -4647,5 +4859,37 @@ mod tests {
             events.push(ev);
         }
         assert!(!events.is_empty(), "Should have received stream events");
+    }
+
+    #[test]
+    fn test_silent_detection_uppercase() {
+        assert!(is_silent_token("[SILENT]"));
+    }
+
+    #[test]
+    fn test_silent_detection_lowercase() {
+        assert!(is_silent_token("[silent]"));
+    }
+
+    #[test]
+    fn test_silent_detection_mixed_case() {
+        assert!(is_silent_token("[Silent]"));
+    }
+
+    #[test]
+    fn test_silent_detection_with_whitespace() {
+        assert!(is_silent_token("  [SILENT]  "));
+    }
+
+    #[test]
+    fn test_silent_detection_no_reply() {
+        assert!(is_silent_token("NO_REPLY"));
+    }
+
+    #[test]
+    fn test_silent_detection_rejects_normal_text() {
+        assert!(!is_silent_token("Hello, how can I help?"));
+        assert!(!is_silent_token("SILENT"));
+        assert!(!is_silent_token(""));
     }
 }

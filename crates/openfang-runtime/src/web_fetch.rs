@@ -53,7 +53,7 @@ impl WebFetchEngine {
         let method_upper = method.to_uppercase();
 
         // Step 1: SSRF protection — BEFORE any network I/O
-        check_ssrf(url)?;
+        check_ssrf(url, &self.config.ssrf_allowed_hosts)?;
 
         // Step 2: Cache lookup (only for GET)
         let cache_key = format!("fetch:{}:{}", method_upper, url);
@@ -185,7 +185,14 @@ fn is_html(content_type: &str, body: &str) -> bool {
 /// Check if a URL targets a private/internal network resource.
 /// Blocks localhost, metadata endpoints, and private IPs.
 /// Must run BEFORE any network I/O.
-pub(crate) fn check_ssrf(url: &str) -> Result<(), String> {
+///
+/// The `allowed_hosts` slice lets self-hosted deployments bypass the
+/// private-IP check for specific hosts.  Entries can be exact hostnames
+/// (`"n8n.local"`), wildcard domains (`"*.olares.com"`), or CIDR ranges
+/// (`"10.0.0.0/8"`).
+///
+/// **Cloud metadata endpoints are NEVER allowed regardless of the allowlist.**
+pub(crate) fn check_ssrf(url: &str, allowed_hosts: &[String]) -> Result<(), String> {
     // Only allow http:// and https:// schemes
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("Only http:// and https:// URLs are allowed".to_string());
@@ -200,6 +207,7 @@ pub(crate) fn check_ssrf(url: &str) -> Result<(), String> {
     };
 
     // Hostname-based blocklist (catches metadata endpoints)
+    // These are UNCONDITIONALLY blocked — no allowlist can override them.
     let blocked = [
         "localhost",
         "ip6-localhost",
@@ -217,13 +225,28 @@ pub(crate) fn check_ssrf(url: &str) -> Result<(), String> {
         return Err(format!("SSRF blocked: {hostname} is a restricted hostname"));
     }
 
+    // Check if the hostname is explicitly allowed before doing DNS resolution.
+    if is_host_allowed(hostname, allowed_hosts) {
+        return Ok(());
+    }
+
     // Resolve DNS and check every returned IP
     let port = if url.starts_with("https") { 443 } else { 80 };
     let socket_addr = format!("{hostname}:{port}");
     if let Ok(addrs) = socket_addr.to_socket_addrs() {
         for addr in addrs {
             let ip = addr.ip();
+            if is_metadata_ip(&ip) {
+                // Metadata IPs are NEVER allowed, even via allowlist.
+                return Err(format!(
+                    "SSRF blocked: {hostname} resolves to metadata IP {ip}"
+                ));
+            }
             if ip.is_loopback() || ip.is_unspecified() || is_private_ip(&ip) {
+                // Check if the resolved IP matches a CIDR in the allowlist.
+                if is_ip_allowed(&ip, allowed_hosts) {
+                    continue;
+                }
                 return Err(format!(
                     "SSRF blocked: {hostname} resolves to private IP {ip}"
                 ));
@@ -232,6 +255,97 @@ pub(crate) fn check_ssrf(url: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Returns true if an IP is a cloud metadata endpoint address.
+fn is_metadata_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            // 169.254.169.254 (AWS/GCP/Azure IMDS)
+            octets == [169, 254, 169, 254]
+            // 100.100.100.200 (Alibaba Cloud IMDS)
+            || octets == [100, 100, 100, 200]
+            // 192.0.0.192 (Azure IMDS alternative)
+            || octets == [192, 0, 0, 192]
+        }
+        _ => false,
+    }
+}
+
+/// Check if a hostname matches any entry in the allowlist.
+/// Supports exact match and wildcard domains (`*.example.com`).
+fn is_host_allowed(hostname: &str, allowed_hosts: &[String]) -> bool {
+    let lower = hostname.to_lowercase();
+    for entry in allowed_hosts {
+        let entry_lower = entry.to_lowercase();
+        // Exact match
+        if entry_lower == lower {
+            return true;
+        }
+        // Wildcard domain: *.example.com matches sub.example.com
+        if let Some(suffix) = entry_lower.strip_prefix("*.") {
+            if lower.ends_with(&format!(".{suffix}")) || lower == suffix {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check if an IP address matches any CIDR entry in the allowlist.
+fn is_ip_allowed(ip: &IpAddr, allowed_hosts: &[String]) -> bool {
+    for entry in allowed_hosts {
+        if let Some(pos) = entry.find('/') {
+            // Parse as CIDR: base_ip/prefix_len
+            let base_str = &entry[..pos];
+            let prefix_str = &entry[pos + 1..];
+            if let (Ok(base_ip), Ok(prefix_len)) =
+                (base_str.parse::<IpAddr>(), prefix_str.parse::<u32>())
+            {
+                if ip_in_cidr(ip, &base_ip, prefix_len) {
+                    return true;
+                }
+            }
+        } else if let Ok(entry_ip) = entry.parse::<IpAddr>() {
+            // Exact IP match
+            if *ip == entry_ip {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check if `ip` falls within the CIDR block `base/prefix_len`.
+fn ip_in_cidr(ip: &IpAddr, base: &IpAddr, prefix_len: u32) -> bool {
+    match (ip, base) {
+        (IpAddr::V4(ip4), IpAddr::V4(base4)) => {
+            if prefix_len > 32 {
+                return false;
+            }
+            if prefix_len == 0 {
+                return true;
+            }
+            let ip_bits = u32::from_be_bytes(ip4.octets());
+            let base_bits = u32::from_be_bytes(base4.octets());
+            let mask = !0u32 << (32 - prefix_len);
+            (ip_bits & mask) == (base_bits & mask)
+        }
+        (IpAddr::V6(ip6), IpAddr::V6(base6)) => {
+            if prefix_len > 128 {
+                return false;
+            }
+            if prefix_len == 0 {
+                return true;
+            }
+            let ip_bits = u128::from_be_bytes(ip6.octets());
+            let base_bits = u128::from_be_bytes(base6.octets());
+            let mask = !0u128 << (128 - prefix_len);
+            (ip_bits & mask) == (base_bits & mask)
+        }
+        _ => false, // mismatched families
+    }
 }
 
 /// Check if an IP address is in a private range.
@@ -308,8 +422,8 @@ mod tests {
 
     #[test]
     fn test_ssrf_blocks_localhost() {
-        assert!(check_ssrf("http://localhost/admin").is_err());
-        assert!(check_ssrf("http://localhost:8080/api").is_err());
+        assert!(check_ssrf("http://localhost/admin", &[]).is_err());
+        assert!(check_ssrf("http://localhost:8080/api", &[]).is_err());
     }
 
     #[test]
@@ -323,8 +437,8 @@ mod tests {
 
     #[test]
     fn test_ssrf_blocks_metadata() {
-        assert!(check_ssrf("http://169.254.169.254/latest/meta-data/").is_err());
-        assert!(check_ssrf("http://metadata.google.internal/computeMetadata/v1/").is_err());
+        assert!(check_ssrf("http://169.254.169.254/latest/meta-data/", &[]).is_err());
+        assert!(check_ssrf("http://metadata.google.internal/computeMetadata/v1/", &[]).is_err());
     }
 
     #[test]
@@ -339,28 +453,28 @@ mod tests {
 
     #[test]
     fn test_ssrf_blocks_non_http() {
-        assert!(check_ssrf("file:///etc/passwd").is_err());
-        assert!(check_ssrf("ftp://internal.corp/data").is_err());
-        assert!(check_ssrf("gopher://evil.com").is_err());
+        assert!(check_ssrf("file:///etc/passwd", &[]).is_err());
+        assert!(check_ssrf("ftp://internal.corp/data", &[]).is_err());
+        assert!(check_ssrf("gopher://evil.com", &[]).is_err());
     }
 
     #[test]
     fn test_ssrf_blocks_cloud_metadata() {
         // Alibaba Cloud IMDS
-        assert!(check_ssrf("http://100.100.100.200/latest/meta-data/").is_err());
+        assert!(check_ssrf("http://100.100.100.200/latest/meta-data/", &[]).is_err());
         // Azure IMDS alternative
-        assert!(check_ssrf("http://192.0.0.192/metadata/instance").is_err());
+        assert!(check_ssrf("http://192.0.0.192/metadata/instance", &[]).is_err());
     }
 
     #[test]
     fn test_ssrf_blocks_zero_ip() {
-        assert!(check_ssrf("http://0.0.0.0/").is_err());
+        assert!(check_ssrf("http://0.0.0.0/", &[]).is_err());
     }
 
     #[test]
     fn test_ssrf_blocks_ipv6_localhost() {
-        assert!(check_ssrf("http://[::1]/admin").is_err());
-        assert!(check_ssrf("http://[::1]:8080/api").is_err());
+        assert!(check_ssrf("http://[::1]/admin", &[]).is_err());
+        assert!(check_ssrf("http://[::1]:8080/api", &[]).is_err());
     }
 
     #[test]
@@ -373,5 +487,48 @@ mod tests {
 
         let h3 = extract_host("http://[::1]/path");
         assert_eq!(h3, "[::1]:80");
+    }
+
+    // ── SSRF allowlist tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_ssrf_allowlist_permits_private_ip() {
+        // A CIDR allowlist entry should permit an otherwise-blocked private IP.
+        let allow = vec!["10.0.0.0/8".to_string()];
+        assert!(check_ssrf("http://10.1.2.3", &allow).is_ok());
+    }
+
+    #[test]
+    fn test_ssrf_allowlist_still_blocks_metadata() {
+        // Even if the allowlist covers the entire link-local range,
+        // cloud metadata endpoints must NEVER be permitted.
+        let allow = vec!["169.254.0.0/16".to_string()];
+        assert!(check_ssrf("http://169.254.169.254/latest/meta-data/", &allow).is_err());
+        // Also verify hostname-based metadata blocks
+        let allow2 = vec!["metadata.google.internal".to_string()];
+        assert!(check_ssrf("http://metadata.google.internal/computeMetadata/v1/", &allow2).is_err());
+    }
+
+    #[test]
+    fn test_ssrf_allowlist_wildcard_domain() {
+        let allow = vec!["*.example.com".to_string()];
+        assert!(check_ssrf("http://api.example.com", &allow).is_ok());
+        // Non-matching domain should still go through normal checks
+        assert!(is_host_allowed("other.net", &allow) == false);
+    }
+
+    #[test]
+    fn test_ssrf_allowlist_exact_hostname() {
+        let allow = vec!["n8n.local".to_string()];
+        assert!(check_ssrf("http://n8n.local/webhook", &allow).is_ok());
+    }
+
+    #[test]
+    fn test_cidr_matching() {
+        let ip_in: IpAddr = "10.1.2.3".parse().unwrap();
+        let ip_out: IpAddr = "11.0.0.1".parse().unwrap();
+        let base: IpAddr = "10.0.0.0".parse().unwrap();
+        assert!(ip_in_cidr(&ip_in, &base, 8));
+        assert!(!ip_in_cidr(&ip_out, &base, 8));
     }
 }

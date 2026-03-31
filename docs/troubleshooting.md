@@ -583,19 +583,24 @@ docker run -d --name openfang \
 
 ### How do I protect the dashboard with a password?
 
-OpenFang doesn't have built-in login. Use a reverse proxy with basic auth:
+OpenFang has built-in dashboard authentication. Enable it in `~/.openfang/config.toml`:
 
-**Caddy example:**
-```
-ai.yourdomain.com {
-    basicauth {
-        username $2a$14$YOUR_HASHED_PASSWORD
-    }
-    reverse_proxy localhost:4200
-}
+```toml
+[auth]
+enabled = true
+username = "admin"
+password_hash = "$argon2id$..."  # see below
 ```
 
-Generate a password hash: `caddy hash-password`
+Generate the password hash:
+
+```bash
+openfang auth hash-password
+```
+
+Paste the output into the `password_hash` field and restart the daemon.
+
+For public-facing deployments, you should also place a reverse proxy (Caddy, nginx) in front for TLS termination.
 
 ### How do I configure the embedding model for memory?
 
