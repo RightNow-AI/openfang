@@ -375,7 +375,7 @@ async fn test_specific_session_messaging() {
     assert_eq!(session_body["session_id"].as_str().unwrap(), custom_session_id);
     assert_eq!(session_body["agent_id"].as_str().unwrap(), agent_id);
     assert!(session_body["message_count"].as_u64().unwrap() > 0);
-    assert!(session_body["messages"].as_array().unwrap().len() > 0);
+    assert!(!session_body["messages"].as_array().unwrap().is_empty());
 
     // Verify the agent's DEFAULT active session is still empty/untouched (if not the same)
     let resp = client

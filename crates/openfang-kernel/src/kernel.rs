@@ -1574,6 +1574,7 @@ impl OpenFangKernel {
     /// Per-agent locking ensures that concurrent messages for the same agent
     /// are serialized (preventing session corruption), while messages for
     /// different agents run in parallel.
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_message_with_handle_and_blocks(
         &self,
         agent_id: AgentId,
@@ -1671,6 +1672,7 @@ impl OpenFangKernel {
     ///
     /// WASM and Python agents don't support true streaming — they execute
     /// synchronously and emit a single `TextDelta` + `ContentComplete` pair.
+    #[allow(clippy::too_many_arguments)]
     pub fn send_message_streaming(
         self: &Arc<Self>,
         agent_id: AgentId,

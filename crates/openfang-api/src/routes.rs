@@ -609,7 +609,7 @@ pub async fn get_agent_session(
     }
 }
 
-fn format_session_messages(session: &openfang_types::agent::Session) -> Vec<serde_json::Value> {
+fn format_session_messages(session: &openfang_memory::session::Session) -> Vec<serde_json::Value> {
     // Two-pass approach: ToolUse blocks live in Assistant messages while
     // ToolResult blocks arrive in subsequent User messages.  Pass 1
     // collects all tool_use entries keyed by id; pass 2 attaches results.
@@ -721,7 +721,7 @@ fn format_session_messages(session: &openfang_types::agent::Session) -> Vec<serd
                     ..
                 } = b
                 {
-                    if let Some(&(msg_idx, tool_idx)) = tool_use_index.get(tool_use_id) {
+                    if let Some(&(msg_idx, tool_idx)) = tool_use_index.get(tool_use_id.as_str()) {
                         if let Some(msg) = built_messages.get_mut(msg_idx) {
                             if let Some(tools_arr) =
                                 msg.get_mut("tools").and_then(|v| v.as_array_mut())

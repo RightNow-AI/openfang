@@ -514,7 +514,7 @@ mod tests {
         let allow = vec!["*.example.com".to_string()];
         assert!(check_ssrf("http://api.example.com", &allow).is_ok());
         // Non-matching domain should still go through normal checks
-        assert!(is_host_allowed("other.net", &allow) == false);
+        assert!(!is_host_allowed("other.net", &allow));
     }
 
     #[test]
