@@ -354,7 +354,7 @@ async fn test_specific_session_messaging() {
         .send()
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     let response_text = body["response"].as_str().unwrap();
@@ -369,10 +369,13 @@ async fn test_specific_session_messaging() {
         .send()
         .await
         .unwrap();
-        
+
     assert_eq!(resp.status(), 200);
     let session_body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(session_body["session_id"].as_str().unwrap(), custom_session_id);
+    assert_eq!(
+        session_body["session_id"].as_str().unwrap(),
+        custom_session_id
+    );
     assert_eq!(session_body["agent_id"].as_str().unwrap(), agent_id);
     assert!(session_body["message_count"].as_u64().unwrap() > 0);
     assert!(!session_body["messages"].as_array().unwrap().is_empty());
@@ -386,7 +389,7 @@ async fn test_specific_session_messaging() {
         .send()
         .await
         .unwrap();
-        
+
     assert_eq!(resp.status(), 200);
     let default_session: serde_json::Value = resp.json().await.unwrap();
     // Default session should either be 0 or point to a different session ID

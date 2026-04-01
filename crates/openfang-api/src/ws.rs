@@ -492,7 +492,10 @@ async fn handle_text_message(
                 .and_then(|s| s.parse::<uuid::Uuid>().ok())
                 .map(openfang_types::agent::SessionId)
                 .unwrap_or_else(|| {
-                    state.kernel.registry.get(agent_id)
+                    state
+                        .kernel
+                        .registry
+                        .get(agent_id)
                         .map(|e| e.session_id)
                         .unwrap_or_else(|| openfang_types::agent::SessionId(uuid::Uuid::nil()))
                 });

@@ -632,10 +632,7 @@ fn format_session_messages(session: &openfang_memory::session::Session) -> Vec<s
                         openfang_types::message::ContentBlock::Text { text, .. } => {
                             texts.push(text.clone());
                         }
-                        openfang_types::message::ContentBlock::Image {
-                            media_type,
-                            data,
-                        } => {
+                        openfang_types::message::ContentBlock::Image { media_type, data } => {
                             texts.push("[Image]".to_string());
                             // Persist image to upload dir so it can be
                             // served back when loading session history.
@@ -663,10 +660,7 @@ fn format_session_messages(session: &openfang_memory::session::Session) -> Vec<s
                             }
                         }
                         openfang_types::message::ContentBlock::ToolUse {
-                            id,
-                            name,
-                            input,
-                            ..
+                            id, name, input, ..
                         } => {
                             let tool_idx = tools.len();
                             tools.push(serde_json::json!({
@@ -727,10 +721,8 @@ fn format_session_messages(session: &openfang_memory::session::Session) -> Vec<s
                                 msg.get_mut("tools").and_then(|v| v.as_array_mut())
                             {
                                 if let Some(tool_obj) = tools_arr.get_mut(tool_idx) {
-                                    tool_obj["result"] =
-                                        serde_json::Value::String(result.clone());
-                                    tool_obj["is_error"] =
-                                        serde_json::Value::Bool(*is_error);
+                                    tool_obj["result"] = serde_json::Value::String(result.clone());
+                                    tool_obj["is_error"] = serde_json::Value::Bool(*is_error);
                                 }
                             }
                         }
