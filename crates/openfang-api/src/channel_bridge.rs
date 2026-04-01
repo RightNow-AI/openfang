@@ -1326,11 +1326,15 @@ pub async fn start_channel_bridge_with_config(
 
     // Voice
     if let Some(ref voice_config) = config.voice {
-        let adapter = Arc::new(VoiceAdapter::new(
+        let mut adapter = VoiceAdapter::new(
             voice_config.listen.clone(),
             voice_config.default_agent.clone(),
-        ));
-        adapters.push((adapter, voice_config.default_agent.clone()));
+        );
+        // Attach PCM pipeline if STT + TTS are configured
+        if let (Some(stt), Some(tts)) = (voice_config.stt.clone(), voice_config.tts.clone()) {
+            adapter = adapter.with_pipeline(stt, tts, voice_config.smart_turn.as_ref());
+        }
+        adapters.push((Arc::new(adapter), voice_config.default_agent.clone()));
     }
 
     // Twitch

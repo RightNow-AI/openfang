@@ -487,6 +487,38 @@ tr:hover td { background: var(--surface2); }
   50% { opacity: 0.4; }
 }
 
+/* Voice conversation mode */
+.btn-voice-active {
+  background: rgba(99, 102, 241, 0.15) !important;
+  color: #818cf8 !important;
+}
+.voice-status-bar {
+  flex-shrink: 0;
+}
+.voice-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+.voice-dot-listening {
+  background: #22c55e;
+  animation: recording-pulse 1.5s ease-in-out infinite;
+}
+.voice-dot-thinking {
+  background: #f59e0b;
+  animation: recording-pulse 0.8s ease-in-out infinite;
+}
+.voice-dot-speaking {
+  background: #818cf8;
+  animation: recording-pulse 0.6s ease-in-out infinite;
+}
+.voice-dot-idle {
+  background: var(--text-muted);
+}
+
 /* Audio player in tool card */
 .audio-player {
   display: flex;

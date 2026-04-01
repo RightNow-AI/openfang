@@ -1,32 +1,51 @@
 //! Voice channel adapter.
 //!
 //! Provides a WebSocket server that accepts voice clients (mobile apps, Meet
-//! bots, web clients). Clients handle STT and TTS directly with providers
-//! (Deepgram, Cartesia); this adapter only exchanges text.
+//! bots, web browsers).  Supports two modes determined by the first frame:
 //!
-//! # Protocol
+//! ## Text mode (default — backward compatible)
 //!
-//! Text WebSocket frames, JSON messages:
+//! Clients handle STT and TTS themselves and exchange JSON text frames.
 //!
 //! ```text
-//! Client → Server:
+//! Client → Server (JSON text frames):
 //!   { "type": "utterance", "text": "...", "speaker": "Philippe", "final": true }
 //!   { "type": "cancel" }
 //!   { "type": "end" }
 //!
-//! Server → Client:
+//! Server → Client (JSON text frames):
 //!   { "type": "response", "text": "...", "emotion": "neutral", "sentence_end": true }
 //!   { "type": "backchannel", "text": "I see, sir." }
 //!   { "type": "status", "state": "thinking" | "listening" }
 //!   { "type": "error", "message": "..." }
 //! ```
 //!
-//! # Emotion Tags
+//! ## PCM mode (requires `stt` + `tts` config)
+//!
+//! Activated when the first WebSocket frame is binary.  The server handles the
+//! full audio pipeline: Smart Turn end-of-utterance detection → STT → agent →
+//! TTS → PCM back to client.  JSON control frames are sent alongside binary PCM.
+//!
+//! ```text
+//! Client → Server:
+//!   [binary]  Raw Int16 LE PCM at 16 kHz mono, any chunk size
+//!
+//! Server → Client:
+//!   [binary]  Raw Int16 LE PCM at 16 kHz mono (TTS output)
+//!   [text]    { "type": "transcribed", "text": "..." }
+//!   [text]    { "type": "status", "state": "thinking" | "listening" }
+//!   [text]    { "type": "error", "message": "..." }
+//! ```
+//!
+//! ## Emotion Tags
 //!
 //! The agent may prefix sentences with emotion tags like `[amused]`, which
 //! the adapter parses, validates against a known set, and sends as a structured
 //! `emotion` field. Unknown tags default to `neutral`.
 
+use crate::smart_turn::SmartTurnDetector;
+use crate::stt;
+use crate::tts::{self, i16_to_bytes};
 use crate::types::{
     ChannelAdapter, ChannelContent, ChannelMessage, ChannelStatus, ChannelType, ChannelUser,
 };
@@ -42,6 +61,7 @@ use axum::{
 };
 use chrono::Utc;
 use futures::{SinkExt, Stream, StreamExt};
+use openfang_types::config::{SmartTurnConfig, VoiceSttConfig, VoiceTtsConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -130,13 +150,24 @@ pub struct VoiceAdapter {
     /// Shutdown signal.
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
-    /// Active sessions: session_id → response sender.
+    /// Active text-mode sessions: session_id → ServerMessage sender.
     sessions: Arc<RwLock<HashMap<String, mpsc::Sender<ServerMessage>>>>,
+    /// Active PCM-mode sessions: session_id → agent text sender (→ TTS → PCM out).
+    pcm_sessions: Arc<RwLock<HashMap<String, mpsc::Sender<String>>>>,
     /// Status tracking.
     status: Arc<RwLock<ChannelStatus>>,
     /// Receiver for async delegation results (set by channel bridge at startup).
     #[allow(clippy::type_complexity)]
     async_result_rx: Arc<tokio::sync::Mutex<Option<mpsc::Receiver<(String, String)>>>>,
+    /// PCM pipeline config (STT, TTS, Smart Turn).
+    pipeline: Option<Arc<VoicePipeline>>,
+}
+
+/// Loaded voice pipeline — STT, TTS, and optional Smart Turn.
+pub struct VoicePipeline {
+    pub stt: VoiceSttConfig,
+    pub tts: VoiceTtsConfig,
+    pub smart_turn: Option<SmartTurnDetector>,
 }
 
 impl VoiceAdapter {
@@ -149,9 +180,29 @@ impl VoiceAdapter {
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            pcm_sessions: Arc::new(RwLock::new(HashMap::new())),
             status: Arc::new(RwLock::new(ChannelStatus::default())),
             async_result_rx: Arc::new(tokio::sync::Mutex::new(None)),
+            pipeline: None,
         }
+    }
+
+    /// Attach a voice pipeline for PCM mode.  Call before `start()`.
+    pub fn with_pipeline(
+        mut self,
+        stt: VoiceSttConfig,
+        tts: VoiceTtsConfig,
+        smart_turn_cfg: Option<&SmartTurnConfig>,
+    ) -> Self {
+        let smart_turn = smart_turn_cfg.and_then(|cfg| {
+            SmartTurnDetector::load(&cfg.model_path, cfg.threshold)
+                .map_err(|e| {
+                    warn!("Smart Turn model failed to load, will use silence detection: {e}");
+                })
+                .ok()
+        });
+        self.pipeline = Some(Arc::new(VoicePipeline { stt, tts, smart_turn }));
+        self
     }
 
     /// Set the async result receiver for delegation callbacks.
@@ -169,10 +220,14 @@ impl VoiceAdapter {
 struct AppState {
     /// Channel to send ChannelMessages to the bridge.
     bridge_tx: mpsc::Sender<ChannelMessage>,
-    /// Active sessions.
+    /// Active text-mode sessions.
     sessions: Arc<RwLock<HashMap<String, mpsc::Sender<ServerMessage>>>>,
+    /// Active PCM-mode sessions: session_id → agent text sender.
+    pcm_sessions: Arc<RwLock<HashMap<String, mpsc::Sender<String>>>>,
     /// Status tracking.
     status: Arc<RwLock<ChannelStatus>>,
+    /// Optional PCM pipeline (STT + TTS + Smart Turn).
+    pipeline: Option<Arc<VoicePipeline>>,
 }
 
 #[async_trait]
@@ -196,7 +251,9 @@ impl ChannelAdapter for VoiceAdapter {
         let state = AppState {
             bridge_tx,
             sessions: self.sessions.clone(),
+            pcm_sessions: self.pcm_sessions.clone(),
             status: self.status.clone(),
+            pipeline: self.pipeline.clone(),
         };
 
         let app = Router::new()
@@ -289,17 +346,35 @@ impl ChannelAdapter for VoiceAdapter {
             _ => return Ok(()),
         };
 
-        // Find the session — try exact platform_id match first,
-        // then fall back to any active session (for async callbacks
-        // that arrive without channel context).
+        // Check PCM sessions first — route text directly to TTS pipeline
+        {
+            let pcm = self.pcm_sessions.read().await;
+            let pcm_tx = if let Some(tx) = pcm.get(&user.platform_id) {
+                Some(tx.clone())
+            } else if pcm.len() == 1 {
+                pcm.values().next().map(|tx| tx.clone())
+            } else {
+                None
+            };
+
+            if let Some(tx) = pcm_tx {
+                if text.trim() == "[SILENT]" {
+                    return Ok(());
+                }
+                let _ = tx.send(text).await;
+                let mut s = self.status.write().await;
+                s.messages_sent += 1;
+                return Ok(());
+            }
+        }
+
+        // Text-mode session routing
         let sessions = self.sessions.read().await;
         let tx = if let Some(tx) = sessions.get(&user.platform_id) {
             tx.clone()
         } else if sessions.len() == 1 {
-            // Only one session — route to it (async callback case)
             sessions.values().next().unwrap().clone()
         } else if !sessions.is_empty() {
-            // Multiple sessions — pick the first (best effort)
             warn!(
                 "No exact voice session for {}, routing to first active session",
                 user.platform_id
@@ -393,6 +468,49 @@ async fn handle_voice_session(socket: WebSocket, state: AppState) {
 
     info!("Voice session started: {session_id}");
 
+    // Peek at the first frame to decide mode.
+    // Binary frame → PCM mode (if pipeline configured).
+    // Text frame → text mode (existing protocol).
+    let first_frame = match ws_rx.next().await {
+        Some(Ok(f)) => f,
+        _ => {
+            let mut sessions = state.sessions.write().await;
+            sessions.remove(&session_id);
+            return;
+        }
+    };
+
+    let is_pcm = matches!(first_frame, Message::Binary(_));
+
+    if is_pcm {
+        if let Some(pipeline) = state.pipeline.clone() {
+            info!("Voice session {session_id}: PCM mode");
+            handle_pcm_session(
+                first_frame,
+                ws_tx,
+                ws_rx,
+                state,
+                session_id,
+                pipeline,
+            )
+            .await;
+        } else {
+            warn!(
+                "Voice session {session_id}: received binary frame but no pipeline configured — \
+                 STT/TTS providers must be set to use PCM mode"
+            );
+            let _ = ws_tx
+                .send(Message::Text(
+                    r#"{"type":"error","message":"PCM mode requires stt and tts configuration"}"#
+                        .into(),
+                ))
+                .await;
+        }
+        return;
+    }
+
+    // ── Text mode ────────────────────────────────────────────────────────────
+
     // Send status
     let _ = send_json(
         &mut ws_tx,
@@ -422,109 +540,32 @@ async fn handle_voice_session(socket: WebSocket, state: AppState) {
         openfang_user: None,
     };
 
+    // Process first frame through the normal text handler
+    process_text_frame(
+        &first_frame,
+        &mut sender,
+        &session_id,
+        &state,
+        &response_tx,
+    )
+    .await;
+
     // Process incoming messages (client → server)
     while let Some(Ok(msg)) = ws_rx.next().await {
-        match msg {
-            Message::Text(text) => {
-                let parsed: Result<ClientMessage, _> = serde_json::from_str(&text);
-                match parsed {
-                    Ok(ClientMessage::Utterance {
-                        text,
-                        speaker,
-                        r#final,
-                    }) => {
-                        // Update sender info if speaker provided
-                        if let Some(ref name) = speaker {
-                            sender.display_name = name.clone();
-                        }
-
-                        if !r#final {
-                            // Interim utterance — could trigger backchannel in future
-                            debug!("Interim utterance: {text}");
-                            continue;
-                        }
-
-                        if text.trim().is_empty() {
-                            continue;
-                        }
-
-                        // Send immediate acknowledgment so the client can
-                        // start TTS while the agent/delegation processes.
-                        // This is spoken as "thinking..." feedback.
-                        let _ = response_tx
-                            .send(ServerMessage::Backchannel {
-                                text: "Of course, sir.".to_string(),
-                            })
-                            .await;
-                        let _ = response_tx
-                            .send(ServerMessage::Status {
-                                state: "thinking".to_string(),
-                            })
-                            .await;
-
-                        // Build ChannelMessage and send to bridge
-                        let mut metadata = HashMap::new();
-                        if let Some(ref name) = speaker {
-                            metadata.insert(
-                                "sender_email".to_string(),
-                                serde_json::Value::String(name.clone()),
-                            );
-                        }
-                        metadata.insert(
-                            "voice_session".to_string(),
-                            serde_json::Value::String(session_id.clone()),
-                        );
-
-                        let channel_msg = ChannelMessage {
-                            channel: ChannelType::Custom("voice".to_string()),
-                            platform_message_id: format!(
-                                "voice-{}-{}",
-                                session_id,
-                                Utc::now().timestamp_millis()
-                            ),
-                            sender: sender.clone(),
-                            content: ChannelContent::Text(text),
-                            target_agent: None,
-                            timestamp: Utc::now(),
-                            is_group: false,
-                            thread_id: None,
-                            metadata,
-                        };
-
-                        if state.bridge_tx.send(channel_msg).await.is_err() {
-                            warn!("Bridge channel closed");
-                            break;
-                        }
-
-                        {
-                            let mut s = state.status.write().await;
-                            s.messages_received += 1;
-                            s.last_message_at = Some(Utc::now());
-                        }
-                    }
-                    Ok(ClientMessage::Cancel) => {
-                        info!("Barge-in cancel from {session_id}");
-                        // TODO: call kernel stop_run for the agent
-                    }
-                    Ok(ClientMessage::End) => {
-                        info!("Voice session ended by client: {session_id}");
-                        break;
-                    }
-                    Err(e) => {
-                        debug!("Invalid voice message: {e}");
-                        let _ = response_tx
-                            .send(ServerMessage::Error {
-                                message: format!("Invalid message: {e}"),
-                            })
-                            .await;
-                    }
-                }
-            }
-            Message::Close(_) => {
-                info!("Voice session closed: {session_id}");
-                break;
-            }
-            _ => {}
+        if matches!(msg, Message::Close(_)) {
+            info!("Voice session closed: {session_id}");
+            break;
+        }
+        let should_break = process_text_frame(
+            &msg,
+            &mut sender,
+            &session_id,
+            &state,
+            &response_tx,
+        )
+        .await;
+        if should_break {
+            break;
         }
     }
 
@@ -538,6 +579,110 @@ async fn handle_voice_session(socket: WebSocket, state: AppState) {
     info!("Voice session cleaned up: {session_id}");
 }
 
+/// Process a single text-mode WebSocket frame.  Returns true if the session
+/// should terminate (End message or bridge closed).
+async fn process_text_frame(
+    msg: &Message,
+    sender: &mut ChannelUser,
+    session_id: &str,
+    state: &AppState,
+    response_tx: &mpsc::Sender<ServerMessage>,
+) -> bool {
+    let text = match msg {
+        Message::Text(t) => t.clone(),
+        _ => return false,
+    };
+
+    let parsed: Result<ClientMessage, _> = serde_json::from_str(&text);
+    match parsed {
+        Ok(ClientMessage::Utterance {
+            text,
+            speaker,
+            r#final,
+        }) => {
+            if let Some(ref name) = speaker {
+                sender.display_name = name.clone();
+            }
+
+            if !r#final {
+                debug!("Interim utterance: {text}");
+                return false;
+            }
+
+            if text.trim().is_empty() {
+                return false;
+            }
+
+            let _ = response_tx
+                .send(ServerMessage::Backchannel {
+                    text: "Of course, sir.".to_string(),
+                })
+                .await;
+            let _ = response_tx
+                .send(ServerMessage::Status {
+                    state: "thinking".to_string(),
+                })
+                .await;
+
+            let mut metadata = HashMap::new();
+            if let Some(ref name) = speaker {
+                metadata.insert(
+                    "sender_email".to_string(),
+                    serde_json::Value::String(name.clone()),
+                );
+            }
+            metadata.insert(
+                "voice_session".to_string(),
+                serde_json::Value::String(session_id.to_string()),
+            );
+
+            let channel_msg = ChannelMessage {
+                channel: ChannelType::Custom("voice".to_string()),
+                platform_message_id: format!(
+                    "voice-{}-{}",
+                    session_id,
+                    Utc::now().timestamp_millis()
+                ),
+                sender: sender.clone(),
+                content: ChannelContent::Text(text),
+                target_agent: None,
+                timestamp: Utc::now(),
+                is_group: false,
+                thread_id: None,
+                metadata,
+            };
+
+            if state.bridge_tx.send(channel_msg).await.is_err() {
+                warn!("Bridge channel closed");
+                return true;
+            }
+
+            {
+                let mut s = state.status.write().await;
+                s.messages_received += 1;
+                s.last_message_at = Some(Utc::now());
+            }
+        }
+        Ok(ClientMessage::Cancel) => {
+            info!("Barge-in cancel from {session_id}");
+        }
+        Ok(ClientMessage::End) => {
+            info!("Voice session ended by client: {session_id}");
+            return true;
+        }
+        Err(e) => {
+            debug!("Invalid voice message: {e}");
+            let _ = response_tx
+                .send(ServerMessage::Error {
+                    message: format!("Invalid message: {e}"),
+                })
+                .await;
+        }
+    }
+
+    false
+}
+
 async fn send_json(
     tx: &mut futures::stream::SplitSink<WebSocket, Message>,
     msg: &ServerMessage,
@@ -545,6 +690,262 @@ async fn send_json(
     let json = serde_json::to_string(msg)?;
     tx.send(Message::Text(json.into())).await?;
     Ok(())
+}
+
+// ── PCM Mode ─────────────────────────────────────────────────────────────────
+
+/// How often (ms) to run Smart Turn inference while buffering audio.
+const SMART_TURN_INTERVAL_MS: u64 = 300;
+/// Silence-based fallback: stop buffering after this many ms of quiet.
+const SILENCE_TIMEOUT_MS: u64 = 1200;
+/// Minimum audio buffer (ms) before Smart Turn runs.
+const MIN_AUDIO_MS: u64 = 500;
+/// Sample rate.
+const PCM_SAMPLE_RATE: usize = 16_000;
+
+/// Handle a PCM-mode voice session.
+///
+/// `first_frame` is the binary frame that triggered PCM mode detection.
+async fn handle_pcm_session(
+    first_frame: Message,
+    mut ws_tx: futures::stream::SplitSink<WebSocket, Message>,
+    mut ws_rx: futures::stream::SplitStream<WebSocket>,
+    state: AppState,
+    session_id: String,
+    pipeline: Arc<VoicePipeline>,
+) {
+    // Send listening status
+    let _ = ws_tx
+        .send(Message::Text(
+            r#"{"type":"status","state":"listening"}"#.into(),
+        ))
+        .await;
+
+    let sender = ChannelUser {
+        platform_id: session_id.clone(),
+        display_name: "Caller".to_string(),
+        openfang_user: None,
+    };
+
+    // Channel for agent text responses back to this PCM session.
+    // Registered in pcm_sessions so VoiceAdapter::send() routes here → TTS.
+    let (agent_tx, mut agent_rx) = mpsc::channel::<String>(16);
+    {
+        let mut pcm = state.pcm_sessions.write().await;
+        pcm.insert(session_id.clone(), agent_tx.clone());
+    }
+
+    // Spawn agent response handler: collects text from bridge, synthesizes TTS
+    let pipeline_for_tts = pipeline.clone();
+    let sid_for_tts = session_id.clone();
+    let (pcm_out_tx, mut pcm_out_rx) = mpsc::channel::<Vec<i16>>(8);
+    tokio::spawn(async move {
+        while let Some(text) = agent_rx.recv().await {
+            if text.trim() == "[SILENT]" {
+                continue;
+            }
+            debug!("PCM session {sid_for_tts}: synthesizing TTS for: {}", &text[..text.len().min(80)]);
+            match tts::synthesize(&text, &pipeline_for_tts.tts).await {
+                Ok(pcm) => {
+                    if pcm_out_tx.send(pcm).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    warn!("TTS error for PCM session {sid_for_tts}: {e}");
+                }
+            }
+        }
+    });
+
+    // Main PCM loop
+    let mut audio_buf: Vec<i16> = Vec::new();
+    let mut last_smart_turn = tokio::time::Instant::now();
+    let min_samples = (MIN_AUDIO_MS as usize * PCM_SAMPLE_RATE) / 1000;
+    let smart_turn_interval =
+        tokio::time::Duration::from_millis(SMART_TURN_INTERVAL_MS);
+    let silence_timeout = tokio::time::Duration::from_millis(SILENCE_TIMEOUT_MS);
+
+    // Process the first binary frame immediately
+    if let Message::Binary(bytes) = first_frame {
+        let samples: Vec<i16> = bytes
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        audio_buf.extend_from_slice(&samples);
+    }
+
+    loop {
+        tokio::select! {
+            // Incoming audio from client
+            frame = ws_rx.next() => {
+                match frame {
+                    Some(Ok(Message::Binary(bytes))) => {
+                        let samples: Vec<i16> = bytes
+                            .chunks_exact(2)
+                            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                            .collect();
+                        audio_buf.extend_from_slice(&samples);
+
+                        // Run Smart Turn at interval
+                        if last_smart_turn.elapsed() >= smart_turn_interval
+                            && audio_buf.len() >= min_samples
+                        {
+                            last_smart_turn = tokio::time::Instant::now();
+                            let complete = if let Some(ref detector) = pipeline.smart_turn {
+                                let (complete, prob) = detector.predict(&audio_buf);
+                                debug!("Smart Turn: complete={complete} prob={prob:.3}");
+                                complete
+                            } else {
+                                // No model — use silence timeout as fallback
+                                false
+                            };
+
+                            if complete {
+                                dispatch_pcm_utterance(
+                                    &audio_buf,
+                                    &pipeline,
+                                    &state,
+                                    &sender,
+                                    &session_id,
+                                    &agent_tx,
+                                    &mut ws_tx,
+                                )
+                                .await;
+                                audio_buf.clear();
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => {
+                        info!("PCM session closed: {session_id}");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Silence timeout — flush buffer if we have audio and no Smart Turn model
+            _ = tokio::time::sleep(silence_timeout), if pipeline.smart_turn.is_none() && !audio_buf.is_empty() && audio_buf.len() >= min_samples => {
+                dispatch_pcm_utterance(
+                    &audio_buf,
+                    &pipeline,
+                    &state,
+                    &sender,
+                    &session_id,
+                    &agent_tx,
+                    &mut ws_tx,
+                )
+                .await;
+                audio_buf.clear();
+            }
+
+            // Outgoing TTS audio to client
+            Some(pcm) = pcm_out_rx.recv() => {
+                let bytes = i16_to_bytes(&pcm);
+                if ws_tx.send(Message::Binary(bytes.into())).await.is_err() {
+                    break;
+                }
+                let _ = ws_tx
+                    .send(Message::Text(
+                        r#"{"type":"status","state":"listening"}"#.into(),
+                    ))
+                    .await;
+            }
+        }
+    }
+
+    // Cleanup
+    {
+        let mut pcm = state.pcm_sessions.write().await;
+        pcm.remove(&session_id);
+    }
+    info!("PCM session cleaned up: {session_id}");
+}
+
+/// Transcribe the accumulated PCM buffer, send to agent, pipe response to TTS.
+async fn dispatch_pcm_utterance(
+    audio_buf: &[i16],
+    pipeline: &VoicePipeline,
+    state: &AppState,
+    sender: &ChannelUser,
+    session_id: &str,
+    agent_tx: &mpsc::Sender<String>,
+    ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
+) {
+    // Send "thinking" status
+    let _ = ws_tx
+        .send(Message::Text(
+            r#"{"type":"status","state":"thinking"}"#.into(),
+        ))
+        .await;
+
+    // Transcribe
+    let transcript = match stt::transcribe(audio_buf, &pipeline.stt).await {
+        Ok(t) if !t.trim().is_empty() => t,
+        Ok(_) => {
+            // Empty transcript — resume listening
+            let _ = ws_tx
+                .send(Message::Text(
+                    r#"{"type":"status","state":"listening"}"#.into(),
+                ))
+                .await;
+            return;
+        }
+        Err(e) => {
+            warn!("STT error for PCM session {session_id}: {e}");
+            let msg = serde_json::json!({"type":"error","message": e.to_string()}).to_string();
+            let _ = ws_tx.send(Message::Text(msg.into())).await;
+            let _ = ws_tx
+                .send(Message::Text(
+                    r#"{"type":"status","state":"listening"}"#.into(),
+                ))
+                .await;
+            return;
+        }
+    };
+
+    // Send transcript to client
+    let transcript_msg =
+        serde_json::json!({"type": "transcribed", "text": transcript}).to_string();
+    let _ = ws_tx.send(Message::Text(transcript_msg.into())).await;
+
+    // Send to agent bridge — response comes back via send() → agent_tx
+    // We register agent_tx as the response sink for this session temporarily.
+    // The bridge calls send() which goes to the compat ServerMessage channel;
+    // we intercept it via a bridge ChannelMessage with a metadata routing key.
+    let mut metadata = HashMap::new();
+    metadata.insert(
+        "voice_session".to_string(),
+        serde_json::Value::String(session_id.to_string()),
+    );
+    metadata.insert(
+        "pcm_mode".to_string(),
+        serde_json::Value::Bool(true),
+    );
+
+    let channel_msg = ChannelMessage {
+        channel: ChannelType::Custom("voice".to_string()),
+        platform_message_id: format!("voice-{}-{}", session_id, Utc::now().timestamp_millis()),
+        sender: sender.clone(),
+        content: ChannelContent::Text(transcript.clone()),
+        target_agent: None,
+        timestamp: Utc::now(),
+        is_group: false,
+        thread_id: None,
+        metadata,
+    };
+
+    if state.bridge_tx.send(channel_msg).await.is_err() {
+        warn!("Bridge closed for PCM session {session_id}");
+        return;
+    }
+
+    {
+        let mut s = state.status.write().await;
+        s.messages_received += 1;
+        s.last_message_at = Some(Utc::now());
+    }
+
 }
 
 // ── Emotion Parsing ──────────────────────────────────────────────────────────

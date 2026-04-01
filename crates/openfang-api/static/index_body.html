@@ -745,8 +745,21 @@
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                 </button>
                 <input type="file" x-ref="fileInput" multiple accept="image/*,.txt,.pdf,.md,.json,.csv,.mp3,.wav,.ogg,.webm,.m4a,.flac" @change="addFiles($event.target.files); $event.target.value = ''" style="display:none">
-                <!-- Mic button -->
-                <button class="btn btn-ghost btn-sm" :class="{ 'btn-recording': recording }" @mousedown="startRecording()" @mouseup="stopRecording()" @mouseleave="if(recording) stopRecording()" title="Hold to record voice" style="padding:6px 8px;flex-shrink:0">
+                <!-- Voice mode toggle (PCM pipeline) -->
+                <button class="btn btn-ghost btn-sm" :class="{ 'btn-voice-active': voiceMode }" @click="toggleVoiceMode()" :title="voiceMode ? 'Stop voice conversation' : 'Start voice conversation (requires voice adapter with STT/TTS configured)'" style="padding:6px 8px;flex-shrink:0" x-show="!recording">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path x-show="!voiceMode" d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path x-show="!voiceMode" d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x-show="!voiceMode" x1="12" x2="12" y1="19" y2="22"/>
+                    <circle x-show="voiceMode" cx="12" cy="12" r="10"/><line x-show="voiceMode" x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                  </svg>
+                </button>
+                <!-- Voice conversation status bar -->
+                <div class="voice-status-bar" x-show="voiceMode" x-transition style="display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:6px;background:var(--bg-secondary);font-size:12px">
+                  <span class="voice-status-dot" :class="'voice-dot-' + voiceStatus"></span>
+                  <span x-text="voiceStatus === 'listening' ? '● Listening' : voiceStatus === 'thinking' ? '⟳ Thinking...' : voiceStatus === 'speaking' ? '♪ Speaking' : '○ Idle'"></span>
+                  <span x-show="voiceTranscript" class="text-muted" x-text="'\"' + voiceTranscript.slice(0, 40) + (voiceTranscript.length > 40 ? '…' : '') + '\"'" style="max-width:200px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis"></span>
+                </div>
+                <!-- Mic button (text mode) — hidden when voice mode is active -->
+                <button class="btn btn-ghost btn-sm" x-show="!voiceMode" :class="{ 'btn-recording': recording }" @mousedown="startRecording()" @mouseup="stopRecording()" @mouseleave="if(recording) stopRecording()" title="Hold to record voice (transcribe and send)" style="padding:6px 8px;flex-shrink:0">
                   <svg x-show="!recording" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
                   <span x-show="recording" class="recording-dot"></span>
                 </button>

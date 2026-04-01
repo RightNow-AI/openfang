@@ -2155,6 +2155,18 @@ pub struct VoiceConfig {
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
+    /// STT (speech-to-text) provider config. When set, the adapter accepts
+    /// binary PCM frames and transcribes them server-side.
+    #[serde(default)]
+    pub stt: Option<VoiceSttConfig>,
+    /// TTS (text-to-speech) provider config. When set, agent text responses
+    /// are synthesized and returned as binary PCM frames.
+    #[serde(default)]
+    pub tts: Option<VoiceTtsConfig>,
+    /// Smart Turn end-of-utterance detection. When set, the ONNX model is used
+    /// to detect when the user has finished speaking instead of a silence timer.
+    #[serde(default)]
+    pub smart_turn: Option<SmartTurnConfig>,
 }
 
 impl Default for VoiceConfig {
@@ -2163,6 +2175,81 @@ impl Default for VoiceConfig {
             listen: "0.0.0.0:4201".to_string(),
             default_agent: None,
             overrides: ChannelOverrides::default(),
+            stt: None,
+            tts: None,
+            smart_turn: None,
+        }
+    }
+}
+
+/// STT provider selection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VoiceSttProvider {
+    Deepgram,
+    OpenAi,
+}
+
+/// STT (speech-to-text) configuration for the voice channel adapter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceSttConfig {
+    /// Provider to use.
+    pub provider: VoiceSttProvider,
+    /// API key for the provider.
+    pub api_key: String,
+    /// BCP-47 language code hint (e.g. "en", "fr"). Provider default if absent.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Model override (e.g. "nova-3" for Deepgram, "whisper-1" for OpenAI).
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// TTS provider selection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VoiceTtsProvider {
+    Cartesia,
+    ElevenLabs,
+    OpenAi,
+}
+
+/// TTS (text-to-speech) configuration for the voice channel adapter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceTtsConfig {
+    /// Provider to use.
+    pub provider: VoiceTtsProvider,
+    /// API key for the provider.
+    pub api_key: String,
+    /// Voice ID (provider-specific).
+    pub voice_id: String,
+    /// Model override (e.g. "sonic-2" for Cartesia). Provider default if absent.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Speech speed multiplier (1.0 = normal). Provider default if absent.
+    #[serde(default)]
+    pub speed: Option<f32>,
+}
+
+/// Smart Turn end-of-utterance detection configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmartTurnConfig {
+    /// Path to the Smart Turn ONNX model file.
+    pub model_path: String,
+    /// Probability threshold above which the turn is considered complete (default 0.5).
+    #[serde(default = "default_smart_turn_threshold")]
+    pub threshold: f32,
+}
+
+fn default_smart_turn_threshold() -> f32 {
+    0.5
+}
+
+impl Default for SmartTurnConfig {
+    fn default() -> Self {
+        Self {
+            model_path: "/data/models/smart-turn-v3.2.onnx".to_string(),
+            threshold: default_smart_turn_threshold(),
         }
     }
 }

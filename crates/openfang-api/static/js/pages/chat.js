@@ -23,12 +23,22 @@ function chatPage() {
     sessionsOpen: false,
     searchOpen: false,
     searchQuery: '',
-    // Voice recording state
+    // Voice recording state (text mode — upload + transcribe)
     recording: false,
     _mediaRecorder: null,
     _audioChunks: [],
     recordingTime: 0,
     _recordingTimer: null,
+    // Voice conversation mode (PCM pipeline via voice WebSocket)
+    voiceMode: false,         // true when PCM voice mode is active
+    voiceLive: false,         // true when mic is open and streaming
+    voiceStatus: 'idle',      // 'idle' | 'listening' | 'thinking' | 'speaking'
+    voiceTranscript: '',      // last transcription received from server
+    _voiceWs: null,           // WebSocket to voice adapter
+    _voiceContext: null,      // AudioContext for playback and capture
+    _voiceWorklet: null,      // AudioWorkletNode for PCM capture
+    _voiceStream: null,       // MediaStream from getUserMedia
+    _voicePcmQueue: [],       // PCM chunks to play back
     // Model autocomplete state
     showModelPicker: false,
     modelPickerList: [],
@@ -1222,6 +1232,195 @@ function chatPage() {
       var m = Math.floor(this.recordingTime / 60);
       var s = this.recordingTime % 60;
       return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+    },
+
+    // ── PCM Voice Mode ──────────────────────────────────────────────────────
+
+    // Toggle PCM voice conversation mode on/off.
+    toggleVoiceMode: async function() {
+      if (this.voiceMode) {
+        this._stopVoiceMode();
+      } else {
+        await this._startVoiceMode();
+      }
+    },
+
+    _startVoiceMode: async function() {
+      var self = this;
+      // Resolve voice adapter WebSocket URL.
+      // The voice adapter runs on the same host, port 4201 by default.
+      // Config may override — read from window.OPENFANG_VOICE_PORT if set.
+      var voicePort = window.OPENFANG_VOICE_PORT || '4201';
+      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      var wsUrl = proto + '//' + location.hostname + ':' + voicePort + '/voice';
+
+      try {
+        this._voiceWs = new WebSocket(wsUrl);
+        this._voiceWs.binaryType = 'arraybuffer';
+      } catch(e) {
+        if (typeof OpenFangToast !== 'undefined') OpenFangToast.error('Cannot connect to voice adapter: ' + wsUrl);
+        return;
+      }
+
+      this._voiceWs.onopen = function() {
+        self.voiceMode = true;
+        self.voiceStatus = 'listening';
+        self._startMicCapture();
+      };
+
+      this._voiceWs.onmessage = function(evt) {
+        if (evt.data instanceof ArrayBuffer) {
+          // Binary PCM from TTS — queue for playback
+          self._enqueuePcmPlayback(evt.data);
+        } else {
+          // JSON control frame
+          try {
+            var msg = JSON.parse(evt.data);
+            if (msg.type === 'status') {
+              self.voiceStatus = msg.state;
+              if (msg.state === 'listening') self.voiceLive = true;
+            } else if (msg.type === 'transcribed') {
+              self.voiceTranscript = msg.text;
+              self.voiceStatus = 'thinking';
+              // Show in chat as user message
+              self.messages.push({ id: ++msgId, role: 'user', text: msg.text, ts: Date.now(), tools: [] });
+              self.scrollToBottom();
+            } else if (msg.type === 'error') {
+              if (typeof OpenFangToast !== 'undefined') OpenFangToast.error('Voice: ' + msg.message);
+            }
+          } catch(e) {}
+        }
+      };
+
+      this._voiceWs.onclose = function() {
+        self._cleanupVoiceMode();
+      };
+
+      this._voiceWs.onerror = function() {
+        if (typeof OpenFangToast !== 'undefined') OpenFangToast.error('Voice connection lost');
+        self._cleanupVoiceMode();
+      };
+    },
+
+    _startMicCapture: async function() {
+      var self = this;
+      try {
+        this._voiceStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
+        this._voiceContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+
+        // Use AudioWorklet if available for low-latency PCM capture, else ScriptProcessor fallback
+        if (this._voiceContext.audioWorklet) {
+          var workletCode = URL.createObjectURL(new Blob([
+            'class PcmCapture extends AudioWorkletProcessor {\n' +
+            '  process(inputs) {\n' +
+            '    var ch = inputs[0][0];\n' +
+            '    if (ch && ch.length) {\n' +
+            '      var out = new Int16Array(ch.length);\n' +
+            '      for (var i = 0; i < ch.length; i++) out[i] = Math.max(-32768, Math.min(32767, ch[i] * 32768));\n' +
+            '      this.port.postMessage(out.buffer, [out.buffer]);\n' +
+            '    }\n' +
+            '    return true;\n' +
+            '  }\n' +
+            '}\n' +
+            'registerProcessor("pcm-capture", PcmCapture);\n'
+          ], { type: 'application/javascript' }));
+
+          await this._voiceContext.audioWorklet.addModule(workletCode);
+          URL.revokeObjectURL(workletCode);
+
+          var source = this._voiceContext.createMediaStreamSource(this._voiceStream);
+          this._voiceWorklet = new AudioWorkletNode(this._voiceContext, 'pcm-capture');
+          this._voiceWorklet.port.onmessage = function(e) {
+            if (self._voiceWs && self._voiceWs.readyState === WebSocket.OPEN && self.voiceLive) {
+              self._voiceWs.send(e.data);
+            }
+          };
+          source.connect(this._voiceWorklet);
+        } else {
+          // ScriptProcessor fallback (deprecated but widely supported)
+          var source2 = this._voiceContext.createMediaStreamSource(this._voiceStream);
+          var proc = this._voiceContext.createScriptProcessor(4096, 1, 1);
+          proc.onaudioprocess = function(e) {
+            if (!self._voiceWs || self._voiceWs.readyState !== WebSocket.OPEN || !self.voiceLive) return;
+            var float32 = e.inputBuffer.getChannelData(0);
+            var int16 = new Int16Array(float32.length);
+            for (var i = 0; i < float32.length; i++) {
+              int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
+            }
+            self._voiceWs.send(int16.buffer);
+          };
+          source2.connect(proc);
+          proc.connect(this._voiceContext.destination);
+          this._voiceWorklet = proc; // reuse field for cleanup
+        }
+
+        this.voiceLive = true;
+      } catch(e) {
+        if (typeof OpenFangToast !== 'undefined') OpenFangToast.error('Microphone access denied');
+        this._cleanupVoiceMode();
+      }
+    },
+
+    // Enqueue binary PCM for sequential playback
+    _enqueuePcmPlayback: function(buffer) {
+      var self = this;
+      this.voiceStatus = 'speaking';
+      this._voicePcmQueue.push(buffer);
+      if (this._voicePcmQueue.length === 1) {
+        this._playNextPcm();
+      }
+    },
+
+    _playNextPcm: function() {
+      var self = this;
+      if (!this._voicePcmQueue.length || !this._voiceContext) return;
+      var raw = this._voicePcmQueue.shift();
+      var int16 = new Int16Array(raw);
+      var float32 = new Float32Array(int16.length);
+      for (var i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
+
+      var audioBuffer = this._voiceContext.createBuffer(1, float32.length, 16000);
+      audioBuffer.copyToChannel(float32, 0);
+
+      var source = this._voiceContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(this._voiceContext.destination);
+      source.onended = function() {
+        if (self._voicePcmQueue.length) {
+          self._playNextPcm();
+        } else {
+          self.voiceStatus = 'listening';
+          self.voiceLive = true;
+        }
+      };
+      source.start();
+    },
+
+    _stopVoiceMode: function() {
+      if (this._voiceWs) {
+        try { this._voiceWs.close(); } catch(e) {}
+        this._voiceWs = null;
+      }
+      this._cleanupVoiceMode();
+    },
+
+    _cleanupVoiceMode: function() {
+      if (this._voiceStream) {
+        this._voiceStream.getTracks().forEach(function(t) { t.stop(); });
+        this._voiceStream = null;
+      }
+      if (this._voiceWorklet) {
+        try { this._voiceWorklet.disconnect(); } catch(e) {}
+        this._voiceWorklet = null;
+      }
+      if (this._voiceContext) {
+        try { this._voiceContext.close(); } catch(e) {}
+        this._voiceContext = null;
+      }
+      this.voiceMode = false;
+      this.voiceLive = false;
+      this.voiceStatus = 'idle';
+      this._voicePcmQueue = [];
     },
 
     // Search: toggle open/close

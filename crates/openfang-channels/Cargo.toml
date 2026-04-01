@@ -33,6 +33,8 @@ hex = { workspace = true }
 html-escape = { workspace = true }
 regex-lite = "0.1"
 roxmltree = "0.21"
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic", "ndarray"] }
+rustfft = "6"
 
 lettre = { workspace = true }
 imap = { workspace = true }

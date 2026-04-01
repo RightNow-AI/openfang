@@ -2208,6 +2208,38 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         setup_steps: &["Create a WeCom application at work.weixin.qq.com", "Get Corp ID, Agent ID, and Secret", "Configure callback URL to your webhook endpoint"],
         config_template: "[channels.wecom]\ncorp_id = \"\"\nagent_id = \"\"\nsecret_env = \"WECOM_SECRET\"",
     },
+    // ── Voice / Audio ───────────────────────────────────────────────────────
+    ChannelMeta {
+        name: "voice", display_name: "Voice", icon: "🎙",
+        description: "WebSocket voice adapter — text mode (client handles STT/TTS) or PCM mode (server-side pipeline with Deepgram/Cartesia/OpenAI)",
+        category: "developer", difficulty: "Easy", setup_time: "~5 min",
+        quick_setup: "Speak to your agent via the web UI or any WebSocket client",
+        setup_type: "form",
+        fields: &[
+            ChannelField { key: "listen", label: "Listen Address", field_type: FieldType::Text, env_var: None, required: false, placeholder: "0.0.0.0:4201", advanced: false },
+            ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: false },
+            // STT
+            ChannelField { key: "stt.provider", label: "STT Provider", field_type: FieldType::Text, env_var: None, required: false, placeholder: "deepgram", advanced: false },
+            ChannelField { key: "stt.api_key", label: "STT API Key", field_type: FieldType::Secret, env_var: Some("DEEPGRAM_API_KEY"), required: false, placeholder: "Token ...", advanced: false },
+            ChannelField { key: "stt.language", label: "STT Language", field_type: FieldType::Text, env_var: None, required: false, placeholder: "en", advanced: true },
+            ChannelField { key: "stt.model", label: "STT Model", field_type: FieldType::Text, env_var: None, required: false, placeholder: "nova-3", advanced: true },
+            // TTS
+            ChannelField { key: "tts.provider", label: "TTS Provider", field_type: FieldType::Text, env_var: None, required: false, placeholder: "cartesia", advanced: false },
+            ChannelField { key: "tts.api_key", label: "TTS API Key", field_type: FieldType::Secret, env_var: Some("CARTESIA_API_KEY"), required: false, placeholder: "sk-...", advanced: false },
+            ChannelField { key: "tts.voice_id", label: "Voice ID", field_type: FieldType::Text, env_var: None, required: false, placeholder: "...", advanced: false },
+            ChannelField { key: "tts.model", label: "TTS Model", field_type: FieldType::Text, env_var: None, required: false, placeholder: "sonic-2", advanced: true },
+            ChannelField { key: "tts.speed", label: "Speed", field_type: FieldType::Number, env_var: None, required: false, placeholder: "1.0", advanced: true },
+            // Smart Turn
+            ChannelField { key: "smart_turn.model_path", label: "Smart Turn Model Path", field_type: FieldType::Text, env_var: None, required: false, placeholder: "/data/models/smart-turn-v3.2.onnx", advanced: true },
+            ChannelField { key: "smart_turn.threshold", label: "Smart Turn Threshold", field_type: FieldType::Number, env_var: None, required: false, placeholder: "0.5", advanced: true },
+        ],
+        setup_steps: &[
+            "Set Listen Address (default 0.0.0.0:4201)",
+            "For PCM mode: configure STT and TTS providers",
+            "Use the web UI voice mode or connect via WebSocket",
+        ],
+        config_template: "[channels.voice]\nlisten = \"0.0.0.0:4201\"\ndefault_agent = \"assistant\"\n\n[channels.voice.stt]\nprovider = \"deepgram\"\napi_key = \"\"\n\n[channels.voice.tts]\nprovider = \"cartesia\"\napi_key = \"\"\nvoice_id = \"\"\n\n[channels.voice.smart_turn]\nmodel_path = \"/data/models/smart-turn-v3.2.onnx\"\nthreshold = 0.5",
+    },
 ];
 
 /// Check if a channel is configured (has a `[channels.xxx]` section in config).
