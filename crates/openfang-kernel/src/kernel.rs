@@ -160,6 +160,8 @@ pub struct OpenFangKernel {
     /// messages via Telegram). Different agents can still run in parallel.
     /// Per-agent exchange counter for continuous compaction.
     exchange_counters: dashmap::DashMap<AgentId, std::sync::atomic::AtomicUsize>,
+    /// Per-agent timestamp of the last continuous compaction (for from_ts in context queries).
+    last_compaction_at: dashmap::DashMap<AgentId, chrono::DateTime<chrono::Utc>>,
     /// Per-agent last message timestamp for session gap detection.
     pub last_message_at: dashmap::DashMap<AgentId, std::time::Instant>,
     agent_msg_locks: dashmap::DashMap<AgentId, Arc<tokio::sync::Mutex<()>>>,
@@ -503,6 +505,106 @@ fn gethostname() -> Option<String> {
     #[cfg(not(any(unix, windows)))]
     {
         None
+    }
+}
+
+// ── Continuous compaction helpers ────────────────────────────────────────────
+
+/// Query configured context sources in parallel and return formatted parts.
+///
+/// Each source receives a bounded time-window query (`from_ts` → `to_ts`).
+/// Sources that time out or error are skipped; only non-empty responses are returned.
+async fn query_context_sources_parallel(
+    kernel: &Arc<OpenFangKernel>,
+    from_ts: chrono::DateTime<chrono::Utc>,
+    to_ts: chrono::DateTime<chrono::Utc>,
+) -> Vec<String> {
+    let context_sources = kernel.config.compaction.context_sources.clone();
+    if context_sources.is_empty() {
+        return Vec::new();
+    }
+
+    let mut handles = Vec::new();
+    for source in context_sources {
+        let query = format!(
+            "{}\nTime window: from {} to {}.",
+            source.prompt,
+            from_ts.format("%Y-%m-%d %H:%M %Z"),
+            to_ts.format("%Y-%m-%d %H:%M %Z"),
+        );
+        let k = kernel.clone();
+        let hand = source.hand.clone();
+        handles.push(tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                openfang_runtime::kernel_handle::KernelHandle::send_to_agent(
+                    k.as_ref(),
+                    &hand,
+                    &query,
+                ),
+            )
+            .await;
+            (hand, result)
+        }));
+    }
+
+    let mut parts = Vec::new();
+    for handle in handles {
+        match handle.await {
+            Ok((hand, Ok(Ok(summary)))) if !summary.trim().is_empty() => {
+                info!(hand = %hand, summary_len = summary.len(), "Compaction context source responded");
+                parts.push(format!("[{}]: {}", hand, summary));
+            }
+            Ok((hand, Ok(Err(e)))) => {
+                warn!(hand = %hand, error = %e, "Compaction context source failed");
+            }
+            Ok((hand, Err(_))) => {
+                warn!(hand = %hand, "Compaction context source timed out");
+            }
+            _ => {}
+        }
+    }
+    parts
+}
+
+/// Inject a context block into the agent's live session as a synthetic user message.
+///
+/// This makes the context visible to the LLM on the next turn without requiring
+/// the agent to call memory_recall. Appended after compaction so it stays in
+/// the `keep_recent` window.
+fn inject_context_into_session(
+    kernel: &OpenFangKernel,
+    agent_id: AgentId,
+    context_block: &str,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) {
+    use openfang_types::message::{Message, MessageContent, Role};
+
+    let entry = match kernel.registry.get(agent_id) {
+        Some(e) => e,
+        None => return,
+    };
+
+    match kernel.memory.get_session(entry.session_id) {
+        Ok(Some(mut session)) => {
+            session.messages.push(Message {
+                role: Role::User,
+                content: MessageContent::Text(format!(
+                    "[Context refresh — {}]\n{}",
+                    timestamp.format("%Y-%m-%d %H:%M UTC"),
+                    context_block,
+                )),
+            });
+            if let Err(e) = kernel.memory.save_session(&session) {
+                warn!(agent_id = %agent_id, error = %e, "Failed to inject context into session");
+            } else {
+                info!(agent_id = %agent_id, "Context injected into session");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            warn!(agent_id = %agent_id, error = %e, "Failed to load session for context injection");
+        }
     }
 }
 
@@ -1089,6 +1191,7 @@ impl OpenFangKernel {
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
             exchange_counters: dashmap::DashMap::new(),
+            last_compaction_at: dashmap::DashMap::new(),
             last_message_at: dashmap::DashMap::new(),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
@@ -1670,9 +1773,19 @@ impl OpenFangKernel {
                             .unwrap_or(0);
 
                         if msg_count > compaction_config.keep_recent
-                            && count % compaction_config.continuous_interval == 0
+                            && count.is_multiple_of(compaction_config.continuous_interval)
                         {
-                            let context_sources = compaction_config.context_sources.clone();
+                            // Capture from_ts before compaction (start of the window being compacted)
+                            let now = chrono::Utc::now();
+                            let from_ts = self
+                                .last_compaction_at
+                                .get(&agent_id)
+                                .map(|t| *t)
+                                .unwrap_or_else(|| now - chrono::Duration::seconds(
+                                    self.config.compaction.max_lookback_secs as i64,
+                                ));
+                            self.last_compaction_at.insert(agent_id, now);
+
                             let self_clone = self.self_handle.get().and_then(|w| w.upgrade());
                             if let Some(kernel) = self_clone {
                                 tokio::spawn(async move {
@@ -1691,69 +1804,11 @@ impl OpenFangKernel {
                                         return;
                                     }
 
-                                    // Query context sources
-                                    if context_sources.is_empty() {
-                                        return;
-                                    }
-
-                                    let now = chrono::Utc::now();
-                                    let mut context_parts = Vec::new();
-
-                                    for source in &context_sources {
-                                        let query = format!(
-                                            "{}\nTime window: up to {}",
-                                            source.prompt,
-                                            now.format("%Y-%m-%d %H:%M %Z"),
-                                        );
-
-                                        match tokio::time::timeout(
-                                            std::time::Duration::from_secs(30),
-                                            openfang_runtime::kernel_handle::KernelHandle::send_to_agent(
-                                                kernel.as_ref(),
-                                                &source.hand,
-                                                &query,
-                                            ),
-                                        )
-                                        .await
-                                        {
-                                            Ok(Ok(summary)) if !summary.trim().is_empty() => {
-                                                info!(
-                                                    hand = %source.hand,
-                                                    summary_len = summary.len(),
-                                                    "Context source responded (non-streaming)"
-                                                );
-                                                context_parts.push(format!(
-                                                    "[{}]: {}",
-                                                    source.hand, summary
-                                                ));
-                                            }
-                                            Ok(Err(e)) => {
-                                                warn!(hand = %source.hand, error = %e, "Context source query failed");
-                                            }
-                                            Err(_) => {
-                                                warn!(hand = %source.hand, "Context source query timed out");
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-
-                                    if !context_parts.is_empty() {
-                                        let context_block = context_parts.join("\n\n");
-                                        info!(
-                                            agent_id = %agent_id,
-                                            sources = context_parts.len(),
-                                            "Contextual summaries gathered (non-streaming)"
-                                        );
-                                        let memory_key =
-                                            format!("session_context_{}", now.timestamp());
-                                        let _ = openfang_runtime::kernel_handle::KernelHandle::memory_store(
-                                            kernel.as_ref(),
-                                            &memory_key,
-                                            serde_json::json!({
-                                                "timestamp": now.to_rfc3339(),
-                                                "context": context_block,
-                                            }),
-                                        );
+                                    // Query context sources in parallel with proper time window
+                                    let parts = query_context_sources_parallel(&kernel, from_ts, now).await;
+                                    if !parts.is_empty() {
+                                        let context_block = parts.join("\n\n");
+                                        inject_context_into_session(&kernel, agent_id, &context_block, now);
                                     }
                                 });
                             }
@@ -2262,8 +2317,19 @@ impl OpenFangKernel {
                             let msg_count = session.messages.len();
 
                             if msg_count > compaction_config.keep_recent
-                                && count % compaction_config.continuous_interval == 0
+                                && count.is_multiple_of(compaction_config.continuous_interval)
                             {
+                                // Capture from_ts before compaction (start of the window being compacted)
+                                let now = chrono::Utc::now();
+                                let from_ts = kernel_clone
+                                    .last_compaction_at
+                                    .get(&agent_id)
+                                    .map(|t| *t)
+                                    .unwrap_or_else(|| now - chrono::Duration::seconds(
+                                        kernel_clone.config.compaction.max_lookback_secs as i64,
+                                    ));
+                                kernel_clone.last_compaction_at.insert(agent_id, now);
+
                                 let kc = kernel_clone.clone();
                                 tokio::spawn(async move {
                                     info!(
@@ -2281,73 +2347,12 @@ impl OpenFangKernel {
                                         return;
                                     }
 
-                                    // Then, query context sources and append to the summary
-                                    let context_sources = &kc.config.compaction.context_sources;
-                                    if context_sources.is_empty() {
-                                        return;
-                                    }
-
-                                    let now = chrono::Utc::now();
-                                    let mut context_parts = Vec::new();
-
-                                    for source in context_sources {
-                                        let query = format!(
-                                            "{}\nTime window: up to {}",
-                                            source.prompt,
-                                            now.format("%Y-%m-%d %H:%M %Z"),
-                                        );
-
-                                        match tokio::time::timeout(
-                                            std::time::Duration::from_secs(30),
-                                            kc.send_to_agent(&source.hand, &query),
-                                        )
-                                        .await
-                                        {
-                                            Ok(Ok(summary)) if !summary.trim().is_empty() => {
-                                                info!(
-                                                    hand = %source.hand,
-                                                    summary_len = summary.len(),
-                                                    "Context source responded"
-                                                );
-                                                context_parts.push(format!(
-                                                    "[{}]: {}",
-                                                    source.hand, summary
-                                                ));
-                                            }
-                                            Ok(Err(e)) => {
-                                                warn!(
-                                                    hand = %source.hand,
-                                                    error = %e,
-                                                    "Context source query failed"
-                                                );
-                                            }
-                                            Err(_) => {
-                                                warn!(
-                                                    hand = %source.hand,
-                                                    "Context source query timed out"
-                                                );
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-
-                                    if !context_parts.is_empty() {
-                                        let context_block = context_parts.join("\n\n");
-                                        info!(
-                                            agent_id = %agent_id,
-                                            sources = context_parts.len(),
-                                            "Contextual summaries appended to session"
-                                        );
-                                        // Store in memory for long-term recall
-                                        let memory_key =
-                                            format!("session_context_{}", now.timestamp());
-                                        let _ = kc.memory_store(
-                                            &memory_key,
-                                            serde_json::json!({
-                                                "timestamp": now.to_rfc3339(),
-                                                "context": context_block,
-                                            }),
-                                        );
+                                    // Query context sources in parallel with proper time window,
+                                    // then inject results directly into the session.
+                                    let parts = query_context_sources_parallel(&kc, from_ts, now).await;
+                                    if !parts.is_empty() {
+                                        let context_block = parts.join("\n\n");
+                                        inject_context_into_session(&kc, agent_id, &context_block, now);
                                     }
                                 });
                             }

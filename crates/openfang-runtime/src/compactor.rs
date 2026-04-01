@@ -139,7 +139,7 @@ pub fn needs_continuous_compaction(
 ) -> bool {
     config.continuous_interval > 0
         && session_message_count > config.keep_recent
-        && exchange_count % config.continuous_interval == 0
+        && exchange_count.is_multiple_of(config.continuous_interval)
 }
 
 // ---------------------------------------------------------------------------
