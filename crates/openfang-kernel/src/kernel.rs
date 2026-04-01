@@ -1539,6 +1539,7 @@ impl OpenFangKernel {
             Some(blocks),
             None,
             None,
+            None,
         )
         .await
     }
@@ -1559,6 +1560,7 @@ impl OpenFangKernel {
             None,
             sender_id,
             sender_name,
+            None,
         )
         .await
     }
@@ -1580,6 +1582,7 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        target_session_id: Option<openfang_types::agent::SessionId>,
     ) -> KernelResult<AgentLoopResult> {
         // Acquire per-agent lock to serialize concurrent messages for the same agent.
         // This prevents session corruption when multiple messages arrive in quick
@@ -1617,6 +1620,7 @@ impl OpenFangKernel {
                 content_blocks,
                 sender_id,
                 sender_name,
+                target_session_id,
             )
             .await
         };
@@ -1675,6 +1679,7 @@ impl OpenFangKernel {
         sender_id: Option<String>,
         sender_name: Option<String>,
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        target_session_id: Option<openfang_types::agent::SessionId>,
     ) -> KernelResult<(
         tokio::sync::mpsc::Receiver<StreamEvent>,
         tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
@@ -1743,12 +1748,13 @@ impl OpenFangKernel {
         }
 
         // LLM agent: true streaming via agent loop
+        let active_session_id = target_session_id.unwrap_or(entry.session_id);
         let mut session = self
             .memory
-            .get_session(entry.session_id)
+            .get_session(active_session_id)
             .map_err(KernelError::OpenFang)?
             .unwrap_or_else(|| openfang_memory::session::Session {
-                id: entry.session_id,
+                id: active_session_id,
                 agent_id,
                 messages: Vec::new(),
                 context_window_tokens: 0,
@@ -2300,18 +2306,20 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        target_session_id: Option<openfang_types::agent::SessionId>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
             .check_quota(agent_id, &entry.manifest.resources)
             .map_err(KernelError::OpenFang)?;
 
+        let active_session_id = target_session_id.unwrap_or(entry.session_id);
         let mut session = self
             .memory
-            .get_session(entry.session_id)
+            .get_session(active_session_id)
             .map_err(KernelError::OpenFang)?
             .unwrap_or_else(|| openfang_memory::session::Session {
-                id: entry.session_id,
+                id: active_session_id,
                 agent_id,
                 messages: Vec::new(),
                 context_window_tokens: 0,

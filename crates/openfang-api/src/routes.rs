@@ -386,6 +386,7 @@ pub async fn send_message(
             content_blocks,
             req.sender_id,
             req.sender_name,
+            None,
         )
         .await
     {
@@ -420,6 +421,119 @@ pub async fn send_message(
         }
         Err(e) => {
             tracing::warn!("send_message failed for agent {id}: {e}");
+            let status = if format!("{e}").contains("Agent not found") {
+                StatusCode::NOT_FOUND
+            } else if format!("{e}").contains("quota") || format!("{e}").contains("Quota") {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (
+                status,
+                Json(serde_json::json!({"error": format!("Message delivery failed: {e}")})),
+            )
+        }
+    }
+}
+
+/// POST /api/agents/:id/sessions/:session_id/message — Send a message to a specific session of an agent.
+pub async fn send_message_to_session(
+    State(state): State<Arc<AppState>>,
+    Path((id, session_id_str)): Path<(String, String)>,
+    Json(req): Json<MessageRequest>,
+) -> impl IntoResponse {
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            );
+        }
+    };
+
+    let session_id: openfang_types::agent::SessionId = match session_id_str.parse::<uuid::Uuid>() {
+        Ok(u) => openfang_types::agent::SessionId(u),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid session ID"})),
+            );
+        }
+    };
+
+    // SECURITY: Reject oversized messages to prevent OOM / LLM token abuse.
+    const MAX_MESSAGE_SIZE: usize = 64 * 1024; // 64KB
+    if req.message.len() > MAX_MESSAGE_SIZE {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": "Message too large (max 64KB)"})),
+        );
+    }
+
+    // Check agent exists before processing
+    if state.kernel.registry.get(agent_id).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Agent not found"})),
+        );
+    }
+
+    // Resolve file attachments into image content blocks.
+    let content_blocks = if !req.attachments.is_empty() {
+        let image_blocks = resolve_attachments(&req.attachments);
+        if image_blocks.is_empty() {
+            None
+        } else {
+            Some(image_blocks)
+        }
+    } else {
+        None
+    };
+
+    let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
+    match state
+        .kernel
+        .send_message_with_handle_and_blocks(
+            agent_id,
+            &req.message,
+            Some(kernel_handle),
+            content_blocks,
+            req.sender_id,
+            req.sender_name,
+            Some(session_id),
+        )
+        .await
+    {
+        Ok(result) => {
+            // Strip <think>...</think> blocks from model output
+            let cleaned = crate::ws::strip_think_tags(&result.response);
+
+            let response = if result.silent {
+                String::new()
+            } else if cleaned.trim().is_empty() {
+                format!(
+                    "[The agent completed processing but returned no text response. ({} in / {} out | {} iter)]",
+                    result.total_usage.input_tokens,
+                    result.total_usage.output_tokens,
+                    result.iterations,
+                )
+            } else {
+                cleaned
+            };
+            (
+                StatusCode::OK,
+                Json(serde_json::json!(MessageResponse {
+                    response,
+                    input_tokens: result.total_usage.input_tokens,
+                    output_tokens: result.total_usage.output_tokens,
+                    iterations: result.iterations,
+                    cost_usd: result.cost_usd,
+                })),
+            )
+        }
+        Err(e) => {
+            tracing::warn!("send_message_to_session failed for agent {id}: {e}");
             let status = if format!("{e}").contains("Agent not found") {
                 StatusCode::NOT_FOUND
             } else if format!("{e}").contains("quota") || format!("{e}").contains("Quota") {
@@ -1446,10 +1560,128 @@ pub async fn send_message_stream(
         req.sender_id,
         req.sender_name,
         None, // SSE streaming doesn't support image attachments yet
+        None,
     ) {
         Ok(pair) => pair,
         Err(e) => {
             tracing::warn!("Streaming message failed for agent {id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Streaming message failed"})),
+            )
+                .into_response();
+        }
+    };
+
+    let sse_stream = stream::unfold(rx, |mut rx| async move {
+        match rx.recv().await {
+            Some(event) => {
+                let sse_event: Result<Event, std::convert::Infallible> = Ok(match event {
+                    StreamEvent::TextDelta { text } => Event::default()
+                        .event("chunk")
+                        .json_data(serde_json::json!({"content": text, "done": false}))
+                        .unwrap_or_else(|_| Event::default().data("error")),
+                    StreamEvent::ToolUseStart { name, .. } => Event::default()
+                        .event("tool_use")
+                        .json_data(serde_json::json!({"tool": name}))
+                        .unwrap_or_else(|_| Event::default().data("error")),
+                    StreamEvent::ToolUseEnd { name, input, .. } => Event::default()
+                        .event("tool_result")
+                        .json_data(serde_json::json!({"tool": name, "input": input}))
+                        .unwrap_or_else(|_| Event::default().data("error")),
+                    StreamEvent::ContentComplete { usage, .. } => Event::default()
+                        .event("done")
+                        .json_data(serde_json::json!({
+                            "done": true,
+                            "usage": {
+                                "input_tokens": usage.input_tokens,
+                                "output_tokens": usage.output_tokens,
+                            }
+                        }))
+                        .unwrap_or_else(|_| Event::default().data("error")),
+                    StreamEvent::PhaseChange { phase, detail } => Event::default()
+                        .event("phase")
+                        .json_data(serde_json::json!({
+                            "phase": phase,
+                            "detail": detail,
+                        }))
+                        .unwrap_or_else(|_| Event::default().data("error")),
+                    _ => Event::default().comment("skip"),
+                });
+                Some((sse_event, rx))
+            }
+            None => None,
+        }
+    });
+
+    Sse::new(sse_stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
+}
+
+/// POST /api/agents/:id/sessions/:session_id/message/stream — SSE streaming response to specific session.
+pub async fn send_message_stream_to_session(
+    State(state): State<Arc<AppState>>,
+    Path((id, session_id_str)): Path<(String, String)>,
+    Json(req): Json<MessageRequest>,
+) -> axum::response::Response {
+    use axum::response::sse::{Event, Sse};
+    use futures::stream;
+    use openfang_runtime::llm_driver::StreamEvent;
+
+    // SECURITY: Reject oversized messages to prevent OOM / LLM token abuse.
+    const MAX_MESSAGE_SIZE: usize = 64 * 1024; // 64KB
+    if req.message.len() > MAX_MESSAGE_SIZE {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": "Message too large (max 64KB)"})),
+        )
+            .into_response();
+    }
+
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            )
+                .into_response();
+        }
+    };
+
+    let session_id: openfang_types::agent::SessionId = match session_id_str.parse::<uuid::Uuid>() {
+        Ok(u) => openfang_types::agent::SessionId(u),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid session ID"})),
+            )
+                .into_response();
+        }
+    };
+
+    if state.kernel.registry.get(agent_id).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Agent not found"})),
+        )
+            .into_response();
+    }
+
+    let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
+    let (rx, _handle) = match state.kernel.send_message_streaming(
+        agent_id,
+        &req.message,
+        Some(kernel_handle),
+        req.sender_id,
+        req.sender_name,
+        None, // SSE streaming doesn't support image attachments yet
+        Some(session_id),
+    ) {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::warn!("Streaming message to session failed for agent {id}: {e}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Streaming message failed"})),
