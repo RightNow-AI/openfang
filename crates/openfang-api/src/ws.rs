@@ -486,12 +486,24 @@ async fn handle_text_message(
                 }
             }
 
+            // Resolve specific session target if provided, otherwise fallback to agent's active session
+            let session_id = parsed["session_id"]
+                .as_str()
+                .and_then(|s| s.parse::<uuid::Uuid>().ok())
+                .map(openfang_types::agent::SessionId)
+                .unwrap_or_else(|| {
+                    state.kernel.registry.get(agent_id)
+                        .map(|e| e.session_id)
+                        .unwrap_or_else(|| openfang_types::agent::SessionId(uuid::Uuid::nil()))
+                });
+
             // Send typing lifecycle: start
             let _ = send_json(
                 sender,
                 &serde_json::json!({
                     "type": "typing",
                     "state": "start",
+                    "session_id": session_id.0.to_string(),
                 }),
             )
             .await;
@@ -506,6 +518,7 @@ async fn handle_text_message(
                 None,
                 None,
                 ws_content_blocks,
+                Some(session_id),
             ) {
                 Ok((mut rx, handle)) => {
                     // Forward stream events to WebSocket with debouncing.
@@ -541,6 +554,7 @@ async fn handle_text_message(
                                             let _ = flush_text_buffer(
                                                 &sender_stream,
                                                 &mut text_buffer,
+                                                session_id,
                                             )
                                             .await;
                                             break;
@@ -560,6 +574,7 @@ async fn handle_text_message(
                                                     let _ = flush_text_buffer(
                                                         &sender_stream,
                                                         &mut text_buffer,
+                                                        session_id,
                                                     )
                                                     .await;
                                                     flush_deadline = far_future;
@@ -573,6 +588,7 @@ async fn handle_text_message(
                                                 let _ = flush_text_buffer(
                                                     &sender_stream,
                                                     &mut text_buffer,
+                                                    session_id,
                                                 )
                                                 .await;
                                                 flush_deadline = far_future;
@@ -588,15 +604,19 @@ async fn handle_text_message(
                                                             "type": "typing",
                                                             "state": "tool",
                                                             "tool": name,
+                                                            "session_id": session_id.0.to_string(),
                                                         }),
                                                     )
                                                     .await;
                                                 }
 
                                                 // Map event to JSON with verbose filtering
-                                                if let Some(json) =
+                                                if let Some(mut json) =
                                                     map_stream_event(&ev, vlevel)
                                                 {
+                                                    if let Some(obj) = json.as_object_mut() {
+                                                        obj.insert("session_id".to_string(), serde_json::Value::String(session_id.0.to_string()));
+                                                    }
                                                     if send_json(&sender_stream, &json)
                                                         .await
                                                         .is_err()
@@ -613,6 +633,7 @@ async fn handle_text_message(
                                     let _ = flush_text_buffer(
                                         &sender_stream,
                                         &mut text_buffer,
+                                        session_id,
                                     )
                                     .await;
                                     flush_deadline = far_future;
@@ -681,6 +702,7 @@ async fn handle_text_message(
                                 &serde_json::json!({
                                     "type": "typing",
                                     "state": "stop",
+                                    "session_id": session_id.0.to_string(),
                                 }),
                             )
                             .await;
@@ -694,6 +716,7 @@ async fn handle_text_message(
                                         "type": "silent_complete",
                                         "input_tokens": usage.input_tokens,
                                         "output_tokens": usage.output_tokens,
+                                        "session_id": session_id.0.to_string(),
                                     }),
                                 )
                                 .await;
@@ -735,6 +758,7 @@ async fn handle_text_message(
                                     "iterations": 0, // Not available from stream; handle updates later if needed
                                     "cost_usd": null,
                                     "context_pressure": pressure,
+                                    "session_id": session_id.0.to_string(),
                                 }),
                             )
                             .await;
@@ -745,6 +769,7 @@ async fn handle_text_message(
                                 sender,
                                 &serde_json::json!({
                                     "type": "typing", "state": "stop",
+                                    "session_id": session_id.0.to_string(),
                                 }),
                             )
                             .await;
@@ -753,6 +778,7 @@ async fn handle_text_message(
                                 &serde_json::json!({
                                     "type": "error",
                                     "content": "Internal error occurred",
+                                    "session_id": session_id.0.to_string(),
                                 }),
                             )
                             .await;
@@ -765,6 +791,7 @@ async fn handle_text_message(
                         sender,
                         &serde_json::json!({
                             "type": "typing", "state": "stop",
+                            "session_id": session_id.0.to_string(),
                         }),
                     )
                     .await;
@@ -774,6 +801,7 @@ async fn handle_text_message(
                         &serde_json::json!({
                             "type": "error",
                             "content": user_msg,
+                            "session_id": session_id.0.to_string(),
                         }),
                     )
                     .await;
@@ -1097,6 +1125,7 @@ fn map_stream_event(event: &StreamEvent, verbose: VerboseLevel) -> Option<serde_
 async fn flush_text_buffer(
     sender: &Arc<Mutex<SplitSink<WebSocket, Message>>>,
     buffer: &mut String,
+    session_id: openfang_types::agent::SessionId,
 ) -> Result<(), axum::Error> {
     if buffer.is_empty() {
         return Ok(());
@@ -1106,6 +1135,7 @@ async fn flush_text_buffer(
         &serde_json::json!({
             "type": "text_delta",
             "content": buffer.as_str(),
+            "session_id": session_id.0.to_string(),
         }),
     )
     .await;
