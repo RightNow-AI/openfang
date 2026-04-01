@@ -1,6 +1,6 @@
 # OpenFang on ARM64 (aarch64)
 
-This guide provides instructions for building and running OpenFang on ARM64 architectures, such as Oracle Cloud (Neoverse-N1), Raspberry Pi 5, and AWS Graviton instances.
+This guide provides instructions for building and running OpenFang on ARM64 architectures (e.g., Oracle Cloud Neoverse-N1 and similar aarch64 Linux environments).
 
 ## Prerequisites
 
