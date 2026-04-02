@@ -188,19 +188,15 @@ impl VoiceAdapter {
     }
 
     /// Attach a voice pipeline for PCM mode.  Call before `start()`.
+    ///
+    /// `smart_turn` is loaded separately (via `spawn_blocking`) so this method
+    /// accepts an already-resolved `Option<SmartTurnDetector>`.
     pub fn with_pipeline(
         mut self,
         stt: VoiceSttConfig,
         tts: VoiceTtsConfig,
-        smart_turn_cfg: Option<&SmartTurnConfig>,
+        smart_turn: Option<SmartTurnDetector>,
     ) -> Self {
-        let smart_turn = smart_turn_cfg.and_then(|cfg| {
-            SmartTurnDetector::load(&cfg.model_path, cfg.threshold)
-                .map_err(|e| {
-                    warn!("Smart Turn model failed to load, will use silence detection: {e}");
-                })
-                .ok()
-        });
         self.pipeline = Some(Arc::new(VoicePipeline { stt, tts, smart_turn }));
         self
     }

@@ -4331,4 +4331,77 @@ mod tests {
         let config: KernelConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.heartbeat.default_timeout_secs, 300);
     }
+
+    #[test]
+    fn test_voice_config_try_into() {
+        // Test the two-step deserialization path used by the real config loader
+        let toml_str = r#"
+[channels.voice]
+listen = "0.0.0.0:4201"
+default_agent = "jeeves"
+
+[channels.voice.stt]
+provider = "deepgram"
+api_key = "test-key"
+language = "en"
+model = "nova-3"
+
+[channels.voice.tts]
+provider = "cartesia"
+api_key = "test-tts-key"
+voice_id = "abc-123"
+model = "sonic-2"
+
+[channels.voice.smart_turn]
+model_path = "/data/models/smart-turn.onnx"
+threshold = 0.5
+
+[channels.voice.overrides]
+system_prompt_replace = false
+system_prompt = "You are on a live voice call."
+"#;
+        let val: toml::Value = toml::from_str(toml_str).unwrap();
+        let config: KernelConfig = val.try_into().expect("try_into should succeed");
+        assert!(config.channels.voice.is_some(), "voice should be Some via try_into");
+        let voice = config.channels.voice.unwrap();
+        assert!(voice.stt.is_some());
+        assert!(voice.tts.is_some());
+    }
+
+    #[test]
+    fn test_voice_config_with_pipeline() {
+        let toml_str = r#"
+[channels.voice]
+listen = "0.0.0.0:4201"
+default_agent = "jeeves"
+
+[channels.voice.stt]
+provider = "deepgram"
+api_key = "test-key"
+language = "en"
+model = "nova-3"
+
+[channels.voice.tts]
+provider = "cartesia"
+api_key = "test-tts-key"
+voice_id = "abc-123"
+model = "sonic-2"
+
+[channels.voice.smart_turn]
+model_path = "/data/models/smart-turn.onnx"
+threshold = 0.5
+
+[channels.voice.overrides]
+system_prompt_replace = false
+system_prompt = "You are on a live voice call."
+"#;
+        let config: KernelConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.channels.voice.is_some(), "voice config should be Some");
+        let voice = config.channels.voice.unwrap();
+        assert!(voice.stt.is_some(), "stt should be Some");
+        assert!(voice.tts.is_some(), "tts should be Some");
+        assert!(voice.smart_turn.is_some(), "smart_turn should be Some");
+        let stt = voice.stt.unwrap();
+        assert_eq!(stt.api_key, "test-key");
+    }
 }

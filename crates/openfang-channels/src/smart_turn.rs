@@ -46,7 +46,7 @@ impl SmartTurnDetector {
         let model_path_owned = model_path.to_string();
         let build_session = || -> Result<Session, Box<dyn std::error::Error>> {
             let session = Session::builder()?
-                .with_optimization_level(GraphOptimizationLevel::All)?
+                .with_optimization_level(GraphOptimizationLevel::Disable)?
                 .with_intra_threads(1)?
                 .with_inter_threads(1)?
                 .commit_from_file(&model_path_owned)?;

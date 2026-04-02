@@ -1330,9 +1330,44 @@ pub async fn start_channel_bridge_with_config(
             voice_config.listen.clone(),
             voice_config.default_agent.clone(),
         );
-        // Attach PCM pipeline if STT + TTS are configured
+        // Attach PCM pipeline if STT + TTS are configured.
+        // SmartTurnDetector::load() is synchronous and CPU-bound (ONNX model load);
+        // run it in spawn_blocking so it doesn't stall the async runtime.
         if let (Some(stt), Some(tts)) = (voice_config.stt.clone(), voice_config.tts.clone()) {
-            adapter = adapter.with_pipeline(stt, tts, voice_config.smart_turn.as_ref());
+            let smart_turn_cfg = voice_config.smart_turn.clone();
+            let smart_turn = if let Some(cfg) = smart_turn_cfg {
+                let load_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(15),
+                    tokio::task::spawn_blocking(move || {
+                        openfang_channels::smart_turn::SmartTurnDetector::load(
+                            &cfg.model_path,
+                            cfg.threshold,
+                        )
+                        .map_err(|e| e.to_string())
+                    }),
+                )
+                .await;
+                match load_result {
+                    Ok(Ok(Ok(detector))) => Some(detector),
+                    Ok(Ok(Err(e))) => {
+                        warn!("Smart Turn model failed to load, will use silence detection: {e}");
+                        None
+                    }
+                    Ok(Err(e)) => {
+                        warn!("Smart Turn load task panicked: {e}");
+                        None
+                    }
+                    Err(_) => {
+                        warn!(
+                            "Smart Turn model load timed out after 15s, will use silence detection"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            adapter = adapter.with_pipeline(stt, tts, smart_turn);
         }
         adapters.push((Arc::new(adapter), voice_config.default_agent.clone()));
     }
