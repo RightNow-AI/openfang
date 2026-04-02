@@ -75,7 +75,7 @@ bytes = "1"
 
 # Futures
 futures = "0.3"
-prost = "0.13"
+prost = "0.14"
 
 # WebSocket client (for Discord/Slack gateway)
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
