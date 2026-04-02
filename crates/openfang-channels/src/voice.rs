@@ -142,7 +142,7 @@ struct VoiceSession {
 
 /// Voice channel adapter — WebSocket server for voice clients.
 pub struct VoiceAdapter {
-    /// Address to bind the WebSocket server.
+    /// Address to bind the WebSocket server (for backwards-compatible direct access).
     listen_addr: String,
     /// Default agent to route voice messages to.
     #[allow(dead_code)]
@@ -161,6 +161,10 @@ pub struct VoiceAdapter {
     async_result_rx: Arc<tokio::sync::Mutex<Option<mpsc::Receiver<(String, String)>>>>,
     /// PCM pipeline config (STT, TTS, Smart Turn).
     pipeline: Option<Arc<VoicePipeline>>,
+    /// Bridge sender — pre-created so make_router() can share it with start().
+    bridge_tx: mpsc::Sender<ChannelMessage>,
+    /// Bridge receiver — taken exactly once by start() to return the event stream.
+    bridge_rx: Arc<tokio::sync::Mutex<Option<mpsc::Receiver<ChannelMessage>>>>,
 }
 
 /// Loaded voice pipeline — STT, TTS, and optional Smart Turn.
@@ -174,6 +178,7 @@ impl VoiceAdapter {
     /// Create a new voice adapter.
     pub fn new(listen_addr: String, default_agent: Option<String>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (bridge_tx, bridge_rx) = mpsc::channel::<ChannelMessage>(256);
         Self {
             listen_addr,
             default_agent,
@@ -184,7 +189,30 @@ impl VoiceAdapter {
             status: Arc::new(RwLock::new(ChannelStatus::default())),
             async_result_rx: Arc::new(tokio::sync::Mutex::new(None)),
             pipeline: None,
+            bridge_tx,
+            bridge_rx: Arc::new(tokio::sync::Mutex::new(Some(bridge_rx))),
         }
+    }
+
+    /// Returns an Axum router containing the `/voice` WebSocket handler.
+    ///
+    /// Merge this into the main API server router so voice is accessible
+    /// through the same port as the REST API — no separate port needs to be
+    /// exposed, and a single reverse-proxy rule covers everything.
+    ///
+    /// The handler shares session state with the optional standalone server
+    /// started by `start()`, so both access paths see the same sessions.
+    pub fn make_router(&self) -> Router<()> {
+        let state = AppState {
+            bridge_tx: self.bridge_tx.clone(),
+            sessions: self.sessions.clone(),
+            pcm_sessions: self.pcm_sessions.clone(),
+            status: self.status.clone(),
+            pipeline: self.pipeline.clone(),
+        };
+        Router::new()
+            .route("/voice", get(ws_handler))
+            .with_state(state)
     }
 
     /// Attach a voice pipeline for PCM mode.  Call before `start()`.
@@ -242,10 +270,19 @@ impl ChannelAdapter for VoiceAdapter {
     {
         info!("Starting voice adapter on {}", self.listen_addr);
 
-        let (bridge_tx, bridge_rx) = mpsc::channel::<ChannelMessage>(256);
+        // Take bridge_rx — start() can only succeed once.
+        let bridge_rx = self
+            .bridge_rx
+            .lock()
+            .await
+            .take()
+            .ok_or("Voice adapter already started")?;
 
+        // Build Axum app for the standalone server (backwards-compatible direct
+        // access on listen_addr).  The /voice handler is also mounted on the
+        // main API port via make_router() so a single reverse-proxy suffices.
         let state = AppState {
-            bridge_tx,
+            bridge_tx: self.bridge_tx.clone(),
             sessions: self.sessions.clone(),
             pcm_sessions: self.pcm_sessions.clone(),
             status: self.status.clone(),
@@ -327,9 +364,7 @@ impl ChannelAdapter for VoiceAdapter {
             });
         }
 
-        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(
-            bridge_rx,
-        )))
+        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(bridge_rx)))
     }
 
     async fn send(

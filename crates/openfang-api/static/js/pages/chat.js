@@ -1247,12 +1247,12 @@ function chatPage() {
 
     _startVoiceMode: async function() {
       var self = this;
-      // Resolve voice adapter WebSocket URL.
-      // The voice adapter runs on the same host, port 4201 by default.
-      // Config may override — read from window.OPENFANG_VOICE_PORT if set.
-      var voicePort = window.OPENFANG_VOICE_PORT || '4201';
+      // Voice WebSocket is served on the same port as the API (via /voice on
+      // the main Axum router) so it works through any reverse proxy without
+      // extra configuration.  The legacy separate-port path is still available
+      // via window.OPENFANG_VOICE_URL for deployments that need it.
       var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      var wsUrl = proto + '//' + location.hostname + ':' + voicePort + '/voice';
+      var wsUrl = window.OPENFANG_VOICE_URL || (proto + '//' + location.host + '/voice');
 
       try {
         this._voiceWs = new WebSocket(wsUrl);

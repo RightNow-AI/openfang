@@ -38,8 +38,10 @@ pub async fn build_router(
     kernel: Arc<OpenFangKernel>,
     listen_addr: SocketAddr,
 ) -> (Router<()>, Arc<AppState>) {
-    // Start channel bridges (Telegram, etc.)
-    let bridge = channel_bridge::start_channel_bridge(kernel.clone()).await;
+    // Start channel bridges (Telegram, voice, etc.)
+    // voice_router: the /voice WebSocket handler merged into the main router so
+    // a single reverse-proxy rule covers both REST and voice WebSocket.
+    let (bridge, voice_router) = channel_bridge::start_channel_bridge(kernel.clone()).await;
 
     let channels_config = kernel.config.channels.clone();
     let state = Arc::new(AppState {
@@ -735,6 +737,15 @@ pub async fn build_router(
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state.clone());
+
+    // Merge the /voice WebSocket handler (already has its own state embedded)
+    // AFTER applying middleware so voice bypasses auth/rate-limiting, matching
+    // the behaviour of the standalone voice server on port 4201.
+    let app = if let Some(vr) = voice_router {
+        app.merge(vr)
+    } else {
+        app
+    };
 
     (app, state)
 }

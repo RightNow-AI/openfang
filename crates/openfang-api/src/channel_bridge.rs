@@ -55,6 +55,7 @@ use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_channels::wecom::WeComAdapter;
+use axum::Router;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::agent::AgentId;
 use std::sync::Arc;
@@ -1079,10 +1080,13 @@ fn read_token(env_var_or_token: &str, adapter_name: &str) -> Option<String> {
 ///
 /// Returns `Some(BridgeManager)` if any channels were configured and started,
 /// or `None` if no channels are configured.
-pub async fn start_channel_bridge(kernel: Arc<OpenFangKernel>) -> Option<BridgeManager> {
+pub async fn start_channel_bridge(
+    kernel: Arc<OpenFangKernel>,
+) -> (Option<BridgeManager>, Option<Router<()>>) {
     let channels = kernel.config.channels.clone();
-    let (bridge, _names) = start_channel_bridge_with_config(kernel, &channels).await;
-    bridge
+    let (bridge, _names, voice_router) =
+        start_channel_bridge_with_config(kernel, &channels).await;
+    (bridge, voice_router)
 }
 
 /// Start channels from an explicit `ChannelsConfig` (used by hot-reload).
@@ -1091,7 +1095,7 @@ pub async fn start_channel_bridge(kernel: Arc<OpenFangKernel>) -> Option<BridgeM
 pub async fn start_channel_bridge_with_config(
     kernel: Arc<OpenFangKernel>,
     config: &openfang_types::config::ChannelsConfig,
-) -> (Option<BridgeManager>, Vec<String>) {
+) -> (Option<BridgeManager>, Vec<String>, Option<Router<()>>) {
     let has_any = config.telegram.is_some()
         || config.discord.is_some()
         || config.slack.is_some()
@@ -1139,8 +1143,10 @@ pub async fn start_channel_bridge_with_config(
         || config.voice.is_some();
 
     if !has_any {
-        return (None, Vec::new());
+        return (None, Vec::new(), None);
     }
+
+    let mut voice_router: Option<Router<()>> = None;
 
     let handle = KernelBridgeAdapter {
         kernel: kernel.clone(),
@@ -1369,6 +1375,10 @@ pub async fn start_channel_bridge_with_config(
             };
             adapter = adapter.with_pipeline(stt, tts, smart_turn);
         }
+        // Extract the /voice WebSocket router before wrapping in Arc<dyn>.
+        // This is merged into the main API server so voice is reachable through
+        // the same port as the REST API — no separate port exposure needed.
+        voice_router = Some(adapter.make_router());
         adapters.push((Arc::new(adapter), voice_config.default_agent.clone()));
     }
 
@@ -1768,7 +1778,7 @@ pub async fn start_channel_bridge_with_config(
     }
 
     if adapters.is_empty() {
-        return (None, Vec::new());
+        return (None, Vec::new(), None);
     }
 
     // Resolve per-channel default agents AND set the first one as system-wide fallback
@@ -1848,9 +1858,9 @@ pub async fn start_channel_bridge_with_config(
     }
 
     if started_names.is_empty() {
-        (None, Vec::new())
+        (None, Vec::new(), None)
     } else {
-        (Some(manager), started_names)
+        (Some(manager), started_names, voice_router)
     }
 }
 
@@ -1907,7 +1917,9 @@ pub async fn reload_channels_from_disk(
     *state.channels_config.write().await = fresh_config.channels.clone();
 
     // Start new bridge with fresh channel config
-    let (new_bridge, started) =
+    // Note: voice_router is ignored on hot-reload — the main Axum router is
+    // immutable after startup. Voice remains accessible via the existing route.
+    let (new_bridge, started, _voice_router) =
         start_channel_bridge_with_config(state.kernel.clone(), &fresh_config.channels).await;
 
     // Store the new bridge
