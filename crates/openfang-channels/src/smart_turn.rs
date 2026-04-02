@@ -41,11 +41,28 @@ impl SmartTurnDetector {
             return Err(format!("Smart Turn model not found: {model_path}").into());
         }
 
-        let session = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::All)?
-            .with_intra_threads(1)?
-            .with_inter_threads(1)?
-            .commit_from_file(model_path)?;
+        // Wrap in catch_unwind: ort's load-dynamic feature panics (rather than
+        // returning Err) when libonnxruntime.so is missing from the system.
+        let model_path_owned = model_path.to_string();
+        let build_session = || -> Result<Session, Box<dyn std::error::Error>> {
+            let session = Session::builder()?
+                .with_optimization_level(GraphOptimizationLevel::All)?
+                .with_intra_threads(1)?
+                .with_inter_threads(1)?
+                .commit_from_file(&model_path_owned)?;
+            Ok(session)
+        };
+        let session = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build_session)) {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                return Err(
+                    "ONNX Runtime library (libonnxruntime.so) not found — \
+                     install libonnxruntime or set ORT_DYLIB_PATH"
+                        .into(),
+                )
+            }
+        };
 
         let size_mb = std::fs::metadata(model_path)
             .map(|m| m.len() as f32 / 1024.0 / 1024.0)
