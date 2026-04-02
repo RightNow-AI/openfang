@@ -168,8 +168,16 @@ pub async fn agent_ws(
 
         let query_auth = uri
             .query()
-            .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
-            .map(|token| ct_eq(token, api_key))
+            .and_then(|q| {
+                url::form_urlencoded::parse(q.as_bytes()).find_map(|(k, v)| {
+                    if k == "token" {
+                        Some(v.into_owned())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .map(|token| ct_eq(&token, api_key))
             .unwrap_or(false);
 
         if !header_auth && !query_auth {

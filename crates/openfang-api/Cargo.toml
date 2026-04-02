@@ -32,6 +32,7 @@ futures = { workspace = true }
 governor = { workspace = true }
 tokio-stream = { workspace = true }
 subtle = { workspace = true }
+url = { workspace = true }
 base64 = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
