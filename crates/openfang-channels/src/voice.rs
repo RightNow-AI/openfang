@@ -766,12 +766,23 @@ async fn send_json(
 
 /// How often (ms) to run Smart Turn inference while buffering audio.
 const SMART_TURN_INTERVAL_MS: u64 = 300;
-/// Silence-based fallback: stop buffering after this many ms of quiet.
+/// Silence-based fallback: how long (ms) of quiet after last speech triggers dispatch.
 const SILENCE_TIMEOUT_MS: u64 = 1200;
-/// Minimum audio buffer (ms) before Smart Turn runs.
+/// Minimum audio buffer (ms) before Smart Turn or silence dispatch runs.
 const MIN_AUDIO_MS: u64 = 500;
 /// Sample rate.
 const PCM_SAMPLE_RATE: usize = 16_000;
+/// RMS threshold (Int16 units) for counting a chunk as "speech" in the silence fallback.
+/// ~1% of max amplitude — low enough to catch normal speech, high enough to ignore mic noise.
+const SILENCE_SPEECH_THRESHOLD: f64 = 300.0;
+
+fn rms_i16(samples: &[i16]) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
+    (sum / samples.len() as f64).sqrt()
+}
 
 /// Handle a PCM-mode voice session.
 ///
@@ -861,6 +872,9 @@ async fn handle_pcm_session(
     let smart_turn_interval =
         tokio::time::Duration::from_millis(SMART_TURN_INTERVAL_MS);
     let silence_timeout = tokio::time::Duration::from_millis(SILENCE_TIMEOUT_MS);
+    // Silence fallback: absolute deadline, pushed forward on each speech chunk.
+    // Using sleep_until(absolute) avoids the reset-on-each-frame bug of sleep(duration).
+    let mut silence_fire_at = tokio::time::Instant::now() + silence_timeout;
 
     // Process the first binary frame immediately
     if let Message::Binary(bytes) = first_frame {
@@ -868,6 +882,9 @@ async fn handle_pcm_session(
             .chunks_exact(2)
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
+        if rms_i16(&samples) > SILENCE_SPEECH_THRESHOLD {
+            silence_fire_at = tokio::time::Instant::now() + silence_timeout;
+        }
         audio_buf.extend_from_slice(&samples);
     }
 
@@ -932,6 +949,12 @@ async fn handle_pcm_session(
                             .chunks_exact(2)
                             .map(|c| i16::from_le_bytes([c[0], c[1]]))
                             .collect();
+                        // Silence fallback: push deadline forward when speech is detected
+                        if pipeline.smart_turn.is_none()
+                            && rms_i16(&samples) > SILENCE_SPEECH_THRESHOLD
+                        {
+                            silence_fire_at = tokio::time::Instant::now() + silence_timeout;
+                        }
                         audio_buf.extend_from_slice(&samples);
 
                         // Run Smart Turn at interval
@@ -974,8 +997,11 @@ async fn handle_pcm_session(
                 }
             }
 
-            // Silence timeout — flush buffer if we have audio and no Smart Turn model
-            _ = tokio::time::sleep(silence_timeout), if pipeline.smart_turn.is_none() && !audio_buf.is_empty() && audio_buf.len() >= min_samples => {
+            // Silence timeout — flush buffer when no speech heard for SILENCE_TIMEOUT_MS.
+            // Uses sleep_until(absolute deadline) so the timer survives across loop
+            // iterations without resetting — unlike sleep(duration) which would reset
+            // on every incoming audio frame and never fire.
+            _ = tokio::time::sleep_until(silence_fire_at), if pipeline.smart_turn.is_none() && !audio_buf.is_empty() && audio_buf.len() >= min_samples => {
                 dispatch_pcm_utterance(
                     &audio_buf,
                     &pipeline,
@@ -990,6 +1016,8 @@ async fn handle_pcm_session(
                 )
                 .await;
                 audio_buf.clear();
+                // Push deadline into the future so we don't immediately re-fire
+                silence_fire_at = tokio::time::Instant::now() + silence_timeout;
             }
 
             // Outgoing TTS audio to client
