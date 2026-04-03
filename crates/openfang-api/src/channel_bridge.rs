@@ -1373,7 +1373,13 @@ pub async fn start_channel_bridge_with_config(
             } else {
                 None
             };
-            adapter = adapter.with_pipeline(stt, tts, smart_turn);
+            adapter = adapter.with_pipeline(
+                stt,
+                tts,
+                smart_turn,
+                voice_config.barge_in_threshold,
+                voice_config.barge_in_speaking_threshold,
+            );
         }
         // Extract the /voice WebSocket router before wrapping in Arc<dyn>.
         // This is merged into the main API server so voice is reachable through

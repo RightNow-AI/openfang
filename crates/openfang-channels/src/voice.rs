@@ -131,6 +131,13 @@ enum ServerMessage {
     Status { state: String },
     /// Error message.
     Error { message: String },
+    /// Barge-in acknowledged — TTS stopped, server is listening again.
+    BargeInAck,
+    /// Session configuration sent once after the Hello handshake.
+    Config {
+        barge_in_threshold: u32,
+        barge_in_speaking_threshold: u32,
+    },
 }
 
 // ── Voice Session ────────────────────────────────────────────────────────────
@@ -178,6 +185,8 @@ pub struct VoicePipeline {
     pub stt: VoiceSttConfig,
     pub tts: VoiceTtsConfig,
     pub smart_turn: Option<SmartTurnDetector>,
+    pub barge_in_threshold: u32,
+    pub barge_in_speaking_threshold: u32,
 }
 
 impl VoiceAdapter {
@@ -230,8 +239,16 @@ impl VoiceAdapter {
         stt: VoiceSttConfig,
         tts: VoiceTtsConfig,
         smart_turn: Option<SmartTurnDetector>,
+        barge_in_threshold: u32,
+        barge_in_speaking_threshold: u32,
     ) -> Self {
-        self.pipeline = Some(Arc::new(VoicePipeline { stt, tts, smart_turn }));
+        self.pipeline = Some(Arc::new(VoicePipeline {
+            stt,
+            tts,
+            smart_turn,
+            barge_in_threshold,
+            barge_in_speaking_threshold,
+        }));
         self
     }
 
@@ -711,7 +728,13 @@ async fn process_text_frame(
             }
         }
         Ok(ClientMessage::Cancel) => {
-            info!("Barge-in cancel from {session_id}");
+            info!("Barge-in from text session {session_id}");
+            let _ = response_tx.send(ServerMessage::BargeInAck).await;
+            let _ = response_tx
+                .send(ServerMessage::Status {
+                    state: "listening".to_string(),
+                })
+                .await;
         }
         Ok(ClientMessage::End) => {
             info!("Voice session ended by client: {session_id}");
@@ -783,7 +806,17 @@ async fn handle_pcm_session(
         pcm.insert(session_id.clone(), agent_tx.clone());
     }
 
-    // Spawn agent response handler: collects text from bridge, synthesizes TTS
+    // Barge-in cancel signal: main loop sends true to skip current TTS.
+    let (cancel_tx, cancel_rx_tts) = watch::channel(false);
+    // Track sentences the agent has already spoken (capped at 3 for context).
+    let spoken_sentences: Arc<tokio::sync::Mutex<Vec<String>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let spoken_sentences_tts = spoken_sentences.clone();
+    // Context injected into the next utterance after a barge-in.
+    let mut pending_barge_in_context: Option<String> = None;
+
+    // Spawn agent response handler: collects text from bridge, synthesizes TTS.
+    // Checks cancel_rx before and after synthesis to skip output during barge-in.
     let pipeline_for_tts = pipeline.clone();
     let sid_for_tts = session_id.clone();
     let (pcm_out_tx, mut pcm_out_rx) = mpsc::channel::<Vec<i16>>(8);
@@ -792,9 +825,24 @@ async fn handle_pcm_session(
             if text.trim() == "[SILENT]" {
                 continue;
             }
+            // Skip synthesis if barge-in is active
+            if *cancel_rx_tts.borrow() {
+                continue;
+            }
             debug!("PCM session {sid_for_tts}: synthesizing TTS for: {}", &text[..text.len().min(80)]);
             match tts::synthesize(&text, &pipeline_for_tts.tts).await {
                 Ok(pcm) => {
+                    // Discard output if barge-in arrived during synthesis
+                    if *cancel_rx_tts.borrow() {
+                        continue;
+                    }
+                    {
+                        let mut spoken = spoken_sentences_tts.lock().await;
+                        spoken.push(text.clone());
+                        if spoken.len() > 3 {
+                            spoken.remove(0);
+                        }
+                    }
                     if pcm_out_tx.send(pcm).await.is_err() {
                         break;
                     }
@@ -836,9 +884,41 @@ async fn handle_pcm_session(
                                 info!("PCM session {session_id}: speaker identified as {speaker:?}");
                                 sender.display_name = speaker.clone();
                                 primary_speaker = Some(speaker);
+                                // Send session config (barge-in thresholds) to client
+                                let config_msg = serde_json::json!({
+                                    "type": "config",
+                                    "barge_in_threshold": pipeline.barge_in_threshold,
+                                    "barge_in_speaking_threshold": pipeline.barge_in_speaking_threshold,
+                                })
+                                .to_string();
+                                let _ = ws_tx.send(Message::Text(config_msg.into())).await;
                             }
                             Ok(ClientMessage::Cancel) => {
-                                info!("Barge-in cancel from PCM session {session_id}");
+                                info!("Barge-in from PCM session {session_id}");
+                                // Signal TTS task to skip pending synthesis
+                                cancel_tx.send(true).ok();
+                                // Drain any already-queued PCM frames
+                                while pcm_out_rx.try_recv().is_ok() {}
+                                // Build context from what was spoken
+                                let spoken_ctx = {
+                                    let s = spoken_sentences.lock().await;
+                                    s.join(" ")
+                                };
+                                if !spoken_ctx.is_empty() {
+                                    pending_barge_in_context =
+                                        Some(format!("[Agent had said: \"{spoken_ctx}\"]"));
+                                }
+                                spoken_sentences.lock().await.clear();
+                                // Discard stale pre-barge-in audio
+                                audio_buf.clear();
+                                let _ = ws_tx
+                                    .send(Message::Text(r#"{"type":"barge_in_ack"}"#.into()))
+                                    .await;
+                                let _ = ws_tx
+                                    .send(Message::Text(
+                                        r#"{"type":"status","state":"listening"}"#.into(),
+                                    ))
+                                    .await;
                             }
                             Ok(ClientMessage::End) => {
                                 info!("PCM session ended by client: {session_id}");
@@ -875,6 +955,8 @@ async fn handle_pcm_session(
                                     &state,
                                     &sender,
                                     &primary_speaker,
+                                    &mut pending_barge_in_context,
+                                    &cancel_tx,
                                     &session_id,
                                     &agent_tx,
                                     &mut ws_tx,
@@ -900,6 +982,8 @@ async fn handle_pcm_session(
                     &state,
                     &sender,
                     &primary_speaker,
+                    &mut pending_barge_in_context,
+                    &cancel_tx,
                     &session_id,
                     &agent_tx,
                     &mut ws_tx,
@@ -938,10 +1022,15 @@ async fn dispatch_pcm_utterance(
     state: &AppState,
     sender: &ChannelUser,
     primary_speaker: &Option<String>,
+    pending_barge_in_context: &mut Option<String>,
+    cancel_tx: &watch::Sender<bool>,
     session_id: &str,
     agent_tx: &mpsc::Sender<String>,
     ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
 ) {
+    // Reset barge-in cancel so TTS processes the upcoming response normally
+    cancel_tx.send(false).ok();
+
     // Send "thinking" status
     let _ = ws_tx
         .send(Message::Text(
@@ -991,6 +1080,13 @@ async fn dispatch_pcm_utterance(
                 .await;
             return;
         }
+    };
+
+    // Prepend barge-in context if the user interrupted the previous response
+    let final_text = if let Some(ctx) = pending_barge_in_context.take() {
+        format!("{ctx}\n\nUser said: {final_text}")
+    } else {
+        final_text
     };
 
     // Send transcript to client (with speaker prefix if present)

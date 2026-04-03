@@ -2167,6 +2167,24 @@ pub struct VoiceConfig {
     /// to detect when the user has finished speaking instead of a silence timer.
     #[serde(default)]
     pub smart_turn: Option<SmartTurnConfig>,
+    /// RMS amplitude threshold (Int16 scale) for barge-in detection.
+    /// User speech above this level while the agent is speaking triggers barge-in.
+    /// Default 1500. Lower values are more sensitive; raise if false triggers occur.
+    #[serde(default = "default_barge_in_threshold")]
+    pub barge_in_threshold: u32,
+    /// Elevated RMS threshold used while the agent is actively speaking,
+    /// to avoid echo or background noise accidentally triggering barge-in.
+    /// Default 3000. Should be significantly higher than barge_in_threshold.
+    #[serde(default = "default_barge_in_speaking_threshold")]
+    pub barge_in_speaking_threshold: u32,
+}
+
+fn default_barge_in_threshold() -> u32 {
+    1500
+}
+
+fn default_barge_in_speaking_threshold() -> u32 {
+    3000
 }
 
 impl Default for VoiceConfig {
@@ -2178,6 +2196,8 @@ impl Default for VoiceConfig {
             stt: None,
             tts: None,
             smart_turn: None,
+            barge_in_threshold: default_barge_in_threshold(),
+            barge_in_speaking_threshold: default_barge_in_speaking_threshold(),
         }
     }
 }

@@ -39,6 +39,9 @@ function chatPage() {
     _voiceWorklet: null,      // AudioWorkletNode for PCM capture
     _voiceStream: null,       // MediaStream from getUserMedia
     _voicePcmQueue: [],       // PCM chunks to play back
+    _voiceCurrentSource: null,          // AudioBufferSourceNode currently playing
+    _voiceBargeInPending: false,        // true after Cancel sent, before BargeInAck
+    _bargeInSpeakingThreshold: 3000,    // RMS threshold while agent is speaking
     // Model autocomplete state
     showModelPicker: false,
     modelPickerList: [],
@@ -1291,6 +1294,14 @@ function chatPage() {
               // Show in chat as user message
               self.messages.push({ id: ++msgId, role: 'user', text: msg.text, ts: Date.now(), tools: [] });
               self.scrollToBottom();
+            } else if (msg.type === 'config') {
+              if (msg.barge_in_speaking_threshold != null) {
+                self._bargeInSpeakingThreshold = msg.barge_in_speaking_threshold;
+              }
+            } else if (msg.type === 'barge_in_ack') {
+              self._voiceBargeInPending = false;
+              self.voiceStatus = 'listening';
+              self.voiceLive = true;
             } else if (msg.type === 'error') {
               if (typeof OpenFangToast !== 'undefined') OpenFangToast.error('Voice: ' + msg.message);
             }
@@ -1329,7 +1340,10 @@ function chatPage() {
             '    if (ch && ch.length) {\n' +
             '      var out = new Int16Array(ch.length);\n' +
             '      for (var i = 0; i < ch.length; i++) out[i] = Math.max(-32768, Math.min(32767, ch[i] * 32768));\n' +
-            '      this.port.postMessage(out.buffer, [out.buffer]);\n' +
+            '      var rms = 0;\n' +
+            '      for (var i = 0; i < ch.length; i++) rms += ch[i] * ch[i];\n' +
+            '      rms = Math.sqrt(rms / ch.length);\n' +
+            '      this.port.postMessage({ pcm: out.buffer, rms: rms }, [out.buffer]);\n' +
             '    }\n' +
             '    return true;\n' +
             '  }\n' +
@@ -1343,8 +1357,19 @@ function chatPage() {
           var source = this._voiceContext.createMediaStreamSource(this._voiceStream);
           this._voiceWorklet = new AudioWorkletNode(this._voiceContext, 'pcm-capture');
           this._voiceWorklet.port.onmessage = function(e) {
+            var pcm = e.data.pcm;
+            var rms = e.data.rms;
+            // Barge-in: if agent is speaking and mic level exceeds threshold, interrupt
+            if (self.voiceStatus === 'speaking' && !self._voiceBargeInPending) {
+              var threshold = self._bargeInSpeakingThreshold;
+              // rms is float [0,1]; scale to match Int16 range for threshold comparison
+              if (rms * 32768 > threshold) {
+                self._triggerBargeIn();
+                return;
+              }
+            }
             if (self._voiceWs && self._voiceWs.readyState === WebSocket.OPEN && self.voiceLive) {
-              self._voiceWs.send(e.data);
+              self._voiceWs.send(pcm);
             }
           };
           source.connect(this._voiceWorklet);
@@ -1399,7 +1424,9 @@ function chatPage() {
       var source = this._voiceContext.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(this._voiceContext.destination);
+      this._voiceCurrentSource = source;
       source.onended = function() {
+        if (self._voiceCurrentSource === source) self._voiceCurrentSource = null;
         if (self._voicePcmQueue.length) {
           self._playNextPcm();
         } else {
@@ -1408,6 +1435,22 @@ function chatPage() {
         }
       };
       source.start();
+    },
+
+    _triggerBargeIn: function() {
+      if (this._voiceBargeInPending) return;
+      this._voiceBargeInPending = true;
+      // Stop current audio playback immediately
+      if (this._voiceCurrentSource) {
+        try { this._voiceCurrentSource.stop(); } catch(e) {}
+        this._voiceCurrentSource = null;
+      }
+      this._voicePcmQueue = [];
+      // Tell server to cancel ongoing TTS/generation
+      if (this._voiceWs && this._voiceWs.readyState === WebSocket.OPEN) {
+        this._voiceWs.send(JSON.stringify({ type: 'cancel' }));
+      }
+      this.voiceStatus = 'listening';
     },
 
     _stopVoiceMode: function() {
