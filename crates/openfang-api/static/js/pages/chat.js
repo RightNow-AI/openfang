@@ -1293,10 +1293,11 @@ function chatPage() {
               self.voiceStatus = msg.state;
               if (msg.state === 'listening') self.voiceLive = true;
             } else if (msg.type === 'transcribed') {
-              self.voiceTranscript = msg.text;
+              var displayText = msg.display_text || msg.text;
+              self.voiceTranscript = displayText;
               self.voiceStatus = 'thinking';
-              // Show in chat as user message
-              self.messages.push({ id: ++msgId, role: 'user', text: msg.text, ts: Date.now(), tools: [] });
+              // Show clean transcript in chat as user message
+              self.messages = self.messages.concat([{ id: ++msgId, role: 'user', text: displayText, ts: Date.now(), tools: [] }]);
               self.scrollToBottom();
             } else if (msg.type === 'response') {
               // Agent response text from PCM pipeline — add to chat transcript
@@ -1304,10 +1305,10 @@ function chatPage() {
                 var lastMsg = self.messages[self.messages.length - 1];
                 if (lastMsg && lastMsg.role === 'assistant' && lastMsg._voice) {
                   // Append to the current assistant voice turn
-                  lastMsg.text += ' ' + msg.text;
-                  self.messages.splice(self.messages.length - 1, 1, lastMsg);
+                  var updated = Object.assign({}, lastMsg, { text: lastMsg.text + ' ' + msg.text });
+                  self.messages = self.messages.slice(0, -1).concat([updated]);
                 } else {
-                  self.messages.push({ id: ++msgId, role: 'assistant', text: msg.text, ts: Date.now(), tools: [], _voice: true });
+                  self.messages = self.messages.concat([{ id: ++msgId, role: 'assistant', text: msg.text, ts: Date.now(), tools: [], _voice: true }]);
                 }
                 self.scrollToBottom();
               }

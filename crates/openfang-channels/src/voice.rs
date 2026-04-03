@@ -1134,25 +1134,40 @@ async fn dispatch_pcm_utterance(
         .await;
 
     // Transcribe
-    let final_text = match stt::transcribe(audio_buf, &pipeline.stt).await {
-        Ok(stt::TranscriptResult::Plain(t)) if !t.trim().is_empty() => match primary_speaker {
-            Some(name) => format!("[From: {name}] {t}"),
-            None => t,
-        },
-        Ok(stt::TranscriptResult::Diarized(segments)) if !segments.is_empty() => segments
-            .iter()
-            .map(|seg| {
-                let name = if seg.speaker_index == 0 {
-                    primary_speaker
-                        .clone()
-                        .unwrap_or_else(|| "Speaker 0".to_string())
-                } else {
-                    format!("Speaker {}", seg.speaker_index)
-                };
-                format!("[From: {name}] {}", seg.text)
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+    // display_text: clean STT output for showing in the chat UI (no agent context)
+    // final_text: full text sent to the agent (with speaker prefix, barge-in context)
+    let (display_text, final_text) = match stt::transcribe(audio_buf, &pipeline.stt).await {
+        Ok(stt::TranscriptResult::Plain(t)) if !t.trim().is_empty() => {
+            let clean = t.trim().to_string();
+            let tagged = match primary_speaker {
+                Some(name) => format!("[From: {name}] {clean}"),
+                None => clean.clone(),
+            };
+            (clean, tagged)
+        }
+        Ok(stt::TranscriptResult::Diarized(segments)) if !segments.is_empty() => {
+            let tagged = segments
+                .iter()
+                .map(|seg| {
+                    let name = if seg.speaker_index == 0 {
+                        primary_speaker
+                            .clone()
+                            .unwrap_or_else(|| "Speaker 0".to_string())
+                    } else {
+                        format!("Speaker {}", seg.speaker_index)
+                    };
+                    format!("[From: {name}] {}", seg.text)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            // For diarized, display_text is the raw segments joined without tags
+            let clean = segments
+                .iter()
+                .map(|seg| seg.text.trim().to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            (clean, tagged)
+        }
         Ok(_) => {
             // Empty transcript — resume listening
             let _ = ws_tx
@@ -1182,8 +1197,9 @@ async fn dispatch_pcm_utterance(
         final_text
     };
 
-    // Send transcript to client (with speaker prefix if present)
-    let transcript_msg = serde_json::json!({"type": "transcribed", "text": final_text}).to_string();
+    // Send transcript to client: display_text for the chat UI, text for the agent
+    let transcript_msg =
+        serde_json::json!({"type": "transcribed", "text": final_text, "display_text": display_text}).to_string();
     let _ = ws_tx.send(Message::Text(transcript_msg.into())).await;
 
     let mut metadata = HashMap::new();
