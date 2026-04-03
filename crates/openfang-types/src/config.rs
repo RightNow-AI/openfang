@@ -2203,6 +2203,9 @@ pub struct VoiceSttConfig {
     /// Model override (e.g. "nova-3" for Deepgram, "whisper-1" for OpenAI).
     #[serde(default)]
     pub model: Option<String>,
+    /// Enable speaker diarization (Deepgram only; ignored with a warning for OpenAI).
+    #[serde(default)]
+    pub diarize: bool,
 }
 
 /// TTS provider selection.

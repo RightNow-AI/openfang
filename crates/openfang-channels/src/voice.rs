@@ -98,6 +98,12 @@ enum ClientMessage {
         #[serde(default = "default_true")]
         r#final: bool,
     },
+    /// Identity announcement — sent once on session open before PCM streams.
+    /// Sets the primary speaker name for the session. In text mode, overrides
+    /// the per-utterance `speaker` field as the session-wide default.
+    Hello {
+        speaker: String,
+    },
     /// Cancel current agent response (barge-in).
     Cancel,
     /// End the voice session.
@@ -564,17 +570,19 @@ async fn handle_voice_session(socket: WebSocket, state: AppState) {
         debug!("Response forwarder ended for {sid_clone}");
     });
 
-    // Default sender (updated when first utterance arrives with speaker info)
+    // Default sender (updated when Hello or first utterance arrives)
     let mut sender = ChannelUser {
         platform_id: session_id.clone(),
         display_name: "Caller".to_string(),
         openfang_user: None,
     };
+    let mut primary_speaker: Option<String> = None;
 
     // Process first frame through the normal text handler
     process_text_frame(
         &first_frame,
         &mut sender,
+        &mut primary_speaker,
         &session_id,
         &state,
         &response_tx,
@@ -590,6 +598,7 @@ async fn handle_voice_session(socket: WebSocket, state: AppState) {
         let should_break = process_text_frame(
             &msg,
             &mut sender,
+            &mut primary_speaker,
             &session_id,
             &state,
             &response_tx,
@@ -615,6 +624,7 @@ async fn handle_voice_session(socket: WebSocket, state: AppState) {
 async fn process_text_frame(
     msg: &Message,
     sender: &mut ChannelUser,
+    primary_speaker: &mut Option<String>,
     session_id: &str,
     state: &AppState,
     response_tx: &mpsc::Sender<ServerMessage>,
@@ -626,13 +636,20 @@ async fn process_text_frame(
 
     let parsed: Result<ClientMessage, _> = serde_json::from_str(&text);
     match parsed {
+        Ok(ClientMessage::Hello { speaker }) => {
+            info!("Voice session {session_id}: speaker identified as {speaker:?}");
+            sender.display_name = speaker.clone();
+            *primary_speaker = Some(speaker);
+        }
         Ok(ClientMessage::Utterance {
             text,
             speaker,
             r#final,
         }) => {
+            // Per-utterance speaker overrides the session default
             if let Some(ref name) = speaker {
                 sender.display_name = name.clone();
+                *primary_speaker = Some(name.clone());
             }
 
             if !r#final {
@@ -655,13 +672,12 @@ async fn process_text_frame(
                 })
                 .await;
 
+            let prefixed_text = match primary_speaker {
+                Some(name) => format!("[From: {name}] {text}"),
+                None => text,
+            };
+
             let mut metadata = HashMap::new();
-            if let Some(ref name) = speaker {
-                metadata.insert(
-                    "sender_email".to_string(),
-                    serde_json::Value::String(name.clone()),
-                );
-            }
             metadata.insert(
                 "voice_session".to_string(),
                 serde_json::Value::String(session_id.to_string()),
@@ -675,7 +691,7 @@ async fn process_text_frame(
                     Utc::now().timestamp_millis()
                 ),
                 sender: sender.clone(),
-                content: ChannelContent::Text(text),
+                content: ChannelContent::Text(prefixed_text),
                 target_agent: None,
                 timestamp: Utc::now(),
                 is_group: false,
@@ -752,11 +768,12 @@ async fn handle_pcm_session(
         ))
         .await;
 
-    let sender = ChannelUser {
+    let mut sender = ChannelUser {
         platform_id: session_id.clone(),
         display_name: "Caller".to_string(),
         openfang_user: None,
     };
+    let mut primary_speaker: Option<String> = None;
 
     // Channel for agent text responses back to this PCM session.
     // Registered in pcm_sessions so VoiceAdapter::send() routes here → TTS.
@@ -811,6 +828,25 @@ async fn handle_pcm_session(
             // Incoming audio from client
             frame = ws_rx.next() => {
                 match frame {
+                    Some(Ok(Message::Text(t))) => {
+                        // Handle control frames (Hello, Cancel, End) in PCM mode
+                        let parsed: Result<ClientMessage, _> = serde_json::from_str(&t);
+                        match parsed {
+                            Ok(ClientMessage::Hello { speaker }) => {
+                                info!("PCM session {session_id}: speaker identified as {speaker:?}");
+                                sender.display_name = speaker.clone();
+                                primary_speaker = Some(speaker);
+                            }
+                            Ok(ClientMessage::Cancel) => {
+                                info!("Barge-in cancel from PCM session {session_id}");
+                            }
+                            Ok(ClientMessage::End) => {
+                                info!("PCM session ended by client: {session_id}");
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
                     Some(Ok(Message::Binary(bytes))) => {
                         let samples: Vec<i16> = bytes
                             .chunks_exact(2)
@@ -838,6 +874,7 @@ async fn handle_pcm_session(
                                     &pipeline,
                                     &state,
                                     &sender,
+                                    &primary_speaker,
                                     &session_id,
                                     &agent_tx,
                                     &mut ws_tx,
@@ -862,6 +899,7 @@ async fn handle_pcm_session(
                     &pipeline,
                     &state,
                     &sender,
+                    &primary_speaker,
                     &session_id,
                     &agent_tx,
                     &mut ws_tx,
@@ -899,6 +937,7 @@ async fn dispatch_pcm_utterance(
     pipeline: &VoicePipeline,
     state: &AppState,
     sender: &ChannelUser,
+    primary_speaker: &Option<String>,
     session_id: &str,
     agent_tx: &mpsc::Sender<String>,
     ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
@@ -911,8 +950,27 @@ async fn dispatch_pcm_utterance(
         .await;
 
     // Transcribe
-    let transcript = match stt::transcribe(audio_buf, &pipeline.stt).await {
-        Ok(t) if !t.trim().is_empty() => t,
+    let final_text = match stt::transcribe(audio_buf, &pipeline.stt).await {
+        Ok(stt::TranscriptResult::Plain(t)) if !t.trim().is_empty() => {
+            match primary_speaker {
+                Some(name) => format!("[From: {name}] {t}"),
+                None => t,
+            }
+        }
+        Ok(stt::TranscriptResult::Diarized(segments)) if !segments.is_empty() => segments
+            .iter()
+            .map(|seg| {
+                let name = if seg.speaker_index == 0 {
+                    primary_speaker
+                        .clone()
+                        .unwrap_or_else(|| "Speaker 0".to_string())
+                } else {
+                    format!("Speaker {}", seg.speaker_index)
+                };
+                format!("[From: {name}] {}", seg.text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
         Ok(_) => {
             // Empty transcript — resume listening
             let _ = ws_tx
@@ -935,15 +993,11 @@ async fn dispatch_pcm_utterance(
         }
     };
 
-    // Send transcript to client
+    // Send transcript to client (with speaker prefix if present)
     let transcript_msg =
-        serde_json::json!({"type": "transcribed", "text": transcript}).to_string();
+        serde_json::json!({"type": "transcribed", "text": final_text}).to_string();
     let _ = ws_tx.send(Message::Text(transcript_msg.into())).await;
 
-    // Send to agent bridge — response comes back via send() → agent_tx
-    // We register agent_tx as the response sink for this session temporarily.
-    // The bridge calls send() which goes to the compat ServerMessage channel;
-    // we intercept it via a bridge ChannelMessage with a metadata routing key.
     let mut metadata = HashMap::new();
     metadata.insert(
         "voice_session".to_string(),
@@ -958,7 +1012,7 @@ async fn dispatch_pcm_utterance(
         channel: ChannelType::Custom("voice".to_string()),
         platform_message_id: format!("voice-{}-{}", session_id, Utc::now().timestamp_millis()),
         sender: sender.clone(),
-        content: ChannelContent::Text(transcript.clone()),
+        content: ChannelContent::Text(final_text),
         target_agent: None,
         timestamp: Utc::now(),
         is_group: false,

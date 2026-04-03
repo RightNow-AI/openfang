@@ -1,6 +1,6 @@
 //! Speech-to-text providers for the voice pipeline.
 //!
-//! Accepts raw 16-bit PCM at 16 kHz mono and returns a transcription string.
+//! Accepts raw 16-bit PCM at 16 kHz mono and returns a transcription.
 //! Uses batch REST APIs — audio is fully buffered before transcription (Smart
 //! Turn handles end-of-utterance detection upstream).
 //!
@@ -17,22 +17,43 @@ use tracing::{debug, warn};
 
 const STT_TIMEOUT_SECS: u64 = 30;
 
+// ── Public types ─────────────────────────────────────────────────────────────
+
+/// A segment of speech attributed to a single speaker.
+pub struct DiarizedSegment {
+    /// Zero-based speaker index from the STT provider.
+    /// Speaker 0 maps to the primary speaker identified via the Hello handshake.
+    pub speaker_index: u32,
+    pub text: String,
+}
+
+/// Result of a transcription call.
+pub enum TranscriptResult {
+    /// Single-speaker or non-diarized transcript.
+    Plain(String),
+    /// Multi-speaker transcript broken into per-speaker segments.
+    Diarized(Vec<DiarizedSegment>),
+}
+
 // ── Public interface ─────────────────────────────────────────────────────────
 
 /// Transcribe raw 16-bit PCM (16 kHz mono) to text.
-///
-/// Returns the transcription string, or an error if the provider call fails.
 pub async fn transcribe(
     pcm: &[i16],
     config: &VoiceSttConfig,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<TranscriptResult, Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::builder()
         .timeout(Duration::from_secs(STT_TIMEOUT_SECS))
         .build()?;
 
     match config.provider {
         VoiceSttProvider::Deepgram => transcribe_deepgram(pcm, config, &client).await,
-        VoiceSttProvider::OpenAi => transcribe_openai(pcm, config, &client).await,
+        VoiceSttProvider::OpenAi => {
+            if config.diarize {
+                warn!("Diarization is not supported by the OpenAI Whisper provider; ignoring");
+            }
+            transcribe_openai(pcm, config, &client).await
+        }
     }
 }
 
@@ -56,25 +77,36 @@ struct DeepgramChannel {
 #[derive(Deserialize)]
 struct DeepgramAlternative {
     transcript: String,
+    #[serde(default)]
+    words: Vec<DeepgramWord>,
+}
+
+#[derive(Deserialize)]
+struct DeepgramWord {
+    word: String,
+    #[serde(default)]
+    punctuated_word: Option<String>,
+    #[serde(default)]
+    speaker: Option<u32>,
 }
 
 async fn transcribe_deepgram(
     pcm: &[i16],
     config: &VoiceSttConfig,
     client: &Client,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<TranscriptResult, Box<dyn std::error::Error + Send + Sync>> {
     let wav = pcm_to_wav(pcm);
 
-    let model = config
-        .model
-        .as_deref()
-        .unwrap_or("nova-3");
+    let model = config.model.as_deref().unwrap_or("nova-3");
 
     let mut url = format!(
         "https://api.deepgram.com/v1/listen?model={model}&smart_format=true"
     );
     if let Some(ref lang) = config.language {
         url.push_str(&format!("&language={lang}"));
+    }
+    if config.diarize {
+        url.push_str("&diarize=true");
     }
 
     let resp = client
@@ -93,15 +125,44 @@ async fn transcribe_deepgram(
     }
 
     let data: DeepgramResponse = resp.json().await?;
-    let transcript = data
+    let alternative = data
         .results
         .and_then(|r| r.channels.into_iter().next())
-        .and_then(|c| c.alternatives.into_iter().next())
-        .map(|a| a.transcript)
-        .unwrap_or_default();
+        .and_then(|c| c.alternatives.into_iter().next());
 
-    debug!("Deepgram transcript: {:?}", transcript);
-    Ok(transcript)
+    let Some(alt) = alternative else {
+        return Ok(TranscriptResult::Plain(String::new()));
+    };
+
+    debug!("Deepgram transcript: {:?}", alt.transcript);
+
+    if config.diarize && !alt.words.is_empty() {
+        Ok(TranscriptResult::Diarized(build_diarized_segments(
+            alt.words,
+        )))
+    } else {
+        Ok(TranscriptResult::Plain(alt.transcript))
+    }
+}
+
+fn build_diarized_segments(words: Vec<DeepgramWord>) -> Vec<DiarizedSegment> {
+    let mut segments: Vec<DiarizedSegment> = Vec::new();
+    for word in words {
+        let speaker = word.speaker.unwrap_or(0);
+        let text = word.punctuated_word.unwrap_or(word.word);
+        if let Some(last) = segments.last_mut() {
+            if last.speaker_index == speaker {
+                last.text.push(' ');
+                last.text.push_str(&text);
+                continue;
+            }
+        }
+        segments.push(DiarizedSegment {
+            speaker_index: speaker,
+            text,
+        });
+    }
+    segments
 }
 
 // ── OpenAI Whisper ────────────────────────────────────────────────────────────
@@ -115,7 +176,7 @@ async fn transcribe_openai(
     pcm: &[i16],
     config: &VoiceSttConfig,
     client: &Client,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<TranscriptResult, Box<dyn std::error::Error + Send + Sync>> {
     let wav = pcm_to_wav(pcm);
 
     let model = config
@@ -124,7 +185,6 @@ async fn transcribe_openai(
         .unwrap_or("whisper-1")
         .to_string();
 
-    // multipart/form-data
     let file_part = reqwest::multipart::Part::bytes(wav)
         .file_name("audio.wav")
         .mime_str("audio/wav")?;
@@ -153,7 +213,7 @@ async fn transcribe_openai(
 
     let data: OpenAiTranscriptionResponse = resp.json().await?;
     debug!("OpenAI Whisper transcript: {:?}", data.text);
-    Ok(data.text)
+    Ok(TranscriptResult::Plain(data.text))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -170,6 +230,7 @@ mod tests {
             api_key: "test-key".to_string(),
             language: Some("en".to_string()),
             model: None,
+            diarize: false,
         };
         assert_eq!(cfg.provider, VoiceSttProvider::Deepgram);
         assert_eq!(cfg.language.as_deref(), Some("en"));
@@ -182,8 +243,24 @@ mod tests {
             api_key: "sk-test".to_string(),
             language: None,
             model: Some("whisper-1".to_string()),
+            diarize: false,
         };
         assert_eq!(cfg.provider, VoiceSttProvider::OpenAi);
         assert_eq!(cfg.model.as_deref(), Some("whisper-1"));
+    }
+
+    #[test]
+    fn test_build_diarized_segments_groups_consecutive() {
+        let words = vec![
+            DeepgramWord { word: "hello".to_string(), punctuated_word: Some("Hello".to_string()), speaker: Some(0) },
+            DeepgramWord { word: "there".to_string(), punctuated_word: Some("there".to_string()), speaker: Some(0) },
+            DeepgramWord { word: "hi".to_string(), punctuated_word: Some("Hi".to_string()), speaker: Some(1) },
+        ];
+        let segments = build_diarized_segments(words);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].speaker_index, 0);
+        assert_eq!(segments[0].text, "Hello there");
+        assert_eq!(segments[1].speaker_index, 1);
+        assert_eq!(segments[1].text, "Hi");
     }
 }

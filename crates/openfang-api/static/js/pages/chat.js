@@ -1263,6 +1263,12 @@ function chatPage() {
       }
 
       this._voiceWs.onopen = function() {
+        // Announce identity before streaming PCM
+        var speakerName = (self.$store && self.$store.app && self.$store.app.sessionUser)
+          ? self.$store.app.sessionUser
+          : 'User';
+        self._voiceWs.send(JSON.stringify({ type: 'hello', speaker: speakerName }));
+
         self.voiceMode = true;
         self.voiceStatus = 'listening';
         self._startMicCapture();
