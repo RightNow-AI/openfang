@@ -524,7 +524,9 @@ async fn handle_voice_session(socket: WebSocket, state: AppState) {
 
     // Peek at the first frame to decide mode.
     // Binary frame → PCM mode (if pipeline configured).
-    // Text frame → text mode (existing protocol).
+    // Hello text frame → may still become PCM mode: read the next frame to decide,
+    //   passing the Hello through so PCM mode can process it for speaker identity.
+    // Other text frame → text mode (existing protocol).
     let first_frame = match ws_rx.next().await {
         Some(Ok(f)) => f,
         _ => {
@@ -534,12 +536,55 @@ async fn handle_voice_session(socket: WebSocket, state: AppState) {
         }
     };
 
-    let is_pcm = matches!(first_frame, Message::Binary(_));
+    // If the first frame is a Hello text frame and we have a pipeline, read one
+    // more frame to determine whether the client intends PCM mode (binary) or
+    // text mode. The speaker name from Hello is extracted here and passed
+    // directly to handle_pcm_session so it isn't lost.
+    let mut pre_hello_speaker: Option<String> = None;
+    let (first_frame, is_pcm) = if let Message::Text(ref t) = first_frame {
+        if let Ok(ClientMessage::Hello { ref speaker }) = serde_json::from_str::<ClientMessage>(t) {
+            pre_hello_speaker = Some(speaker.clone());
+            if state.pipeline.is_some() {
+                // Read the follow-up frame to see if it's binary PCM
+                match ws_rx.next().await {
+                    Some(Ok(second)) if matches!(second, Message::Binary(_)) => {
+                        (second, true)
+                    }
+                    Some(Ok(second)) => {
+                        // Text mode: Hello then a text frame — stay in text mode,
+                        // handle Hello in the text loop below
+                        (second, false)
+                    }
+                    _ => {
+                        let mut sessions = state.sessions.write().await;
+                        sessions.remove(&session_id);
+                        return;
+                    }
+                }
+            } else {
+                (first_frame, false)
+            }
+        } else {
+            (first_frame, false)
+        }
+    } else {
+        let is_pcm = matches!(first_frame, Message::Binary(_));
+        (first_frame, is_pcm)
+    };
 
     if is_pcm {
         if let Some(pipeline) = state.pipeline.clone() {
             info!("Voice session {session_id}: PCM mode");
-            handle_pcm_session(first_frame, ws_tx, ws_rx, state, session_id, pipeline).await;
+            handle_pcm_session(
+                first_frame,
+                ws_tx,
+                ws_rx,
+                state,
+                session_id,
+                pipeline,
+                pre_hello_speaker,
+            )
+            .await;
         } else {
             warn!(
                 "Voice session {session_id}: received binary frame but no pipeline configured — \
@@ -786,6 +831,7 @@ async fn handle_pcm_session(
     state: AppState,
     session_id: String,
     pipeline: Arc<VoicePipeline>,
+    pre_hello_speaker: Option<String>,
 ) {
     // Send listening status
     let _ = ws_tx
@@ -794,12 +840,26 @@ async fn handle_pcm_session(
         ))
         .await;
 
+    let initial_name = pre_hello_speaker
+        .clone()
+        .unwrap_or_else(|| "Caller".to_string());
     let mut sender = ChannelUser {
         platform_id: session_id.clone(),
-        display_name: "Caller".to_string(),
+        display_name: initial_name.clone(),
         openfang_user: None,
     };
-    let mut primary_speaker: Option<String> = None;
+    let mut primary_speaker: Option<String> = pre_hello_speaker.clone();
+    if let Some(ref speaker) = pre_hello_speaker {
+        info!("Voice session {session_id}: speaker identified as {speaker:?}");
+        // Send Config frame now that we know the speaker
+        let config_msg = serde_json::json!({
+            "type": "config",
+            "barge_in_threshold": pipeline.barge_in_threshold,
+            "barge_in_speaking_threshold": pipeline.barge_in_speaking_threshold,
+        })
+        .to_string();
+        let _ = ws_tx.send(Message::Text(config_msg.into())).await;
+    }
 
     // Channel for agent text responses back to this PCM session.
     // Registered in pcm_sessions so VoiceAdapter::send() routes here → TTS.
