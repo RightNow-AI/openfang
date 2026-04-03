@@ -1305,7 +1305,13 @@ function chatPage() {
     _startMicCapture: async function() {
       var self = this;
       try {
-        this._voiceStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
+        // sampleRate constraint is advisory on most browsers; AudioContext handles resampling
+        try {
+          this._voiceStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
+        } catch(e1) {
+          // Some browsers reject the sampleRate constraint — retry without it
+          this._voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
         this._voiceContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
 
         // Use AudioWorklet if available for low-latency PCM capture, else ScriptProcessor fallback
@@ -1356,7 +1362,9 @@ function chatPage() {
 
         this.voiceLive = true;
       } catch(e) {
-        if (typeof OpenFangToast !== 'undefined') OpenFangToast.error('Microphone access denied');
+        var msg = (e && e.name) ? e.name + ': ' + (e.message || '') : String(e);
+        if (typeof OpenFangToast !== 'undefined') OpenFangToast.error('Voice mic error: ' + msg);
+        console.error('Voice mic error', e);
         this._cleanupVoiceMode();
       }
     },

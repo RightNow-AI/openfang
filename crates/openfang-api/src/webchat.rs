@@ -109,6 +109,10 @@ pub async fn webchat_page() -> impl IntoResponse {
                 csp,
             ),
             (header::CACHE_CONTROL, "no-store".to_string()),
+            (
+                header::HeaderName::from_static("permissions-policy"),
+                "microphone=*, camera=()".to_string(),
+            ),
         ],
         html,
     )
