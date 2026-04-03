@@ -56,27 +56,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           VERSION="${VERSION#v}"
-          node - <<'JS'
-          const fs = require('fs');
-          const version = process.env.VERSION;
-          if (!version) throw new Error('VERSION is required');
-
-          const cargoPath = 'Cargo.toml';
-          const cargo = fs.readFileSync(cargoPath, 'utf8');
-          const updatedCargo = cargo.replace(
-            /(\[workspace\.package\][\s\S]*?^version\s*=\s*")[^"]+("\s*$)/m,
-            `$1${version}$2`,
-          );
-          if (updatedCargo === cargo) {
-            throw new Error('failed to stamp workspace.package version in Cargo.toml');
-          }
-          fs.writeFileSync(cargoPath, updatedCargo);
-
-          const tauriPath = 'crates/openfang-desktop/tauri.conf.json';
-          const tauri = JSON.parse(fs.readFileSync(tauriPath, 'utf8'));
-          tauri.version = version;
-          fs.writeFileSync(tauriPath, `${JSON.stringify(tauri, null, 2)}\n`);
-          JS
+          node scripts/stamp-release-version.mjs
 
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
@@ -196,22 +176,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           VERSION="${VERSION#v}"
-          node - <<'JS'
-          const fs = require('fs');
-          const version = process.env.VERSION;
-          if (!version) throw new Error('VERSION is required');
-
-          const cargoPath = 'Cargo.toml';
-          const cargo = fs.readFileSync(cargoPath, 'utf8');
-          const updatedCargo = cargo.replace(
-            /(\[workspace\.package\][\s\S]*?^version\s*=\s*")[^"]+("\s*$)/m,
-            `$1${version}$2`,
-          );
-          if (updatedCargo === cargo) {
-            throw new Error('failed to stamp workspace.package version in Cargo.toml');
-          }
-          fs.writeFileSync(cargoPath, updatedCargo);
-          JS
+          node scripts/stamp-release-version.mjs
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -268,22 +233,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           VERSION="${VERSION#v}"
-          node - <<'JS'
-          const fs = require('fs');
-          const version = process.env.VERSION;
-          if (!version) throw new Error('VERSION is required');
-
-          const cargoPath = 'Cargo.toml';
-          const cargo = fs.readFileSync(cargoPath, 'utf8');
-          const updatedCargo = cargo.replace(
-            /(\[workspace\.package\][\s\S]*?^version\s*=\s*")[^"]+("\s*$)/m,
-            `$1${version}$2`,
-          );
-          if (updatedCargo === cargo) {
-            throw new Error('failed to stamp workspace.package version in Cargo.toml');
-          }
-          fs.writeFileSync(cargoPath, updatedCargo);
-          JS
+          node scripts/stamp-release-version.mjs
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
