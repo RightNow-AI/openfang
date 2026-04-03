@@ -253,6 +253,8 @@ struct OaiResponseMessage {
     tool_calls: Option<Vec<OaiToolCall>>,
     /// Reasoning/thinking content returned by some models (DeepSeek-R1, Qwen3, etc.)
     /// via LM Studio, Ollama, and other local inference servers.
+    /// Ollama uses "reasoning" for Gemma 4; others use "reasoning_content".
+    #[serde(alias = "reasoning")]
     reasoning_content: Option<String>,
 }
 
