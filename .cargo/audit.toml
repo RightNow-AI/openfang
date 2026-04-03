@@ -31,4 +31,5 @@ ignore = [
     "RUSTSEC-2025-0100",  # gio-sys unmaintained
     "RUSTSEC-2026-0002",  # serde_cbor unmaintained
     "RUSTSEC-2023-0086",  # lexopt unmaintained (if present)
+    "RUSTSEC-2026-0049",  # rustls-webpki CRL matching — rumqttc 0.25.1 depends on vulnerable version, awaiting upstream fix
 ]
