@@ -756,7 +756,7 @@
                 <div class="voice-status-bar" x-show="voiceMode" x-transition style="display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:6px;background:var(--bg-secondary);font-size:12px">
                   <span class="voice-status-dot" :class="'voice-dot-' + voiceStatus"></span>
                   <span x-text="voiceStatus === 'listening' ? '● Listening' : voiceStatus === 'thinking' ? '⟳ Thinking...' : voiceStatus === 'speaking' ? '♪ Speaking' : '○ Idle'"></span>
-                  <span x-show="voiceTranscript" class="text-muted" x-text="'\"' + voiceTranscript.slice(0, 40) + (voiceTranscript.length > 40 ? '…' : '') + '\"'" style="max-width:200px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis"></span>
+                  <span x-show="voiceTranscript" class="text-muted" x-text="'&quot;' + voiceTranscript.slice(0, 40) + (voiceTranscript.length > 40 ? '…' : '') + '&quot;'" style="max-width:200px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis"></span>
                 </div>
                 <!-- Dictation mic — hold to transcribe speech into the text box -->
                 <button class="btn btn-ghost btn-sm" x-show="!voiceMode" :class="{ 'btn-recording': recording }" @mousedown="startRecording()" @mouseup="stopRecording()" @mouseleave="if(recording) stopRecording()" title="Hold to dictate (transcribes speech into text box)" style="padding:6px 8px;flex-shrink:0">
@@ -5073,4 +5073,4 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
 <!-- Toast notification container -->
 <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
-<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){});}</script>
+<script nonce="__NONCE__">if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){});}</script>
