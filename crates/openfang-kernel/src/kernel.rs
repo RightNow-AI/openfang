@@ -790,6 +790,13 @@ impl OpenFangKernel {
             info!("Loaded {hand_count} bundled hand(s)");
         }
 
+        // Load user-defined hands from $OPENFANG_HOME/hands/
+        let hands_dir = config.home_dir.join("hands");
+        let custom_hand_count = hand_registry.load_from_directory(&hands_dir);
+        if custom_hand_count > 0 {
+            info!("Loaded {custom_hand_count} custom hand(s) from hands directory");
+        }
+
         // Initialize extension/integration registry
         let mut extension_registry =
             openfang_extensions::registry::IntegrationRegistry::new(&config.home_dir);

@@ -105,6 +105,69 @@ impl HandRegistry {
             .collect()
     }
 
+    /// Load hand definitions from a directory at runtime.
+    ///
+    /// Supports two layouts:
+    /// - `hands/*.toml`      — flat TOML file per hand (no SKILL.md)
+    /// - `hands/*/HAND.toml` — subdirectory with HAND.toml and optional SKILL.md
+    ///
+    /// Returns the count of hand definitions loaded.
+    pub fn load_from_directory(&self, dir: &std::path::Path) -> usize {
+        if !dir.exists() {
+            return 0;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(path = %dir.display(), error = %e, "Failed to read hands directory");
+                return 0;
+            }
+        };
+        let mut count = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let (toml_content, skill_content) = if path.is_file() {
+                if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                    continue;
+                }
+                let toml = match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!(path = %path.display(), error = %e, "Failed to read hand TOML");
+                        continue;
+                    }
+                };
+                (toml, String::new())
+            } else if path.is_dir() {
+                let toml_path = path.join("HAND.toml");
+                if !toml_path.exists() {
+                    continue;
+                }
+                let toml = match std::fs::read_to_string(&toml_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!(path = %toml_path.display(), error = %e, "Failed to read hand TOML");
+                        continue;
+                    }
+                };
+                let skill = std::fs::read_to_string(path.join("SKILL.md")).unwrap_or_default();
+                (toml, skill)
+            } else {
+                continue;
+            };
+            match self.upsert_from_content(&toml_content, &skill_content) {
+                Ok(def) => {
+                    info!(hand = %def.id, name = %def.name, "Loaded hand from directory");
+                    count += 1;
+                }
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e, "Failed to parse hand from directory");
+                }
+            }
+        }
+        count
+    }
+
     /// Load all bundled hand definitions. Returns count of definitions loaded.
     pub fn load_bundled(&self) -> usize {
         let bundled = bundled::bundled_hands();
