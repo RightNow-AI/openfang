@@ -878,6 +878,12 @@ async fn handle_pcm_session(
     // Context injected into the next utterance after a barge-in.
     let mut pending_barge_in_context: Option<String> = None;
 
+    // Multi-utterance interrupt buffering:
+    // If the user speaks again before the agent has responded, we buffer the new input
+    // and discard the stale response when it arrives, then restart with all pending inputs.
+    let mut waiting_for_response = false;
+    let mut pending_inputs: Vec<String> = Vec::new(); // final_text for buffered utterances
+
     // Spawn agent response handler: collects text from bridge, synthesizes TTS.
     // Checks cancel_rx before and after synthesis to skip output during barge-in.
     let pipeline_for_tts = pipeline.clone();
@@ -974,6 +980,9 @@ async fn handle_pcm_session(
                                 cancel_tx.send(true).ok();
                                 // Drain any already-queued PCM frames
                                 while pcm_out_rx.try_recv().is_ok() {}
+                                // Discard buffered inputs — user is starting fresh
+                                pending_inputs.clear();
+                                waiting_for_response = false;
                                 // Build context from what was spoken
                                 let spoken_ctx = {
                                     let s = spoken_sentences.lock().await;
@@ -1031,19 +1040,23 @@ async fn handle_pcm_session(
                             };
 
                             if complete {
-                                dispatch_pcm_utterance(
+                                if let Some((_disp, final_text)) = transcribe_utterance(
                                     &audio_buf,
                                     &pipeline,
-                                    &state,
-                                    &sender,
                                     &primary_speaker,
                                     &mut pending_barge_in_context,
-                                    &cancel_tx,
                                     &session_id,
-                                    &agent_tx,
                                     &mut ws_tx,
                                 )
-                                .await;
+                                .await
+                                {
+                                    if waiting_for_response {
+                                        pending_inputs.push(final_text);
+                                    } else {
+                                        send_utterance_to_agent(final_text, &state, &sender, &cancel_tx, &session_id).await;
+                                        waiting_for_response = true;
+                                    }
+                                }
                                 audio_buf.clear();
                             }
                         }
@@ -1061,19 +1074,23 @@ async fn handle_pcm_session(
             // iterations without resetting — unlike sleep(duration) which would reset
             // on every incoming audio frame and never fire.
             _ = tokio::time::sleep_until(silence_fire_at), if pipeline.smart_turn.is_none() && !audio_buf.is_empty() && audio_buf.len() >= min_samples => {
-                dispatch_pcm_utterance(
+                if let Some((_disp, final_text)) = transcribe_utterance(
                     &audio_buf,
                     &pipeline,
-                    &state,
-                    &sender,
                     &primary_speaker,
                     &mut pending_barge_in_context,
-                    &cancel_tx,
                     &session_id,
-                    &agent_tx,
                     &mut ws_tx,
                 )
-                .await;
+                .await
+                {
+                    if waiting_for_response {
+                        pending_inputs.push(final_text);
+                    } else {
+                        send_utterance_to_agent(final_text, &state, &sender, &cancel_tx, &session_id).await;
+                        waiting_for_response = true;
+                    }
+                }
                 audio_buf.clear();
                 // Reset to far future — wait for new speech before next dispatch
                 speech_ever_detected = false;
@@ -1082,22 +1099,33 @@ async fn handle_pcm_session(
 
             // Outgoing TTS audio to client
             Some((pcm, response_text)) = pcm_out_rx.recv() => {
-                // Send the agent's text so it appears in the chat transcript
-                let resp_msg = serde_json::json!({
-                    "type": "response",
-                    "text": response_text,
-                    "sentence_end": true,
-                }).to_string();
-                let _ = ws_tx.send(Message::Text(resp_msg.into())).await;
-                let bytes = i16_to_bytes(&pcm);
-                if ws_tx.send(Message::Binary(bytes.into())).await.is_err() {
-                    break;
+                if !pending_inputs.is_empty() {
+                    // User spoke while agent was thinking — discard this stale response
+                    // and restart with all accumulated inputs combined into one request.
+                    cancel_tx.send(true).ok();
+                    while pcm_out_rx.try_recv().is_ok() {}
+                    let n = pending_inputs.len();
+                    let combined = pending_inputs.drain(..).collect::<Vec<_>>().join("\n");
+                    info!("PCM session {session_id}: discarding stale response, replaying {n} buffered input(s)");
+                    send_utterance_to_agent(combined, &state, &sender, &cancel_tx, &session_id).await;
+                    // waiting_for_response stays true
+                } else {
+                    // Normal path: send response text and PCM audio to client
+                    waiting_for_response = false;
+                    let resp_msg = serde_json::json!({
+                        "type": "response",
+                        "text": response_text,
+                        "sentence_end": true,
+                    }).to_string();
+                    let _ = ws_tx.send(Message::Text(resp_msg.into())).await;
+                    let bytes = i16_to_bytes(&pcm);
+                    if ws_tx.send(Message::Binary(bytes.into())).await.is_err() {
+                        break;
+                    }
+                    let _ = ws_tx
+                        .send(Message::Text(r#"{"type":"status","state":"listening"}"#.into()))
+                        .await;
                 }
-                let _ = ws_tx
-                    .send(Message::Text(
-                        r#"{"type":"status","state":"listening"}"#.into(),
-                    ))
-                    .await;
             }
         }
     }
@@ -1110,30 +1138,22 @@ async fn handle_pcm_session(
     info!("PCM session cleaned up: {session_id}");
 }
 
-/// Transcribe the accumulated PCM buffer, send to agent, pipe response to TTS.
-async fn dispatch_pcm_utterance(
+/// Transcribe PCM audio and send transcript to the client.
+/// Returns `Some((display_text, final_text))` on success, `None` if empty or error.
+/// `display_text` is the clean user-visible text; `final_text` has speaker prefix + barge-in context.
+async fn transcribe_utterance(
     audio_buf: &[i16],
     pipeline: &VoicePipeline,
-    state: &AppState,
-    sender: &ChannelUser,
     primary_speaker: &Option<String>,
     pending_barge_in_context: &mut Option<String>,
-    cancel_tx: &watch::Sender<bool>,
     session_id: &str,
-    agent_tx: &mpsc::Sender<String>,
     ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
-) {
-    // Reset barge-in cancel so TTS processes the upcoming response normally
-    cancel_tx.send(false).ok();
-
-    // Send "thinking" status
+) -> Option<(String, String)> {
+    // Send "thinking" status immediately so the user knows we heard them
     let _ = ws_tx
-        .send(Message::Text(
-            r#"{"type":"status","state":"thinking"}"#.into(),
-        ))
+        .send(Message::Text(r#"{"type":"status","state":"thinking"}"#.into()))
         .await;
 
-    // Transcribe
     // display_text: clean STT output for showing in the chat UI (no agent context)
     // final_text: full text sent to the agent (with speaker prefix, barge-in context)
     let (display_text, final_text) = match stt::transcribe(audio_buf, &pipeline.stt).await {
@@ -1160,7 +1180,6 @@ async fn dispatch_pcm_utterance(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            // For diarized, display_text is the raw segments joined without tags
             let clean = segments
                 .iter()
                 .map(|seg| seg.text.trim().to_string())
@@ -1171,22 +1190,18 @@ async fn dispatch_pcm_utterance(
         Ok(_) => {
             // Empty transcript — resume listening
             let _ = ws_tx
-                .send(Message::Text(
-                    r#"{"type":"status","state":"listening"}"#.into(),
-                ))
+                .send(Message::Text(r#"{"type":"status","state":"listening"}"#.into()))
                 .await;
-            return;
+            return None;
         }
         Err(e) => {
             warn!("STT error for PCM session {session_id}: {e}");
             let msg = serde_json::json!({"type":"error","message": e.to_string()}).to_string();
             let _ = ws_tx.send(Message::Text(msg.into())).await;
             let _ = ws_tx
-                .send(Message::Text(
-                    r#"{"type":"status","state":"listening"}"#.into(),
-                ))
+                .send(Message::Text(r#"{"type":"status","state":"listening"}"#.into()))
                 .await;
-            return;
+            return None;
         }
     };
 
@@ -1199,8 +1214,23 @@ async fn dispatch_pcm_utterance(
 
     // Send transcript to client: display_text for the chat UI, text for the agent
     let transcript_msg =
-        serde_json::json!({"type": "transcribed", "text": final_text, "display_text": display_text}).to_string();
+        serde_json::json!({"type": "transcribed", "text": final_text, "display_text": display_text})
+            .to_string();
     let _ = ws_tx.send(Message::Text(transcript_msg.into())).await;
+
+    Some((display_text, final_text))
+}
+
+/// Send a transcribed utterance to the agent bridge.
+async fn send_utterance_to_agent(
+    final_text: String,
+    state: &AppState,
+    sender: &ChannelUser,
+    cancel_tx: &watch::Sender<bool>,
+    session_id: &str,
+) {
+    // Reset barge-in cancel so TTS processes the upcoming response normally
+    cancel_tx.send(false).ok();
 
     let mut metadata = HashMap::new();
     metadata.insert(
