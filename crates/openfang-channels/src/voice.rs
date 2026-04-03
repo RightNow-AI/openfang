@@ -882,7 +882,7 @@ async fn handle_pcm_session(
     // Checks cancel_rx before and after synthesis to skip output during barge-in.
     let pipeline_for_tts = pipeline.clone();
     let sid_for_tts = session_id.clone();
-    let (pcm_out_tx, mut pcm_out_rx) = mpsc::channel::<Vec<i16>>(8);
+    let (pcm_out_tx, mut pcm_out_rx) = mpsc::channel::<(Vec<i16>, String)>(8);
     tokio::spawn(async move {
         while let Some(text) = agent_rx.recv().await {
             if text.trim() == "[SILENT]" {
@@ -909,7 +909,7 @@ async fn handle_pcm_session(
                             spoken.remove(0);
                         }
                     }
-                    if pcm_out_tx.send(pcm).await.is_err() {
+                    if pcm_out_tx.send((pcm, text.clone())).await.is_err() {
                         break;
                     }
                 }
@@ -927,8 +927,11 @@ async fn handle_pcm_session(
     let smart_turn_interval = tokio::time::Duration::from_millis(SMART_TURN_INTERVAL_MS);
     let silence_timeout = tokio::time::Duration::from_millis(SILENCE_TIMEOUT_MS);
     // Silence fallback: absolute deadline, pushed forward on each speech chunk.
-    // Using sleep_until(absolute) avoids the reset-on-each-frame bug of sleep(duration).
-    let mut silence_fire_at = tokio::time::Instant::now() + silence_timeout;
+    // Initialized far in the future so it only fires after actual speech is detected —
+    // prevents dispatching silence/noise during the opening seconds of a session.
+    let far_future = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3600);
+    let mut silence_fire_at = far_future;
+    let mut speech_ever_detected = false;
 
     // Process the first binary frame immediately
     if let Message::Binary(bytes) = first_frame {
@@ -937,6 +940,7 @@ async fn handle_pcm_session(
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
         if rms_i16(&samples) > SILENCE_SPEECH_THRESHOLD {
+            speech_ever_detected = true;
             silence_fire_at = tokio::time::Instant::now() + silence_timeout;
         }
         audio_buf.extend_from_slice(&samples);
@@ -1007,6 +1011,7 @@ async fn handle_pcm_session(
                         if pipeline.smart_turn.is_none()
                             && rms_i16(&samples) > SILENCE_SPEECH_THRESHOLD
                         {
+                            speech_ever_detected = true;
                             silence_fire_at = tokio::time::Instant::now() + silence_timeout;
                         }
                         audio_buf.extend_from_slice(&samples);
@@ -1070,12 +1075,20 @@ async fn handle_pcm_session(
                 )
                 .await;
                 audio_buf.clear();
-                // Push deadline into the future so we don't immediately re-fire
-                silence_fire_at = tokio::time::Instant::now() + silence_timeout;
+                // Reset to far future — wait for new speech before next dispatch
+                speech_ever_detected = false;
+                silence_fire_at = far_future;
             }
 
             // Outgoing TTS audio to client
-            Some(pcm) = pcm_out_rx.recv() => {
+            Some((pcm, response_text)) = pcm_out_rx.recv() => {
+                // Send the agent's text so it appears in the chat transcript
+                let resp_msg = serde_json::json!({
+                    "type": "response",
+                    "text": response_text,
+                    "sentence_end": true,
+                }).to_string();
+                let _ = ws_tx.send(Message::Text(resp_msg.into())).await;
                 let bytes = i16_to_bytes(&pcm);
                 if ws_tx.send(Message::Binary(bytes.into())).await.is_err() {
                     break;

@@ -1250,6 +1250,10 @@ function chatPage() {
 
     _startVoiceMode: async function() {
       var self = this;
+      // Guard: don't open a second session if one is already active
+      if (this._voiceWs && (this._voiceWs.readyState === WebSocket.OPEN || this._voiceWs.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
       // Voice WebSocket is served on the same port as the API (via /voice on
       // the main Axum router) so it works through any reverse proxy without
       // extra configuration.  The legacy separate-port path is still available
@@ -1294,6 +1298,19 @@ function chatPage() {
               // Show in chat as user message
               self.messages.push({ id: ++msgId, role: 'user', text: msg.text, ts: Date.now(), tools: [] });
               self.scrollToBottom();
+            } else if (msg.type === 'response') {
+              // Agent response text from PCM pipeline — add to chat transcript
+              if (msg.text && msg.text.trim()) {
+                var lastMsg = self.messages[self.messages.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant' && lastMsg._voice) {
+                  // Append to the current assistant voice turn
+                  lastMsg.text += ' ' + msg.text;
+                  self.messages.splice(self.messages.length - 1, 1, lastMsg);
+                } else {
+                  self.messages.push({ id: ++msgId, role: 'assistant', text: msg.text, ts: Date.now(), tools: [], _voice: true });
+                }
+                self.scrollToBottom();
+              }
             } else if (msg.type === 'config') {
               if (msg.barge_in_speaking_threshold != null) {
                 self._bargeInSpeakingThreshold = msg.barge_in_speaking_threshold;

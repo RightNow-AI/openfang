@@ -1,0 +1,33 @@
+# Fast dev image: binary built on host, just packaged here.
+# Usage:
+#   cargo build --release --bin openfang   # ~10s incremental
+#   docker build -t openfang-gw:latest -f Dockerfile.dev .
+#   docker compose up -d openfang
+#
+# First host build: ~3 min (same as Docker). Subsequent: ~10s.
+# Requires the host target triple to match the container (linux/amd64).
+
+FROM rust:1-slim-bookworm
+
+# ONNX Runtime for Smart Turn
+ARG ORT_VERSION=1.20.1
+ADD https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz /tmp/ort.tgz
+RUN tar -xzf /tmp/ort.tgz -C /tmp && \
+    cp /tmp/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION} /usr/lib/ && \
+    ln -s /usr/lib/libonnxruntime.so.${ORT_VERSION} /usr/lib/libonnxruntime.so && \
+    ldconfig && \
+    rm -rf /tmp/ort.tgz /tmp/onnxruntime-linux-x64-${ORT_VERSION}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates python3 python3-pip python3-venv nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy pre-built binary from host
+COPY target/release/openfang /usr/local/bin/
+COPY agents /opt/openfang/agents
+
+EXPOSE 4200
+VOLUME /data
+ENV OPENFANG_HOME=/data
+ENTRYPOINT ["openfang"]
+CMD ["start"]
