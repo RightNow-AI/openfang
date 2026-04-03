@@ -1100,12 +1100,18 @@ async fn handle_pcm_session(
             // Outgoing TTS audio to client
             Some((pcm, response_text)) = pcm_out_rx.recv() => {
                 if !pending_inputs.is_empty() {
-                    // User spoke while agent was thinking — discard this stale response
-                    // and restart with all accumulated inputs combined into one request.
+                    // User spoke while agent was thinking — discard this stale response.
+                    // Inject the discarded response as context so the model knows it answered
+                    // but the user never heard it (see RightNow-AI/openfang#974 for proper fix).
                     cancel_tx.send(true).ok();
                     while pcm_out_rx.try_recv().is_ok() {}
                     let n = pending_inputs.len();
-                    let combined = pending_inputs.drain(..).collect::<Vec<_>>().join("\n");
+                    let stale_ctx = if response_text.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("[You had responded: \"{}\" but the user spoke again before hearing it]\n\n", response_text.trim())
+                    };
+                    let combined = format!("{stale_ctx}{}", pending_inputs.drain(..).collect::<Vec<_>>().join("\n"));
                     info!("PCM session {session_id}: discarding stale response, replaying {n} buffered input(s)");
                     send_utterance_to_agent(combined, &state, &sender, &cancel_tx, &session_id).await;
                     // waiting_for_response stays true
