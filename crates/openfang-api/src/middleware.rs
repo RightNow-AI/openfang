@@ -250,10 +250,12 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Bo
         "referrer-policy",
         "strict-origin-when-cross-origin".parse().unwrap(),
     );
-    headers.insert(
-        "cache-control",
-        "no-store, no-cache, must-revalidate".parse().unwrap(),
-    );
+    if !headers.contains_key("cache-control") {
+        headers.insert(
+            "cache-control",
+            "no-store, no-cache, must-revalidate".parse().unwrap(),
+        );
+    }
     headers.insert(
         "strict-transport-security",
         "max-age=63072000; includeSubDomains".parse().unwrap(),
