@@ -243,7 +243,6 @@ pub trait ChannelBridgeHandle: Send + Sync {
         None
     }
 
-
     /// Check if auto-reply is enabled and the message should trigger one.
     /// Returns Some(reply_text) if auto-reply fires, None otherwise.
     async fn check_auto_reply(&self, _agent_id: AgentId, _message: &str) -> Option<String> {
@@ -980,7 +979,6 @@ async fn dispatch_message(
     } else {
         prefixed_text
     };
-
 
     // Send to agent and relay response
     let result = handle.send_message(agent_id, &prefixed_text).await;

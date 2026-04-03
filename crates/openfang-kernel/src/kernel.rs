@@ -987,12 +987,12 @@ impl OpenFangKernel {
                 // Auto-detect embedding provider by checking API key env vars in
                 // priority order.  First match wins.
                 const API_KEY_PROVIDERS: &[(&str, &str)] = &[
-                    ("OPENAI_API_KEY",    "openai"),
-                    ("GROQ_API_KEY",      "groq"),
-                    ("MISTRAL_API_KEY",   "mistral"),
-                    ("TOGETHER_API_KEY",  "together"),
+                    ("OPENAI_API_KEY", "openai"),
+                    ("GROQ_API_KEY", "groq"),
+                    ("MISTRAL_API_KEY", "mistral"),
+                    ("TOGETHER_API_KEY", "together"),
                     ("FIREWORKS_API_KEY", "fireworks"),
-                    ("COHERE_API_KEY",    "cohere"),
+                    ("COHERE_API_KEY", "cohere"),
                 ];
 
                 let detected_from_key = API_KEY_PROVIDERS
@@ -1236,8 +1236,7 @@ impl OpenFangKernel {
                                                 != entry.manifest.tool_allowlist
                                             || disk_manifest.tool_blocklist
                                                 != entry.manifest.tool_blocklist
-                                            || disk_manifest.skills
-                                                != entry.manifest.skills
+                                            || disk_manifest.skills != entry.manifest.skills
                                             || disk_manifest.mcp_servers
                                                 != entry.manifest.mcp_servers;
                                         if changed {
@@ -1781,9 +1780,11 @@ impl OpenFangKernel {
                                 .last_compaction_at
                                 .get(&agent_id)
                                 .map(|t| *t)
-                                .unwrap_or_else(|| now - chrono::Duration::seconds(
-                                    self.config.compaction.max_lookback_secs as i64,
-                                ));
+                                .unwrap_or_else(|| {
+                                    now - chrono::Duration::seconds(
+                                        self.config.compaction.max_lookback_secs as i64,
+                                    )
+                                });
                             self.last_compaction_at.insert(agent_id, now);
 
                             let self_clone = self.self_handle.get().and_then(|w| w.upgrade());
@@ -1805,10 +1806,16 @@ impl OpenFangKernel {
                                     }
 
                                     // Query context sources in parallel with proper time window
-                                    let parts = query_context_sources_parallel(&kernel, from_ts, now).await;
+                                    let parts =
+                                        query_context_sources_parallel(&kernel, from_ts, now).await;
                                     if !parts.is_empty() {
                                         let context_block = parts.join("\n\n");
-                                        inject_context_into_session(&kernel, agent_id, &context_block, now);
+                                        inject_context_into_session(
+                                            &kernel,
+                                            agent_id,
+                                            &context_block,
+                                            now,
+                                        );
                                     }
                                 });
                             }
@@ -2325,9 +2332,11 @@ impl OpenFangKernel {
                                     .last_compaction_at
                                     .get(&agent_id)
                                     .map(|t| *t)
-                                    .unwrap_or_else(|| now - chrono::Duration::seconds(
-                                        kernel_clone.config.compaction.max_lookback_secs as i64,
-                                    ));
+                                    .unwrap_or_else(|| {
+                                        now - chrono::Duration::seconds(
+                                            kernel_clone.config.compaction.max_lookback_secs as i64,
+                                        )
+                                    });
                                 kernel_clone.last_compaction_at.insert(agent_id, now);
 
                                 let kc = kernel_clone.clone();
@@ -2349,10 +2358,16 @@ impl OpenFangKernel {
 
                                     // Query context sources in parallel with proper time window,
                                     // then inject results directly into the session.
-                                    let parts = query_context_sources_parallel(&kc, from_ts, now).await;
+                                    let parts =
+                                        query_context_sources_parallel(&kc, from_ts, now).await;
                                     if !parts.is_empty() {
                                         let context_block = parts.join("\n\n");
-                                        inject_context_into_session(&kc, agent_id, &context_block, now);
+                                        inject_context_into_session(
+                                            &kc,
+                                            agent_id,
+                                            &context_block,
+                                            now,
+                                        );
                                     }
                                 });
                             }
