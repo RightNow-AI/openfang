@@ -90,7 +90,7 @@ pub async fn webchat_page() -> impl IntoResponse {
     let html = WEBCHAT_HTML.replace(NONCE_PLACEHOLDER, &nonce);
     let csp = format!(
         "default-src 'self'; \
-         script-src 'self' 'nonce-{nonce}' 'unsafe-eval'; \
+         script-src 'self' 'nonce-{nonce}' 'unsafe-eval' blob:; \
          style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; \
          img-src 'self' data: blob:; \
          connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*; \
