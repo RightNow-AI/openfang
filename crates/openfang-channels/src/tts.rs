@@ -88,7 +88,10 @@ async fn synthesize_cartesia(
 
     let resp = client
         .post("https://api.cartesia.ai/tts/bytes")
-        .header("X-API-Key", &config.api_key)
+        .header(
+            "X-API-Key",
+            std::env::var(&config.api_key_env).unwrap_or_default(),
+        )
         .header("Cartesia-Version", "2024-06-10")
         .json(&body)
         .send()
@@ -152,7 +155,10 @@ async fn synthesize_elevenlabs(
 
     let resp = client
         .post(&url)
-        .header("xi-api-key", &config.api_key)
+        .header(
+            "xi-api-key",
+            std::env::var(&config.api_key_env).unwrap_or_default(),
+        )
         .json(&body)
         .send()
         .await?;
@@ -199,7 +205,13 @@ async fn synthesize_openai(
 
     let resp = client
         .post("https://api.openai.com/v1/audio/speech")
-        .header("Authorization", format!("Bearer {}", config.api_key))
+        .header(
+            "Authorization",
+            format!(
+                "Bearer {}",
+                std::env::var(&config.api_key_env).unwrap_or_default()
+            ),
+        )
         .json(&body)
         .send()
         .await?;
@@ -341,7 +353,7 @@ mod tests {
     fn test_tts_config_cartesia() {
         let cfg = VoiceTtsConfig {
             provider: VoiceTtsProvider::Cartesia,
-            api_key: "test".to_string(),
+            api_key_env: "TTS_API_KEY".to_string(),
             voice_id: "voice-123".to_string(),
             model: Some("sonic-2".to_string()),
             speed: None,
@@ -354,7 +366,7 @@ mod tests {
     fn test_tts_config_elevenlabs() {
         let cfg = VoiceTtsConfig {
             provider: VoiceTtsProvider::ElevenLabs,
-            api_key: "test".to_string(),
+            api_key_env: "TTS_API_KEY".to_string(),
             voice_id: "el-voice".to_string(),
             model: None,
             speed: Some(1.2),

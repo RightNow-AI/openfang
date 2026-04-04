@@ -109,7 +109,13 @@ async fn transcribe_deepgram(
 
     let resp = client
         .post(&url)
-        .header("Authorization", format!("Token {}", config.api_key))
+        .header(
+            "Authorization",
+            format!(
+                "Token {}",
+                std::env::var(&config.api_key_env).unwrap_or_default()
+            ),
+        )
         .header("Content-Type", "audio/wav")
         .body(wav)
         .send()
@@ -193,7 +199,13 @@ async fn transcribe_openai(
 
     let resp = client
         .post("https://api.openai.com/v1/audio/transcriptions")
-        .header("Authorization", format!("Bearer {}", config.api_key))
+        .header(
+            "Authorization",
+            format!(
+                "Bearer {}",
+                std::env::var(&config.api_key_env).unwrap_or_default()
+            ),
+        )
         .multipart(form)
         .send()
         .await?;
@@ -221,7 +233,7 @@ mod tests {
     fn test_stt_config_deepgram() {
         let cfg = VoiceSttConfig {
             provider: VoiceSttProvider::Deepgram,
-            api_key: "test-key".to_string(),
+            api_key_env: "DEEPGRAM_API_KEY".to_string(),
             language: Some("en".to_string()),
             model: None,
             diarize: false,
@@ -234,7 +246,7 @@ mod tests {
     fn test_stt_config_openai() {
         let cfg = VoiceSttConfig {
             provider: VoiceSttProvider::OpenAi,
-            api_key: "sk-test".to_string(),
+            api_key_env: "OPENAI_API_KEY".to_string(),
             language: None,
             model: Some("whisper-1".to_string()),
             diarize: false,

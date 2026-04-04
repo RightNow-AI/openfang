@@ -2190,7 +2190,7 @@ fn default_barge_in_speaking_threshold() -> u32 {
 impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
-            listen: "0.0.0.0:4201".to_string(),
+            listen: "0.0.0.0:4200".to_string(),
             default_agent: None,
             overrides: ChannelOverrides::default(),
             stt: None,
@@ -2215,8 +2215,8 @@ pub enum VoiceSttProvider {
 pub struct VoiceSttConfig {
     /// Provider to use.
     pub provider: VoiceSttProvider,
-    /// API key for the provider.
-    pub api_key: String,
+    /// Environment variable holding the provider API key.
+    pub api_key_env: String,
     /// BCP-47 language code hint (e.g. "en", "fr"). Provider default if absent.
     #[serde(default)]
     pub language: Option<String>,
@@ -2242,8 +2242,8 @@ pub enum VoiceTtsProvider {
 pub struct VoiceTtsConfig {
     /// Provider to use.
     pub provider: VoiceTtsProvider,
-    /// API key for the provider.
-    pub api_key: String,
+    /// Environment variable holding the provider API key.
+    pub api_key_env: String,
     /// Voice ID (provider-specific).
     pub voice_id: String,
     /// Model override (e.g. "sonic-2" for Cartesia). Provider default if absent.
@@ -2271,7 +2271,7 @@ fn default_smart_turn_threshold() -> f32 {
 impl Default for SmartTurnConfig {
     fn default() -> Self {
         Self {
-            model_path: "/data/models/smart-turn-v3.2.onnx".to_string(),
+            model_path: String::new(),
             threshold: default_smart_turn_threshold(),
         }
     }
@@ -4361,17 +4361,17 @@ mod tests {
         let toml_str = r#"
 [channels.voice]
 listen = "0.0.0.0:4201"
-default_agent = "jeeves"
+default_agent = "assistant"
 
 [channels.voice.stt]
 provider = "deepgram"
-api_key = "test-key"
+api_key_env = "DEEPGRAM_API_KEY"
 language = "en"
 model = "nova-3"
 
 [channels.voice.tts]
 provider = "cartesia"
-api_key = "test-tts-key"
+api_key_env = "CARTESIA_API_KEY"
 voice_id = "abc-123"
 model = "sonic-2"
 
@@ -4399,17 +4399,17 @@ system_prompt = "You are on a live voice call."
         let toml_str = r#"
 [channels.voice]
 listen = "0.0.0.0:4201"
-default_agent = "jeeves"
+default_agent = "assistant"
 
 [channels.voice.stt]
 provider = "deepgram"
-api_key = "test-key"
+api_key_env = "DEEPGRAM_API_KEY"
 language = "en"
 model = "nova-3"
 
 [channels.voice.tts]
 provider = "cartesia"
-api_key = "test-tts-key"
+api_key_env = "CARTESIA_API_KEY"
 voice_id = "abc-123"
 model = "sonic-2"
 
