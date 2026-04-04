@@ -4385,7 +4385,10 @@ system_prompt = "You are on a live voice call."
 "#;
         let val: toml::Value = toml::from_str(toml_str).unwrap();
         let config: KernelConfig = val.try_into().expect("try_into should succeed");
-        assert!(config.channels.voice.is_some(), "voice should be Some via try_into");
+        assert!(
+            config.channels.voice.is_some(),
+            "voice should be Some via try_into"
+        );
         let voice = config.channels.voice.unwrap();
         assert!(voice.stt.is_some());
         assert!(voice.tts.is_some());
@@ -4419,7 +4422,10 @@ system_prompt_replace = false
 system_prompt = "You are on a live voice call."
 "#;
         let config: KernelConfig = toml::from_str(toml_str).unwrap();
-        assert!(config.channels.voice.is_some(), "voice config should be Some");
+        assert!(
+            config.channels.voice.is_some(),
+            "voice config should be Some"
+        );
         let voice = config.channels.voice.unwrap();
         assert!(voice.stt.is_some(), "stt should be Some");
         assert!(voice.tts.is_some(), "tts should be Some");

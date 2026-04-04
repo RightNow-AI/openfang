@@ -44,6 +44,7 @@ use openfang_channels::twist::TwistAdapter;
 use openfang_channels::webex::WebexAdapter;
 // Wave 5
 use async_trait::async_trait;
+use axum::Router;
 use openfang_channels::dingtalk::DingTalkAdapter;
 use openfang_channels::dingtalk_stream::DingTalkStreamAdapter;
 use openfang_channels::discourse::DiscourseAdapter;
@@ -55,7 +56,6 @@ use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_channels::wecom::WeComAdapter;
-use axum::Router;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::agent::AgentId;
 use std::sync::Arc;
@@ -1084,8 +1084,7 @@ pub async fn start_channel_bridge(
     kernel: Arc<OpenFangKernel>,
 ) -> (Option<BridgeManager>, Option<Router<()>>) {
     let channels = kernel.config.channels.clone();
-    let (bridge, _names, voice_router) =
-        start_channel_bridge_with_config(kernel, &channels).await;
+    let (bridge, _names, voice_router) = start_channel_bridge_with_config(kernel, &channels).await;
     (bridge, voice_router)
 }
 

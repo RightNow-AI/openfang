@@ -101,9 +101,7 @@ enum ClientMessage {
     /// Identity announcement — sent once on session open before PCM streams.
     /// Sets the primary speaker name for the session. In text mode, overrides
     /// the per-utterance `speaker` field as the session-wide default.
-    Hello {
-        speaker: String,
-    },
+    Hello { speaker: String },
     /// Cancel current agent response (barge-in).
     Cancel,
     /// End the voice session.
@@ -387,7 +385,9 @@ impl ChannelAdapter for VoiceAdapter {
             });
         }
 
-        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(bridge_rx)))
+        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(
+            bridge_rx,
+        )))
     }
 
     async fn send(
@@ -539,15 +539,7 @@ async fn handle_voice_session(socket: WebSocket, state: AppState) {
     if is_pcm {
         if let Some(pipeline) = state.pipeline.clone() {
             info!("Voice session {session_id}: PCM mode");
-            handle_pcm_session(
-                first_frame,
-                ws_tx,
-                ws_rx,
-                state,
-                session_id,
-                pipeline,
-            )
-            .await;
+            handle_pcm_session(first_frame, ws_tx, ws_rx, state, session_id, pipeline).await;
         } else {
             warn!(
                 "Voice session {session_id}: received binary frame but no pipeline configured — \
@@ -840,7 +832,10 @@ async fn handle_pcm_session(
             if *cancel_rx_tts.borrow() {
                 continue;
             }
-            debug!("PCM session {sid_for_tts}: synthesizing TTS for: {}", &text[..text.len().min(80)]);
+            debug!(
+                "PCM session {sid_for_tts}: synthesizing TTS for: {}",
+                &text[..text.len().min(80)]
+            );
             match tts::synthesize(&text, &pipeline_for_tts.tts).await {
                 Ok(pcm) => {
                     // Discard output if barge-in arrived during synthesis
@@ -869,8 +864,7 @@ async fn handle_pcm_session(
     let mut audio_buf: Vec<i16> = Vec::new();
     let mut last_smart_turn = tokio::time::Instant::now();
     let min_samples = (MIN_AUDIO_MS as usize * PCM_SAMPLE_RATE) / 1000;
-    let smart_turn_interval =
-        tokio::time::Duration::from_millis(SMART_TURN_INTERVAL_MS);
+    let smart_turn_interval = tokio::time::Duration::from_millis(SMART_TURN_INTERVAL_MS);
     let silence_timeout = tokio::time::Duration::from_millis(SILENCE_TIMEOUT_MS);
     // Silence fallback: absolute deadline, pushed forward on each speech chunk.
     // Using sleep_until(absolute) avoids the reset-on-each-frame bug of sleep(duration).
@@ -1068,12 +1062,10 @@ async fn dispatch_pcm_utterance(
 
     // Transcribe
     let final_text = match stt::transcribe(audio_buf, &pipeline.stt).await {
-        Ok(stt::TranscriptResult::Plain(t)) if !t.trim().is_empty() => {
-            match primary_speaker {
-                Some(name) => format!("[From: {name}] {t}"),
-                None => t,
-            }
-        }
+        Ok(stt::TranscriptResult::Plain(t)) if !t.trim().is_empty() => match primary_speaker {
+            Some(name) => format!("[From: {name}] {t}"),
+            None => t,
+        },
         Ok(stt::TranscriptResult::Diarized(segments)) if !segments.is_empty() => segments
             .iter()
             .map(|seg| {
@@ -1118,8 +1110,7 @@ async fn dispatch_pcm_utterance(
     };
 
     // Send transcript to client (with speaker prefix if present)
-    let transcript_msg =
-        serde_json::json!({"type": "transcribed", "text": final_text}).to_string();
+    let transcript_msg = serde_json::json!({"type": "transcribed", "text": final_text}).to_string();
     let _ = ws_tx.send(Message::Text(transcript_msg.into())).await;
 
     let mut metadata = HashMap::new();
@@ -1127,10 +1118,7 @@ async fn dispatch_pcm_utterance(
         "voice_session".to_string(),
         serde_json::Value::String(session_id.to_string()),
     );
-    metadata.insert(
-        "pcm_mode".to_string(),
-        serde_json::Value::Bool(true),
-    );
+    metadata.insert("pcm_mode".to_string(), serde_json::Value::Bool(true));
 
     let channel_msg = ChannelMessage {
         channel: ChannelType::Custom("voice".to_string()),
@@ -1154,7 +1142,6 @@ async fn dispatch_pcm_utterance(
         s.messages_received += 1;
         s.last_message_at = Some(Utc::now());
     }
-
 }
 
 // ── Emotion Parsing ──────────────────────────────────────────────────────────
