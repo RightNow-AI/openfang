@@ -243,7 +243,7 @@ pub(crate) fn bytes_to_i16_le(bytes: &[u8]) -> Vec<i16> {
 /// Encode i16 PCM samples as a minimal WAV file (16kHz mono) for STT upload.
 pub fn pcm_to_wav(pcm: &[i16]) -> Vec<u8> {
     let num_samples = pcm.len() as u32;
-    let byte_rate: u32 = 16_000 * 1 * 2;
+    let byte_rate: u32 = 16_000 * 2;
     let data_size = num_samples * 2;
     let file_size = 36 + data_size;
 

@@ -61,7 +61,7 @@ use axum::{
 };
 use chrono::Utc;
 use futures::{SinkExt, Stream, StreamExt};
-use openfang_types::config::{SmartTurnConfig, VoiceSttConfig, VoiceTtsConfig};
+use openfang_types::config::{VoiceSttConfig, VoiceTtsConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -132,6 +132,7 @@ enum ServerMessage {
     /// Barge-in acknowledged — TTS stopped, server is listening again.
     BargeInAck,
     /// Session configuration sent once after the Hello handshake.
+    #[allow(dead_code)]
     Config {
         barge_in_threshold: u32,
         barge_in_speaking_threshold: u32,
@@ -406,7 +407,7 @@ impl ChannelAdapter for VoiceAdapter {
             let pcm_tx = if let Some(tx) = pcm.get(&user.platform_id) {
                 Some(tx.clone())
             } else if pcm.len() == 1 {
-                pcm.values().next().map(|tx| tx.clone())
+                pcm.values().next().cloned()
             } else {
                 None
             };
@@ -935,7 +936,6 @@ async fn handle_pcm_session(
     // prevents dispatching silence/noise during the opening seconds of a session.
     let far_future = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3600);
     let mut silence_fire_at = far_future;
-    let mut speech_ever_detected = false;
 
     // Process the first binary frame immediately
     if let Message::Binary(bytes) = first_frame {
@@ -944,7 +944,6 @@ async fn handle_pcm_session(
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
         if rms_i16(&samples) > SILENCE_SPEECH_THRESHOLD {
-            speech_ever_detected = true;
             silence_fire_at = tokio::time::Instant::now() + silence_timeout;
         }
         audio_buf.extend_from_slice(&samples);
@@ -1018,7 +1017,6 @@ async fn handle_pcm_session(
                         if pipeline.smart_turn.is_none()
                             && rms_i16(&samples) > SILENCE_SPEECH_THRESHOLD
                         {
-                            speech_ever_detected = true;
                             silence_fire_at = tokio::time::Instant::now() + silence_timeout;
                         }
                         audio_buf.extend_from_slice(&samples);
@@ -1091,7 +1089,6 @@ async fn handle_pcm_session(
                 }
                 audio_buf.clear();
                 // Reset to far future — wait for new speech before next dispatch
-                speech_ever_detected = false;
                 silence_fire_at = far_future;
             }
 
@@ -1109,7 +1106,7 @@ async fn handle_pcm_session(
                     } else {
                         format!("[You had responded: \"{}\" but the user spoke again before hearing it]\n\n", response_text.trim())
                     };
-                    let combined = format!("{stale_ctx}{}", pending_inputs.drain(..).collect::<Vec<_>>().join("\n"));
+                    let combined = format!("{stale_ctx}{}", std::mem::take(&mut pending_inputs).join("\n"));
                     info!("PCM session {session_id}: discarding stale response, replaying {n} buffered input(s)");
                     send_utterance_to_agent(combined, &state, &sender, &cancel_tx, &session_id).await;
                     // waiting_for_response stays true
