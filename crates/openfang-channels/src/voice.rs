@@ -9,13 +9,13 @@
 //!
 //! ```text
 //! Client → Server (JSON text frames):
-//!   { "type": "utterance", "text": "...", "speaker": "Philippe", "final": true }
+//!   { "type": "utterance", "text": "...", "speaker": "Alice", "final": true }
 //!   { "type": "cancel" }
 //!   { "type": "end" }
 //!
 //! Server → Client (JSON text frames):
 //!   { "type": "response", "text": "...", "emotion": "neutral", "sentence_end": true }
-//!   { "type": "backchannel", "text": "I see, sir." }
+//!   { "type": "backchannel", "text": "I see." }
 //!   { "type": "status", "state": "thinking" | "listening" }
 //!   { "type": "error", "message": "..." }
 //! ```
