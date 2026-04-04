@@ -5245,6 +5245,13 @@ pub async fn list_tools(State(state): State<Arc<AppState>>) -> impl IntoResponse
 pub async fn get_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Return a redacted view of the kernel config
     let config = &state.kernel.config;
+    let voice_pcm_enabled = config
+        .channels
+        .voice
+        .as_ref()
+        .map(|v| v.stt.is_some() && v.tts.is_some())
+        .unwrap_or(false);
+
     Json(serde_json::json!({
         "home_dir": config.home_dir.to_string_lossy(),
         "data_dir": config.data_dir.to_string_lossy(),
@@ -5257,6 +5264,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> impl IntoResponse
         "memory": {
             "decay_rate": config.memory.decay_rate,
         },
+        "voice_pcm_enabled": voice_pcm_enabled,
     }))
 }
 

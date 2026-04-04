@@ -30,6 +30,7 @@ function chatPage() {
     recordingTime: 0,
     _recordingTimer: null,
     // Voice conversation mode (PCM pipeline via voice WebSocket)
+    voicePcmEnabled: false,   // true when server has STT+TTS configured
     voiceMode: false,         // true when PCM voice mode is active
     voiceLive: false,         // true when mic is open and streaming
     voiceStatus: 'idle',      // 'idle' | 'listening' | 'thinking' | 'speaking'
@@ -149,6 +150,11 @@ function chatPage() {
 
     init() {
       var self = this;
+
+      // Check server capabilities (voice PCM, etc.)
+      fetch('/api/config').then(function(r) { return r.json(); }).then(function(cfg) {
+        self.voicePcmEnabled = !!cfg.voice_pcm_enabled;
+      }).catch(function() {});
 
       // Start tip cycle
       this.startTipCycle();
@@ -1241,6 +1247,10 @@ function chatPage() {
 
     // Toggle PCM voice conversation mode on/off.
     toggleVoiceMode: async function() {
+      if (!this.voicePcmEnabled) {
+        this.messages.push({ id: Date.now(), role: 'system', text: 'Voice mode is not enabled on this server. Configure STT and TTS providers in [channels.voice] to use this feature.', meta: '', tools: [] });
+        return;
+      }
       if (this.voiceMode) {
         this._stopVoiceMode();
       } else {
