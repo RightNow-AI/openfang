@@ -130,10 +130,7 @@ async fn synthesize_elevenlabs(
     config: &VoiceTtsConfig,
     client: &Client,
 ) -> Result<Vec<i16>, Box<dyn std::error::Error + Send + Sync>> {
-    let model = config
-        .model
-        .as_deref()
-        .unwrap_or("eleven_turbo_v2_5");
+    let model = config.model.as_deref().unwrap_or("eleven_turbo_v2_5");
 
     let voice_settings = config.speed.map(|spd| ElevenLabsVoiceSettings {
         stability: 0.5,
@@ -246,13 +243,13 @@ pub fn pcm_to_wav(pcm: &[i16]) -> Vec<u8> {
     // fmt chunk
     wav.extend_from_slice(b"fmt ");
     wav.extend_from_slice(&16u32.to_le_bytes()); // chunk size
-    wav.extend_from_slice(&1u16.to_le_bytes());  // PCM
-    wav.extend_from_slice(&1u16.to_le_bytes());  // mono
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
     wav.extend_from_slice(&16_000u32.to_le_bytes()); // sample rate
     wav.extend_from_slice(&byte_rate.to_le_bytes());
-    wav.extend_from_slice(&2u16.to_le_bytes());  // block align
+    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
     wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
-    // data chunk
+                                                 // data chunk
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&data_size.to_le_bytes());
     for sample in pcm {
@@ -296,7 +293,7 @@ fn resample_24k_to_16k(src: &[i16]) -> Vec<i16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openfang_types::config::{VoiceTtsProvider};
+    use openfang_types::config::VoiceTtsProvider;
 
     #[test]
     fn test_pcm_to_wav_header() {

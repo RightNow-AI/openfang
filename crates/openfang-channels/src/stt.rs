@@ -99,9 +99,7 @@ async fn transcribe_deepgram(
 
     let model = config.model.as_deref().unwrap_or("nova-3");
 
-    let mut url = format!(
-        "https://api.deepgram.com/v1/listen?model={model}&smart_format=true"
-    );
+    let mut url = format!("https://api.deepgram.com/v1/listen?model={model}&smart_format=true");
     if let Some(ref lang) = config.language {
         url.push_str(&format!("&language={lang}"));
     }
@@ -179,11 +177,7 @@ async fn transcribe_openai(
 ) -> Result<TranscriptResult, Box<dyn std::error::Error + Send + Sync>> {
     let wav = pcm_to_wav(pcm);
 
-    let model = config
-        .model
-        .as_deref()
-        .unwrap_or("whisper-1")
-        .to_string();
+    let model = config.model.as_deref().unwrap_or("whisper-1").to_string();
 
     let file_part = reqwest::multipart::Part::bytes(wav)
         .file_name("audio.wav")
@@ -252,9 +246,21 @@ mod tests {
     #[test]
     fn test_build_diarized_segments_groups_consecutive() {
         let words = vec![
-            DeepgramWord { word: "hello".to_string(), punctuated_word: Some("Hello".to_string()), speaker: Some(0) },
-            DeepgramWord { word: "there".to_string(), punctuated_word: Some("there".to_string()), speaker: Some(0) },
-            DeepgramWord { word: "hi".to_string(), punctuated_word: Some("Hi".to_string()), speaker: Some(1) },
+            DeepgramWord {
+                word: "hello".to_string(),
+                punctuated_word: Some("Hello".to_string()),
+                speaker: Some(0),
+            },
+            DeepgramWord {
+                word: "there".to_string(),
+                punctuated_word: Some("there".to_string()),
+                speaker: Some(0),
+            },
+            DeepgramWord {
+                word: "hi".to_string(),
+                punctuated_word: Some("Hi".to_string()),
+                speaker: Some(1),
+            },
         ];
         let segments = build_diarized_segments(words);
         assert_eq!(segments.len(), 2);

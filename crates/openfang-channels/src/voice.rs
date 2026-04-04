@@ -547,9 +547,7 @@ async fn handle_voice_session(socket: WebSocket, state: AppState) {
             if state.pipeline.is_some() {
                 // Read the follow-up frame to see if it's binary PCM
                 match ws_rx.next().await {
-                    Some(Ok(second)) if matches!(second, Message::Binary(_)) => {
-                        (second, true)
-                    }
+                    Some(Ok(second)) if matches!(second, Message::Binary(_)) => (second, true),
                     Some(Ok(second)) => {
                         // Text mode: Hello then a text frame — stay in text mode,
                         // handle Hello in the text loop below
@@ -1157,7 +1155,9 @@ async fn transcribe_utterance(
 ) -> Option<(String, String)> {
     // Send "thinking" status immediately so the user knows we heard them
     let _ = ws_tx
-        .send(Message::Text(r#"{"type":"status","state":"thinking"}"#.into()))
+        .send(Message::Text(
+            r#"{"type":"status","state":"thinking"}"#.into(),
+        ))
         .await;
 
     // display_text: clean STT output for showing in the chat UI (no agent context)
@@ -1196,7 +1196,9 @@ async fn transcribe_utterance(
         Ok(_) => {
             // Empty transcript — resume listening
             let _ = ws_tx
-                .send(Message::Text(r#"{"type":"status","state":"listening"}"#.into()))
+                .send(Message::Text(
+                    r#"{"type":"status","state":"listening"}"#.into(),
+                ))
                 .await;
             return None;
         }
@@ -1205,7 +1207,9 @@ async fn transcribe_utterance(
             let msg = serde_json::json!({"type":"error","message": e.to_string()}).to_string();
             let _ = ws_tx.send(Message::Text(msg.into())).await;
             let _ = ws_tx
-                .send(Message::Text(r#"{"type":"status","state":"listening"}"#.into()))
+                .send(Message::Text(
+                    r#"{"type":"status","state":"listening"}"#.into(),
+                ))
                 .await;
             return None;
         }

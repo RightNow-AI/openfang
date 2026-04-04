@@ -56,11 +56,9 @@ impl SmartTurnDetector {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => return Err(e),
             Err(_) => {
-                return Err(
-                    "ONNX Runtime library (libonnxruntime.so) not found — \
+                return Err("ONNX Runtime library (libonnxruntime.so) not found — \
                      install libonnxruntime or set ORT_DYLIB_PATH"
-                        .into(),
-                )
+                    .into())
             }
         };
 
@@ -126,9 +124,7 @@ impl SmartTurnDetector {
             }
         };
 
-        let probability = outputs[0]
-            .try_extract_scalar::<f32>()
-            .unwrap_or(1.0);
+        let probability = outputs[0].try_extract_scalar::<f32>().unwrap_or(1.0);
 
         (probability > self.threshold, probability)
     }
@@ -305,7 +301,10 @@ mod tests {
     fn test_hz_mel_roundtrip() {
         for hz in [0.0f32, 100.0, 500.0, 1000.0, 4000.0, 8000.0] {
             let roundtrip = mel_to_hz(hz_to_mel(hz));
-            assert!((roundtrip - hz).abs() < 0.01, "hz={hz} roundtrip={roundtrip}");
+            assert!(
+                (roundtrip - hz).abs() < 0.01,
+                "hz={hz} roundtrip={roundtrip}"
+            );
         }
     }
 }
