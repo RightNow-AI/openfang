@@ -45,3 +45,4 @@ Thumbs.db
 *.swo
 *~
 .serena/
+deploy/deploy-key
