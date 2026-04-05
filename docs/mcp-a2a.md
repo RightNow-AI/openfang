@@ -71,8 +71,31 @@ Each entry maps to a `McpServerConfigEntry` struct:
 | `transport` | `McpTransportEntry` | required | How to connect (stdio or SSE) |
 | `timeout_secs` | `u64` | `30` | JSON-RPC request timeout |
 | `env` | `Vec<String>` | `[]` | Env vars to pass through to the subprocess |
+| `headers` | `Vec<String>` | `[]` | Custom HTTP headers for authentication (e.g., `["Authorization: Bearer <token>"]`) |
 
 #### Transport Types
+
+##### Header Configuration
+
+MCP servers can include custom HTTP headers for authentication and other requirements:
+
+```toml
+[[mcp_servers]]
+name = "homeassistant"
+timeout_secs = 10
+headers = [
+    "Authorization: Bearer <token>"
+]
+
+[mcp_servers.transport]
+type = "http"
+url = "http://homeassistant:8123/api/mcp"
+method = "POST"
+```
+
+**Important**: Do not manually set reserved headers like `Accept`, `Content-Type`, or `User-Agent` as these are automatically set by the HTTP client. Only include custom headers required by the MCP server.
+
+**Security Note**: Authorization tokens in debug logs are automatically redacted as `[REDACTED]` to prevent accidental exposure.
 
 OpenFang supports two MCP transports, defined by `McpTransport`:
 
