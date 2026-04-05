@@ -173,8 +173,16 @@ pub async fn build_router(
             axum::routing::post(routes::send_message),
         )
         .route(
+            "/api/agents/{id}/sessions/{session_id}/message",
+            axum::routing::post(routes::send_message_to_session),
+        )
+        .route(
             "/api/agents/{id}/message/stream",
             axum::routing::post(routes::send_message_stream),
+        )
+        .route(
+            "/api/agents/{id}/sessions/{session_id}/message/stream",
+            axum::routing::post(routes::send_message_stream_to_session),
         )
         .route(
             "/api/agents/{id}/session",
@@ -515,7 +523,7 @@ pub async fn build_router(
         .route("/api/sessions", axum::routing::get(routes::list_sessions))
         .route(
             "/api/sessions/{id}",
-            axum::routing::delete(routes::delete_session),
+            axum::routing::get(routes::get_session).delete(routes::delete_session),
         )
         .route(
             "/api/sessions/{id}/label",

@@ -93,8 +93,16 @@ async fn start_test_server_with_provider(
             axum::routing::post(routes::send_message),
         )
         .route(
+            "/api/agents/{id}/sessions/{session_id}/message",
+            axum::routing::post(routes::send_message_to_session),
+        )
+        .route(
             "/api/agents/{id}/session",
             axum::routing::get(routes::get_agent_session),
+        )
+        .route(
+            "/api/sessions/{id}",
+            axum::routing::get(routes::get_session),
         )
         .route("/api/agents/{id}/ws", axum::routing::get(ws::agent_ws))
         .route(
@@ -312,6 +320,82 @@ async fn test_agent_session_empty() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["message_count"], 0);
     assert_eq!(body["messages"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_specific_session_messaging() {
+    if std::env::var("GROQ_API_KEY").is_err() {
+        eprintln!("GROQ_API_KEY not set, skipping LLM specific session test");
+        return;
+    }
+
+    let server = start_test_server_with_llm().await;
+    let client = reqwest::Client::new();
+
+    // Spawn agent
+    let resp = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": LLM_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let agent_id = body["agent_id"].as_str().unwrap().to_string();
+
+    let custom_session_id = uuid::Uuid::new_v4().to_string();
+
+    // Send message to the SPECIFIC session
+    let resp = client
+        .post(format!(
+            "{}/api/agents/{}/sessions/{}/message",
+            server.base_url, agent_id, custom_session_id
+        ))
+        .json(&serde_json::json!({"message": "Hello from custom session!"}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let response_text = body["response"].as_str().unwrap();
+    assert!(!response_text.is_empty());
+
+    // Fetch the specific session directly
+    let resp = client
+        .get(format!(
+            "{}/api/sessions/{}",
+            server.base_url, custom_session_id
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let session_body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        session_body["session_id"].as_str().unwrap(),
+        custom_session_id
+    );
+    assert_eq!(session_body["agent_id"].as_str().unwrap(), agent_id);
+    assert!(session_body["message_count"].as_u64().unwrap() > 0);
+    assert!(!session_body["messages"].as_array().unwrap().is_empty());
+
+    // Verify the agent's DEFAULT active session is still empty/untouched (if not the same)
+    let resp = client
+        .get(format!(
+            "{}/api/agents/{}/session",
+            server.base_url, agent_id
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let default_session: serde_json::Value = resp.json().await.unwrap();
+    // Default session should either be 0 or point to a different session ID
+    if default_session["session_id"].as_str().unwrap() != custom_session_id {
+        assert_eq!(default_session["message_count"], 0);
+    }
 }
 
 #[tokio::test]
