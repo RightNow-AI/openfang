@@ -2208,6 +2208,20 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         setup_steps: &["Create a WeCom application at work.weixin.qq.com", "Get Corp ID, Agent ID, and Secret", "Configure callback URL to your webhook endpoint"],
         config_template: "[channels.wecom]\ncorp_id = \"\"\nagent_id = \"\"\nsecret_env = \"WECOM_SECRET\"",
     },
+    ChannelMeta {
+        name: "wecom_stream", display_name: "WeCom Stream", icon: "WC",
+        description: "WeCom Stream Mode (WebSocket long-connection)",
+        category: "enterprise", difficulty: "Easy", setup_time: "~5 min",
+        quick_setup: "Create an Enterprise Internal App with Stream Mode enabled",
+        setup_type: "form",
+        fields: &[
+            ChannelField { key: "bot_id", label: "Bot ID (Corp ID)", field_type: FieldType::Text, env_var: None, required: true, placeholder: "ww...", advanced: false },
+            ChannelField { key: "secret_env", label: "Secret", field_type: FieldType::Secret, env_var: Some("WECOM_WS_SECRET"), required: true, placeholder: "secret...", advanced: false },
+            ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
+        ],
+        setup_steps: &["Create an Enterprise Internal App in WeCom Open Platform", "Enable Stream Mode in the app settings", "Copy Bot ID (Corp ID) and Secret below"],
+        config_template: "[channels.wecom_stream]\nbot_id = \"\"\nsecret_env = \"WECOM_WS_SECRET\"",
+    },
 ];
 
 /// Check if a channel is configured (has a `[channels.xxx]` section in config).
@@ -2255,6 +2269,7 @@ fn is_channel_configured(config: &openfang_types::config::ChannelsConfig, name: 
         "webhook" => config.webhook.is_some(),
         "mumble" => config.mumble.is_some(),
         "wecom" => config.wecom.is_some(),
+        "wecom_stream" => config.wecom_stream.is_some(),
         _ => false,
     }
 }

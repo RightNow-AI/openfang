@@ -53,3 +53,4 @@ pub mod mumble;
 pub mod ntfy;
 pub mod webhook;
 pub mod wecom;
+pub mod wecom_stream;

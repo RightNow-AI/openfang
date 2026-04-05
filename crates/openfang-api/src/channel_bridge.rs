@@ -18,6 +18,7 @@ use openfang_channels::teams::TeamsAdapter;
 use openfang_channels::telegram::TelegramAdapter;
 use openfang_channels::twitch::TwitchAdapter;
 use openfang_channels::types::ChannelAdapter;
+use openfang_channels::wecom_stream::WeComStreamAdapter;
 use openfang_channels::whatsapp::WhatsAppAdapter;
 use openfang_channels::xmpp::XmppAdapter;
 use openfang_channels::zulip::ZulipAdapter;
@@ -812,6 +813,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             "linkedin" => channels.linkedin.as_ref().map(|c| c.overrides.clone()),
             "wecom" => channels.wecom.as_ref().map(|c| c.overrides.clone()),
             "mqtt" => channels.mqtt.as_ref().map(|c| c.overrides.clone()),
+            "wecom_stream" => channels.wecom_stream.as_ref().map(|c| c.overrides.clone()),
             _ => None,
         }
     }
@@ -1116,6 +1118,7 @@ pub async fn start_channel_bridge_with_config(
         || config.ntfy.is_some()
         || config.gotify.is_some()
         || config.webhook.is_some()
+        || config.wecom_stream.is_some()
         || config.linkedin.is_some();
 
     if !has_any {
@@ -1474,6 +1477,14 @@ pub async fn start_channel_bridge_with_config(
                 wc_config.token.clone(),
             ));
             adapters.push((adapter, wc_config.default_agent.clone()));
+        }
+    }
+
+    // WeCom Stream
+    if let Some(ref ws_config) = config.wecom_stream {
+        if let Some(secret) = read_token(&ws_config.secret_env, "WECOM_WS_SECRET") {
+            let adapter = Arc::new(WeComStreamAdapter::new(ws_config.bot_id.clone(), secret));
+            adapters.push((adapter, ws_config.default_agent.clone()));
         }
     }
 

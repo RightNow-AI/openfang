@@ -1723,6 +1723,8 @@ pub struct ChannelsConfig {
     pub linkedin: Option<LinkedInConfig>,
     /// WeCom/WeChat Work configuration (None = disabled).
     pub wecom: Option<WeComConfig>,
+    /// WeCom Stream mode — long-lived WebSocket (None = disabled).
+    pub wecom_stream: Option<WeComStreamConfig>,
     /// MQTT pub/sub configuration (None = disabled).
     pub mqtt: Option<MqttConfig>,
 }
@@ -2548,6 +2550,32 @@ impl Default for WeComConfig {
             webhook_port: 8454,
             token: None,
             encoding_aes_key: None,
+            default_agent: None,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
+/// WeCom Stream mode — long-lived WebSocket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WeComStreamConfig {
+    /// WeCom application agent ID.
+    pub bot_id: String,
+    /// Env var name holding the application secret.
+    pub secret_env: String,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for WeComStreamConfig {
+    fn default() -> Self {
+        Self {
+            bot_id: String::new(),
+            secret_env: "WECOM_SECRET".to_string(),
             default_agent: None,
             overrides: ChannelOverrides::default(),
         }
