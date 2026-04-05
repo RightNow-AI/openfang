@@ -14,7 +14,6 @@ use rmcp::service::RunningService;
 use rmcp::{RoleClient, ServiceExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use tracing::{debug, info};
 
 // ---------------------------------------------------------------------------
@@ -307,11 +306,8 @@ impl McpConnection {
             }
         }
 
-        let config = StreamableHttpClientTransportConfig {
-            uri: Arc::from(url),
-            custom_headers,
-            ..Default::default()
-        };
+        let config = StreamableHttpClientTransportConfig::with_uri(url)
+            .custom_headers(custom_headers);
 
         let transport = StreamableHttpClientTransport::from_config(config);
 
