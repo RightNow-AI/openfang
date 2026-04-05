@@ -28,6 +28,63 @@ function translateUi(text) {
   return text;
 }
 
+function uiIntlLocale() {
+  if (window.OpenFangI18n && typeof window.OpenFangI18n.intlLocale === 'function') {
+    return window.OpenFangI18n.intlLocale();
+  }
+  return undefined;
+}
+
+function resolveUiIntlLocale(localeHint) {
+  if (localeHint === 'zh-CN') return 'zh-CN';
+  if (localeHint === 'en') return 'en-US';
+  return localeHint || uiIntlLocale();
+}
+
+function formatUiDateTime(value, localeHint, options) {
+  var date = new Date(value);
+  if (localeHint && typeof localeHint === 'object' && options === undefined) {
+    options = localeHint;
+    localeHint = undefined;
+  }
+  var locale = resolveUiIntlLocale(localeHint);
+  if (!value || isNaN(date.getTime())) return '-';
+  return locale ? date.toLocaleString(locale, options) : date.toLocaleString(undefined, options);
+}
+
+function formatUiDate(value, localeHint, options) {
+  var date = new Date(value);
+  if (localeHint && typeof localeHint === 'object' && options === undefined) {
+    options = localeHint;
+    localeHint = undefined;
+  }
+  var locale = resolveUiIntlLocale(localeHint);
+  if (!value || isNaN(date.getTime())) return '-';
+  return locale ? date.toLocaleDateString(locale, options) : date.toLocaleDateString(undefined, options);
+}
+
+function formatUiTime(value, localeHint, options) {
+  var date = new Date(value);
+  if (localeHint && typeof localeHint === 'object' && options === undefined) {
+    options = localeHint;
+    localeHint = undefined;
+  }
+  var locale = resolveUiIntlLocale(localeHint);
+  if (!value || isNaN(date.getTime())) return '-';
+  return locale ? date.toLocaleTimeString(locale, options) : date.toLocaleTimeString(undefined, options);
+}
+
+function formatUiNumber(value, localeHint, options) {
+  var number = Number(value);
+  if (localeHint && typeof localeHint === 'object' && options === undefined) {
+    options = localeHint;
+    localeHint = undefined;
+  }
+  var locale = resolveUiIntlLocale(localeHint);
+  if (!isFinite(number)) return '0';
+  return locale ? number.toLocaleString(locale, options) : number.toLocaleString(undefined, options);
+}
+
 function renderMarkdown(text) {
   var html;
   var copyLabel;

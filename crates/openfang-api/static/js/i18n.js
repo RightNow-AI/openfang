@@ -874,10 +874,16 @@
   }
 
   function getStoredLocale() {
-    try { return normalizeLocale(localStorage.getItem(STORAGE_KEY)); } catch (e) { return DEFAULT_LOCALE; }
+    var stored;
+    try {
+      stored = localStorage.getItem(STORAGE_KEY);
+    } catch (e) {
+      return null;
+    }
+    return stored ? normalizeLocale(stored) : null;
   }
 
-  var _locale = getStoredLocale() || getNavigatorLocale();
+  var _locale = getStoredLocale() || getNavigatorLocale() || DEFAULT_LOCALE;
   _locale = normalizeLocale(_locale);
   var _titleOriginal = '';
   var _textOriginal = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;

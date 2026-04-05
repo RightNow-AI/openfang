@@ -363,6 +363,7 @@ function chatPage() {
       this.showSlashMenu = false;
       this.inputText = '';
       var self = this;
+      var zh = isZhLocale();
       cmdArgs = cmdArgs || '';
       switch (cmd) {
         case '/help':
@@ -529,6 +530,7 @@ function chatPage() {
     },
 
     selectAgent(agent) {
+      var zh = isZhLocale();
       this.currentAgent = agent;
       this.messages = [];
       this.connectWs(agent.id);

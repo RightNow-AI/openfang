@@ -833,7 +833,7 @@ function handsPage() {
                   padding: 10,
                   callbacks: {
                     label: function(ctx) {
-                      return '$' + ctx.parsed.y.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                      return '$' + formatUiNumber(ctx.parsed.y, {minimumFractionDigits: 2, maximumFractionDigits: 2});
                     }
                   }
                 }
@@ -848,7 +848,7 @@ function handsPage() {
                   ticks: {
                     color: textColor,
                     font: { size: 10 },
-                    callback: function(v) { return '$' + v.toLocaleString(); }
+                    callback: function(v) { return '$' + formatUiNumber(v); }
                   }
                 }
               }
@@ -897,7 +897,7 @@ function handsPage() {
                   callbacks: {
                     label: function(ctx) {
                       var v = ctx.parsed.y;
-                      return (v >= 0 ? '+$' : '-$') + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                      return (v >= 0 ? '+$' : '-$') + formatUiNumber(Math.abs(v), {minimumFractionDigits: 2, maximumFractionDigits: 2});
                     }
                   }
                 }
@@ -913,7 +913,7 @@ function handsPage() {
                     color: textColor,
                     font: { size: 10 },
                     callback: function(v) {
-                      return (v >= 0 ? '+$' : '-$') + Math.abs(v).toLocaleString();
+                      return (v >= 0 ? '+$' : '-$') + formatUiNumber(Math.abs(v));
                     }
                   }
                 }

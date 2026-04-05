@@ -486,7 +486,7 @@
                       <div class="text-xs text-dim truncate" style="margin-top:2px;max-width:300px" x-show="e.detail" x-text="e.detail" :title="e.detail"></div>
                     </div>
                   </div>
-                  <span class="text-xs text-dim font-mono" style="white-space:nowrap;flex-shrink:0" x-text="timeAgo(e.timestamp)" :title="new Date(e.timestamp).toLocaleString()"></span>
+                  <span class="text-xs text-dim font-mono" style="white-space:nowrap;flex-shrink:0" x-text="timeAgo(e.timestamp)" :title="formatUiDateTime(e.timestamp, locale)"></span>
                 </div>
               </template>
             </div>
@@ -958,7 +958,7 @@
                         </span>
                       </template>
                     </div>
-                    <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value" x-text="detailAgent.created_at ? new Date(detailAgent.created_at).toLocaleString() : '-'"></span></div>
+                    <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value" x-text="formatUiDateTime(detailAgent.created_at, locale)"></span></div>
 
                     <!-- Fallback Model Chain -->
                     <div class="detail-row" style="align-items:flex-start">
@@ -1371,7 +1371,7 @@
                   <tr>
                     <td><span class="font-bold" x-text="wf.name"></span><br><span class="text-xs text-dim" x-text="wf.description"></span></td>
                     <td x-text="Array.isArray(wf.steps) ? wf.steps.length + ' step' + (wf.steps.length !== 1 ? 's' : '') : wf.steps"></td>
-                    <td class="text-xs" x-text="new Date(wf.created_at).toLocaleDateString()"></td>
+                    <td class="text-xs" x-text="formatUiDate(wf.created_at, locale)"></td>
                     <td>
                       <button class="btn btn-primary btn-sm" @click="showRunModal(wf)">Run</button>
                       <button class="btn btn-ghost btn-sm" @click="showEditModal(wf)">Edit</button>
@@ -1866,7 +1866,7 @@
                         <td>
                           <div class="toggle" :class="{ active: t.enabled }" @click="toggleTrigger(t)"></div>
                         </td>
-                        <td class="text-xs" x-text="new Date(t.created_at).toLocaleDateString()"></td>
+                        <td class="text-xs" x-text="formatUiDate(t.created_at, locale)"></td>
                         <td>
                           <button class="btn btn-danger btn-sm" @click="deleteTrigger(t)">Delete</button>
                         </td>
@@ -2603,7 +2603,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                       </div>
                       <span class="badge" :class="{ 'badge-success': inst.status === 'Active', 'badge-dim': inst.status === 'Paused', 'badge-warn': inst.status && inst.status.startsWith('Error'), 'badge-info': inst.status === 'Inactive' }" x-text="inst.status"></span>
                     </div>
-                    <div class="text-xs text-dim" x-text="'Activated: ' + new Date(inst.activated_at).toLocaleString()"></div>
+                    <div class="text-xs text-dim"><span>Activated:</span> <span x-text="formatUiDateTime(inst.activated_at, locale)"></span></div>
                     <div class="text-xs text-dim" x-show="inst.agent_id" x-text="'Agent: ' + inst.agent_id"></div>
 
                     <!-- Stats (loaded on demand) -->
@@ -3161,9 +3161,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                               <td class="text-dim" x-text="trade.date"></td>
                               <td style="font-weight:600" x-text="trade.ticker"></td>
                               <td><span class="trade-side-badge" :class="trade.side === 'BUY' ? 'trade-buy' : 'trade-sell'" x-text="trade.side"></span></td>
-                              <td x-text="'$' + Number(trade.price || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})"></td>
+                              <td x-text="'$' + formatUiNumber(trade.price || 0, locale, {minimumFractionDigits:2, maximumFractionDigits:2})"></td>
                               <td x-text="trade.qty"></td>
-                              <td :class="(trade.pnl || 0) >= 0 ? 'heatmap-positive' : 'heatmap-negative'" x-text="(trade.pnl >= 0 ? '+$' : '-$') + Math.abs(trade.pnl || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})"></td>
+                              <td :class="(trade.pnl || 0) >= 0 ? 'heatmap-positive' : 'heatmap-negative'" x-text="(trade.pnl >= 0 ? '+$' : '-$') + formatUiNumber(Math.abs(trade.pnl || 0), locale, {minimumFractionDigits:2, maximumFractionDigits:2})"></td>
                             </tr>
                           </template>
                         </tbody>
@@ -4003,7 +4003,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   <template x-for="a in byAgent" :key="a.agent_id">
                     <tr>
                       <td class="font-bold" x-text="a.name"></td>
-                      <td x-text="a.total_tokens ? a.total_tokens.toLocaleString() : '0'"></td>
+                      <td x-text="formatUiNumber(a.total_tokens || 0, locale)"></td>
                       <td x-text="a.tool_calls || 0"></td>
                     </tr>
                   </template>
@@ -4212,7 +4212,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                       <td class="text-xs truncate" style="font-family:monospace;max-width:120px" x-text="s.session_id ? s.session_id.substring(0, 8) + '...' : '-'" :title="s.session_id"></td>
                       <td class="font-bold" x-text="s.agent_name || s.agent_id"></td>
                       <td x-text="s.message_count"></td>
-                      <td class="text-xs" x-text="s.created_at ? new Date(s.created_at).toLocaleString() : '-'"></td>
+                      <td class="text-xs" x-text="formatUiDateTime(s.created_at, locale)"></td>
                       <td>
                         <button class="btn btn-primary btn-sm" @click="openInChat(s)">Chat</button>
                         <button class="btn btn-danger btn-sm" @click="deleteSession(s.session_id)">Delete</button>
@@ -4362,7 +4362,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             <div class="card" style="font-family:monospace;max-height:70vh;overflow-y:auto" id="log-container" @mouseenter="hovering = true" @mouseleave="hovering = false">
               <template x-for="entry in filteredEntries" :key="entry.seq">
                 <div class="log-entry">
-                  <span class="log-timestamp" x-text="new Date(entry.timestamp).toLocaleTimeString()"></span>
+                  <span class="log-timestamp" x-text="formatUiTime(entry.timestamp, locale)"></span>
                   <span class="log-level" :class="'log-level-' + classifyLevel(entry.action)" x-text="classifyLevel(entry.action).toUpperCase()"></span>
                   <span class="text-xs" style="color:var(--text-dim);margin-right:6px" x-text="'[' + entry.action + ']'"></span>
                   <span class="text-xs" x-text="entry.detail"></span>
@@ -4414,7 +4414,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   <template x-for="e in filteredAuditEntries" :key="e.seq">
                     <tr>
                       <td x-text="e.seq"></td>
-                      <td class="text-xs" style="white-space:nowrap" x-text="new Date(e.timestamp).toLocaleString()"></td>
+                      <td class="text-xs" style="white-space:nowrap" x-text="formatUiDateTime(e.timestamp, locale)"></td>
                       <td class="truncate" style="max-width:120px" x-text="auditAgentName(e.agent_id)" :title="e.agent_id"></td>
                       <td><span class="badge badge-created" x-text="friendlyAction(e.action)"></span></td>
                       <td class="truncate" style="max-width:200px" x-text="e.detail" :title="e.detail"></td>
