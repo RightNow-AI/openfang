@@ -881,12 +881,14 @@ impl OpenFangKernel {
                 // Auto-detect embedding provider by checking API key env vars in
                 // priority order.  First match wins.
                 const API_KEY_PROVIDERS: &[(&str, &str)] = &[
-                    ("OPENAI_API_KEY",    "openai"),
-                    ("GROQ_API_KEY",      "groq"),
-                    ("MISTRAL_API_KEY",   "mistral"),
-                    ("TOGETHER_API_KEY",  "together"),
+                    ("GEMINI_API_KEY", "gemini"),
+                    ("GOOGLE_API_KEY", "gemini"),
+                    ("OPENAI_API_KEY", "openai"),
+                    ("GROQ_API_KEY", "groq"),
+                    ("MISTRAL_API_KEY", "mistral"),
+                    ("TOGETHER_API_KEY", "together"),
                     ("FIREWORKS_API_KEY", "fireworks"),
-                    ("COHERE_API_KEY",    "cohere"),
+                    ("COHERE_API_KEY", "cohere"),
                 ];
 
                 let detected_from_key = API_KEY_PROVIDERS
@@ -1127,8 +1129,7 @@ impl OpenFangKernel {
                                                 != entry.manifest.tool_allowlist
                                             || disk_manifest.tool_blocklist
                                                 != entry.manifest.tool_blocklist
-                                            || disk_manifest.skills
-                                                != entry.manifest.skills
+                                            || disk_manifest.skills != entry.manifest.skills
                                             || disk_manifest.mcp_servers
                                                 != entry.manifest.mcp_servers;
                                         if changed {
@@ -5700,6 +5701,7 @@ fn apply_budget_defaults(
 fn default_embedding_model_for_provider(provider: &str) -> &'static str {
     match provider {
         "openai" => "text-embedding-3-small",
+        "gemini" | "google" => "gemini-embedding-2-preview",
         "groq" => "nomic-embed-text",
         "mistral" => "mistral-embed",
         "together" => "togethercomputer/m2-bert-80M-8k-retrieval",
