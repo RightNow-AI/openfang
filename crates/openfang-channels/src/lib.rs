@@ -52,4 +52,5 @@ pub mod mqtt;
 pub mod mumble;
 pub mod ntfy;
 pub mod webhook;
+pub mod qq;
 pub mod wecom;

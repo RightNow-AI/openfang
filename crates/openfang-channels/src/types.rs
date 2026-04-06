@@ -279,6 +279,18 @@ pub trait ChannelAdapter: Send + Sync {
     fn suppress_error_responses(&self) -> bool {
         false
     }
+
+    /// Whether this adapter supports receiving the agent response as multiple
+    /// progressive text chunks rather than a single complete message.
+    ///
+    /// When `true`, the bridge uses `ChannelBridgeHandle::stream_message()` and
+    /// calls `send()` once per flushed sentence-boundary chunk, producing a
+    /// streaming-like UX. Adapters that handle rapid successive sends correctly
+    /// (e.g. QQ, which uses incrementing `msg_seq` for deduplication) should
+    /// return `true`.
+    fn supports_streaming(&self) -> bool {
+        false
+    }
 }
 
 /// Split a message into chunks of at most `max_len` characters,

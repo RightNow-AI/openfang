@@ -1,6 +1,6 @@
 # Channel Adapters
 
-OpenFang connects to messaging platforms through **40 channel adapters**, allowing users to interact with their agents across every major communication platform. Adapters span consumer messaging, enterprise collaboration, social media, community platforms, privacy-focused protocols, and generic webhooks.
+OpenFang connects to messaging platforms through **41 channel adapters**, allowing users to interact with their agents across every major communication platform. Adapters span consumer messaging, enterprise collaboration, social media, community platforms, privacy-focused protocols, and generic webhooks.
 
 All adapters share a common foundation: graceful shutdown via `watch::channel`, exponential backoff on connection failures, `Zeroizing<String>` for secrets, automatic message splitting for platform limits, per-channel model/prompt overrides, DM/group policy enforcement, per-user rate limiting, and output formatting (Markdown, TelegramHTML, SlackMrkdwn, PlainText).
 
@@ -97,6 +97,12 @@ All adapters share a common foundation: graceful shutdown via `watch::channel`, 
 | Flock | Webhook | `FLOCK_TOKEN` | `Custom("flock")` |
 | Twist | API v3 polling | `TWIST_TOKEN` | `Custom("twist")` |
 | DingTalk | Robot API webhook | `DINGTALK_TOKEN`, `DINGTALK_SECRET` | `Custom("dingtalk")` |
+
+### Consumer China (1)
+
+| Channel | Protocol | Env Vars | ChannelType Variant |
+|---------|----------|----------|---------------------|
+| QQ | QQ Open Platform WebSocket / Webhook | `QQ_CLIENT_SECRET` | `Custom("qq")` |
 
 ### Notification (2)
 
@@ -614,6 +620,115 @@ The `AgentRouter` determines which agent receives an incoming message. The routi
 4. **Fallback**: If no routing applies, messages go to the first available agent.
 
 ---
+
+---
+
+## QQ
+
+### Overview
+
+The QQ adapter connects to Tencent's **QQ Open Platform** (q.qq.com), supporting three chat
+scene types:
+
+| Scene | Trigger event | Description |
+|-------|--------------|-------------|
+| C2C | `C2C_MESSAGE_CREATE` | Private message from a QQ user |
+| Group | `GROUP_AT_MESSAGE_CREATE` | Group message that @-mentions the bot |
+| Guild | `AT_MESSAGE_CREATE` | Server channel message that @-mentions the bot |
+| Direct | `DIRECT_MESSAGE_CREATE` | Direct message inside a QQ Guild |
+
+### Prerequisites
+
+- A verified QQ bot application at [q.qq.com](https://q.qq.com)
+- App ID and App Client Secret from the Open Platform console
+
+### Setup
+
+1. Go to [q.qq.com](https://q.qq.com), create a bot application, and publish it.
+2. Copy your **App ID** and generate an **App Client Secret**.
+3. Set the secret as an environment variable:
+
+```bash
+export QQ_CLIENT_SECRET=your_client_secret_here
+```
+
+4. Add to `config.toml` (WebSocket mode — no public URL required):
+
+```toml
+[channels.qq]
+app_id            = "your_app_id"
+client_secret_env = "QQ_CLIENT_SECRET"
+transport_mode    = "websocket"
+default_agent     = "assistant"
+```
+
+5. Restart the daemon:
+
+```bash
+openfang restart
+```
+
+### Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `app_id` | string | _(required)_ | QQ Bot App ID from the console |
+| `client_secret_env` | string | `QQ_CLIENT_SECRET` | Env var name that holds the App Client Secret |
+| `transport_mode` | string | `websocket` | `websocket` · `webhook` · `both` |
+| `webhook_port` | number | `8465` | TCP port for the inbound webhook server |
+| `webhook_path` | string | `/qqbot/webhook` | URL path for the inbound webhook |
+| `default_agent` | string | _(none)_ | Agent name to route all QQ messages to |
+| `overrides` | table | _(see Overrides)_ | Per-channel model/prompt/policy overrides |
+
+### Transport Modes
+
+#### `websocket` (default)
+
+OpenFang maintains a persistent WebSocket connection to the QQ Gateway
+(`wss://api.sgroup.qq.com/websocket`).  Session state is saved to
+`.qqbot/session-<app_id>-0.json` and automatically resumed on reconnect.
+
+**Pros:** No public inbound URL needed; works behind NAT/firewalls.
+
+#### `webhook`
+
+OpenFang starts an HTTP server on `webhook_port` that receives QQ push events.
+You must expose this port publicly and configure the **Callback URL** in the
+QQ Open Platform console:
+
+```
+http(s)://<your-domain>:8465/qqbot/webhook
+```
+
+```toml
+[channels.qq]
+app_id            = "your_app_id"
+client_secret_env = "QQ_CLIENT_SECRET"
+transport_mode    = "webhook"
+webhook_port      = 8465
+webhook_path      = "/qqbot/webhook"
+default_agent     = "assistant"
+```
+
+Ed25519 request signatures are verified automatically using the Client Secret.
+
+#### `both`
+
+Runs the WebSocket gateway **and** the webhook server concurrently — useful
+when you want redundancy or are migrating between modes.
+
+### How It Works
+
+1. On startup, OpenFang calls `bots.qq.com/app/getAppAccessToken` with the
+   App ID and Client Secret to obtain a bearer token (auto-refreshed ~60 s
+   before expiry).
+2. In `websocket` mode it fetches the Gateway URL and connects via
+   `tokio-tungstenite`, sending `Identify` and periodic heartbeats.
+3. Inbound `WsPayload` events are deduped by `event_id` (10-minute TTL),
+   then translated into `ChannelMessage` and forwarded to the kernel.
+4. For replies, the adapter stores the sender's scene context (C2C / Group /
+   Guild / DM) and routes `send()` calls to the correct QQ API endpoint.
+
 
 ## Writing Custom Adapters
 

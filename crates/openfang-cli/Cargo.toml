@@ -32,3 +32,4 @@ uuid = { workspace = true }
 ratatui = { workspace = true }
 colored = { workspace = true }
 tempfile = { workspace = true }
+rustls = { workspace = true }

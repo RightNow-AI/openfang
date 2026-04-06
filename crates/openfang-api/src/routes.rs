@@ -2208,6 +2208,28 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         setup_steps: &["Create a WeCom application at work.weixin.qq.com", "Get Corp ID, Agent ID, and Secret", "Configure callback URL to your webhook endpoint"],
         config_template: "[channels.wecom]\ncorp_id = \"\"\nagent_id = \"\"\nsecret_env = \"WECOM_SECRET\"",
     },
+    ChannelMeta {
+        name: "qq", display_name: "QQ", icon: "QQ",
+        description: "QQ Open Platform bot adapter (supports C2C, Group, Guild, and DM)",
+        category: "messaging", difficulty: "Medium", setup_time: "~5 min",
+        quick_setup: "Paste your App ID and App Client Secret from the QQ Open Platform",
+        setup_type: "form",
+        fields: &[
+            ChannelField { key: "app_id", label: "App ID", field_type: FieldType::Text, env_var: None, required: true, placeholder: "your_app_id", advanced: false },
+            ChannelField { key: "client_secret_env", label: "App Client Secret", field_type: FieldType::Secret, env_var: Some("QQ_CLIENT_SECRET"), required: true, placeholder: "your_client_secret", advanced: false },
+            ChannelField { key: "transport_mode", label: "Transport Mode", field_type: FieldType::Text, env_var: None, required: false, placeholder: "websocket|webhook|both", advanced: false },
+            ChannelField { key: "webhook_port", label: "Webhook Port", field_type: FieldType::Number, env_var: None, required: false, placeholder: "8465", advanced: true },
+            ChannelField { key: "webhook_path", label: "Webhook Path", field_type: FieldType::Text, env_var: None, required: false, placeholder: "/qqbot/webhook", advanced: true },
+            ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
+        ],
+        setup_steps: &[
+            "Create a bot at https://q.qq.com (QQ Open Platform)",
+            "Copy App ID and App Client Secret",
+            "Set the App Client Secret env var: export QQ_CLIENT_SECRET=<your_client_secret>",
+            "For webhook mode, expose port 8465 publicly and configure the callback URL",
+        ],
+        config_template: "[channels.qq]\napp_id = \"\"\nclient_secret_env = \"QQ_CLIENT_SECRET\"\ntransport_mode = \"websocket\"",
+    },
 ];
 
 /// Check if a channel is configured (has a `[channels.xxx]` section in config).
@@ -2255,6 +2277,7 @@ fn is_channel_configured(config: &openfang_types::config::ChannelsConfig, name: 
         "webhook" => config.webhook.is_some(),
         "mumble" => config.mumble.is_some(),
         "wecom" => config.wecom.is_some(),
+        "qq" => config.qq.is_some(),
         _ => false,
     }
 }
@@ -2507,6 +2530,10 @@ fn channel_config_values(
             .and_then(|c| serde_json::to_value(c).ok()),
         "wecom" => config
             .wecom
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c).ok()),
+        "qq" => config
+            .qq
             .as_ref()
             .and_then(|c| serde_json::to_value(c).ok()),
         _ => None,

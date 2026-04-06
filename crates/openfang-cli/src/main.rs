@@ -895,6 +895,11 @@ fn write_stdout_safe(msg: &str) {
 }
 
 fn main() {
+    // Install ring as the rustls CryptoProvider before any TLS connections are made.
+    // Both aws-lc-rs and ring are in the dependency tree (via reqwest and tokio-tungstenite),
+    // so rustls 0.23+ cannot auto-detect; we must install explicitly.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Load ~/.openfang/.env into process environment (system env takes priority).
     dotenv::load_dotenv();
 

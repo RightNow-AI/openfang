@@ -79,6 +79,7 @@ prost = "0.13"
 
 # WebSocket client (for Discord/Slack gateway)
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+rustls = { version = "0.23", features = ["ring"] }
 url = "2"
 
 # WASM sandbox

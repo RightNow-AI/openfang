@@ -54,6 +54,7 @@ use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_channels::wecom::WeComAdapter;
+use openfang_channels::qq::QqAdapter;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::agent::AgentId;
 use std::sync::Arc;
@@ -108,6 +109,42 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             .await
             .map_err(|e| format!("{e}"))?;
         Ok(result.response)
+    }
+
+    async fn stream_message(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<openfang_channels::bridge::ChannelStreamEvent>, String> {
+        use openfang_channels::bridge::ChannelStreamEvent;
+        use openfang_runtime::llm_driver::StreamEvent;
+
+        let (llm_rx, _handle) = self
+            .kernel
+            .send_message_streaming(agent_id, message, None, None, None, None)
+            .map_err(|e| format!("{e}"))?;
+
+        let (out_tx, out_rx) = tokio::sync::mpsc::channel::<ChannelStreamEvent>(256);
+
+        tokio::spawn(async move {
+            let mut llm_rx = llm_rx;
+            while let Some(ev) = llm_rx.recv().await {
+                match ev {
+                    StreamEvent::TextDelta { text } => {
+                        if out_tx.send(ChannelStreamEvent::TextChunk(text)).await.is_err() {
+                            break;
+                        }
+                    }
+                    StreamEvent::ContentComplete { .. } => {
+                        let _ = out_tx.send(ChannelStreamEvent::Done).await;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        Ok(out_rx)
     }
 
     async fn find_agent_by_name(&self, name: &str) -> Result<Option<AgentId>, String> {
@@ -812,6 +849,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             "linkedin" => channels.linkedin.as_ref().map(|c| c.overrides.clone()),
             "wecom" => channels.wecom.as_ref().map(|c| c.overrides.clone()),
             "mqtt" => channels.mqtt.as_ref().map(|c| c.overrides.clone()),
+            "qq" => channels.qq.as_ref().map(|c| c.overrides.clone()),
             _ => None,
         }
     }
@@ -1023,13 +1061,18 @@ fn parse_trigger_pattern(s: &str) -> Option<openfang_kernel::triggers::TriggerPa
 /// Otherwise treat it as an env var name and look it up.
 fn read_token(env_var_or_token: &str, adapter_name: &str) -> Option<String> {
     // Heuristic: actual tokens contain `:` (Telegram, Discord) or start with
-    // known prefixes. Env var names are uppercase ASCII identifiers.
+    // known prefixes, or are clearly not an env var name.
+    // Env var names are conventionally UPPER_SNAKE_CASE — all-caps, digits, underscores.
+    // Any value that contains lowercase letters is NOT a valid env var name and must
+    // be a direct secret value (e.g. QQ client secrets, base64 tokens, etc.).
+    let has_lowercase = env_var_or_token.chars().any(|c| c.is_ascii_lowercase());
     let looks_like_token = env_var_or_token.contains(':')
         || env_var_or_token.starts_with("xoxb-")
         || env_var_or_token.starts_with("xapp-")
         || env_var_or_token.starts_with("sk-")
         || env_var_or_token.starts_with("Bearer ")
-        || env_var_or_token.len() > 80; // Long random strings are tokens, not env var names
+        || env_var_or_token.len() > 80 // Long random strings are tokens, not env var names
+        || has_lowercase; // Env var names are UPPER_SNAKE_CASE — lowercase means it's a value
 
     if looks_like_token {
         warn!(
@@ -1061,6 +1104,34 @@ fn read_token(env_var_or_token: &str, adapter_name: &str) -> Option<String> {
 /// Returns `Some(BridgeManager)` if any channels were configured and started,
 /// or `None` if no channels are configured.
 pub async fn start_channel_bridge(kernel: Arc<OpenFangKernel>) -> Option<BridgeManager> {
+    // Load secrets.env at startup so tokens in that file are available
+    // to read_token() calls just as they are during hot-reload.
+    let secrets_path = kernel.config.home_dir.join("secrets.env");
+    if secrets_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&secrets_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some(eq_pos) = trimmed.find('=') {
+                    let key = trimmed[..eq_pos].trim();
+                    let mut value = trimmed[eq_pos + 1..].trim().to_string();
+                    if !key.is_empty() {
+                        if ((value.starts_with('"') && value.ends_with('"'))
+                            || (value.starts_with('\'') && value.ends_with('\'')))
+                            && value.len() >= 2
+                        {
+                            value = value[1..value.len() - 1].to_string();
+                        }
+                        std::env::set_var(key, &value);
+                    }
+                }
+            }
+            tracing::info!("Loaded secrets.env at channel bridge startup");
+        }
+    }
+
     let channels = kernel.config.channels.clone();
     let (bridge, _names) = start_channel_bridge_with_config(kernel, &channels).await;
     bridge
@@ -1116,7 +1187,11 @@ pub async fn start_channel_bridge_with_config(
         || config.ntfy.is_some()
         || config.gotify.is_some()
         || config.webhook.is_some()
-        || config.linkedin.is_some();
+        || config.linkedin.is_some()
+        // Consumer China / IoT
+        || config.wecom.is_some()
+        || config.mqtt.is_some()
+        || config.qq.is_some();
 
     if !has_any {
         return (None, Vec::new());
@@ -1699,6 +1774,38 @@ pub async fn start_channel_bridge_with_config(
         adapters.push((adapter, mq_config.default_agent.clone()));
     }
 
+    // QQ Open Platform
+    if let Some(ref qq_config) = config.qq {
+        // Prefer the inline `client_secret` field; fall back to env var lookup.
+        // Resolution order (mirrors the reference rust-qqbot which hardcodes QQ_CLIENT_SECRET):
+        //   1. Inline client_secret in config
+        //   2. Env var named by client_secret_env (default: QQ_CLIENT_SECRET)
+        //   3. Always try QQ_CLIENT_SECRET as the canonical fallback
+        let qq_secret = if !qq_config.client_secret.is_empty() {
+            Some(qq_config.client_secret.clone())
+        } else if let Some(secret) = read_token(&qq_config.client_secret_env, "QQ") {
+            Some(secret)
+        } else if qq_config.client_secret_env != "QQ_CLIENT_SECRET" {
+            // canonical fallback — reference always reads QQ_CLIENT_SECRET directly
+            std::env::var("QQ_CLIENT_SECRET").ok().filter(|t| !t.is_empty())
+        } else {
+            None
+        };
+        if let Some(secret) = qq_secret {
+            match QqAdapter::new(
+                qq_config.app_id.clone(),
+                secret,
+                &qq_config.transport_mode,
+                qq_config.webhook_port,
+                qq_config.webhook_path.clone(),
+                qq_config.streaming,
+            ) {
+                Ok(adapter) => adapters.push((Arc::new(adapter), qq_config.default_agent.clone())),
+                Err(e) => tracing::warn!("Failed to create QQ adapter: {e}"),
+            }
+        }
+    }
+
     if adapters.is_empty() {
         return (None, Vec::new());
     }
@@ -1896,6 +2003,7 @@ mod tests {
         // Wave 5
         assert!(config.channels.mumble.is_none());
         assert!(config.channels.dingtalk.is_none());
+        assert!(config.channels.qq.is_none());
         assert!(config.channels.discourse.is_none());
         assert!(config.channels.gitter.is_none());
         assert!(config.channels.ntfy.is_none());

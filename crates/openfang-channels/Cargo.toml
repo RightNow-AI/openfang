@@ -33,6 +33,10 @@ hex = { workspace = true }
 html-escape = { workspace = true }
 regex-lite = "0.1"
 roxmltree = "0.21"
+anyhow = { workspace = true }
+ed25519-dalek = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = "0.15"
 
 lettre = { workspace = true }
 imap = { workspace = true }

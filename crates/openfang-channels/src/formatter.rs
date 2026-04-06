@@ -513,54 +513,12 @@ fn markdown_to_wecom_plain(text: &str) -> String {
 }
 
 /// Strip all Markdown formatting, producing plain text.
+///
+/// Delegates to `markdown_to_wecom_plain` which handles the full set of
+/// markdown constructs: headings, horizontal rules, blockquotes, fenced code
+/// blocks, tables, bold/italic/inline-code, and links.
 fn markdown_to_plain(text: &str) -> String {
-    let mut result = text.to_string();
-
-    // Remove bold markers
-    result = result.replace("**", "");
-
-    // Remove italic markers (single *)
-    // Simple approach: remove isolated *
-    let mut out = String::with_capacity(result.len());
-    let chars: Vec<char> = result.chars().collect();
-    for (i, &ch) in chars.iter().enumerate() {
-        if ch == '*'
-            && (i == 0 || chars[i - 1] != '*')
-            && (i + 1 >= chars.len() || chars[i + 1] != '*')
-        {
-            continue;
-        }
-        out.push(ch);
-    }
-    result = out;
-
-    // Remove inline code markers
-    result = result.replace('`', "");
-
-    // Convert links: [text](url) → text (url)
-    while let Some(bracket_start) = result.find('[') {
-        if let Some(bracket_end) = result[bracket_start..].find("](") {
-            let bracket_end = bracket_start + bracket_end;
-            if let Some(paren_end) = result[bracket_end + 2..].find(')') {
-                let paren_end = bracket_end + 2 + paren_end;
-                let link_text = &result[bracket_start + 1..bracket_end];
-                let url = &result[bracket_end + 2..paren_end];
-                result = format!(
-                    "{}{} ({}){}",
-                    &result[..bracket_start],
-                    link_text,
-                    url,
-                    &result[paren_end + 1..]
-                );
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-
-    result
+    markdown_to_wecom_plain(text)
 }
 
 #[cfg(test)]

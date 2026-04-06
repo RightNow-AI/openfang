@@ -1725,6 +1725,8 @@ pub struct ChannelsConfig {
     pub wecom: Option<WeComConfig>,
     /// MQTT pub/sub configuration (None = disabled).
     pub mqtt: Option<MqttConfig>,
+    /// QQ Open Platform bot configuration (None = disabled).
+    pub qq: Option<QqConfig>,
 }
 
 /// Telegram channel adapter configuration.
@@ -2553,6 +2555,62 @@ impl Default for WeComConfig {
         }
     }
 }
+/// QQ Open Platform bot configuration.
+///
+/// Supports the official QQ Bot API (bots.qq.com) with WebSocket gateway,
+/// HTTP webhook, or both transport modes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QqConfig {
+    /// QQ Bot App ID from the QQ Open Platform console.
+    pub app_id: String,
+    /// Inline App Client Secret from the QQ Open Platform console.
+    /// If set, takes precedence over `client_secret_env`.
+    #[serde(default, alias = "app_secret")]
+    pub client_secret: String,
+    /// Env var name holding the App Client Secret.
+    /// Ignored when `client_secret` is non-empty.
+    #[serde(alias = "app_secret_env")]
+    pub client_secret_env: String,
+    /// Transport mode: `"websocket"` (default), `"webhook"`, or `"both"`.
+    pub transport_mode: String,
+    /// TCP port for the inbound webhook HTTP server (webhook/both modes).
+    pub webhook_port: u16,
+    /// URL path for the inbound webhook (webhook/both modes).
+    pub webhook_path: String,
+    /// Default agent name to route messages to.
+    pub default_agent: Option<String>,
+    /// Enable streaming delivery: the LLM response is pushed to the user as
+    /// sentence-boundary chunks rather than waiting for the full reply.
+    ///
+    /// **Defaults to `false`** because QQ has no message-edit API — each chunk
+    /// would create a separate message bubble, which is terrible UX.  Only enable
+    /// this on platforms that support in-place message editing (Telegram, Discord,
+    /// Slack).  For QQ you almost always want the default `false` so the full
+    /// response arrives as a single message.
+    #[serde(default)]
+    pub streaming: bool,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for QqConfig {
+    fn default() -> Self {
+        Self {
+            app_id: String::new(),
+            client_secret: String::new(),
+            client_secret_env: "QQ_CLIENT_SECRET".to_string(),
+            transport_mode: "websocket".to_string(),
+            webhook_port: 8465,
+            webhook_path: "/qqbot/webhook".to_string(),
+            default_agent: None,
+            streaming: false,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
 
 /// MQTT channel adapter configuration.
 ///
@@ -3572,6 +3630,22 @@ impl KernelConfig {
                 warnings.push(format!(
                     "LinkedIn configured but {} is not set",
                     li.access_token_env
+                ));
+            }
+        }
+        if let Some(ref qq) = self.channels.qq {
+            if qq.app_id.is_empty() {
+                warnings.push("QQ configured but app_id is empty".to_string());
+            }
+            // Accept either an inline client_secret or a non-empty env var.
+            let has_secret = !qq.client_secret.is_empty()
+                || !std::env::var(&qq.client_secret_env)
+                    .unwrap_or_default()
+                    .is_empty();
+            if !has_secret {
+                warnings.push(format!(
+                    "QQ configured but neither client_secret nor env var {} is set",
+                    qq.client_secret_env
                 ));
             }
         }

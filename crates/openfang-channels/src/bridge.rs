@@ -21,6 +21,17 @@ use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
+/// An incremental event from a streaming agent response, delivered to a channel.
+#[derive(Debug)]
+pub enum ChannelStreamEvent {
+    /// A chunk of text (one or more tokens, up to a sentence boundary).
+    TextChunk(String),
+    /// The response stream completed successfully.
+    Done,
+    /// The response stream ended with an error.
+    Error(String),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChatCommandSpec {
     pub name: &'static str,
@@ -119,6 +130,23 @@ pub trait ChannelBridgeHandle: Send + Sync {
             .collect::<Vec<_>>()
             .join("\n");
         self.send_message(agent_id, &text).await
+    }
+
+    /// Stream a message to an agent, delivering incremental text chunks via an mpsc
+    /// receiver.  The final `Done` event signals the complete response.
+    ///
+    /// The default implementation wraps `send_message()` — the full text is emitted
+    /// as a single `TextChunk` followed by `Done`.  Override for true LLM streaming.
+    async fn stream_message(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<ChannelStreamEvent>, String> {
+        let text = self.send_message(agent_id, message).await?;
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let _ = tx.send(ChannelStreamEvent::TextChunk(text)).await;
+        let _ = tx.send(ChannelStreamEvent::Done).await;
+        Ok(rx)
     }
 
     /// Find an agent by name, returning its ID.
@@ -512,11 +540,138 @@ async fn send_response(
     }
 }
 
+/// Drive a streaming agent response to a channel adapter.
+///
+/// Collects `ChannelStreamEvent`s from the bridge handle, buffers them at
+/// sentence/paragraph boundaries, and calls `send_response()` for each
+/// flushed chunk. Aborts the typing task and fires lifecycle reactions on
+/// completion or error.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_streaming(
+    message: &ChannelMessage,
+    handle: &Arc<dyn ChannelBridgeHandle>,
+    adapter: &dyn ChannelAdapter,
+    agent_id: AgentId,
+    ct_str: &str,
+    text: &str,
+    typing_task: tokio::task::JoinHandle<()>,
+    thread_id: Option<&str>,
+    output_format: OutputFormat,
+    lifecycle_reactions: bool,
+) {
+    let msg_id = &message.platform_message_id;
+
+    let mut rx = match handle.stream_message(agent_id, text).await {
+        Ok(rx) => rx,
+        Err(e) => {
+            typing_task.abort();
+            if lifecycle_reactions {
+                send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Error).await;
+            }
+            let err_msg = sanitize_agent_error(&e.to_string());
+            if !adapter.suppress_error_responses() {
+                send_response(adapter, &message.sender, err_msg.clone(), thread_id, output_format).await;
+            }
+            handle.record_delivery(agent_id, ct_str, &message.sender.platform_id, false, Some(&err_msg), thread_id).await;
+            return;
+        }
+    };
+
+    // Sentence-boundary chunk buffering constants.
+    // MIN: wait for at least this many chars before flushing at a sentence end.
+    // MAX: always flush when the buffer reaches this size (hard cap per message).
+    // TIMEOUT: flush whatever is buffered if no new tokens arrive for this duration.
+    const MIN_FLUSH_LEN: usize = 100;
+    const MAX_FLUSH_LEN: usize = 500;
+    const FLUSH_TIMEOUT_SECS: u64 = 8;
+
+    let mut buffer = String::new();
+
+    loop {
+        tokio::select! {
+            maybe_ev = rx.recv() => {
+                match maybe_ev {
+                    Some(ChannelStreamEvent::TextChunk(chunk)) => {
+                        buffer.push_str(&chunk);
+                        if should_stream_flush(&buffer, MIN_FLUSH_LEN, MAX_FLUSH_LEN) {
+                            let chunk_text = std::mem::take(&mut buffer);
+                            send_response(adapter, &message.sender, chunk_text, thread_id, output_format).await;
+                        }
+                    }
+                    Some(ChannelStreamEvent::Done) | None => {
+                        // Flush remaining partial content.
+                        let remaining = std::mem::take(&mut buffer);
+                        if !remaining.trim().is_empty() {
+                            send_response(adapter, &message.sender, remaining, thread_id, output_format).await;
+                        }
+                        break;
+                    }
+                    Some(ChannelStreamEvent::Error(e)) => {
+                        // Flush any already-received partial content, then report error.
+                        let partial = std::mem::take(&mut buffer);
+                        if !partial.trim().is_empty() {
+                            send_response(adapter, &message.sender, partial, thread_id, output_format).await;
+                        }
+                        typing_task.abort();
+                        if lifecycle_reactions {
+                            send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Error).await;
+                        }
+                        let err_msg = sanitize_agent_error(&e);
+                        if !adapter.suppress_error_responses() {
+                            send_response(adapter, &message.sender, err_msg.clone(), thread_id, output_format).await;
+                        }
+                        handle.record_delivery(agent_id, ct_str, &message.sender.platform_id, false, Some(&err_msg), thread_id).await;
+                        return;
+                    }
+                }
+            }
+            // Flush timeout: send whatever is buffered to avoid prolonged silence.
+            _ = tokio::time::sleep(Duration::from_secs(FLUSH_TIMEOUT_SECS)) => {
+                let partial = std::mem::take(&mut buffer);
+                if !partial.trim().is_empty() {
+                    send_response(adapter, &message.sender, partial, thread_id, output_format).await;
+                }
+            }
+        }
+    }
+
+    typing_task.abort();
+    if lifecycle_reactions {
+        send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;
+    }
+    handle.record_delivery(agent_id, ct_str, &message.sender.platform_id, true, None, thread_id).await;
+}
+
+/// Returns `true` when the streaming buffer should be flushed to the channel.
+///
+/// Flushes at:
+/// - Paragraph breaks (`\n\n`) — strong sentence boundary.
+/// - Sentence-terminating punctuation (`.` / `!` / `?`) at the trimmed end of the
+///   buffer, when the buffer has reached `min_len` characters.
+/// - Hard maximum (`max_len`) regardless of content — prevents indefinitely large chunks.
+fn should_stream_flush(buffer: &str, min_len: usize, max_len: usize) -> bool {
+    if buffer.len() >= max_len {
+        return true;
+    }
+    if buffer.len() < min_len {
+        return false;
+    }
+    // Paragraph break is a strong flush signal.
+    if buffer.contains("\n\n") {
+        return true;
+    }
+    // Flush at the end of a sentence.
+    let trimmed = buffer.trim_end();
+    matches!(trimmed.chars().last(), Some('.') | Some('!') | Some('?'))
+}
+
 fn default_output_format_for_channel(channel_type: &str) -> OutputFormat {
     match channel_type {
         "telegram" => OutputFormat::TelegramHtml,
         "slack" => OutputFormat::SlackMrkdwn,
-        "wecom" => OutputFormat::PlainText,
+        // QQ Open Platform renders msg_type=0 (plain text) — markdown syntax
+        // would appear as raw characters. Strip to plain text by default.
+        "wecom" | "qq" => OutputFormat::PlainText,
         _ => OutputFormat::Markdown,
     }
 }
@@ -963,6 +1118,25 @@ async fn dispatch_message(
     } else {
         text.clone()
     };
+
+    // Streaming path: for adapters that support progressive delivery, push chunks
+    // to the user as the LLM generates them rather than waiting for the full response.
+    if adapter.supports_streaming() {
+        dispatch_streaming(
+            message,
+            handle,
+            adapter,
+            agent_id,
+            ct_str,
+            &prefixed_text,
+            typing_task,
+            thread_id,
+            output_format,
+            lifecycle_reactions,
+        )
+        .await;
+        return;
+    }
 
     // Send to agent and relay response
     let result = handle.send_message(agent_id, &prefixed_text).await;
@@ -1926,6 +2100,10 @@ mod tests {
         );
         assert_eq!(
             default_output_format_for_channel("wecom"),
+            OutputFormat::PlainText
+        );
+        assert_eq!(
+            default_output_format_for_channel("qq"),
             OutputFormat::PlainText
         );
         assert_eq!(
