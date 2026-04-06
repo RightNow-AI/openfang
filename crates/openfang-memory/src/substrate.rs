@@ -2,134 +2,235 @@
 //!
 //! Composes the structured store, semantic store, knowledge store,
 //! session store, and consolidation engine behind a single async API.
+//!
+//! Backends are selected via `MemoryConfig::backend`:
+//! - `"sqlite"` (default): all stores backed by a shared SQLite connection
+//! - `"http"`: semantic store routes to HTTP gateway, everything else SQLite
+//! - `"postgres"`: all stores backed by PostgreSQL + pgvector
+//! - `"qdrant"`: semantic via Qdrant, everything else SQLite
+//! - `"postgres+qdrant"`: structured/sessions/usage via PostgreSQL, semantic via Qdrant
+//!
+//! This file is 100% backend-agnostic — zero rusqlite imports.
 
-use crate::consolidation::ConsolidationEngine;
-use crate::knowledge::KnowledgeStore;
-use crate::migration::run_migrations;
-use crate::semantic::SemanticStore;
-use crate::session::{Session, SessionStore};
-use crate::structured::StructuredStore;
-use crate::usage::UsageStore;
+use crate::backends::{
+    AuditBackend, ConsolidationBackend, PairedDevicesBackend, SessionBackend, TaskQueueBackend,
+    UsageBackend,
+};
+use crate::session::Session;
 
 use async_trait::async_trait;
 use openfang_types::agent::{AgentEntry, AgentId, SessionId};
 use openfang_types::config::MemoryConfig;
+use openfang_types::embedding::EmbeddingDriver;
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::memory::{
     ConsolidationReport, Entity, ExportFormat, GraphMatch, GraphPattern, ImportReport, Memory,
     MemoryFilter, MemoryFragment, MemoryId, MemorySource, Relation,
 };
-use rusqlite::Connection;
+use openfang_types::storage::{KnowledgeBackend, SemanticBackend, StructuredBackend};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing::{info, warn};
 
 /// The unified memory substrate. Implements the `Memory` trait by delegating
-/// to specialized stores backed by a shared SQLite connection.
+/// to specialized stores backed by pluggable backends.
+///
+/// When an `EmbeddingDriver` is set, `remember()` and `recall()` automatically
+/// generate embeddings — callers don't need to handle embedding themselves.
 pub struct MemorySubstrate {
-    conn: Arc<Mutex<Connection>>,
-    structured: StructuredStore,
-    semantic: SemanticStore,
-    knowledge: KnowledgeStore,
-    sessions: SessionStore,
-    consolidation: ConsolidationEngine,
-    usage: UsageStore,
+    structured: Arc<dyn StructuredBackend>,
+    semantic: Arc<dyn SemanticBackend>,
+    knowledge: Arc<dyn KnowledgeBackend>,
+    sessions: Arc<dyn SessionBackend>,
+    usage: Arc<dyn UsageBackend>,
+    paired_devices: Arc<dyn PairedDevicesBackend>,
+    task_queue: Arc<dyn TaskQueueBackend>,
+    consolidation: Option<Arc<dyn ConsolidationBackend>>,
+    audit: Option<Arc<dyn AuditBackend>>,
+    embedding_driver: Option<Arc<dyn EmbeddingDriver>>,
 }
 
 impl MemorySubstrate {
-    /// Open or create a memory substrate at the given database path.
+    /// Open or create a memory substrate.
     ///
-    /// When `memory_config.backend == "http"` and `http_url`/`http_token_env` are set,
-    /// the semantic store routes `remember`/`recall` to the memory-api gateway.
-    /// All other stores (KV, knowledge graph, sessions) remain local SQLite.
+    /// `backend` selects structured/session/usage/etc. storage: `"sqlite"` or `"postgres"`.
+    /// `semantic_backend` selects vector search independently: `"sqlite"`, `"postgres"`, `"qdrant"`, or `"http"`.
+    /// When `semantic_backend` is not set, it follows the main `backend`.
     pub fn open(
         db_path: &Path,
         decay_rate: f32,
         memory_config: &MemoryConfig,
     ) -> OpenFangResult<Self> {
-        let conn = Connection::open(db_path).map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        run_migrations(&conn).map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        let shared = Arc::new(Mutex::new(conn));
+        #[cfg(feature = "postgres")]
+        if memory_config.backend == "postgres" {
+            return Self::open_postgres(memory_config, decay_rate);
+        }
 
-        let semantic = Self::create_semantic_store(Arc::clone(&shared), memory_config);
+        Self::open_sqlite(db_path, decay_rate, memory_config)
+    }
+
+    /// Open a SQLite-backed memory substrate.
+    fn open_sqlite(
+        db_path: &Path,
+        decay_rate: f32,
+        memory_config: &MemoryConfig,
+    ) -> OpenFangResult<Self> {
+        let backend = crate::sqlite::SqliteBackend::open(db_path)?;
+        let default_semantic: Arc<dyn SemanticBackend> = Arc::new(backend.semantic());
+        let semantic = Self::select_semantic(memory_config, default_semantic)?;
 
         Ok(Self {
-            conn: Arc::clone(&shared),
-            structured: StructuredStore::new(Arc::clone(&shared)),
+            structured: Arc::new(backend.structured()),
             semantic,
-            knowledge: KnowledgeStore::new(Arc::clone(&shared)),
-            sessions: SessionStore::new(Arc::clone(&shared)),
-            usage: UsageStore::new(Arc::clone(&shared)),
-            consolidation: ConsolidationEngine::new(shared, decay_rate),
+            knowledge: Arc::new(backend.knowledge()),
+            sessions: Arc::new(backend.session()),
+            usage: Arc::new(backend.usage()),
+            paired_devices: Arc::new(backend.paired_devices()),
+            task_queue: Arc::new(backend.task_queue()),
+            consolidation: Some(Arc::new(backend.consolidation(decay_rate))),
+            audit: Some(Arc::new(backend.audit())),
+            embedding_driver: None,
         })
     }
 
-    /// Create the semantic store, optionally with HTTP backend.
-    fn create_semantic_store(
-        conn: Arc<Mutex<Connection>>,
-        memory_config: &MemoryConfig,
-    ) -> SemanticStore {
-        #[cfg(feature = "http-memory")]
-        if memory_config.backend == "http" {
-            if let (Some(url), Some(token_env)) =
-                (&memory_config.http_url, &memory_config.http_token_env)
-            {
-                match crate::http_client::MemoryApiClient::new(url, token_env) {
-                    Ok(client) => {
-                        // Best-effort health check on startup
-                        match client.health_check() {
-                            Ok(()) => info!(url = %url, "HTTP memory backend connected"),
-                            Err(e) => {
-                                warn!(url = %url, error = %e, "HTTP memory backend health check failed, will retry on use")
-                            }
-                        }
-                        return SemanticStore::new_with_http(conn, client);
+    /// Open a PostgreSQL-backed memory substrate.
+    #[cfg(feature = "postgres")]
+    fn open_postgres(memory_config: &MemoryConfig, decay_rate: f32) -> OpenFangResult<Self> {
+        let pg_url = memory_config.postgres_url.as_deref().ok_or_else(|| {
+            OpenFangError::Memory("postgres backend requires postgres_url in config".to_string())
+        })?;
+        let pool = crate::postgres::create_pool(pg_url, memory_config.postgres_pool_size)?;
+
+        tokio::runtime::Handle::current()
+            .block_on(crate::postgres::run_migrations(&pool))?;
+
+        info!(url = %pg_url, pool_size = memory_config.postgres_pool_size, "PostgreSQL memory backend connected");
+
+        let backend = crate::postgres::PgBackend::new(pool);
+        let default_semantic: Arc<dyn SemanticBackend> = Arc::new(backend.semantic());
+        let semantic = Self::select_semantic(memory_config, default_semantic)?;
+
+        Ok(Self {
+            structured: Arc::new(backend.structured()),
+            semantic,
+            knowledge: Arc::new(backend.knowledge()),
+            sessions: Arc::new(backend.session()),
+            usage: Arc::new(backend.usage()),
+            paired_devices: Arc::new(backend.paired_devices()),
+            task_queue: Arc::new(backend.task_queue()),
+            consolidation: Some(Arc::new(backend.consolidation().with_decay_rate(decay_rate))),
+            audit: Some(Arc::new(backend.audit())),
+            embedding_driver: None,
+        })
+    }
+
+    /// Select the semantic backend based on `semantic_backend` config.
+    /// Falls back to the main `backend` if `semantic_backend` is not set.
+    fn select_semantic(
+        config: &MemoryConfig,
+        default: Arc<dyn SemanticBackend>,
+    ) -> OpenFangResult<Arc<dyn SemanticBackend>> {
+        let sem = config
+            .semantic_backend
+            .as_deref()
+            .unwrap_or(config.backend.as_str());
+
+        match sem {
+            #[cfg(feature = "qdrant")]
+            "qdrant" => {
+                let url = config.qdrant_url.as_deref().unwrap_or("http://localhost:6334");
+                let api_key = config
+                    .qdrant_api_key_env
+                    .as_deref()
+                    .and_then(|env_var| std::env::var(env_var).ok());
+                match crate::qdrant::QdrantSemanticStore::new(
+                    url,
+                    api_key.as_deref(),
+                    &config.qdrant_collection,
+                ) {
+                    Ok(store) => {
+                        info!(url = %url, collection = %config.qdrant_collection, "Qdrant semantic backend");
+                        Ok(Arc::new(store))
                     }
                     Err(e) => {
-                        warn!(error = %e, "Failed to create HTTP memory client, falling back to SQLite");
+                        warn!(error = %e, "Qdrant unavailable, using default semantic backend");
+                        Ok(default)
                     }
                 }
-            } else {
-                warn!("backend=http but http_url/http_token_env not set, falling back to SQLite");
             }
+            #[cfg(feature = "http-memory")]
+            "http" => {
+                let (url, token_env) = match (&config.http_url, &config.http_token_env) {
+                    (Some(u), Some(t)) => (u, t),
+                    _ => {
+                        warn!("semantic_backend=http but http_url/http_token_env not set, using default");
+                        return Ok(default);
+                    }
+                };
+                match crate::http::MemoryApiClient::new(url, token_env) {
+                    Ok(client) => {
+                        match client.health_check() {
+                            Ok(()) => info!(url = %url, "HTTP semantic backend connected"),
+                            Err(e) => warn!(url = %url, error = %e, "HTTP semantic health check failed, will retry"),
+                        }
+                        Ok(Arc::new(crate::http::HttpSemanticStore::new(client, default)))
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "HTTP client failed, using default semantic backend");
+                        Ok(default)
+                    }
+                }
+            }
+            _ => Ok(default),
         }
-
-        #[cfg(not(feature = "http-memory"))]
-        let _ = memory_config;
-
-        SemanticStore::new(conn)
     }
 
     /// Create an in-memory substrate (for testing). Always uses SQLite backend.
     pub fn open_in_memory(decay_rate: f32) -> OpenFangResult<Self> {
-        let conn =
-            Connection::open_in_memory().map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        run_migrations(&conn).map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        let shared = Arc::new(Mutex::new(conn));
+        let backend = crate::sqlite::SqliteBackend::open_in_memory()?;
 
         Ok(Self {
-            conn: Arc::clone(&shared),
-            structured: StructuredStore::new(Arc::clone(&shared)),
-            semantic: SemanticStore::new(Arc::clone(&shared)),
-            knowledge: KnowledgeStore::new(Arc::clone(&shared)),
-            sessions: SessionStore::new(Arc::clone(&shared)),
-            usage: UsageStore::new(Arc::clone(&shared)),
-            consolidation: ConsolidationEngine::new(shared, decay_rate),
+            structured: Arc::new(backend.structured()),
+            semantic: Arc::new(backend.semantic()),
+            knowledge: Arc::new(backend.knowledge()),
+            sessions: Arc::new(backend.session()),
+            usage: Arc::new(backend.usage()),
+            paired_devices: Arc::new(backend.paired_devices()),
+            task_queue: Arc::new(backend.task_queue()),
+            consolidation: Some(Arc::new(backend.consolidation(decay_rate))),
+            audit: Some(Arc::new(backend.audit())),
+            embedding_driver: None,
         })
     }
 
-    /// Get a reference to the usage store.
-    pub fn usage(&self) -> &UsageStore {
-        &self.usage
+    /// Set the embedding driver for automatic embedding generation.
+    pub fn set_embedding_driver(&mut self, driver: Option<Arc<dyn EmbeddingDriver>>) {
+        self.embedding_driver = driver;
     }
 
-    /// Get the shared database connection (for constructing stores from outside).
-    pub fn usage_conn(&self) -> Arc<Mutex<Connection>> {
-        Arc::clone(&self.conn)
+    // -----------------------------------------------------------------
+    // Usage accessors
+    // -----------------------------------------------------------------
+
+    /// Get a reference to the usage backend.
+    pub fn usage(&self) -> &dyn UsageBackend {
+        self.usage.as_ref()
     }
+
+    /// Get a shared-ownership handle to the usage backend.
+    pub fn usage_arc(&self) -> Arc<dyn UsageBackend> {
+        Arc::clone(&self.usage)
+    }
+
+    /// Get the audit backend, if available.
+    pub fn audit(&self) -> Option<Arc<dyn AuditBackend>> {
+        self.audit.clone()
+    }
+
+    // -----------------------------------------------------------------
+    // Agent persistence
+    // -----------------------------------------------------------------
 
     /// Save an agent entry to persistent storage.
     pub fn save_agent(&self, entry: &AgentEntry) -> OpenFangResult<()> {
@@ -157,6 +258,10 @@ impl MemorySubstrate {
     pub fn list_agents(&self) -> OpenFangResult<Vec<(String, String, String)>> {
         self.structured.list_agents()
     }
+
+    // -----------------------------------------------------------------
+    // Structured KV store
+    // -----------------------------------------------------------------
 
     /// Synchronous get from the structured store (for kernel handle use).
     pub fn structured_get(
@@ -187,6 +292,10 @@ impl MemorySubstrate {
         self.structured.set(agent_id, key, value)
     }
 
+    // -----------------------------------------------------------------
+    // Session operations
+    // -----------------------------------------------------------------
+
     /// Get a session by ID.
     pub fn get_session(&self, session_id: SessionId) -> OpenFangResult<Option<Session>> {
         self.sessions.get_session(session_id)
@@ -197,10 +306,10 @@ impl MemorySubstrate {
         self.sessions.save_session(session)
     }
 
-    /// Save a session asynchronously — runs the SQLite write in a blocking
+    /// Save a session asynchronously — runs the write in a blocking
     /// thread so the tokio runtime stays responsive.
     pub async fn save_session_async(&self, session: &Session) -> OpenFangResult<()> {
-        let sessions = self.sessions.clone();
+        let sessions = Arc::clone(&self.sessions);
         let session = session.clone();
         tokio::task::spawn_blocking(move || sessions.save_session(&session))
             .await
@@ -290,18 +399,6 @@ impl MemorySubstrate {
             .store_llm_summary(agent_id, summary, kept_messages)
     }
 
-    /// Write a human-readable JSONL mirror of a session to disk.
-    ///
-    /// Best-effort — errors are returned but should be logged,
-    /// never affecting the primary SQLite store.
-    pub fn write_jsonl_mirror(
-        &self,
-        session: &Session,
-        sessions_dir: &Path,
-    ) -> Result<(), std::io::Error> {
-        self.sessions.write_jsonl_mirror(session, sessions_dir)
-    }
-
     /// Append messages to the agent's canonical session for cross-channel persistence.
     pub fn append_canonical(
         &self,
@@ -320,30 +417,7 @@ impl MemorySubstrate {
 
     /// Load all paired devices from the database.
     pub fn load_paired_devices(&self) -> OpenFangResult<Vec<serde_json::Value>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        let mut stmt = conn.prepare(
-            "SELECT device_id, display_name, platform, paired_at, last_seen, push_token FROM paired_devices"
-        ).map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(serde_json::json!({
-                    "device_id": row.get::<_, String>(0)?,
-                    "display_name": row.get::<_, String>(1)?,
-                    "platform": row.get::<_, String>(2)?,
-                    "paired_at": row.get::<_, String>(3)?,
-                    "last_seen": row.get::<_, String>(4)?,
-                    "push_token": row.get::<_, Option<String>>(5)?,
-                }))
-            })
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        let mut devices = Vec::new();
-        for row in rows {
-            devices.push(row.map_err(|e| OpenFangError::Memory(e.to_string()))?);
-        }
-        Ok(devices)
+        self.paired_devices.load_paired_devices()
     }
 
     /// Save a paired device to the database (insert or replace).
@@ -356,29 +430,13 @@ impl MemorySubstrate {
         last_seen: &str,
         push_token: Option<&str>,
     ) -> OpenFangResult<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        conn.execute(
-            "INSERT OR REPLACE INTO paired_devices (device_id, display_name, platform, paired_at, last_seen, push_token) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![device_id, display_name, platform, paired_at, last_seen, push_token],
-        ).map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        Ok(())
+        self.paired_devices
+            .save_paired_device(device_id, display_name, platform, paired_at, last_seen, push_token)
     }
 
     /// Remove a paired device from the database.
     pub fn remove_paired_device(&self, device_id: &str) -> OpenFangResult<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        conn.execute(
-            "DELETE FROM paired_devices WHERE device_id = ?1",
-            rusqlite::params![device_id],
-        )
-        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
-        Ok(())
+        self.paired_devices.remove_paired_device(device_id)
     }
 
     // -----------------------------------------------------------------
@@ -396,7 +454,7 @@ impl MemorySubstrate {
         embedding: Option<&[f32]>,
     ) -> OpenFangResult<MemoryId> {
         self.semantic
-            .remember_with_embedding(agent_id, content, source, scope, metadata, embedding)
+            .remember(agent_id, content, source, scope, metadata, embedding)
     }
 
     /// Recall memories using vector similarity when a query embedding is provided.
@@ -408,7 +466,7 @@ impl MemorySubstrate {
         query_embedding: Option<&[f32]>,
     ) -> OpenFangResult<Vec<MemoryFragment>> {
         self.semantic
-            .recall_with_embedding(query, limit, filter, query_embedding)
+            .recall(query, limit, filter, query_embedding)
     }
 
     /// Update the embedding for an existing memory.
@@ -424,11 +482,11 @@ impl MemorySubstrate {
         filter: Option<MemoryFilter>,
         query_embedding: Option<&[f32]>,
     ) -> OpenFangResult<Vec<MemoryFragment>> {
-        let store = self.semantic.clone();
+        let store = Arc::clone(&self.semantic);
         let query = query.to_string();
         let embedding_owned = query_embedding.map(|e| e.to_vec());
         tokio::task::spawn_blocking(move || {
-            store.recall_with_embedding(&query, limit, filter, embedding_owned.as_deref())
+            store.recall(&query, limit, filter, embedding_owned.as_deref())
         })
         .await
         .map_err(|e| OpenFangError::Internal(e.to_string()))?
@@ -444,12 +502,12 @@ impl MemorySubstrate {
         metadata: HashMap<String, serde_json::Value>,
         embedding: Option<&[f32]>,
     ) -> OpenFangResult<MemoryId> {
-        let store = self.semantic.clone();
+        let store = Arc::clone(&self.semantic);
         let content = content.to_string();
         let scope = scope.to_string();
         let embedding_owned = embedding.map(|e| e.to_vec());
         tokio::task::spawn_blocking(move || {
-            store.remember_with_embedding(
+            store.remember(
                 agent_id,
                 &content,
                 source,
@@ -474,152 +532,69 @@ impl MemorySubstrate {
         assigned_to: Option<&str>,
         created_by: Option<&str>,
     ) -> OpenFangResult<String> {
-        let conn = Arc::clone(&self.conn);
+        let tq = Arc::clone(&self.task_queue);
         let title = title.to_string();
         let description = description.to_string();
         let assigned_to = assigned_to.unwrap_or("").to_string();
         let created_by = created_by.unwrap_or("").to_string();
 
-        tokio::task::spawn_blocking(move || {
-            let id = uuid::Uuid::new_v4().to_string();
-            let now = chrono::Utc::now().to_rfc3339();
-            let db = conn.lock().map_err(|e| OpenFangError::Internal(e.to_string()))?;
-            db.execute(
-                "INSERT INTO task_queue (id, agent_id, task_type, payload, status, priority, created_at, title, description, assigned_to, created_by)
-                 VALUES (?1, ?2, ?3, ?4, 'pending', 0, ?5, ?6, ?7, ?8, ?9)",
-                rusqlite::params![id, &created_by, &title, b"", now, title, description, assigned_to, created_by],
-            )
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
-            Ok(id)
-        })
-        .await
-        .map_err(|e| OpenFangError::Internal(e.to_string()))?
+        tokio::task::spawn_blocking(move || tq.task_post(&title, &description, &assigned_to, &created_by))
+            .await
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?
     }
 
     /// Claim the next pending task (optionally for a specific assignee). Returns task JSON or None.
     pub async fn task_claim(&self, agent_id: &str) -> OpenFangResult<Option<serde_json::Value>> {
-        let conn = Arc::clone(&self.conn);
+        let tq = Arc::clone(&self.task_queue);
         let agent_id = agent_id.to_string();
 
-        tokio::task::spawn_blocking(move || {
-            let db = conn.lock().map_err(|e| OpenFangError::Internal(e.to_string()))?;
-            // Find first pending task assigned to this agent, or any unassigned pending task
-            let mut stmt = db.prepare(
-                "SELECT id, title, description, assigned_to, created_by, created_at
-                 FROM task_queue
-                 WHERE status = 'pending' AND (assigned_to = ?1 OR assigned_to = '')
-                 ORDER BY priority DESC, created_at ASC
-                 LIMIT 1"
-            ).map_err(|e| OpenFangError::Memory(e.to_string()))?;
-
-            let result = stmt.query_row(rusqlite::params![agent_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                ))
-            });
-
-            match result {
-                Ok((id, title, description, assigned, created_by, created_at)) => {
-                    // Update status to in_progress
-                    db.execute(
-                        "UPDATE task_queue SET status = 'in_progress', assigned_to = ?2 WHERE id = ?1",
-                        rusqlite::params![id, agent_id],
-                    ).map_err(|e| OpenFangError::Memory(e.to_string()))?;
-
-                    Ok(Some(serde_json::json!({
-                        "id": id,
-                        "title": title,
-                        "description": description,
-                        "status": "in_progress",
-                        "assigned_to": if assigned.is_empty() { &agent_id } else { &assigned },
-                        "created_by": created_by,
-                        "created_at": created_at,
-                    })))
-                }
-                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                Err(e) => Err(OpenFangError::Memory(e.to_string())),
-            }
-        })
-        .await
-        .map_err(|e| OpenFangError::Internal(e.to_string()))?
+        tokio::task::spawn_blocking(move || tq.task_claim(&agent_id))
+            .await
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?
     }
 
     /// Mark a task as completed with a result string.
     pub async fn task_complete(&self, task_id: &str, result: &str) -> OpenFangResult<()> {
-        let conn = Arc::clone(&self.conn);
+        let tq = Arc::clone(&self.task_queue);
         let task_id = task_id.to_string();
         let result = result.to_string();
 
-        tokio::task::spawn_blocking(move || {
-            let now = chrono::Utc::now().to_rfc3339();
-            let db = conn.lock().map_err(|e| OpenFangError::Internal(e.to_string()))?;
-            let rows = db.execute(
-                "UPDATE task_queue SET status = 'completed', result = ?2, completed_at = ?3 WHERE id = ?1",
-                rusqlite::params![task_id, result, now],
-            ).map_err(|e| OpenFangError::Memory(e.to_string()))?;
-            if rows == 0 {
-                return Err(OpenFangError::Internal(format!("Task not found: {task_id}")));
-            }
-            Ok(())
-        })
-        .await
-        .map_err(|e| OpenFangError::Internal(e.to_string()))?
+        tokio::task::spawn_blocking(move || tq.task_complete(&task_id, &result))
+            .await
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?
     }
 
     /// List tasks, optionally filtered by status.
     pub async fn task_list(&self, status: Option<&str>) -> OpenFangResult<Vec<serde_json::Value>> {
-        let conn = Arc::clone(&self.conn);
+        let tq = Arc::clone(&self.task_queue);
         let status = status.map(|s| s.to_string());
 
-        tokio::task::spawn_blocking(move || {
-            let db = conn.lock().map_err(|e| OpenFangError::Internal(e.to_string()))?;
-            let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match &status {
-                Some(s) => (
-                    "SELECT id, title, description, status, assigned_to, created_by, created_at, completed_at, result FROM task_queue WHERE status = ?1 ORDER BY created_at DESC",
-                    vec![Box::new(s.clone())],
-                ),
-                None => (
-                    "SELECT id, title, description, status, assigned_to, created_by, created_at, completed_at, result FROM task_queue ORDER BY created_at DESC",
-                    vec![],
-                ),
-            };
+        tokio::task::spawn_blocking(move || tq.task_list(status.as_deref()))
+            .await
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?
+    }
 
-            let mut stmt = db.prepare(sql).map_err(|e| OpenFangError::Memory(e.to_string()))?;
-            let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-            let rows = stmt.query_map(params_refs.as_slice(), |row| {
-                Ok(serde_json::json!({
-                    "id": row.get::<_, String>(0)?,
-                    "title": row.get::<_, String>(1).unwrap_or_default(),
-                    "description": row.get::<_, String>(2).unwrap_or_default(),
-                    "status": row.get::<_, String>(3)?,
-                    "assigned_to": row.get::<_, String>(4).unwrap_or_default(),
-                    "created_by": row.get::<_, String>(5).unwrap_or_default(),
-                    "created_at": row.get::<_, String>(6).unwrap_or_default(),
-                    "completed_at": row.get::<_, Option<String>>(7).unwrap_or(None),
-                    "result": row.get::<_, Option<String>>(8).unwrap_or(None),
-                }))
-            }).map_err(|e| OpenFangError::Memory(e.to_string()))?;
+    // -----------------------------------------------------------------
+    // JSONL mirror
+    // -----------------------------------------------------------------
 
-            let mut tasks = Vec::new();
-            for row in rows {
-                tasks.push(row.map_err(|e| OpenFangError::Memory(e.to_string()))?);
-            }
-            Ok(tasks)
-        })
-        .await
-        .map_err(|e| OpenFangError::Internal(e.to_string()))?
+    /// Write a human-readable JSONL mirror of a session to disk.
+    ///
+    /// Best-effort — errors are returned but should be logged,
+    /// never affecting the primary store.
+    pub fn write_jsonl_mirror(
+        &self,
+        session: &Session,
+        sessions_dir: &Path,
+    ) -> Result<(), std::io::Error> {
+        crate::jsonl::write_session_mirror(session, sessions_dir)
     }
 }
 
 #[async_trait]
 impl Memory for MemorySubstrate {
     async fn get(&self, agent_id: AgentId, key: &str) -> OpenFangResult<Option<serde_json::Value>> {
-        let store = self.structured.clone();
+        let store = Arc::clone(&self.structured);
         let key = key.to_string();
         tokio::task::spawn_blocking(move || store.get(agent_id, &key))
             .await
@@ -632,7 +607,7 @@ impl Memory for MemorySubstrate {
         key: &str,
         value: serde_json::Value,
     ) -> OpenFangResult<()> {
-        let store = self.structured.clone();
+        let store = Arc::clone(&self.structured);
         let key = key.to_string();
         tokio::task::spawn_blocking(move || store.set(agent_id, &key, value))
             .await
@@ -640,7 +615,7 @@ impl Memory for MemorySubstrate {
     }
 
     async fn delete(&self, agent_id: AgentId, key: &str) -> OpenFangResult<()> {
-        let store = self.structured.clone();
+        let store = Arc::clone(&self.structured);
         let key = key.to_string();
         tokio::task::spawn_blocking(move || store.delete(agent_id, &key))
             .await
@@ -655,11 +630,31 @@ impl Memory for MemorySubstrate {
         scope: &str,
         metadata: HashMap<String, serde_json::Value>,
     ) -> OpenFangResult<MemoryId> {
-        let store = self.semantic.clone();
+        // Auto-embed if driver is available
+        let embedding = if let Some(ref driver) = self.embedding_driver {
+            match driver.embed_one(content).await {
+                Ok(vec) => Some(vec),
+                Err(e) => {
+                    warn!("Auto-embedding failed, storing without embedding: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let store = Arc::clone(&self.semantic);
         let content = content.to_string();
         let scope = scope.to_string();
         tokio::task::spawn_blocking(move || {
-            store.remember(agent_id, &content, source, &scope, metadata)
+            store.remember(
+                agent_id,
+                &content,
+                source,
+                &scope,
+                metadata,
+                embedding.as_deref(),
+            )
         })
         .await
         .map_err(|e| OpenFangError::Internal(e.to_string()))?
@@ -671,50 +666,73 @@ impl Memory for MemorySubstrate {
         limit: usize,
         filter: Option<MemoryFilter>,
     ) -> OpenFangResult<Vec<MemoryFragment>> {
-        let store = self.semantic.clone();
+        // Auto-embed query if driver is available
+        let query_embedding = if let Some(ref driver) = self.embedding_driver {
+            match driver.embed_one(query).await {
+                Ok(vec) => Some(vec),
+                Err(e) => {
+                    warn!("Auto-embedding for recall failed, using text fallback: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let store = Arc::clone(&self.semantic);
         let query = query.to_string();
-        tokio::task::spawn_blocking(move || store.recall(&query, limit, filter))
-            .await
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?
+        tokio::task::spawn_blocking(move || {
+            store.recall(&query, limit, filter, query_embedding.as_deref())
+        })
+        .await
+        .map_err(|e| OpenFangError::Internal(e.to_string()))?
     }
 
     async fn forget(&self, id: MemoryId) -> OpenFangResult<()> {
-        let store = self.semantic.clone();
+        let store = Arc::clone(&self.semantic);
         tokio::task::spawn_blocking(move || store.forget(id))
             .await
             .map_err(|e| OpenFangError::Internal(e.to_string()))?
     }
 
     async fn add_entity(&self, entity: Entity) -> OpenFangResult<String> {
-        let store = self.knowledge.clone();
+        let store = Arc::clone(&self.knowledge);
         tokio::task::spawn_blocking(move || store.add_entity(entity))
             .await
             .map_err(|e| OpenFangError::Internal(e.to_string()))?
     }
 
     async fn add_relation(&self, relation: Relation) -> OpenFangResult<String> {
-        let store = self.knowledge.clone();
+        let store = Arc::clone(&self.knowledge);
         tokio::task::spawn_blocking(move || store.add_relation(relation))
             .await
             .map_err(|e| OpenFangError::Internal(e.to_string()))?
     }
 
     async fn query_graph(&self, pattern: GraphPattern) -> OpenFangResult<Vec<GraphMatch>> {
-        let store = self.knowledge.clone();
+        let store = Arc::clone(&self.knowledge);
         tokio::task::spawn_blocking(move || store.query_graph(pattern))
             .await
             .map_err(|e| OpenFangError::Internal(e.to_string()))?
     }
 
     async fn consolidate(&self) -> OpenFangResult<ConsolidationReport> {
-        let engine = self.consolidation.clone();
-        tokio::task::spawn_blocking(move || engine.consolidate())
-            .await
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?
+        if let Some(ref engine) = self.consolidation {
+            let engine = Arc::clone(engine);
+            tokio::task::spawn_blocking(move || engine.consolidate())
+                .await
+                .map_err(|e| OpenFangError::Internal(e.to_string()))?
+        } else {
+            // Non-SQLite backends: consolidation not yet implemented
+            Ok(ConsolidationReport {
+                memories_decayed: 0,
+                memories_merged: 0,
+                duration_ms: 0,
+            })
+        }
     }
 
-    async fn export(&self, format: ExportFormat) -> OpenFangResult<Vec<u8>> {
-        let _ = format;
+    async fn export(&self, _format: ExportFormat) -> OpenFangResult<Vec<u8>> {
         Ok(Vec::new())
     }
 

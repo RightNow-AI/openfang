@@ -1637,16 +1637,34 @@ pub struct MemoryConfig {
     /// How often to run memory consolidation (hours). 0 = disabled.
     #[serde(default = "default_consolidation_interval")]
     pub consolidation_interval_hours: u64,
-    /// Memory backend: "sqlite" (default) or "http".
+    /// Storage backend for structured data, sessions, usage, etc.: "sqlite" (default) or "postgres".
     #[serde(default = "default_memory_backend")]
     pub backend: String,
-    /// HTTP memory API URL (when backend = "http").
-    /// e.g., "http://127.0.0.1:5500"
+    /// Semantic (vector) backend: "sqlite" (default), "postgres", "qdrant", or "http".
+    /// When not set, follows the main `backend` setting.
+    #[serde(default)]
+    pub semantic_backend: Option<String>,
+    /// HTTP memory API URL (when semantic_backend = "http").
     #[serde(default)]
     pub http_url: Option<String>,
     /// Env var name holding the HTTP memory API bearer token.
     #[serde(default)]
     pub http_token_env: Option<String>,
+    /// PostgreSQL connection URL (when backend contains "postgres").
+    #[serde(default)]
+    pub postgres_url: Option<String>,
+    /// PostgreSQL connection pool size.
+    #[serde(default = "default_postgres_pool_size")]
+    pub postgres_pool_size: u32,
+    /// Qdrant server URL (when backend contains "qdrant").
+    #[serde(default)]
+    pub qdrant_url: Option<String>,
+    /// Env var name holding the Qdrant API key.
+    #[serde(default)]
+    pub qdrant_api_key_env: Option<String>,
+    /// Qdrant collection name for memory vectors.
+    #[serde(default = "default_qdrant_collection")]
+    pub qdrant_collection: String,
 }
 
 fn default_consolidation_interval() -> u64 {
@@ -1655,6 +1673,14 @@ fn default_consolidation_interval() -> u64 {
 
 fn default_memory_backend() -> String {
     "sqlite".to_string()
+}
+
+fn default_postgres_pool_size() -> u32 {
+    10
+}
+
+fn default_qdrant_collection() -> String {
+    "openfang_memories".to_string()
 }
 
 impl Default for MemoryConfig {
@@ -1668,8 +1694,14 @@ impl Default for MemoryConfig {
             embedding_api_key_env: None,
             consolidation_interval_hours: default_consolidation_interval(),
             backend: default_memory_backend(),
+            semantic_backend: None,
             http_url: None,
             http_token_env: None,
+            postgres_url: None,
+            postgres_pool_size: default_postgres_pool_size(),
+            qdrant_url: None,
+            qdrant_api_key_env: None,
+            qdrant_collection: default_qdrant_collection(),
         }
     }
 }

@@ -21,5 +21,41 @@ services:
       - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
     restart: unless-stopped
 
+  # Run tests: docker compose --profile test run test
+  test:
+    build:
+      context: .
+      target: tester
+    profiles: ["test"]
+
+  # ── Database backends for integration testing ─────────────────────────
+  # Run: docker compose --profile db up -d
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: openfang
+      POSTGRES_PASSWORD: openfang
+      POSTGRES_DB: openfang_test
+    ports:
+      - "5432:5432"
+    profiles: ["db", "postgres"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openfang"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    profiles: ["db", "qdrant"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
 volumes:
   openfang-data:
