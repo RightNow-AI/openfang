@@ -756,9 +756,7 @@ impl OpenFangKernel {
         };
 
         // Initialize metering engine (shares the same SQLite connection as the memory substrate)
-        let metering = Arc::new(MeteringEngine::new(Arc::new(
-            openfang_memory::usage::UsageStore::new(memory.usage_conn()),
-        )));
+        let metering = Arc::new(MeteringEngine::new(memory.usage_arc()));
 
         let supervisor = Supervisor::new();
         let background = BackgroundExecutor::new(supervisor.subscribe());
@@ -1119,7 +1117,10 @@ impl OpenFangKernel {
             workflows: WorkflowEngine::new(),
             triggers: TriggerEngine::new(),
             background,
-            audit_log: Arc::new(AuditLog::with_db(memory.usage_conn())),
+            audit_log: Arc::new(match memory.audit() {
+                Some(backend) => AuditLog::with_backend(backend),
+                None => AuditLog::new(),
+            }),
             metering,
             default_driver: driver,
             wasm_sandbox,

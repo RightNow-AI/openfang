@@ -5,7 +5,14 @@
 //! Designed to be called from synchronous SemanticStore methods within
 //! `spawn_blocking` contexts.
 
+use chrono::Utc;
+use openfang_types::agent::AgentId;
+use openfang_types::error::{OpenFangError, OpenFangResult};
+use openfang_types::memory::{MemoryFilter, MemoryFragment, MemoryId, MemorySource};
+use openfang_types::storage::SemanticBackend;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{debug, warn};
 
 /// Error type for memory API operations.
@@ -242,5 +249,128 @@ impl MemoryApiClient {
         debug!(count = result.count, "Searched memories via HTTP");
 
         Ok(result.results)
+    }
+}
+
+/// HTTP semantic backend that routes remember/recall to a remote memory-api gateway.
+/// Falls back to a local backend for operations the API doesn't support (forget,
+/// update_embedding) and on HTTP errors.
+pub struct HttpSemanticStore {
+    client: MemoryApiClient,
+    fallback: Arc<dyn SemanticBackend>,
+}
+
+impl HttpSemanticStore {
+    pub fn new(client: MemoryApiClient, fallback: Arc<dyn SemanticBackend>) -> Self {
+        Self { client, fallback }
+    }
+}
+
+impl SemanticBackend for HttpSemanticStore {
+    fn remember(
+        &self,
+        agent_id: AgentId,
+        content: &str,
+        source: MemorySource,
+        scope: &str,
+        metadata: HashMap<String, serde_json::Value>,
+        embedding: Option<&[f32]>,
+    ) -> OpenFangResult<MemoryId> {
+        let source_str = format!("{:?}", source).to_lowercase();
+        let importance = metadata
+            .get("importance")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.min(10) as u8)
+            .unwrap_or(5);
+        let tags: Option<Vec<String>> = metadata
+            .get("tags")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+
+        match self.client.store(
+            content,
+            Some(scope),
+            Some(&agent_id.0.to_string()),
+            Some(&source_str),
+            Some(importance),
+            tags,
+        ) {
+            Ok(resp) => {
+                debug!(id = %resp.id, "Stored memory via HTTP backend");
+                Ok(MemoryId::new())
+            }
+            Err(e) => {
+                warn!(error = %e, "HTTP memory store failed, falling back to local");
+                self.fallback
+                    .remember(agent_id, content, source, scope, metadata, embedding)
+            }
+        }
+    }
+
+    fn recall(
+        &self,
+        query: &str,
+        limit: usize,
+        filter: Option<MemoryFilter>,
+        query_embedding: Option<&[f32]>,
+    ) -> OpenFangResult<Vec<MemoryFragment>> {
+        let category: Option<String> = filter.as_ref().and_then(|f| f.scope.clone());
+
+        match self
+            .client
+            .search(query, limit, category.as_deref())
+            .map_err(|e| OpenFangError::Memory(format!("HTTP search failed: {e}")))
+        {
+            Ok(results) => {
+                let fragments: Vec<MemoryFragment> = results
+                    .into_iter()
+                    .map(|r| {
+                        let created_at = r
+                            .created_at
+                            .map(|ms| {
+                                chrono::DateTime::from_timestamp_millis(ms as i64)
+                                    .unwrap_or_else(Utc::now)
+                            })
+                            .unwrap_or_else(Utc::now);
+
+                        MemoryFragment {
+                            id: MemoryId::new(),
+                            agent_id: filter
+                                .as_ref()
+                                .and_then(|f| f.agent_id)
+                                .unwrap_or_default(),
+                            content: r.content,
+                            embedding: None,
+                            metadata: HashMap::new(),
+                            source: MemorySource::System,
+                            confidence: r.score as f32,
+                            created_at,
+                            accessed_at: Utc::now(),
+                            access_count: 0,
+                            scope: r.category.unwrap_or_else(|| "general".to_string()),
+                        }
+                    })
+                    .collect();
+
+                debug!(
+                    count = fragments.len(),
+                    "Recalled memories via HTTP backend"
+                );
+                Ok(fragments)
+            }
+            Err(e) => {
+                warn!(error = %e, "HTTP memory search failed, falling back to local");
+                self.fallback.recall(query, limit, filter, query_embedding)
+            }
+        }
+    }
+
+    fn forget(&self, id: MemoryId) -> OpenFangResult<()> {
+        // HTTP API doesn't support forget — delegate to fallback
+        self.fallback.forget(id)
+    }
+
+    fn update_embedding(&self, id: MemoryId, embedding: &[f32]) -> OpenFangResult<()> {
+        // HTTP API doesn't support this — delegate to fallback
+        self.fallback.update_embedding(id, embedding)
     }
 }

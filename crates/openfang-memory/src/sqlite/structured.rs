@@ -1,8 +1,10 @@
-//! SQLite structured store for key-value pairs and agent persistence.
+//! SQLite backend for structured key-value pairs and agent persistence.
 
+use crate::helpers;
 use chrono::Utc;
 use openfang_types::agent::{AgentEntry, AgentId};
 use openfang_types::error::{OpenFangError, OpenFangResult};
+use openfang_types::storage::StructuredBackend;
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 
@@ -118,8 +120,7 @@ impl StructuredStore {
             .map_err(|e| OpenFangError::Internal(e.to_string()))?;
         // Use named-field encoding so new fields with #[serde(default)] are
         // handled gracefully when the struct evolves between versions.
-        let manifest_blob = rmp_serde::to_vec_named(&entry.manifest)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+        let manifest_blob = helpers::serialize_manifest(&entry.manifest)?;
         let state_str = serde_json::to_string(&entry.state)
             .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
@@ -203,16 +204,14 @@ impl StructuredStore {
 
         match result {
             Ok((name, manifest_blob, state_str, created_str, session_id_str, identity_str)) => {
-                let manifest = rmp_serde::from_slice(&manifest_blob)
-                    .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+                let manifest = helpers::deserialize_manifest(&manifest_blob)?;
                 let state = serde_json::from_str(&state_str)
                     .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
                 let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now());
                 let session_id = session_id_str
-                    .and_then(|s| uuid::Uuid::parse_str(&s).ok())
-                    .map(openfang_types::agent::SessionId)
+                    .and_then(|s| helpers::parse_session_id(&s).ok())
                     .unwrap_or_else(openfang_types::agent::SessionId::new);
                 let identity = identity_str
                     .and_then(|s| serde_json::from_str(&s).ok())
@@ -329,8 +328,7 @@ impl StructuredStore {
                 continue;
             }
 
-            let agent_id = match uuid::Uuid::parse_str(&id_str).map(openfang_types::agent::AgentId)
-            {
+            let agent_id = match helpers::parse_agent_id(&id_str) {
                 Ok(id) => id,
                 Err(e) => {
                     tracing::warn!(agent = %name, "Skipping agent with bad UUID '{id_str}': {e}");
@@ -338,7 +336,7 @@ impl StructuredStore {
                 }
             };
 
-            let manifest: openfang_types::agent::AgentManifest = match rmp_serde::from_slice(
+            let manifest: openfang_types::agent::AgentManifest = match helpers::deserialize_manifest(
                 &manifest_blob,
             ) {
                 Ok(m) => m,
@@ -353,8 +351,7 @@ impl StructuredStore {
 
             // Auto-repair: re-serialize with current schema and queue for update.
             // This upgrades the stored blob so future boots don't hit lenient paths.
-            let new_blob = rmp_serde::to_vec_named(&manifest)
-                .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+            let new_blob = helpers::serialize_manifest(&manifest)?;
             if new_blob != manifest_blob {
                 tracing::info!(
                     agent = %name, id = %id_str,
@@ -374,8 +371,7 @@ impl StructuredStore {
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
             let session_id = session_id_str
-                .and_then(|s| uuid::Uuid::parse_str(&s).ok())
-                .map(openfang_types::agent::SessionId)
+                .and_then(|s| helpers::parse_session_id(&s).ok())
                 .unwrap_or_else(openfang_types::agent::SessionId::new);
 
             let identity = identity_str
@@ -439,10 +435,40 @@ impl StructuredStore {
     }
 }
 
+impl StructuredBackend for StructuredStore {
+    fn get(&self, agent_id: AgentId, key: &str) -> OpenFangResult<Option<serde_json::Value>> {
+        StructuredStore::get(self, agent_id, key)
+    }
+    fn set(&self, agent_id: AgentId, key: &str, value: serde_json::Value) -> OpenFangResult<()> {
+        StructuredStore::set(self, agent_id, key, value)
+    }
+    fn delete(&self, agent_id: AgentId, key: &str) -> OpenFangResult<()> {
+        StructuredStore::delete(self, agent_id, key)
+    }
+    fn list_kv(&self, agent_id: AgentId) -> OpenFangResult<Vec<(String, serde_json::Value)>> {
+        StructuredStore::list_kv(self, agent_id)
+    }
+    fn save_agent(&self, entry: &AgentEntry) -> OpenFangResult<()> {
+        StructuredStore::save_agent(self, entry)
+    }
+    fn load_agent(&self, agent_id: AgentId) -> OpenFangResult<Option<AgentEntry>> {
+        StructuredStore::load_agent(self, agent_id)
+    }
+    fn remove_agent(&self, agent_id: AgentId) -> OpenFangResult<()> {
+        StructuredStore::remove_agent(self, agent_id)
+    }
+    fn load_all_agents(&self) -> OpenFangResult<Vec<AgentEntry>> {
+        StructuredStore::load_all_agents(self)
+    }
+    fn list_agents(&self) -> OpenFangResult<Vec<(String, String, String)>> {
+        StructuredStore::list_agents(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::migration::run_migrations;
+    use crate::sqlite::migration::run_migrations;
 
     fn setup() -> StructuredStore {
         let conn = Connection::open_in_memory().unwrap();

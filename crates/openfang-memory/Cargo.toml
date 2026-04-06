@@ -8,6 +8,8 @@ description = "Memory substrate for the OpenFang Agent OS"
 [features]
 default = ["http-memory"]
 http-memory = ["reqwest"]
+postgres = ["dep:tokio-postgres", "dep:deadpool-postgres", "dep:pgvector"]
+qdrant = ["dep:qdrant-client"]
 
 [dependencies]
 openfang-types = { path = "../openfang-types" }
@@ -16,12 +18,19 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 rmp-serde = { workspace = true }
 rusqlite = { workspace = true }
+sqlite-vec = { workspace = true }
 chrono = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"], optional = true }
+tokio-postgres = { version = "0.7.17", optional = true, features = ["with-serde_json-1", "with-chrono-0_4", "with-uuid-1"] }
+deadpool-postgres = { version = "0.14", optional = true }
+pgvector = { version = "0.4", optional = true, features = ["postgres"] }
+qdrant-client = { version = "1.13", optional = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

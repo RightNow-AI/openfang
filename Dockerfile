@@ -1,4 +1,19 @@
 # syntax=docker/dockerfile:1
+
+# ── Test stage ──────────────────────────────────────────────────────────────
+# Run: docker compose --profile test run test
+FROM rust:1-slim-bookworm AS tester
+WORKDIR /build
+RUN apt-get update && apt-get install -y pkg-config libssl-dev perl make && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY xtask ./xtask
+COPY agents ./agents
+COPY packages ./packages
+RUN cargo test --workspace --exclude openfang-desktop
+RUN cargo clippy --workspace --all-targets --exclude openfang-desktop -- -D warnings
+
+# ── Builder stage ───────────────────────────────────────────────────────────
 FROM rust:1-slim-bookworm AS builder
 WORKDIR /build
 RUN apt-get update && apt-get install -y pkg-config libssl-dev perl make && rm -rf /var/lib/apt/lists/*

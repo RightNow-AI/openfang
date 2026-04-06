@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 
 /// Current schema version.
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 
 /// Run all migrations to bring the database up to date.
 pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -41,6 +41,10 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
 
     if current_version < 8 {
         migrate_v8(conn)?;
+    }
+
+    if current_version < 9 {
+        migrate_v9(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -328,12 +332,64 @@ fn migrate_v8(conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
+/// v9: Create sqlite-vec virtual table for indexed vector search.
+///
+/// Detects embedding dimensions from existing data. If no embeddings exist yet,
+/// the table is created lazily by `SemanticStore::ensure_vec_table()` on the
+/// first `remember()` call with an embedding.
+fn migrate_v9(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // Detect embedding dimensions from existing data
+    let dims: Option<usize> = conn
+        .query_row(
+            "SELECT LENGTH(embedding) / 4 FROM memories WHERE embedding IS NOT NULL LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+
+    if let Some(dims) = dims {
+        // Create vec0 virtual table with detected dimensions
+        conn.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
+                memory_id TEXT PRIMARY KEY,
+                embedding float[{dims}]
+            );"
+        ))?;
+
+        // Backfill existing embeddings into the vec table
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO memories_vec (memory_id, embedding)
+             SELECT id, embedding FROM memories
+             WHERE embedding IS NOT NULL AND deleted = 0;",
+        )?;
+    }
+    // If no embeddings exist yet, defer table creation to SemanticStore::ensure_vec_table()
+
+    conn.execute(
+        "INSERT OR IGNORE INTO migrations (version, applied_at, description)
+         VALUES (9, datetime('now'), 'Add sqlite-vec virtual table for indexed vector search')",
+        [],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_migration_creates_tables() {
+        // Register sqlite-vec before opening connection
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+                *const (),
+                unsafe extern "C" fn(
+                    *mut rusqlite::ffi::sqlite3,
+                    *mut *const u8,
+                    *const rusqlite::ffi::sqlite3_api_routines,
+                ) -> i32,
+            >(sqlite_vec::sqlite3_vec_init as *const ())));
+        }
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
 
@@ -356,6 +412,16 @@ mod tests {
 
     #[test]
     fn test_migration_idempotent() {
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+                *const (),
+                unsafe extern "C" fn(
+                    *mut rusqlite::ffi::sqlite3,
+                    *mut *const u8,
+                    *const rusqlite::ffi::sqlite3_api_routines,
+                ) -> i32,
+            >(sqlite_vec::sqlite3_vec_init as *const ())));
+        }
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         run_migrations(&conn).unwrap(); // Should not error
