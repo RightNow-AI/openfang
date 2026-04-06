@@ -73,8 +73,7 @@ pub struct OpenAIEmbeddingDriver {
 pub struct GeminiEmbeddingDriver {
     api_key: Zeroizing<String>,
     base_url: String,
-    request_model: String,
-    batch_request_model: String,
+    resource_model: String,
     client: reqwest::Client,
     dims: usize,
     mode: std::sync::atomic::AtomicU8,
@@ -179,13 +178,13 @@ fn normalize_gemini_model_name(model: &str) -> String {
 impl GeminiEmbeddingDriver {
     /// Create a new Gemini embedding driver.
     pub fn new(config: EmbeddingConfig) -> Result<Self, EmbeddingError> {
-        let dims = infer_dimensions(&config.model);
+        let resource_model = normalize_gemini_model_name(&config.model);
+        let dims = infer_dimensions(resource_model.trim_start_matches("models/"));
 
         Ok(Self {
             api_key: Zeroizing::new(config.api_key),
             base_url: config.base_url,
-            request_model: normalize_gemini_model_name(&config.model),
-            batch_request_model: normalize_gemini_model_name(&config.model),
+            resource_model,
             client: reqwest::Client::new(),
             dims,
             mode: std::sync::atomic::AtomicU8::new(GeminiEmbeddingMode::Batch as u8),
@@ -228,8 +227,9 @@ impl EmbeddingDriver for GeminiEmbeddingDriver {
                         error = %err,
                         "Gemini batch embeddings unavailable; falling back to single embedContent requests"
                     );
+                    let embeddings = self.embed_sequential(texts).await?;
                     self.set_mode(GeminiEmbeddingMode::Single);
-                    self.embed_sequential(texts).await
+                    Ok(embeddings)
                 }
                 Err(err) => Err(err),
             },
@@ -276,13 +276,13 @@ impl GeminiEmbeddingDriver {
         let url = format!(
             "{}/v1beta/models/{}:batchEmbedContents",
             self.base_url.trim_end_matches('/'),
-            self.request_model.trim_start_matches("models/")
+            self.resource_model.trim_start_matches("models/")
         );
         let body = GeminiEmbedRequest {
             requests: texts
                 .iter()
                 .map(|text| GeminiEmbedItem {
-                    model: &self.batch_request_model,
+                    model: &self.resource_model,
                     content: GeminiEmbedContent {
                         parts: vec![GeminiEmbedPart { text }],
                     },
@@ -319,10 +319,10 @@ impl GeminiEmbeddingDriver {
         let url = format!(
             "{}/v1beta/{}:embedContent",
             self.base_url.trim_end_matches('/'),
-            self.request_model
+            self.resource_model
         );
         let body = GeminiSingleEmbedRequest {
-            model: &self.request_model,
+            model: &self.resource_model,
             content: GeminiEmbedContent {
                 parts: vec![GeminiEmbedPart { text }],
             },
@@ -615,6 +615,7 @@ mod tests {
     #[test]
     fn test_infer_dimensions() {
         assert_eq!(infer_dimensions("text-embedding-3-small"), 1536);
+        assert_eq!(infer_dimensions("gemini-embedding-2-preview"), 3072);
         assert_eq!(infer_dimensions("all-MiniLM-L6-v2"), 384);
         assert_eq!(infer_dimensions("nomic-embed-text"), 768);
         assert_eq!(infer_dimensions("unknown-model"), 1536); // default
