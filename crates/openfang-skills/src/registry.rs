@@ -17,6 +17,8 @@ pub struct SkillRegistry {
     skills_dir: PathBuf,
     /// When true, no new skills can be loaded (Stable mode).
     frozen: bool,
+    /// Number of workspace skills blocked for critical prompt injection.
+    blocked_skills_count: usize,
 }
 
 impl SkillRegistry {
@@ -26,6 +28,7 @@ impl SkillRegistry {
             skills: HashMap::new(),
             skills_dir,
             frozen: false,
+            blocked_skills_count: 0,
         }
     }
 
@@ -38,6 +41,7 @@ impl SkillRegistry {
             skills: self.skills.clone(),
             skills_dir: self.skills_dir.clone(),
             frozen: self.frozen,
+            blocked_skills_count: self.blocked_skills_count,
         }
     }
 
@@ -51,6 +55,11 @@ impl SkillRegistry {
     /// Check if the registry is frozen.
     pub fn is_frozen(&self) -> bool {
         self.frozen
+    }
+
+    /// Return the number of workspace skills blocked for critical prompt injection.
+    pub fn blocked_count(&self) -> usize {
+        self.blocked_skills_count
     }
 
     /// Load all bundled skills (compile-time embedded SKILL.md files).
@@ -331,6 +340,7 @@ impl SkillRegistry {
                                     skill = %converted.manifest.skill.name,
                                     "BLOCKED workspace skill: critical prompt injection patterns"
                                 );
+                                self.blocked_skills_count += 1;
                                 continue;
                             }
 
@@ -548,5 +558,235 @@ input_schema = {{ type = "object" }}
 
         // Verify that skill.toml was written
         assert!(skill_dir.join("skill.toml").exists());
+    }
+
+    /// #851: Global skills should be visible via snapshot even without workspace skills.
+    #[test]
+    fn test_snapshot_includes_global_skills() {
+        let global_dir = TempDir::new().unwrap();
+        create_test_skill(global_dir.path(), "global-skill");
+
+        let mut registry = SkillRegistry::new(global_dir.path().to_path_buf());
+        registry.load_all().unwrap();
+        assert_eq!(registry.count(), 1);
+
+        // Take a snapshot (simulates what the kernel does before agent execution)
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot.count(), 1, "Snapshot must include global skills");
+        assert!(
+            snapshot.get("global-skill").is_some(),
+            "Global skill must be accessible in snapshot"
+        );
+    }
+
+    /// #808: Workspace skills must override global skills with the same name.
+    #[test]
+    fn test_workspace_skill_overrides_global() {
+        let global_dir = TempDir::new().unwrap();
+        let ws_dir = TempDir::new().unwrap();
+
+        // Create a global skill with one description
+        let global_skill_dir = global_dir.path().join("shared-skill");
+        std::fs::create_dir_all(&global_skill_dir).unwrap();
+        std::fs::write(
+            global_skill_dir.join("skill.toml"),
+            r#"
+[skill]
+name = "shared-skill"
+version = "1.0.0"
+description = "Global version"
+
+[runtime]
+type = "python"
+entry = "main.py"
+
+[[tools.provided]]
+name = "shared_tool"
+description = "Global tool"
+input_schema = { type = "object" }
+"#,
+        )
+        .unwrap();
+
+        // Create a workspace skill with the same name but different description
+        let ws_skill_dir = ws_dir.path().join("shared-skill");
+        std::fs::create_dir_all(&ws_skill_dir).unwrap();
+        std::fs::write(
+            ws_skill_dir.join("skill.toml"),
+            r#"
+[skill]
+name = "shared-skill"
+version = "2.0.0"
+description = "Workspace override version"
+
+[runtime]
+type = "python"
+entry = "main.py"
+
+[[tools.provided]]
+name = "shared_tool"
+description = "Workspace tool"
+input_schema = { type = "object" }
+"#,
+        )
+        .unwrap();
+
+        // Load global skills
+        let mut registry = SkillRegistry::new(global_dir.path().to_path_buf());
+        registry.load_all().unwrap();
+        assert_eq!(registry.count(), 1);
+        assert_eq!(
+            registry
+                .get("shared-skill")
+                .unwrap()
+                .manifest
+                .skill
+                .description,
+            "Global version"
+        );
+
+        // Take a snapshot and load workspace skills (simulates kernel agent path)
+        let mut snapshot = registry.snapshot();
+        snapshot.load_workspace_skills(ws_dir.path()).unwrap();
+
+        // The workspace version must override the global version
+        assert_eq!(
+            snapshot.count(),
+            1,
+            "Duplicate should be overwritten, not added"
+        );
+        assert_eq!(
+            snapshot
+                .get("shared-skill")
+                .unwrap()
+                .manifest
+                .skill
+                .description,
+            "Workspace override version",
+            "Workspace skill must override global skill (#808)"
+        );
+        assert_eq!(
+            snapshot.get("shared-skill").unwrap().manifest.skill.version,
+            "2.0.0"
+        );
+
+        // Tool definitions should come from workspace version
+        let tools = snapshot.all_tool_definitions();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].description, "Workspace tool");
+    }
+
+    /// #851 + #808: Snapshot with both global and workspace skills, where workspace
+    /// overrides one global skill but a second global skill remains.
+    #[test]
+    fn test_snapshot_global_plus_workspace_merge() {
+        let global_dir = TempDir::new().unwrap();
+        let ws_dir = TempDir::new().unwrap();
+
+        // Two global skills
+        create_test_skill(global_dir.path(), "alpha");
+        create_test_skill(global_dir.path(), "beta");
+
+        // Workspace overrides only "alpha"
+        let ws_alpha = ws_dir.path().join("alpha");
+        std::fs::create_dir_all(&ws_alpha).unwrap();
+        std::fs::write(
+            ws_alpha.join("skill.toml"),
+            r#"
+[skill]
+name = "alpha"
+version = "9.0.0"
+description = "Workspace alpha"
+
+[runtime]
+type = "python"
+entry = "main.py"
+
+[[tools.provided]]
+name = "alpha_tool"
+description = "Workspace alpha tool"
+input_schema = { type = "object" }
+"#,
+        )
+        .unwrap();
+
+        let mut registry = SkillRegistry::new(global_dir.path().to_path_buf());
+        registry.load_all().unwrap();
+        assert_eq!(registry.count(), 2);
+
+        let mut snapshot = registry.snapshot();
+        snapshot.load_workspace_skills(ws_dir.path()).unwrap();
+
+        // Both skills present
+        assert_eq!(snapshot.count(), 2);
+        // "alpha" is overridden
+        assert_eq!(
+            snapshot.get("alpha").unwrap().manifest.skill.version,
+            "9.0.0",
+            "Workspace should override alpha"
+        );
+        // "beta" retains global version
+        assert_eq!(
+            snapshot.get("beta").unwrap().manifest.skill.version,
+            "0.1.0",
+            "Global beta should remain unchanged"
+        );
+    }
+
+    /// #824: load_workspace_skills must return the count of workspace skills loaded,
+    /// even when a workspace skill overrides a global skill with the same HashMap key.
+    /// The old doctor code computed `total - bundled_count` which underreported when
+    /// an override didn't increase total_loaded.
+    #[test]
+    fn test_workspace_override_returns_correct_count() {
+        let global_dir = TempDir::new().unwrap();
+        let ws_dir = TempDir::new().unwrap();
+
+        // One global skill named "shared"
+        create_test_skill(global_dir.path(), "shared");
+
+        // Workspace skill with the SAME name — override
+        let ws_shared = ws_dir.path().join("shared");
+        std::fs::create_dir_all(&ws_shared).unwrap();
+        std::fs::write(
+            ws_shared.join("skill.toml"),
+            r#"
+[skill]
+name = "shared"
+version = "2.0.0"
+description = "Workspace override"
+
+[runtime]
+type = "python"
+entry = "main.py"
+
+[[tools.provided]]
+name = "shared_tool"
+description = "Workspace tool"
+input_schema = { type = "object" }
+"#,
+        )
+        .unwrap();
+
+        let mut registry = SkillRegistry::new(global_dir.path().to_path_buf());
+        registry.load_all().unwrap();
+        assert_eq!(registry.count(), 1, "One global skill loaded");
+
+        let ws_count = registry.load_workspace_skills(ws_dir.path()).unwrap();
+
+        // The return value must be 1, NOT 0.
+        // Before the #824 fix, doctor computed total(1) - bundled(1) = 0.
+        assert_eq!(
+            ws_count, 1,
+            "load_workspace_skills must report 1 even when overriding a global skill (#824)"
+        );
+        // Total registry count stays 1 because the override replaced, not added
+        assert_eq!(registry.count(), 1);
+        // But the skill is the workspace version
+        assert_eq!(
+            registry.get("shared").unwrap().manifest.skill.version,
+            "2.0.0",
+            "Workspace version should be active"
+        );
     }
 }

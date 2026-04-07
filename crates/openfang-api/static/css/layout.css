@@ -243,6 +243,14 @@
   z-index: 99;
 }
 
+.mobile-menu-btn {
+  position: fixed !important;
+  top: 12px;
+  left: 16px;
+  z-index: 98;
+  padding: 6px 10px !important;
+}
+
 /* Wide desktop — larger card grids */
 @media (min-width: 1400px) {
   .card-grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
@@ -277,6 +285,8 @@
     left: -300px;
   }
   .mobile-menu-btn { display: flex !important; }
+  /* Offset header content so it does not overlap the fixed mobile menu button. */
+  .page-header > :first-child { margin-left: 52px; }
 }
 
 @media (min-width: 769px) {
@@ -285,7 +295,14 @@
 
 /* Mobile small screen */
 @media (max-width: 480px) {
-  .page-header { flex-direction: column; gap: 8px; align-items: flex-start; padding: 12px 16px; }
+  .page-header {
+    gap: 8px;
+    padding: 12px 16px;
+    flex-wrap: wrap;
+  }
+  .page-header h2 {
+    line-height: 44px;
+  }
   .page-body { padding: 12px; }
   .stats-row { flex-wrap: wrap; }
   .stat-card { min-width: 80px; flex: 1 1 40%; }

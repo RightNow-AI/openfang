@@ -128,6 +128,12 @@ const PROVIDERS: &[ProviderInfo] = &[
         needs_key: true,
     },
     ProviderInfo {
+        name: "nvidia",
+        env_var: "NVIDIA_API_KEY",
+        default_model: "nvidia/llama-3.1-nemotron-70b-instruct",
+        needs_key: true,
+    },
+    ProviderInfo {
         name: "claude-code",
         env_var: "",
         default_model: "claude-code/sonnet",

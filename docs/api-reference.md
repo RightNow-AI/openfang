@@ -23,6 +23,7 @@ All responses include security headers (CSP, X-Frame-Options, X-Content-Type-Opt
 - [Usage & Analytics Endpoints](#usage--analytics-endpoints)
 - [Migration Endpoints](#migration-endpoints)
 - [Session Management Endpoints](#session-management-endpoints)
+- [Cron/Scheduler Endpoints](#cronscheduler-endpoints)
 - [WebSocket Protocol](#websocket-protocol)
 - [SSE Streaming](#sse-streaming)
 - [OpenAI-Compatible API](#openai-compatible-api)
@@ -1767,6 +1768,151 @@ Switch an agent's LLM model at runtime.
   "model": "claude-sonnet-4-20250514"
 }
 ```
+
+---
+
+## Cron/Scheduler Endpoints
+
+Manage recurring and one-shot scheduled jobs. Jobs can trigger agent turns, system events, or workflow runs on a schedule.
+
+### GET /api/cron/jobs
+
+List all cron jobs. Optionally filter by agent with `?agent_id=<uuid>`.
+
+**Response** `200 OK`:
+
+```json
+{
+  "jobs": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "agent_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "name": "daily-report",
+      "enabled": true,
+      "schedule": { "kind": "every", "every_secs": 3600 },
+      "action": {
+        "kind": "agent_turn",
+        "message": "Generate the daily report",
+        "timeout_secs": 120
+      },
+      "delivery": {
+        "kind": "channel",
+        "channel": "slack",
+        "to": "#reports"
+      },
+      "created_at": "2026-03-15T10:30:00Z",
+      "last_run": "2026-03-16T09:00:00Z",
+      "next_run": "2026-03-16T10:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+### POST /api/cron/jobs
+
+Create a new cron job.
+
+**Request Body**:
+
+```json
+{
+  "agent_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "name": "daily-report",
+  "schedule": { "kind": "every", "every_secs": 3600 },
+  "action": {
+    "kind": "agent_turn",
+    "message": "Generate the daily report",
+    "timeout_secs": 120
+  },
+  "delivery": {
+    "kind": "channel",
+    "channel": "slack",
+    "to": "#reports"
+  }
+}
+```
+
+**Response** `201 Created`:
+
+```json
+{
+  "result": "{\"job_id\":\"550e8400-e29b-41d4-a716-446655440000\",\"status\":\"created\"}"
+}
+```
+
+### DELETE /api/cron/jobs/{id}
+
+Delete a cron job by ID.
+
+**Response** `200 OK`:
+
+```json
+{ "status": "deleted" }
+```
+
+### PUT /api/cron/jobs/{id}/enable
+
+Enable or disable a cron job.
+
+**Request Body**:
+
+```json
+{ "enabled": false }
+```
+
+**Response** `200 OK`:
+
+```json
+{ "status": "updated", "enabled": false }
+```
+
+### GET /api/cron/jobs/{id}/status
+
+Get job metadata including last run time, status, and error history.
+
+**Response** `200 OK`:
+
+```json
+{
+  "job": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "agent_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "name": "daily-report",
+    "enabled": true,
+    "schedule": { "kind": "every", "every_secs": 3600 },
+    "action": {
+      "kind": "agent_turn",
+      "message": "Generate the daily report",
+      "timeout_secs": 120
+    },
+    "delivery": { "kind": "none" },
+    "created_at": "2026-03-15T10:30:00Z",
+    "last_run": "2026-03-16T09:00:00Z",
+    "next_run": "2026-03-16T10:00:00Z"
+  },
+  "one_shot": false,
+  "last_status": "ok",
+  "consecutive_errors": 0
+}
+
+### POST /api/cron/jobs/{id}/run
+
+Trigger a cron job immediately. The job executes asynchronously in the background — this endpoint returns immediately without waiting for completion. Poll `GET /api/cron/jobs/{id}/status` to check the result.
+
+**Response** `200 OK`:
+
+```json
+{
+  "status": "triggered",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Error Responses**:
+
+- `400 Bad Request` — Invalid job ID or job is disabled
+- `404 Not Found` — Job not found
 
 ---
 

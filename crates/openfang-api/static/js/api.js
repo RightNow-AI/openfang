@@ -224,9 +224,12 @@ var OpenFangAPI = (function() {
     try {
       var url = WS_BASE + '/api/agents/' + agentId + '/ws';
       if (_authToken) url += '?token=' + encodeURIComponent(_authToken);
-      _ws = new WebSocket(url);
+      var socket = new WebSocket(url);
+      _ws = socket;
 
-      _ws.onopen = function() {
+      socket.onopen = function() {
+        // Guard: ignore if this socket was superseded by a newer connection
+        if (_ws !== socket) return;
         _wsConnected = true;
         _reconnectAttempts = 0;
         setConnectionState('connected');
@@ -237,14 +240,20 @@ var OpenFangAPI = (function() {
         if (_wsCallbacks.onOpen) _wsCallbacks.onOpen();
       };
 
-      _ws.onmessage = function(e) {
+      socket.onmessage = function(e) {
         try {
           var data = JSON.parse(e.data);
-          if (_wsCallbacks.onMessage) _wsCallbacks.onMessage(data);
-        } catch(err) { /* ignore parse errors */ }
+        } catch(parseErr) {
+          return; // Ignore malformed JSON frames
+        }
+        // Dispatch outside try/catch so handler errors are not swallowed
+        if (_wsCallbacks.onMessage) _wsCallbacks.onMessage(data);
       };
 
-      _ws.onclose = function(e) {
+      socket.onclose = function(e) {
+        // Guard: only update state if this is still the active socket.
+        // A superseded socket closing must not null-out the new connection.
+        if (_ws !== socket) return;
         _wsConnected = false;
         _ws = null;
         if (_wsAgentId && _reconnectAttempts < MAX_RECONNECT && e.code !== 1000) {
@@ -265,7 +274,9 @@ var OpenFangAPI = (function() {
         if (_wsCallbacks.onClose) _wsCallbacks.onClose();
       };
 
-      _ws.onerror = function() {
+      socket.onerror = function() {
+        // Guard: ignore errors from superseded sockets
+        if (_ws !== socket) return;
         _wsConnected = false;
         if (_wsCallbacks.onError) _wsCallbacks.onError();
       };
@@ -297,15 +308,15 @@ var OpenFangAPI = (function() {
   function getToken() { return _authToken; }
 
   function upload(agentId, file) {
-    var hdrs = {
-      'Content-Type': file.type || 'application/octet-stream',
-      'X-Filename': file.name
-    };
+    var hdrs = {};
     if (_authToken) hdrs['Authorization'] = 'Bearer ' + _authToken;
+	var form = new FormData();
+    form.append('file', file);
+    form.append('filename', file.name);
     return fetch(BASE + '/api/agents/' + agentId + '/upload', {
       method: 'POST',
       headers: hdrs,
-      body: file
+      body: form
     }).then(function(r) {
       if (!r.ok) throw new Error('Upload failed');
       return r.json();

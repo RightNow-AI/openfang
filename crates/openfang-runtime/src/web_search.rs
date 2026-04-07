@@ -55,6 +55,7 @@ impl WebSearchEngine {
             SearchProvider::Tavily => self.search_tavily(query, max_results).await,
             SearchProvider::Perplexity => self.search_perplexity(query).await,
             SearchProvider::DuckDuckGo => self.search_duckduckgo(query, max_results).await,
+            SearchProvider::Searxng => self.search_searxng(query, max_results, None, 1).await,
             SearchProvider::Auto => self.search_auto(query, max_results).await,
         };
 
@@ -67,7 +68,7 @@ impl WebSearchEngine {
     }
 
     /// Auto-select provider based on available API keys.
-    /// Priority: Tavily → Brave → Perplexity → DuckDuckGo
+    /// Priority: Tavily → Brave → Perplexity → Searxng → DuckDuckGo
     async fn search_auto(&self, query: &str, max_results: usize) -> Result<String, String> {
         // Tavily first (AI-agent-native)
         if resolve_api_key(&self.config.tavily.api_key_env).is_some() {
@@ -93,6 +94,15 @@ impl WebSearchEngine {
             match self.search_perplexity(query).await {
                 Ok(result) => return Ok(result),
                 Err(e) => warn!("Perplexity failed, falling back: {e}"),
+            }
+        }
+
+        // Searxng fourth (self-hosted, no API key needed)
+        if !self.config.searxng.url.is_empty() {
+            debug!("Auto: trying Searxng");
+            match self.search_searxng(query, max_results, None, 1).await {
+                Ok(result) => return Ok(result),
+                Err(e) => warn!("Searxng failed, falling back: {e}"),
             }
         }
 
@@ -312,6 +322,162 @@ impl WebSearchEngine {
         }
 
         Ok(output)
+    }
+
+    /// Search via SearXNG self-hosted instance.
+    async fn search_searxng(
+        &self,
+        query: &str,
+        max_results: usize,
+        category: Option<&str>,
+        page: u32,
+    ) -> Result<String, String> {
+        if self.config.searxng.url.is_empty() {
+            return Err("SearXNG URL is not configured".to_string());
+        }
+
+        let category = category.unwrap_or("general");
+
+        // Validate category against SearXNG instance
+        match self.list_searxng_categories().await {
+            Ok(cats) => {
+                if !cats.iter().any(|c| c == category) {
+                    return Err(format!(
+                        "Invalid SearXNG category '{}'. Available: {}",
+                        category,
+                        cats.join(", ")
+                    ));
+                }
+            }
+            Err(e) => warn!("Could not validate SearXNG category: {e}"),
+        }
+
+        let limit = max_results;
+
+        debug!(query, "Searching via SearXNG");
+
+        let resp = self
+            .client
+            .get(format!("{}/search", self.config.searxng.url.trim_end_matches('/')))
+            .query(&[
+                ("q", query),
+                ("format", "json"),
+                ("categories", category),
+                ("page", &page.to_string()),
+            ])
+            .header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)")
+            .send()
+            .await
+            .map_err(|e| format!("SearXNG request failed: {e}"))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("SearXNG API returned {}", resp.status()));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct SearxngResponse {
+            results: Vec<SearxngResult>,
+            query: String,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct SearxngResult {
+            url: String,
+            title: String,
+            content: Option<String>,
+            #[serde(alias = "pubdate")]
+            published_date: Option<String>,
+        }
+
+        let data: SearxngResponse = resp
+            .json()
+            .await
+            .map_err(|e| format!("SearXNG JSON parse failed: {e}"))?;
+
+        if data.results.is_empty() {
+            return Err(format!("No results found for '{query}' (SearXNG)."));
+        }
+
+        #[derive(serde::Serialize)]
+        struct OutputResult<'a> {
+            title: &'a str,
+            url: &'a str,
+            content: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            published_date: Option<&'a str>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct Output<'a> {
+            query: &'a str,
+            results: Vec<OutputResult<'a>>,
+        }
+
+        let results: Vec<OutputResult> = data
+            .results
+            .iter()
+            .take(limit)
+            .map(|r| OutputResult {
+                title: &r.title,
+                url: &r.url,
+                content: r.content.as_deref().unwrap_or(""),
+                published_date: r.published_date.as_deref(),
+            })
+            .collect();
+
+        let output = Output {
+            query: &data.query,
+            results,
+        };
+
+        serde_json::to_string(&output)
+            .map_err(|e| format!("Failed to serialize SearXNG results: {e}"))
+    }
+
+    /// List available search categories from the SearXNG instance.
+    ///
+    /// Fetches the `/config` endpoint and returns the list of categories
+    /// the instance supports (e.g., "general", "images", "news", "videos").
+    /// Returns an error if SearXNG URL is not configured or the request fails.
+    pub async fn list_searxng_categories(&self) -> Result<Vec<String>, String> {
+        if self.config.searxng.url.is_empty() {
+            return Err("SearXNG URL is not configured".to_string());
+        }
+
+        #[derive(serde::Deserialize)]
+        struct SearxngConfig {
+            categories: Vec<String>,
+        }
+
+        let resp = self
+            .client
+            .get(format!("{}/config", self.config.searxng.url.trim_end_matches('/')))
+            .header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)")
+            .send()
+            .await
+            .map_err(|e| format!("SearXNG config request failed: {e}"))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("SearXNG config API returned {}", resp.status()));
+        }
+
+        let data: SearxngConfig = resp
+            .json()
+            .await
+            .map_err(|e| format!("SearXNG config JSON parse failed: {e}"))?;
+
+        Ok(data.categories)
+    }
+
+    /// Return all non-Auto search providers (for provider listing/discovery).
+    pub fn all_providers() -> Vec<SearchProvider> {
+        vec![
+            SearchProvider::Brave,
+            SearchProvider::Tavily,
+            SearchProvider::Perplexity,
+            SearchProvider::DuckDuckGo,
+            SearchProvider::Searxng,
+        ]
     }
 }
 

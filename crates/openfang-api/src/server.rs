@@ -51,6 +51,7 @@ pub async fn build_router(
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        budget_config: Arc::new(tokio::sync::RwLock::new(kernel.config.budget.clone())),
     });
 
     // CORS: allow localhost origins by default. If API key is set, the API
@@ -102,6 +103,15 @@ pub async fn build_router(
             .allow_methods(tower_http::cors::Any)
             .allow_headers(tower_http::cors::Any)
     };
+
+    // Warn if dashboard auth is enabled but the password hash is not Argon2id.
+    let ph = &state.kernel.config.auth.password_hash;
+    if state.kernel.config.auth.enabled && !ph.is_empty() && !ph.starts_with("$argon2") {
+        tracing::warn!(
+            "Dashboard auth password_hash is not in Argon2id format. \
+             Login will fail. Regenerate with: openfang auth hash-password"
+        );
+    }
 
     // Trim whitespace so `api_key = ""` or `api_key = "  "` both disable auth.
     let api_key = state.kernel.config.api_key.trim().to_string();
@@ -334,6 +344,10 @@ pub async fn build_router(
         .route(
             "/api/skills/uninstall",
             axum::routing::post(routes::uninstall_skill),
+        )
+        .route(
+            "/api/skills/reload",
+            axum::routing::post(routes::reload_skills),
         )
         .route(
             "/api/marketplace/search",
@@ -585,6 +599,10 @@ pub async fn build_router(
         .route(
             "/api/cron/jobs/{id}/status",
             axum::routing::get(routes::cron_job_status),
+        )
+        .route(
+            "/api/cron/jobs/{id}/run",
+            axum::routing::post(routes::run_cron_job),
         )
         // Webhook trigger endpoints (external event injection)
         .route("/hooks/wake", axum::routing::post(routes::webhook_wake))

@@ -60,6 +60,7 @@ struct GeminiRequest {
 struct GeminiContent {
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<String>,
+    #[serde(default)]
     parts: Vec<GeminiPart>,
 }
 
@@ -336,7 +337,117 @@ fn convert_messages(
         }
     }
 
+    // Sanitize for Gemini's strict turn-ordering rules:
+    // - A model turn with functionCall MUST be followed by a user turn with functionResponse
+    // - No consecutive same-role turns
+    let contents = sanitize_gemini_turns(contents);
+
     (contents, system_instruction)
+}
+
+/// Enforce Gemini's strict turn-ordering constraints.
+///
+/// Gemini requires: functionCall (model) → functionResponse (user) → model.
+/// After message trimming, this ordering can break. This function:
+/// 1. Merges consecutive same-role turns
+/// 2. Drops orphaned functionCall parts (no following functionResponse)
+/// 3. Drops orphaned functionResponse parts (no preceding functionCall)
+fn sanitize_gemini_turns(contents: Vec<GeminiContent>) -> Vec<GeminiContent> {
+    if contents.is_empty() {
+        return contents;
+    }
+
+    // Step 1: Merge consecutive same-role turns
+    let mut merged: Vec<GeminiContent> = Vec::with_capacity(contents.len());
+    for entry in contents {
+        if let Some(last) = merged.last_mut() {
+            if last.role == entry.role {
+                last.parts.extend(entry.parts);
+                continue;
+            }
+        }
+        merged.push(entry);
+    }
+
+    // Step 2: Drop orphaned functionCall parts from model turns.
+    // A model turn with functionCall must be followed by a user turn with functionResponse.
+    let len = merged.len();
+    for i in 0..len {
+        let is_model = merged[i].role.as_deref() == Some("model");
+        if !is_model {
+            continue;
+        }
+
+        let has_function_call = merged[i]
+            .parts
+            .iter()
+            .any(|p| matches!(p, GeminiPart::FunctionCall { .. }));
+        if !has_function_call {
+            continue;
+        }
+
+        // Check if next turn is a user turn with functionResponse
+        let next_has_response = i + 1 < len
+            && merged[i + 1].role.as_deref() == Some("user")
+            && merged[i + 1]
+                .parts
+                .iter()
+                .any(|p| matches!(p, GeminiPart::FunctionResponse { .. }));
+
+        if !next_has_response {
+            // Drop the functionCall parts from this model turn (keep text parts)
+            merged[i]
+                .parts
+                .retain(|p| !matches!(p, GeminiPart::FunctionCall { .. }));
+        }
+    }
+
+    // Step 3: Drop orphaned functionResponse parts from user turns.
+    // A user turn with functionResponse must be preceded by a model turn with functionCall.
+    for i in 0..merged.len() {
+        let is_user = merged[i].role.as_deref() == Some("user");
+        if !is_user {
+            continue;
+        }
+
+        let has_function_response = merged[i]
+            .parts
+            .iter()
+            .any(|p| matches!(p, GeminiPart::FunctionResponse { .. }));
+        if !has_function_response {
+            continue;
+        }
+
+        let prev_has_call = i > 0
+            && merged[i - 1].role.as_deref() == Some("model")
+            && merged[i - 1]
+                .parts
+                .iter()
+                .any(|p| matches!(p, GeminiPart::FunctionCall { .. }));
+
+        if !prev_has_call {
+            merged[i]
+                .parts
+                .retain(|p| !matches!(p, GeminiPart::FunctionResponse { .. }));
+        }
+    }
+
+    // Step 4: Remove turns that ended up empty after filtering
+    merged.retain(|c| !c.parts.is_empty());
+
+    // Step 5: Final merge pass (removing parts may have created new consecutive same-role)
+    let mut final_merged: Vec<GeminiContent> = Vec::with_capacity(merged.len());
+    for entry in merged {
+        if let Some(last) = final_merged.last_mut() {
+            if last.role == entry.role {
+                last.parts.extend(entry.parts);
+                continue;
+            }
+        }
+        final_merged.push(entry);
+    }
+
+    final_merged
 }
 
 /// Extract system prompt from messages or the explicit system field.
@@ -653,7 +764,20 @@ impl LlmDriver for GeminiDriver {
                 return Err(LlmError::Api { status, message });
             }
 
-            // Parse SSE stream
+            // Parse SSE stream — process line-by-line like the OpenAI driver.
+            //
+            // Gemini's `streamGenerateContent?alt=sse` endpoint sends
+            // standard SSE: each event is a `data: {...}` line followed by
+            // a blank line.  The previous implementation looked for `\n\n`
+            // as the event delimiter, but many HTTP responses use `\r\n`
+            // line endings, so the actual delimiter is `\r\n\r\n` which
+            // `find("\n\n")` never matches — causing the entire stream to
+            // be silently buffered without extracting any events (zero
+            // TextDelta emissions → empty response → infinite retry loop).
+            //
+            // Fix: process the buffer one line at a time (splitting on
+            // `\n` and stripping trailing `\r`).  A `data:` line is
+            // parsed immediately.  Empty/blank lines are simply skipped.
             let mut buffer = String::new();
             let mut text_content = String::new();
             // Thought signature for accumulated text content (last one wins)
@@ -662,22 +786,32 @@ impl LlmDriver for GeminiDriver {
             let mut fn_calls: Vec<(String, serde_json::Value, Option<String>)> = Vec::new();
             let mut finish_reason: Option<String> = None;
             let mut usage = TokenUsage::default();
+            let mut chunk_count: u32 = 0;
+            let mut sse_line_count: u32 = 0;
 
             let mut byte_stream = resp.bytes_stream();
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
+                chunk_count += 1;
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-                // Process complete SSE events (delimited by \n\n or \r\n\r\n)
-                while let Some(pos) = buffer.find("\n\n") {
-                    let event_text = buffer[..pos].to_string();
-                    buffer = buffer[pos + 2..].to_string();
+                // Process complete lines (handle both \r\n and \n endings)
+                while let Some(pos) = buffer.find('\n') {
+                    let line = buffer[..pos].trim_end().to_string();
+                    buffer = buffer[pos + 1..].to_string();
 
-                    // Extract the data line (handle both "data: " and "data:" formats)
-                    let data = event_text
-                        .lines()
-                        .find_map(|line| line.strip_prefix("data:").map(|d| d.trim_start()))
-                        .unwrap_or("");
+                    // Skip empty lines and SSE comments
+                    if line.is_empty() || line.starts_with(':') {
+                        continue;
+                    }
+
+                    sse_line_count += 1;
+
+                    // Extract the data payload (handle both "data: " and "data:" formats)
+                    let data = match line.strip_prefix("data:") {
+                        Some(d) => d.trim_start(),
+                        None => continue,
+                    };
 
                     if data.is_empty() {
                         continue;
@@ -685,7 +819,14 @@ impl LlmDriver for GeminiDriver {
 
                     let json: GeminiResponse = match serde_json::from_str(data) {
                         Ok(v) => v,
-                        Err(_) => continue,
+                        Err(e) => {
+                            debug!(
+                                error = %e,
+                                data_preview = &data[..data.len().min(200)],
+                                "Failed to parse Gemini SSE data line"
+                            );
+                            continue;
+                        }
                     };
 
                     // Extract usage from each chunk (last one wins)
@@ -766,6 +907,121 @@ impl LlmDriver for GeminiDriver {
                         }
                     }
                 }
+            }
+
+            // Process any remaining data left in the buffer after the stream
+            // ends (e.g. final chunk not terminated by a newline).
+            let remaining = buffer.trim();
+            if !remaining.is_empty() {
+                if let Some(data) = remaining.strip_prefix("data:") {
+                    let data = data.trim();
+                    if !data.is_empty() {
+                        if let Ok(json) = serde_json::from_str::<GeminiResponse>(data) {
+                            if let Some(ref u) = json.usage_metadata {
+                                usage.input_tokens = u.prompt_token_count;
+                                usage.output_tokens = u.candidates_token_count;
+                            }
+                            for candidate in &json.candidates {
+                                if let Some(fr) = &candidate.finish_reason {
+                                    finish_reason = Some(fr.clone());
+                                }
+                                if let Some(ref content) = candidate.content {
+                                    for part in &content.parts {
+                                        match part {
+                                            GeminiPart::Text {
+                                                text,
+                                                thought_signature,
+                                            } => {
+                                                if !text.is_empty() {
+                                                    text_content.push_str(text);
+                                                    let _ = tx
+                                                        .send(StreamEvent::TextDelta {
+                                                            text: text.clone(),
+                                                        })
+                                                        .await;
+                                                }
+                                                if thought_signature.is_some() {
+                                                    text_thought_sig = thought_signature.clone();
+                                                }
+                                            }
+                                            GeminiPart::FunctionCall {
+                                                function_call,
+                                                thought_signature,
+                                            } => {
+                                                let id = format!(
+                                                    "call_{}",
+                                                    uuid::Uuid::new_v4().simple()
+                                                );
+                                                let _ = tx
+                                                    .send(StreamEvent::ToolUseStart {
+                                                        id: id.clone(),
+                                                        name: function_call.name.clone(),
+                                                    })
+                                                    .await;
+                                                let args_str =
+                                                    serde_json::to_string(&function_call.args)
+                                                        .unwrap_or_default();
+                                                let _ = tx
+                                                    .send(StreamEvent::ToolInputDelta {
+                                                        text: args_str,
+                                                    })
+                                                    .await;
+                                                let _ = tx
+                                                    .send(StreamEvent::ToolUseEnd {
+                                                        id,
+                                                        name: function_call.name.clone(),
+                                                        input: function_call.args.clone(),
+                                                    })
+                                                    .await;
+                                                fn_calls.push((
+                                                    function_call.name.clone(),
+                                                    function_call.args.clone(),
+                                                    thought_signature.clone(),
+                                                ));
+                                            }
+                                            GeminiPart::Thought { ref text, .. } => {
+                                                if !text.is_empty() {
+                                                    let _ = tx
+                                                        .send(StreamEvent::ThinkingDelta {
+                                                            text: text.clone(),
+                                                        })
+                                                        .await;
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Log stream summary for diagnostics (mirrors OpenAI driver)
+            let is_empty_stream = text_content.is_empty()
+                && fn_calls.is_empty()
+                && usage.input_tokens == 0
+                && usage.output_tokens == 0;
+            if is_empty_stream {
+                warn!(
+                    chunks = chunk_count,
+                    sse_lines = sse_line_count,
+                    finish = ?finish_reason,
+                    buffer_remaining = buffer.len(),
+                    "Gemini SSE stream returned empty: 0 content, 0 tokens — likely a silently failed request"
+                );
+            } else {
+                debug!(
+                    chunks = chunk_count,
+                    sse_lines = sse_line_count,
+                    text_len = text_content.len(),
+                    tool_count = fn_calls.len(),
+                    finish = ?finish_reason,
+                    input_tokens = usage.input_tokens,
+                    output_tokens = usage.output_tokens,
+                    "Gemini SSE stream completed"
+                );
             }
 
             // Build final response
@@ -1351,6 +1607,15 @@ mod tests {
                     provider_metadata: None,
                 }]),
             },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_456".to_string(),
+                    tool_name: "read_file".to_string(),
+                    content: "file contents".to_string(),
+                    is_error: false,
+                }]),
+            },
         ];
 
         let (contents, _) = convert_messages(&messages, &None);
@@ -1581,12 +1846,27 @@ mod tests {
             _ => panic!("Expected ToolUse"),
         }
 
+        // Extract the generated tool_use_id for the ToolResult
+        let tool_use_id = match &completion.content[1] {
+            ContentBlock::ToolUse { id, .. } => id.clone(),
+            _ => panic!("Expected ToolUse"),
+        };
+
         // Now convert back to Gemini format and verify signatures are echoed
         let messages = vec![
             Message::user("Search for rust"),
             Message {
                 role: Role::Assistant,
                 content: MessageContent::Blocks(completion.content),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id,
+                    tool_name: "web_search".to_string(),
+                    content: "search results".to_string(),
+                    is_error: false,
+                }]),
             },
         ];
         let (contents, _) = convert_messages(&messages, &None);
@@ -1719,5 +1999,142 @@ mod tests {
             }
             _ => panic!("Expected Text block"),
         }
+    }
+
+    // ── sanitize_gemini_turns tests ─────────────────────────────────────
+
+    #[test]
+    fn test_sanitize_drops_orphaned_function_call() {
+        // A model turn with functionCall but no following functionResponse
+        // should have the functionCall stripped.
+        let contents = vec![
+            GeminiContent {
+                role: Some("user".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "Hello".to_string(),
+                    thought_signature: None,
+                }],
+            },
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![
+                    GeminiPart::Text {
+                        text: "I'll search.".to_string(),
+                        thought_signature: None,
+                    },
+                    GeminiPart::FunctionCall {
+                        function_call: GeminiFunctionCallData {
+                            name: "web_search".to_string(),
+                            args: serde_json::json!({"q": "rust"}),
+                        },
+                        thought_signature: None,
+                    },
+                ],
+            },
+        ];
+
+        let sanitized = sanitize_gemini_turns(contents);
+        assert_eq!(sanitized.len(), 2);
+        // functionCall should be stripped, text kept
+        assert_eq!(sanitized[1].parts.len(), 1);
+        assert!(matches!(&sanitized[1].parts[0], GeminiPart::Text { .. }));
+    }
+
+    #[test]
+    fn test_sanitize_keeps_valid_function_call_response_pair() {
+        let contents = vec![
+            GeminiContent {
+                role: Some("user".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "Search".to_string(),
+                    thought_signature: None,
+                }],
+            },
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![GeminiPart::FunctionCall {
+                    function_call: GeminiFunctionCallData {
+                        name: "web_search".to_string(),
+                        args: serde_json::json!({"q": "rust"}),
+                    },
+                    thought_signature: None,
+                }],
+            },
+            GeminiContent {
+                role: Some("user".to_string()),
+                parts: vec![GeminiPart::FunctionResponse {
+                    function_response: GeminiFunctionResponseData {
+                        name: "web_search".to_string(),
+                        response: serde_json::json!({"result": "Rust is great"}),
+                    },
+                }],
+            },
+        ];
+
+        let sanitized = sanitize_gemini_turns(contents);
+        assert_eq!(sanitized.len(), 3);
+        // functionCall should be preserved
+        assert!(matches!(
+            &sanitized[1].parts[0],
+            GeminiPart::FunctionCall { .. }
+        ));
+    }
+
+    #[test]
+    fn test_sanitize_drops_orphaned_function_response() {
+        // A user turn with functionResponse but no preceding functionCall
+        let contents = vec![
+            GeminiContent {
+                role: Some("user".to_string()),
+                parts: vec![GeminiPart::FunctionResponse {
+                    function_response: GeminiFunctionResponseData {
+                        name: "web_search".to_string(),
+                        response: serde_json::json!({"result": "data"}),
+                    },
+                }],
+            },
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "Done.".to_string(),
+                    thought_signature: None,
+                }],
+            },
+        ];
+
+        let sanitized = sanitize_gemini_turns(contents);
+        // Orphaned functionResponse removed, empty user turn removed
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].role.as_deref(), Some("model"));
+    }
+
+    #[test]
+    fn test_sanitize_merges_consecutive_same_role() {
+        let contents = vec![
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "First.".to_string(),
+                    thought_signature: None,
+                }],
+            },
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "Second.".to_string(),
+                    thought_signature: None,
+                }],
+            },
+        ];
+
+        let sanitized = sanitize_gemini_turns(contents);
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].parts.len(), 2);
+    }
+
+    #[test]
+    fn test_sanitize_empty_input() {
+        let sanitized = sanitize_gemini_turns(vec![]);
+        assert!(sanitized.is_empty());
     }
 }

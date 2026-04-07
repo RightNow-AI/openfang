@@ -1,0 +1,6 @@
+langchain>=0.3
+langchain-openai>=0.3
+langchain-core>=0.3
+langchain-ollama>=0.3
+fastapi>=0.115
+uvicorn>=0.34

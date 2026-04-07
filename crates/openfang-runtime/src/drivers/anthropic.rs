@@ -471,9 +471,8 @@ impl LlmDriver for AnthropicDriver {
                                 input_json,
                             }) = blocks.get(block_idx)
                             {
-                                let input: serde_json::Value =
-                                    serde_json::from_str(input_json)
-                                        .unwrap_or_else(|_| serde_json::json!({}));
+                                let input: serde_json::Value = serde_json::from_str(input_json)
+                                    .unwrap_or_else(|_| serde_json::json!({}));
                                 let _ = tx
                                     .send(StreamEvent::ToolUseEnd {
                                         id: id.clone(),
@@ -521,8 +520,8 @@ impl LlmDriver for AnthropicDriver {
                         name,
                         input_json,
                     } => {
-                        let input: serde_json::Value =
-                            serde_json::from_str(&input_json).unwrap_or_default();
+                        let input: serde_json::Value = serde_json::from_str(&input_json)
+                            .unwrap_or_else(|_| serde_json::json!({}));
                         content.push(ContentBlock::ToolUse {
                             id: id.clone(),
                             name: name.clone(),
@@ -550,6 +549,28 @@ impl LlmDriver for AnthropicDriver {
             status: 0,
             message: "Max retries exceeded".to_string(),
         })
+    }
+}
+
+/// Ensure a `serde_json::Value` is a JSON object (dictionary).
+///
+/// The Anthropic API requires `tool_use.input` to be a JSON object, never a
+/// string, null, or other scalar.  This helper handles:
+///  - `Value::Object` → returned as-is
+///  - `Value::String` → attempt to parse as JSON; if the result is an object, use it
+///  - anything else (Null, Number, Bool, Array) → empty object `{}`
+fn ensure_object(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(_) => v.clone(),
+        serde_json::Value::String(s) => {
+            // The input may have been double-serialized (stored as a JSON string).
+            // Try to parse it back into a Value.
+            match serde_json::from_str::<serde_json::Value>(s) {
+                Ok(parsed) if parsed.is_object() => parsed,
+                _ => serde_json::json!({}),
+            }
+        }
+        _ => serde_json::json!({}),
     }
 }
 
@@ -582,7 +603,7 @@ fn convert_message(msg: &Message) -> ApiMessage {
                     } => Some(ApiContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
-                        input: input.clone(),
+                        input: ensure_object(input),
                     }),
                     ContentBlock::ToolResult {
                         tool_use_id,
@@ -691,5 +712,64 @@ mod tests {
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(response.tool_calls[0].name, "web_search");
         assert_eq!(response.usage.total(), 150);
+    }
+
+    #[test]
+    fn test_ensure_object_from_object() {
+        let obj = serde_json::json!({"key": "value"});
+        assert_eq!(ensure_object(&obj), obj);
+    }
+
+    #[test]
+    fn test_ensure_object_from_string() {
+        // Simulates double-serialized input (stored as JSON string)
+        let stringified = serde_json::Value::String(r#"{"query": "rust"}"#.to_string());
+        let result = ensure_object(&stringified);
+        assert_eq!(result, serde_json::json!({"query": "rust"}));
+    }
+
+    #[test]
+    fn test_ensure_object_from_null() {
+        let null = serde_json::Value::Null;
+        assert_eq!(ensure_object(&null), serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_ensure_object_from_non_object_string() {
+        // A string that parses to a non-object JSON value
+        let s = serde_json::Value::String("42".to_string());
+        assert_eq!(ensure_object(&s), serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_ensure_object_from_invalid_json_string() {
+        let s = serde_json::Value::String("not json at all".to_string());
+        assert_eq!(ensure_object(&s), serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_convert_message_normalizes_tool_input() {
+        // Simulate a ToolUse block with a stringified JSON input (legacy session data)
+        let msg = Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "tu-1".to_string(),
+                name: "web_search".to_string(),
+                input: serde_json::Value::String(r#"{"query": "test"}"#.to_string()),
+                provider_metadata: None,
+            }]),
+        };
+        let api_msg = convert_message(&msg);
+        if let ApiContent::Blocks(blocks) = api_msg.content {
+            match &blocks[0] {
+                ApiContentBlock::ToolUse { input, .. } => {
+                    assert!(input.is_object(), "input should be an object, got: {input}");
+                    assert_eq!(input["query"], "test");
+                }
+                _ => panic!("Expected ToolUse block"),
+            }
+        } else {
+            panic!("Expected Blocks content");
+        }
     }
 }

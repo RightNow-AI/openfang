@@ -355,6 +355,7 @@ fn channel_type_to_str(ct: &ChannelType) -> &str {
         ChannelType::WebChat => "webchat",
         ChannelType::CLI => "cli",
         ChannelType::Custom(s) => s.as_str(),
+        _ => "unknown",
     }
 }
 

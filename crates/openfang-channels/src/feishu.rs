@@ -11,19 +11,23 @@
 //! - Rich text (post) message parsing
 //! - Event encryption/decryption support (AES-256-CBC)
 //! - Tenant access token caching with auto-refresh
+//! - WebSocket mode: Long connection receives events (no public IP required)
 
 use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use futures::Stream;
+use futures::{SinkExt, Stream, StreamExt};
+use prost::Message as ProstMessage;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch, RwLock};
-use tracing::{info, warn};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tracing::{debug, error, info, warn};
+use url::Url;
 use zeroize::Zeroizing;
 
 // ─── Region-based API endpoints ─────────────────────────────────────────────
@@ -37,6 +41,51 @@ const MAX_MESSAGE_LEN: usize = 4000;
 
 /// Token refresh buffer — refresh 5 minutes before actual expiry.
 const TOKEN_REFRESH_BUFFER_SECS: u64 = 300;
+
+/// Feishu websocket endpoint discovery API.
+const FEISHU_WS_ENDPOINT_URL: &str = "https://open.feishu.cn/callback/ws/endpoint";
+
+const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_BACKOFF: Duration = Duration::from_secs(60);
+const DEFAULT_WS_PING_INTERVAL_SECS: u64 = 30;
+
+/// Feishu websocket frame header.
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct FeishuWsHeader {
+    #[prost(string, tag = "1")]
+    key: String,
+    #[prost(string, tag = "2")]
+    value: String,
+}
+
+/// Feishu websocket frame (pbbp2.proto compatible).
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct FeishuWsFrame {
+    #[prost(uint64, tag = "1")]
+    seq_id: u64,
+    #[prost(uint64, tag = "2")]
+    log_id: u64,
+    #[prost(int32, tag = "3")]
+    service: i32,
+    #[prost(int32, tag = "4")]
+    method: i32,
+    #[prost(message, repeated, tag = "5")]
+    headers: Vec<FeishuWsHeader>,
+    #[prost(string, optional, tag = "6")]
+    payload_encoding: Option<String>,
+    #[prost(string, optional, tag = "7")]
+    payload_type: Option<String>,
+    #[prost(bytes, optional, tag = "8")]
+    payload: Option<Vec<u8>>,
+    #[prost(string, optional, tag = "9")]
+    log_id_new: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct FeishuWsEndpoint {
+    url: String,
+    ping_interval_secs: u64,
+}
 
 /// Maximum cached message/event IDs for deduplication.
 const DEDUP_CACHE_SIZE: usize = 1000;
@@ -82,6 +131,17 @@ impl FeishuRegion {
     }
 }
 
+// ─── Connection Mode ──────────────────────────────────────────────────────
+
+/// Feishu connection mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeishuConnectionMode {
+    /// Webhook mode: HTTP server receives event callbacks.
+    Webhook,
+    /// WebSocket mode: Long connection receives events (no public IP required).
+    WebSocket,
+}
+
 // ─── Deduplication ──────────────────────────────────────────────────────────
 
 /// Simple ring-buffer deduplication cache.
@@ -117,15 +177,17 @@ impl DedupCache {
 
 /// Feishu/Lark Open Platform adapter.
 ///
-/// Inbound messages arrive via a webhook HTTP server that receives event
-/// callbacks from the platform. Outbound messages are sent via the IM API
+/// Inbound messages arrive via a webhook HTTP server or WebSocket long connection.
+/// Outbound messages are sent via the IM API
 /// with a tenant access token for authentication.
 pub struct FeishuAdapter {
     /// Feishu/Lark app ID.
     app_id: String,
     /// SECURITY: App secret, zeroized on drop.
     app_secret: Zeroizing<String>,
-    /// Port on which the inbound webhook HTTP server listens.
+    /// Connection mode (Webhook or WebSocket).
+    connection_mode: FeishuConnectionMode,
+    /// Port on which the inbound webhook HTTP server listens (Webhook mode only).
     webhook_port: u16,
     /// Region (CN or International).
     region: FeishuRegion,
@@ -157,6 +219,7 @@ impl FeishuAdapter {
         Self {
             app_id,
             app_secret: Zeroizing::new(app_secret),
+            connection_mode: FeishuConnectionMode::Webhook,
             webhook_port,
             region: FeishuRegion::Cn,
             webhook_path: "/feishu/webhook".to_string(),
@@ -193,6 +256,30 @@ impl FeishuAdapter {
         adapter.encrypt_key = encrypt_key;
         adapter.bot_names = bot_names;
         adapter
+    }
+
+    /// Create a new Feishu adapter in WebSocket mode.
+    ///
+    /// WebSocket mode does not require a public IP or webhook configuration.
+    pub fn new_websocket(app_id: String, app_secret: String) -> Self {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        Self {
+            app_id,
+            app_secret: Zeroizing::new(app_secret),
+            connection_mode: FeishuConnectionMode::WebSocket,
+            webhook_port: 0,
+            region: FeishuRegion::Cn,
+            webhook_path: String::new(),
+            verification_token: None,
+            encrypt_key: None,
+            bot_names: Vec::new(),
+            client: reqwest::Client::new(),
+            shutdown_tx: Arc::new(shutdown_tx),
+            shutdown_rx,
+            cached_token: Arc::new(RwLock::new(None)),
+            message_dedup: Arc::new(DedupCache::new(DEDUP_CACHE_SIZE)),
+            event_dedup: Arc::new(DedupCache::new(DEDUP_CACHE_SIZE)),
+        }
     }
 
     /// API URL for a given path suffix.
@@ -368,6 +455,629 @@ impl FeishuAdapter {
         }
 
         Ok(())
+    }
+
+    /// Start webhook server (Webhook mode).
+    async fn start_webhook(
+        &self,
+        tx: mpsc::Sender<ChannelMessage>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let port = self.webhook_port;
+        let webhook_path = self.webhook_path.clone();
+        let verification_token = self.verification_token.clone();
+        let encrypt_key = self.encrypt_key.clone();
+        let bot_names = self.bot_names.clone();
+        let channel_name = self.region.channel_name().to_string();
+        let region_label = self.region.label().to_string();
+        let message_dedup = Arc::clone(&self.message_dedup);
+        let event_dedup = Arc::clone(&self.event_dedup);
+        let mut shutdown_rx = self.shutdown_rx.clone();
+
+        tokio::spawn(async move {
+            let verification_token = Arc::new(verification_token);
+            let encrypt_key = Arc::new(encrypt_key);
+            let tx = Arc::new(tx);
+            let bot_names = Arc::new(bot_names);
+            let channel_name = Arc::new(channel_name);
+            let region_label = Arc::new(region_label);
+
+            let app = axum::Router::new().route(
+                &webhook_path,
+                axum::routing::post({
+                    let vt = Arc::clone(&verification_token);
+                    let ek = Arc::clone(&encrypt_key);
+                    let tx = Arc::clone(&tx);
+                    let bot_names = Arc::clone(&bot_names);
+                    let channel_name = Arc::clone(&channel_name);
+                    let region_label = Arc::clone(&region_label);
+                    let message_dedup = Arc::clone(&message_dedup);
+                    let event_dedup = Arc::clone(&event_dedup);
+                    move |body: axum::extract::Json<serde_json::Value>| {
+                        let vt = Arc::clone(&vt);
+                        let ek = Arc::clone(&ek);
+                        let tx = Arc::clone(&tx);
+                        let bot_names = Arc::clone(&bot_names);
+                        let channel_name = Arc::clone(&channel_name);
+                        let region_label = Arc::clone(&region_label);
+                        let message_dedup = Arc::clone(&message_dedup);
+                        let event_dedup = Arc::clone(&event_dedup);
+                        async move {
+                            let mut event_data = body.0.clone();
+
+                            if let Some(encrypted) = body.0.get("encrypt").and_then(|v| v.as_str())
+                            {
+                                if let Some(ref key) = *ek {
+                                    match decrypt_event(encrypted, key) {
+                                        Ok(decrypted) => event_data = decrypted,
+                                        Err(e) => {
+                                            warn!("{region_label}: decrypt failed: {e}");
+                                            return (
+                                                axum::http::StatusCode::BAD_REQUEST,
+                                                axum::Json(
+                                                    serde_json::json!({"error": "decrypt failed"}),
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            if event_data.get("type").and_then(|v| v.as_str())
+                                == Some("url_verification")
+                            {
+                                if let Some(ref expected_token) = *vt {
+                                    let token = event_data["token"].as_str().unwrap_or("");
+                                    if token != expected_token {
+                                        warn!("{region_label}: invalid verification token");
+                                        return (
+                                            axum::http::StatusCode::FORBIDDEN,
+                                            axum::Json(serde_json::json!({})),
+                                        );
+                                    }
+                                }
+                                if let Some(challenge) = body.0.get("challenge") {
+                                    return (
+                                        axum::http::StatusCode::OK,
+                                        axum::Json(serde_json::json!({
+                                            "challenge": challenge,
+                                        })),
+                                    );
+                                }
+                                let challenge = event_data
+                                    .get("challenge")
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::String(String::new()));
+                                return (
+                                    axum::http::StatusCode::OK,
+                                    axum::Json(serde_json::json!({
+                                        "challenge": challenge,
+                                    })),
+                                );
+                            }
+
+                            if let Some(event_id) = event_data
+                                .get("header")
+                                .and_then(|h| h.get("event_id"))
+                                .and_then(|v| v.as_str())
+                            {
+                                if event_dedup.check_and_insert(event_id) {
+                                    return (
+                                        axum::http::StatusCode::OK,
+                                        axum::Json(serde_json::json!({"code": 0})),
+                                    );
+                                }
+                            }
+
+                            let schema = event_data.get("schema").and_then(|v| v.as_str());
+                            if schema == Some("2.0") {
+                                if let Some(msg) =
+                                    parse_event(&event_data, &bot_names, &channel_name)
+                                {
+                                    if !message_dedup.check_and_insert(&msg.platform_message_id) {
+                                        let _ = tx.send(msg).await;
+                                    }
+                                }
+                            } else {
+                                let event_type = event_data["event"]["type"].as_str().unwrap_or("");
+                                if event_type == "message" {
+                                    let event = &event_data["event"];
+                                    let text = event["text"].as_str().unwrap_or("");
+                                    if !text.is_empty() {
+                                        let open_id =
+                                            event["open_id"].as_str().unwrap_or("").to_string();
+                                        let chat_id = event["open_chat_id"]
+                                            .as_str()
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let msg_id = event["open_message_id"]
+                                            .as_str()
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let is_group =
+                                            event["chat_type"].as_str().unwrap_or("") == "group";
+
+                                        if !message_dedup.check_and_insert(&msg_id) {
+                                            let content = if text.starts_with('/') {
+                                                let parts: Vec<&str> =
+                                                    text.splitn(2, ' ').collect();
+                                                let cmd = parts[0].trim_start_matches('/');
+                                                let args: Vec<String> = parts
+                                                    .get(1)
+                                                    .map(|a| {
+                                                        a.split_whitespace()
+                                                            .map(String::from)
+                                                            .collect()
+                                                    })
+                                                    .unwrap_or_default();
+                                                ChannelContent::Command {
+                                                    name: cmd.to_string(),
+                                                    args,
+                                                }
+                                            } else {
+                                                ChannelContent::Text(text.to_string())
+                                            };
+
+                                            let channel_msg = ChannelMessage {
+                                                channel: ChannelType::Custom(
+                                                    channel_name.to_string(),
+                                                ),
+                                                platform_message_id: msg_id,
+                                                sender: ChannelUser {
+                                                    platform_id: chat_id,
+                                                    display_name: open_id,
+                                                    openfang_user: None,
+                                                },
+                                                content,
+                                                target_agent: None,
+                                                timestamp: Utc::now(),
+                                                is_group,
+                                                thread_id: None,
+                                                metadata: HashMap::new(),
+                                            };
+
+                                            let _ = tx.send(channel_msg).await;
+                                        }
+                                    }
+                                }
+                            }
+
+                            (
+                                axum::http::StatusCode::OK,
+                                axum::Json(serde_json::json!({"code": 0})),
+                            )
+                        }
+                    }
+                }),
+            );
+
+            let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+            info!("{} webhook server listening on {addr}", *region_label);
+
+            let listener = match tokio::net::TcpListener::bind(addr).await {
+                Ok(l) => l,
+                Err(e) => {
+                    warn!("{} webhook bind failed: {e}", *region_label);
+                    return;
+                }
+            };
+
+            let server = axum::serve(listener, app);
+
+            tokio::select! {
+                result = server => {
+                    if let Err(e) = result {
+                        warn!("{} webhook server error: {e}", *region_label);
+                    }
+                }
+                _ = shutdown_rx.changed() => {
+                    info!("{} adapter shutting down", *region_label);
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Start WebSocket connection loop (WebSocket mode).
+    async fn start_websocket_loop(
+        &self,
+        tx: mpsc::Sender<ChannelMessage>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = Arc::new(self.clone_adapter());
+
+        tokio::spawn(async move {
+            let label = adapter.region.label();
+            info!("Starting {label} WebSocket mode");
+            let mut shutdown_rx = adapter.shutdown_rx.clone();
+            let mut backoff = INITIAL_BACKOFF;
+
+            loop {
+                if *shutdown_rx.borrow() {
+                    break;
+                }
+
+                if let Err(e) = Self::run_websocket_inner(adapter.clone(), tx.clone()).await {
+                    error!("{label} WebSocket error: {e}");
+                } else {
+                    info!("{label} WebSocket connection closed");
+                }
+
+                if *shutdown_rx.borrow() {
+                    break;
+                }
+
+                warn!("{label} WebSocket reconnecting in {backoff:?}");
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {}
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                }
+
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+
+            info!("{label} WebSocket loop stopped");
+        });
+
+        Ok(())
+    }
+
+    fn clone_adapter(&self) -> FeishuAdapterClone {
+        FeishuAdapterClone {
+            app_id: self.app_id.clone(),
+            app_secret: self.app_secret.clone(),
+            region: self.region,
+            client: self.client.clone(),
+            shutdown_rx: self.shutdown_rx.clone(),
+            bot_names: self.bot_names.clone(),
+            message_dedup: Arc::clone(&self.message_dedup),
+            event_dedup: Arc::clone(&self.event_dedup),
+        }
+    }
+
+    async fn run_websocket_inner(
+        adapter: Arc<FeishuAdapterClone>,
+        tx: mpsc::Sender<ChannelMessage>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let label = adapter.region.label();
+        let endpoint = adapter.get_websocket_endpoint().await?;
+        let ws_url = endpoint.url;
+        let service_id = parse_service_id(&ws_url);
+
+        info!("Connecting to {label} WebSocket endpoint: {ws_url}");
+        let (ws_stream, _) = connect_async(&ws_url).await?;
+        info!("{label} WebSocket connected successfully");
+
+        let (mut write, mut read) = ws_stream.split();
+        let mut shutdown_rx = adapter.shutdown_rx.clone();
+        let mut ping_interval =
+            tokio::time::interval(Duration::from_secs(endpoint.ping_interval_secs));
+        ping_interval.tick().await;
+
+        let channel_name = adapter.region.channel_name().to_string();
+        let mut frame_parts: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
+
+        loop {
+            tokio::select! {
+                msg = read.next() => {
+                    match msg {
+                        Some(Ok(Message::Binary(data))) => {
+                            let frame = match FeishuWsFrame::decode(data.as_slice()) {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    warn!("{label} WS decode frame failed: {e}");
+                                    continue;
+                                }
+                            };
+
+                            match frame.method {
+                                0 => {
+                                    if let Some(new_interval) = parse_pong_interval(&frame) {
+                                        if new_interval > 0 {
+                                            debug!("{label} WS update ping interval to {}s", new_interval);
+                                            ping_interval = tokio::time::interval(Duration::from_secs(new_interval));
+                                            ping_interval.tick().await;
+                                        }
+                                    }
+                                }
+                                1 => {
+                                    Self::handle_data_frame(frame, &mut write, &tx, &adapter.bot_names, &channel_name, &adapter.message_dedup, &adapter.event_dedup, &mut frame_parts).await?;
+                                }
+                                method => {
+                                    debug!("{label} WS unhandled frame method: {method}");
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Text(text))) => {
+                            debug!("{label} WS unexpected text message: {text}");
+                        }
+                        Some(Ok(Message::Close(frame))) => {
+                            info!("{label} WebSocket closed by server: {frame:?}");
+                            break;
+                        }
+                        Some(Ok(Message::Ping(payload))) => {
+                            let _ = write.send(Message::Pong(payload)).await;
+                        }
+                        Some(Ok(Message::Pong(_))) => {
+                            debug!("{label} WebSocket pong");
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => return Err(format!("{label} WebSocket stream error: {e}").into()),
+                        None => break,
+                    }
+                }
+                _ = ping_interval.tick() => {
+                    let ping_frame = build_ping_frame(service_id);
+                    write.send(Message::Binary(ping_frame.encode_to_vec())).await?;
+                }
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        info!("{label} WebSocket shutting down");
+                        let _ = write.close().await;
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_data_frame<S>(
+        mut frame: FeishuWsFrame,
+        write: &mut S,
+        tx: &mpsc::Sender<ChannelMessage>,
+        bot_names: &[String],
+        channel_name: &str,
+        message_dedup: &DedupCache,
+        event_dedup: &DedupCache,
+        frame_parts: &mut HashMap<String, Vec<Vec<u8>>>,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        S: SinkExt<Message> + Unpin,
+        <S as futures::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let frame_type = ws_header(&frame.headers, "type").unwrap_or_default();
+        if frame_type != "event" {
+            return Ok(());
+        }
+
+        let payload = match frame.payload.take() {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let payload = match combine_payload(&frame.headers, payload, frame_parts) {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let mut code = 200;
+        match serde_json::from_slice::<serde_json::Value>(&payload) {
+            Ok(event) => {
+                if let Some(event_id) = event
+                    .get("header")
+                    .and_then(|h| h.get("event_id"))
+                    .and_then(|v| v.as_str())
+                {
+                    if event_dedup.check_and_insert(event_id) {
+                        let ack_frame = build_ack_frame(&frame, code);
+                        write
+                            .send(Message::Binary(ack_frame.encode_to_vec()))
+                            .await?;
+                        return Ok(());
+                    }
+                }
+                if let Some(msg) = parse_event(&event, bot_names, channel_name) {
+                    if !message_dedup.check_and_insert(&msg.platform_message_id)
+                        && tx.send(msg).await.is_err()
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("WS event payload parse failed: {e}");
+                code = 500;
+            }
+        }
+
+        let ack_frame = build_ack_frame(&frame, code);
+        write
+            .send(Message::Binary(ack_frame.encode_to_vec()))
+            .await?;
+        Ok(())
+    }
+}
+
+// ─── WebSocket adapter clone ────────────────────────────────────────────────
+
+/// Cloneable Feishu adapter parts for use in async WebSocket tasks.
+struct FeishuAdapterClone {
+    app_id: String,
+    app_secret: Zeroizing<String>,
+    region: FeishuRegion,
+    client: reqwest::Client,
+    shutdown_rx: watch::Receiver<bool>,
+    bot_names: Vec<String>,
+    message_dedup: Arc<DedupCache>,
+    event_dedup: Arc<DedupCache>,
+}
+
+impl FeishuAdapterClone {
+    /// Get WebSocket endpoint from Feishu API.
+    async fn get_websocket_endpoint(&self) -> Result<FeishuWsEndpoint, Box<dyn std::error::Error>> {
+        let resp = self
+            .client
+            .post(FEISHU_WS_ENDPOINT_URL)
+            .json(&serde_json::json!({
+                "AppID": self.app_id,
+                "AppSecret": self.app_secret.as_str(),
+            }))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let resp_body = resp.text().await.unwrap_or_default();
+            return Err(format!(
+                "{} WebSocket endpoint request failed {status}: {resp_body}",
+                self.region.label()
+            )
+            .into());
+        }
+
+        let resp_body: serde_json::Value = resp.json().await?;
+        parse_ws_endpoint_response(&resp_body)
+    }
+}
+
+// ─── WebSocket helper functions ─────────────────────────────────────────────
+
+fn parse_ws_endpoint_response(
+    resp_body: &serde_json::Value,
+) -> Result<FeishuWsEndpoint, Box<dyn std::error::Error>> {
+    let code = resp_body["code"].as_i64().unwrap_or(-1);
+    if code != 0 {
+        let msg = resp_body["msg"].as_str().unwrap_or("unknown error");
+        return Err(format!("Feishu WebSocket endpoint error: {msg}").into());
+    }
+
+    let data = &resp_body["data"];
+    let ws_url = data
+        .get("url")
+        .or_else(|| data.get("URL"))
+        .and_then(|v| v.as_str())
+        .ok_or("Missing WebSocket URL in response")?
+        .to_string();
+
+    let ping_interval = data
+        .get("client_config")
+        .or_else(|| data.get("ClientConfig"))
+        .and_then(|cfg| cfg.get("ping_interval").or_else(|| cfg.get("PingInterval")))
+        .and_then(|v| v.as_u64())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_WS_PING_INTERVAL_SECS);
+
+    Ok(FeishuWsEndpoint {
+        url: ws_url,
+        ping_interval_secs: ping_interval,
+    })
+}
+
+fn parse_service_id(ws_url: &str) -> i32 {
+    Url::parse(ws_url)
+        .ok()
+        .and_then(|u| {
+            u.query_pairs()
+                .find(|(k, _)| k == "service_id")
+                .and_then(|(_, v)| v.parse::<i32>().ok())
+        })
+        .unwrap_or(0)
+}
+
+fn ws_header(headers: &[FeishuWsHeader], key: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|h| h.key == key)
+        .map(|h| h.value.clone())
+}
+
+fn parse_pong_interval(frame: &FeishuWsFrame) -> Option<u64> {
+    let frame_type = ws_header(&frame.headers, "type")?;
+    if frame_type != "pong" {
+        return None;
+    }
+
+    let payload = frame.payload.as_ref()?;
+    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    value
+        .get("ping_interval")
+        .or_else(|| value.get("PingInterval"))
+        .and_then(|v| v.as_u64())
+}
+
+fn combine_payload(
+    headers: &[FeishuWsHeader],
+    payload: Vec<u8>,
+    frame_parts: &mut HashMap<String, Vec<Vec<u8>>>,
+) -> Option<Vec<u8>> {
+    let sum = ws_header(headers, "sum")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1);
+    if sum <= 1 {
+        return Some(payload);
+    }
+
+    let seq = ws_header(headers, "seq")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let msg_id = ws_header(headers, "message_id")?;
+
+    if seq >= sum {
+        return None;
+    }
+
+    let entry = frame_parts
+        .entry(msg_id.clone())
+        .or_insert_with(|| vec![Vec::new(); sum]);
+
+    if entry.len() != sum {
+        *entry = vec![Vec::new(); sum];
+    }
+
+    entry[seq] = payload;
+
+    if entry.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+
+    let mut combined = Vec::new();
+    for part in entry.iter() {
+        combined.extend_from_slice(part);
+    }
+    frame_parts.remove(&msg_id);
+    Some(combined)
+}
+
+fn build_ping_frame(service_id: i32) -> FeishuWsFrame {
+    FeishuWsFrame {
+        seq_id: 0,
+        log_id: 0,
+        service: service_id,
+        method: 0,
+        headers: vec![FeishuWsHeader {
+            key: "type".to_string(),
+            value: "ping".to_string(),
+        }],
+        payload_encoding: None,
+        payload_type: None,
+        payload: None,
+        log_id_new: None,
+    }
+}
+
+fn build_ack_frame(request: &FeishuWsFrame, code: u16) -> FeishuWsFrame {
+    let payload = serde_json::json!({
+        "code": code,
+        "headers": {},
+        "data": []
+    });
+
+    FeishuWsFrame {
+        seq_id: request.seq_id,
+        log_id: request.log_id,
+        service: request.service,
+        method: request.method,
+        headers: request.headers.clone(),
+        payload_encoding: None,
+        payload_type: None,
+        payload: Some(serde_json::to_vec(&payload).unwrap_or_default()),
+        log_id_new: request.log_id_new.clone(),
     }
 }
 
@@ -634,226 +1344,11 @@ impl ChannelAdapter for FeishuAdapter {
         info!("{label} adapter authenticated as {bot_name}");
 
         let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
-        let port = self.webhook_port;
-        let webhook_path = self.webhook_path.clone();
-        let verification_token = self.verification_token.clone();
-        let encrypt_key = self.encrypt_key.clone();
-        let bot_names = self.bot_names.clone();
-        let channel_name = self.region.channel_name().to_string();
-        let region_label = self.region.label().to_string();
-        let message_dedup = Arc::clone(&self.message_dedup);
-        let event_dedup = Arc::clone(&self.event_dedup);
-        let mut shutdown_rx = self.shutdown_rx.clone();
 
-        tokio::spawn(async move {
-            let verification_token = Arc::new(verification_token);
-            let encrypt_key = Arc::new(encrypt_key);
-            let tx = Arc::new(tx);
-            let bot_names = Arc::new(bot_names);
-            let channel_name = Arc::new(channel_name);
-            let region_label = Arc::new(region_label);
-
-            let app = axum::Router::new().route(
-                &webhook_path,
-                axum::routing::post({
-                    let vt = Arc::clone(&verification_token);
-                    let ek = Arc::clone(&encrypt_key);
-                    let tx = Arc::clone(&tx);
-                    let bot_names = Arc::clone(&bot_names);
-                    let channel_name = Arc::clone(&channel_name);
-                    let region_label = Arc::clone(&region_label);
-                    let message_dedup = Arc::clone(&message_dedup);
-                    let event_dedup = Arc::clone(&event_dedup);
-                    move |body: axum::extract::Json<serde_json::Value>| {
-                        let vt = Arc::clone(&vt);
-                        let ek = Arc::clone(&ek);
-                        let tx = Arc::clone(&tx);
-                        let bot_names = Arc::clone(&bot_names);
-                        let channel_name = Arc::clone(&channel_name);
-                        let region_label = Arc::clone(&region_label);
-                        let message_dedup = Arc::clone(&message_dedup);
-                        let event_dedup = Arc::clone(&event_dedup);
-                        async move {
-                            let mut event_data = body.0.clone();
-
-                            // Step 1: Decrypt if encrypted
-                            if let Some(encrypted) = body.0.get("encrypt").and_then(|v| v.as_str())
-                            {
-                                if let Some(ref key) = *ek {
-                                    match decrypt_event(encrypted, key) {
-                                        Ok(decrypted) => {
-                                            event_data = decrypted;
-                                        }
-                                        Err(e) => {
-                                            warn!("{region_label}: decrypt failed: {e}");
-                                            return (
-                                                axum::http::StatusCode::BAD_REQUEST,
-                                                axum::Json(
-                                                    serde_json::json!({"error": "decrypt failed"}),
-                                                ),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Step 2: URL verification challenge
-                            if event_data.get("type").and_then(|v| v.as_str())
-                                == Some("url_verification")
-                            {
-                                if let Some(ref expected_token) = *vt {
-                                    let token = event_data["token"].as_str().unwrap_or("");
-                                    if token != expected_token {
-                                        warn!("{region_label}: invalid verification token");
-                                        return (
-                                            axum::http::StatusCode::FORBIDDEN,
-                                            axum::Json(serde_json::json!({})),
-                                        );
-                                    }
-                                }
-                                // Also handle v2 challenge format
-                                if let Some(challenge) = body.0.get("challenge") {
-                                    return (
-                                        axum::http::StatusCode::OK,
-                                        axum::Json(serde_json::json!({
-                                            "challenge": challenge,
-                                        })),
-                                    );
-                                }
-                                let challenge = event_data
-                                    .get("challenge")
-                                    .cloned()
-                                    .unwrap_or(serde_json::Value::String(String::new()));
-                                return (
-                                    axum::http::StatusCode::OK,
-                                    axum::Json(serde_json::json!({
-                                        "challenge": challenge,
-                                    })),
-                                );
-                            }
-
-                            // Step 3: Event deduplication
-                            if let Some(event_id) = event_data
-                                .get("header")
-                                .and_then(|h| h.get("event_id"))
-                                .and_then(|v| v.as_str())
-                            {
-                                if event_dedup.check_and_insert(event_id) {
-                                    return (
-                                        axum::http::StatusCode::OK,
-                                        axum::Json(serde_json::json!({"code": 0})),
-                                    );
-                                }
-                            }
-
-                            // Step 4: Parse V2 event
-                            let schema = event_data.get("schema").and_then(|v| v.as_str());
-                            if schema == Some("2.0") {
-                                if let Some(msg) =
-                                    parse_event(&event_data, &bot_names, &channel_name)
-                                {
-                                    if !message_dedup.check_and_insert(&msg.platform_message_id) {
-                                        let _ = tx.send(msg).await;
-                                    }
-                                }
-                            } else {
-                                // V1 legacy event format
-                                let event_type = event_data["event"]["type"].as_str().unwrap_or("");
-                                if event_type == "message" {
-                                    let event = &event_data["event"];
-                                    let text = event["text"].as_str().unwrap_or("");
-                                    if !text.is_empty() {
-                                        let open_id =
-                                            event["open_id"].as_str().unwrap_or("").to_string();
-                                        let chat_id = event["open_chat_id"]
-                                            .as_str()
-                                            .unwrap_or("")
-                                            .to_string();
-                                        let msg_id = event["open_message_id"]
-                                            .as_str()
-                                            .unwrap_or("")
-                                            .to_string();
-                                        let is_group =
-                                            event["chat_type"].as_str().unwrap_or("") == "group";
-
-                                        if !message_dedup.check_and_insert(&msg_id) {
-                                            let content = if text.starts_with('/') {
-                                                let parts: Vec<&str> =
-                                                    text.splitn(2, ' ').collect();
-                                                let cmd = parts[0].trim_start_matches('/');
-                                                let args: Vec<String> = parts
-                                                    .get(1)
-                                                    .map(|a| {
-                                                        a.split_whitespace()
-                                                            .map(String::from)
-                                                            .collect()
-                                                    })
-                                                    .unwrap_or_default();
-                                                ChannelContent::Command {
-                                                    name: cmd.to_string(),
-                                                    args,
-                                                }
-                                            } else {
-                                                ChannelContent::Text(text.to_string())
-                                            };
-
-                                            let channel_msg = ChannelMessage {
-                                                channel: ChannelType::Custom(
-                                                    channel_name.to_string(),
-                                                ),
-                                                platform_message_id: msg_id,
-                                                sender: ChannelUser {
-                                                    platform_id: chat_id,
-                                                    display_name: open_id,
-                                                    openfang_user: None,
-                                                },
-                                                content,
-                                                target_agent: None,
-                                                timestamp: Utc::now(),
-                                                is_group,
-                                                thread_id: None,
-                                                metadata: HashMap::new(),
-                                            };
-
-                                            let _ = tx.send(channel_msg).await;
-                                        }
-                                    }
-                                }
-                            }
-
-                            (
-                                axum::http::StatusCode::OK,
-                                axum::Json(serde_json::json!({"code": 0})),
-                            )
-                        }
-                    }
-                }),
-            );
-
-            let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-            info!("{} webhook server listening on {addr}", *region_label);
-
-            let listener = match tokio::net::TcpListener::bind(addr).await {
-                Ok(l) => l,
-                Err(e) => {
-                    warn!("{} webhook bind failed: {e}", *region_label);
-                    return;
-                }
-            };
-
-            let server = axum::serve(listener, app);
-
-            tokio::select! {
-                result = server => {
-                    if let Err(e) = result {
-                        warn!("{} webhook server error: {e}", *region_label);
-                    }
-                }
-                _ = shutdown_rx.changed() => {
-                    info!("{} adapter shutting down", *region_label);
-                }
-            }
-        });
+        match self.connection_mode {
+            FeishuConnectionMode::Webhook => self.start_webhook(tx).await?,
+            FeishuConnectionMode::WebSocket => self.start_websocket_loop(tx).await?,
+        }
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
     }
@@ -1291,5 +1786,142 @@ mod tests {
 
         let msg = parse_event(&event, &[], "feishu").unwrap();
         assert_eq!(msg.thread_id, Some("om_root1".to_string()));
+    }
+
+    // ─── WebSocket mode tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_feishu_websocket_adapter_creation() {
+        let adapter =
+            FeishuAdapter::new_websocket("cli_abc123".to_string(), "app-secret-456".to_string());
+        assert_eq!(adapter.name(), "feishu");
+        assert_eq!(adapter.connection_mode, FeishuConnectionMode::WebSocket);
+        assert_eq!(adapter.webhook_port, 0); // not used in WS mode
+    }
+
+    #[test]
+    fn test_connection_mode_default_is_webhook() {
+        let adapter = FeishuAdapter::new("cli_abc123".to_string(), "secret".to_string(), 9000);
+        assert_eq!(adapter.connection_mode, FeishuConnectionMode::Webhook);
+    }
+
+    #[test]
+    fn test_ws_endpoint_parsing() {
+        let resp = serde_json::json!({
+            "code": 0,
+            "data": {
+                "URL": "wss://open.feishu.cn/callback/ws/endpoint?token=abc123"
+            }
+        });
+        let url = resp
+            .get("data")
+            .and_then(|d| d.get("URL"))
+            .and_then(|u| u.as_str())
+            .unwrap();
+        assert!(url.starts_with("wss://"));
+        assert!(url.contains("token=abc123"));
+    }
+
+    #[test]
+    fn test_combine_payload_single_part() {
+        let headers = vec![];
+        let mut parts = HashMap::new();
+        let result = combine_payload(&headers, b"hello world".to_vec(), &mut parts);
+        assert_eq!(result, Some(b"hello world".to_vec()));
+    }
+
+    #[test]
+    fn test_combine_payload_multi_part() {
+        let headers_seq0 = vec![
+            FeishuWsHeader {
+                key: "sum".to_string(),
+                value: "2".to_string(),
+            },
+            FeishuWsHeader {
+                key: "seq".to_string(),
+                value: "0".to_string(),
+            },
+            FeishuWsHeader {
+                key: "message_id".to_string(),
+                value: "msg1".to_string(),
+            },
+        ];
+        let headers_seq1 = vec![
+            FeishuWsHeader {
+                key: "sum".to_string(),
+                value: "2".to_string(),
+            },
+            FeishuWsHeader {
+                key: "seq".to_string(),
+                value: "1".to_string(),
+            },
+            FeishuWsHeader {
+                key: "message_id".to_string(),
+                value: "msg1".to_string(),
+            },
+        ];
+        let mut parts = HashMap::new();
+        // First part — not yet complete
+        let r1 = combine_payload(&headers_seq0, b"hello ".to_vec(), &mut parts);
+        assert!(r1.is_none());
+        // Second part — now complete
+        let r2 = combine_payload(&headers_seq1, b"world".to_vec(), &mut parts);
+        assert_eq!(r2, Some(b"hello world".to_vec()));
+    }
+
+    #[test]
+    fn test_ws_header_lookup() {
+        let headers = vec![FeishuWsHeader {
+            key: "service_id".to_string(),
+            value: "svc_123".to_string(),
+        }];
+        assert_eq!(
+            ws_header(&headers, "service_id"),
+            Some("svc_123".to_string())
+        );
+        assert_eq!(ws_header(&headers, "missing"), None);
+    }
+
+    #[test]
+    fn test_build_ping_frame() {
+        let frame = build_ping_frame(42);
+        assert_eq!(frame.method, 0); // ping method
+        assert_eq!(frame.service, 42);
+        assert_eq!(frame.headers.len(), 1);
+        assert_eq!(frame.headers[0].key, "type");
+        assert_eq!(frame.headers[0].value, "ping");
+    }
+
+    #[test]
+    fn test_build_ack_frame() {
+        let data_frame = FeishuWsFrame {
+            seq_id: 100,
+            log_id: 200,
+            service: 1,
+            method: 2,
+            headers: vec![
+                FeishuWsHeader {
+                    key: "log_id".to_string(),
+                    value: "log_abc".to_string(),
+                },
+                FeishuWsHeader {
+                    key: "type".to_string(),
+                    value: "event".to_string(),
+                },
+            ],
+            payload: Some(vec![]),
+            payload_encoding: None,
+            payload_type: None,
+            log_id_new: None,
+        };
+        let ack = build_ack_frame(&data_frame, 0);
+        assert_eq!(ack.seq_id, 100);
+        assert_eq!(ack.log_id, 200);
+        assert_eq!(ack.service, 1);
+        assert_eq!(ack.method, 2);
+        assert_eq!(ack.headers.len(), data_frame.headers.len());
+        // Payload should contain JSON with code
+        let payload_str = String::from_utf8(ack.payload.unwrap()).unwrap();
+        assert!(payload_str.contains("\"code\":0"));
     }
 }
