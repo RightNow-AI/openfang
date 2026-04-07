@@ -160,6 +160,41 @@ function chatPage() {
           e.preventDefault();
           self.toggleSearch();
         }
+        // Approval navigation (when approvals are pending)
+        if (self.currentAgent && $store.app.pendingApprovalCount > 0) {
+          // Arrow keys for approval selection
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            var currentIdx = $store.app.pendingApprovals.findIndex(function(a) { return a.id === $store.app.selectedApprovalId; });
+            if (currentIdx > 0) {
+              $store.app.selectedApprovalId = $store.app.pendingApprovals[currentIdx - 1].id;
+            } else if ($store.app.pendingApprovals.length > 0) {
+              $store.app.selectedApprovalId = $store.app.pendingApprovals[$store.app.pendingApprovals.length - 1].id;
+            }
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            var currentIdx = $store.app.pendingApprovals.findIndex(function(a) { return a.id === $store.app.selectedApprovalId; });
+            if (currentIdx >= 0 && currentIdx < $store.app.pendingApprovals.length - 1) {
+              $store.app.selectedApprovalId = $store.app.pendingApprovals[currentIdx + 1].id;
+            } else if ($store.app.pendingApprovals.length > 0) {
+              $store.app.selectedApprovalId = $store.app.pendingApprovals[0].id;
+            }
+          }
+          // A key for approve
+          else if (e.key === 'a' || e.key === 'A') {
+            e.preventDefault();
+            if ($store.app.selectedApprovalId) {
+              self.approveTool($store.app.selectedApprovalId);
+            }
+          }
+          // R key for reject
+          else if (e.key === 'r' || e.key === 'R') {
+            e.preventDefault();
+            if ($store.app.selectedApprovalId) {
+              self.rejectTool($store.app.selectedApprovalId);
+            }
+          }
+        }
       });
 
       // Load session + session list when agent changes
@@ -1257,6 +1292,49 @@ function chatPage() {
     },
 
     renderMarkdown: renderMarkdown,
-    escapeHtml: escapeHtml
+    escapeHtml: escapeHtml,
+    
+    // Approval functions
+    approveTool: async function(approvalId) {
+      try {
+        var response = await OpenFangAPI.post('/api/approvals/' + approvalId + '/approve', {});
+        if (response.status === 'ok') {
+          // Remove from pending list
+          this.removeApproval(approvalId);
+          this.showToast('Approved: ' + (this.getApproval(approvalId)?.description || 'action'), 'success');
+        } else {
+          this.showToast('Approval failed: ' + (response.error || 'Unknown error'), 'danger');
+        }
+      } catch (e) {
+        this.showToast('Approval error: ' + (e.message || 'Network error'), 'danger');
+      }
+    },
+    
+    rejectTool: async function(approvalId) {
+      try {
+        var response = await OpenFangAPI.post('/api/approvals/' + approvalId + '/reject', {});
+        if (response.status === 'ok') {
+          // Remove from pending list
+          this.removeApproval(approvalId);
+          this.showToast('Rejected: ' + (this.getApproval(approvalId)?.description || 'action'), 'warn');
+        } else {
+          this.showToast('Rejection failed: ' + (response.error || 'Unknown error'), 'danger');
+        }
+      } catch (e) {
+        this.showToast('Rejection error: ' + (e.message || 'Network error'), 'danger');
+      }
+    },
+    
+    getApproval: function(approvalId) {
+      return $store.app.pendingApprovals.find(function(a) { return a.id === approvalId; });
+    },
+    
+    removeApproval: function(approvalId) {
+      $store.app.pendingApprovals = $store.app.pendingApprovals.filter(function(a) { return a.id !== approvalId; });
+      $store.app.pendingApprovalCount = $store.app.pendingApprovals.length;
+      if ($store.app.selectedApprovalId === approvalId) {
+        $store.app.selectedApprovalId = null;
+      }
+    }
   };
 }

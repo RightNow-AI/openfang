@@ -1366,6 +1366,15 @@ impl App {
             chat::ChatAction::SlashCommand(cmd) => self.handle_slash_command(&cmd),
             chat::ChatAction::OpenModelPicker => self.open_model_picker(),
             chat::ChatAction::SwitchModel(model_id) => self.switch_model(&model_id),
+            chat::ChatAction::ApproveTool(approval_id) => {
+                self.handle_approval_action(&approval_id, true);
+            }
+            chat::ChatAction::RejectTool(approval_id) => {
+                self.handle_approval_action(&approval_id, false);
+            }
+            chat::ChatAction::SelectApproval(idx) => {
+                self.chat.selected_approval_idx = Some(idx);
+            }
         }
     }
 
@@ -2361,6 +2370,27 @@ impl App {
         let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::BG_CARD));
         frame.render_widget(bar, area);
     }
+
+    fn handle_approval_action(&mut self, approval_id: &str, approve: bool) {
+        // Find and remove the approval from the UI
+        let approval = self.chat.pending_approvals.iter()
+            .find(|a| a.id == approval_id)
+            .cloned();
+        
+        if let Some(approval) = approval {
+            self.chat.remove_approval(approval_id);
+            
+            // Show feedback in the chat
+            let action = if approve { "approved" } else { "rejected" };
+            self.chat.push_message(
+                chat::Role::System,
+                format!("✓ {} {} for {}", approval.tool_name, action, approval.agent_id)
+            );
+            
+            // In a real implementation, you would call the kernel API here
+            // to actually approve/reject the tool execution
+        }
+    }
 }
 
 /// Draw a one-line toast at the bottom of the screen.
@@ -2405,6 +2435,7 @@ pub fn run(config: Option<PathBuf>) {
 
     // ── Main loop ────────────────────────────────────────────────────────────
     // Draw first, then block on events. This ensures the first frame appears
+
     // immediately, before any event processing.
     while !app.should_quit {
         terminal

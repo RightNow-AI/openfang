@@ -135,6 +135,8 @@ document.addEventListener('alpine:init', function() {
     version: '0.1.0',
     agentCount: 0,
     pendingApprovalCount: 0,
+    pendingApprovals: [],
+    selectedApprovalId: null,
     lastPendingApprovalSignature: '',
     pendingAgent: null,
     focusMode: localStorage.getItem('openfang-focus') === 'true',
@@ -168,8 +170,13 @@ document.addEventListener('alpine:init', function() {
         if (pending.length > 0 && signature !== this.lastPendingApprovalSignature && typeof OpenFangToast !== 'undefined') {
           OpenFangToast.warn('An agent is waiting for approval. Open Approvals to review.');
         }
+        this.pendingApprovals = pending;
         this.pendingApprovalCount = pending.length;
         this.lastPendingApprovalSignature = signature;
+        // Initialize selected approval if not set and we have pending approvals
+        if (pending.length > 0 && !this.selectedApprovalId) {
+          this.selectedApprovalId = pending[0].id;
+        }
       } catch(e) { /* silent */ }
     },
 

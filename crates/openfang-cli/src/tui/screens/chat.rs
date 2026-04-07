@@ -85,6 +85,21 @@ pub struct ChatState {
     pub model_picker_filter: String,
     /// Selected index in the filtered model list.
     pub model_picker_idx: usize,
+    /// Pending approval requests for inline approval UI
+    pub pending_approvals: Vec<PendingApproval>,
+    /// Currently selected approval for quick action (if any)
+    pub selected_approval_idx: Option<usize>,
+}
+
+/// Approval request for inline display in chat
+#[derive(Clone)]
+pub struct PendingApproval {
+    pub id: String,
+    pub agent_id: String,
+    pub tool_name: String,
+    pub description: String,
+    pub risk_level: String,
+    pub requested_at: String,
 }
 
 pub enum ChatAction {
@@ -96,6 +111,12 @@ pub enum ChatAction {
     OpenModelPicker,
     /// Switch to a specific model by id.
     SwitchModel(String),
+    /// Approve a pending tool execution
+    ApproveTool(String),
+    /// Reject a pending tool execution
+    RejectTool(String),
+    /// Select an approval for quick action
+    SelectApproval(usize),
 }
 
 impl ChatState {
@@ -122,7 +143,27 @@ impl ChatState {
             model_picker_models: Vec::new(),
             model_picker_filter: String::new(),
             model_picker_idx: 0,
+            pending_approvals: Vec::new(),
+            selected_approval_idx: None,
         }
+    }
+
+    /// Add a pending approval request to the chat UI
+    pub fn add_pending_approval(&mut self, approval: PendingApproval) {
+        self.pending_approvals.push(approval);
+    }
+
+    /// Remove an approval request after it's been handled
+    pub fn remove_approval(&mut self, approval_id: &str) {
+        self.pending_approvals.retain(|a| a.id != approval_id);
+        if self.selected_approval_idx.is_some() {
+            self.selected_approval_idx = None;
+        }
+    }
+
+    /// Get the currently selected approval (if any)
+    pub fn selected_approval(&self) -> Option<&PendingApproval> {
+        self.selected_approval_idx.and_then(|idx| self.pending_approvals.get(idx))
     }
 
     pub fn reset(&mut self) {
@@ -343,6 +384,44 @@ impl ChatState {
             return ChatAction::Continue;
         }
 
+        // Approval selection and action handling
+        if !self.pending_approvals.is_empty() {
+            match key.code {
+                KeyCode::Up => {
+                    if let Some(current) = self.selected_approval_idx {
+                        self.selected_approval_idx = Some(current.saturating_sub(1));
+                    } else {
+                        self.selected_approval_idx = Some(0);
+                    }
+                    return ChatAction::Continue;
+                }
+                KeyCode::Down => {
+                    let max_idx = self.pending_approvals.len().saturating_sub(1);
+                    if let Some(current) = self.selected_approval_idx {
+                        if current < max_idx {
+                            self.selected_approval_idx = Some(current + 1);
+                        }
+                    } else {
+                        self.selected_approval_idx = Some(0);
+                    }
+                    return ChatAction::Continue;
+                }
+                KeyCode::Char('a') | KeyCode::Char('A') => {
+                    if let Some(selected) = self.selected_approval() {
+                        return ChatAction::ApproveTool(selected.id.clone());
+                    }
+                    return ChatAction::Continue;
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    if let Some(selected) = self.selected_approval() {
+                        return ChatAction::RejectTool(selected.id.clone());
+                    }
+                    return ChatAction::Continue;
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
             KeyCode::Esc => ChatAction::Back,
             KeyCode::Enter => {
@@ -405,11 +484,12 @@ pub fn draw(f: &mut Frame, area: Rect, state: &mut ChatState) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Layout: messages | separator | input | hints
+    // Layout: messages | separator | input | approvals | hints
     let chunks = Layout::vertical([
         Constraint::Min(3),    // messages area
         Constraint::Length(1), // separator
         Constraint::Length(1), // input
+        Constraint::Length(if state.pending_approvals.is_empty() { 0 } else { 3 }), // approvals (only show if pending)
         Constraint::Length(1), // hints
     ])
     .split(inner);
@@ -458,15 +538,22 @@ pub fn draw(f: &mut Frame, area: Rect, state: &mut ChatState) {
     };
     f.render_widget(Paragraph::new(input_line), chunks[2]);
 
+    // ── Approvals ───────────────────────────────────────────────────────────
+    if !state.pending_approvals.is_empty() {
+        draw_approvals(f, chunks[3], state);
+    }
+
     // ── Hints ────────────────────────────────────────────────────────────────
-    let hints = if state.show_model_picker {
+    let approval_hint = if !state.pending_approvals.is_empty() {
+        "  [\u{2191}\u{2193}] Select  [A] Approve  [R] Reject  [Esc] Back"
+    } else if state.show_model_picker {
         "    [\u{2191}\u{2193}] Navigate  [Enter] Select  [Esc] Close  [type] Filter"
     } else if state.is_streaming {
         "    [Enter] Stage  [\u{2191}\u{2193}] Scroll  [Esc] Stop"
     } else {
         "    [Enter] Send  [Ctrl+M] Models  [\u{2191}\u{2193}] Scroll  [Esc] Back"
     };
-    let hints = Paragraph::new(Line::from(vec![Span::styled(hints, theme::hint_style())]));
+    let hints = Paragraph::new(Line::from(vec![Span::styled(approval_hint, theme::hint_style())]));
     f.render_widget(hints, chunks[3]);
 
     // ── Model picker overlay ────────────────────────────────────────────────
@@ -891,4 +978,61 @@ fn truncate_line(s: &str, max_len: usize) -> String {
             openfang_types::truncate_str(s, max_len.saturating_sub(1))
         )
     }
+}
+
+/// Draw approval notifications in the chat UI
+fn draw_approvals(f: &mut Frame, area: Rect, state: &ChatState) {
+    if area.height < 1 {
+        return;
+    }
+
+    let block = Block::default()
+        .title(Line::from(vec![Span::styled(
+            " Pending Approvals ",
+            Style::default().fg(theme::YELLOW).add_modifier(Modifier::BOLD),
+        )]))
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(theme::BORDER));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Create a list of approval items
+    let mut items = Vec::new();
+    for (idx, approval) in state.pending_approvals.iter().enumerate() {
+        let risk_color = match approval.risk_level.as_str() {
+            "Critical" => theme::RED,
+            "High" => theme::YELLOW, // Using YELLOW for High risk
+            "Medium" => theme::YELLOW,
+            _ => theme::GREEN,
+        };
+
+        let mut line_spans = Vec::new();
+        if Some(idx) == state.selected_approval_idx {
+            line_spans.push(Span::styled("▶ ", Style::default().fg(theme::ACCENT)));
+        } else {
+            line_spans.push(Span::styled("  ", Style::default()));
+        }
+
+        line_spans.push(Span::styled(
+            format!("[{}] ", approval.risk_level),
+            Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
+        ));
+        line_spans.push(Span::styled(
+            truncate_line(&approval.description, (inner.width as usize).saturating_sub(20)),
+            Style::default().fg(theme::TEXT_PRIMARY),
+        ));
+
+        items.push(Line::from(line_spans));
+    }
+
+    if items.is_empty() {
+        items.push(Line::from(Span::styled(
+            "No pending approvals",
+            theme::dim_style(),
+        )));
+    }
+
+    let paragraph = Paragraph::new(items);
+    f.render_widget(paragraph, inner);
 }

@@ -670,10 +670,10 @@
                               </template>
                             </div>
                             <!-- Audio player for TTS results -->
-                            <div x-show="tool._audioFile" style="padding:8px 12px">
+                            <div x-show="tool._audioFile && tool._audioFile.length" style="padding:8px 12px">
                               <div class="audio-player">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
-                                <span class="text-xs" x-text="'Audio: ' + tool._audioFile.split('/').pop()"></span>
+                                <span class="text-xs" x-text="'Audio: ' + (tool._audioFile ? tool._audioFile.split('/').pop() : '')"></span>
                                 <span class="text-xs text-dim" x-show="tool._audioDuration" x-text="'~' + Math.round((tool._audioDuration || 0) / 1000) + 's'"></span>
                               </div>
                             </div>
@@ -774,6 +774,38 @@
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
                   </button>
                 </template>
+              </div>
+              <!-- Approval notifications -->
+              <div x-show="$store.app.pendingApprovalCount > 0" class="approval-notifications" style="border-top:1px solid var(--border);padding:8px 12px;background:var(--bg-alt);">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="2" style="flex-shrink:0;"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+                  <span class="text-sm font-medium" style="color:var(--warn);">Pending Approvals</span>
+                  <span class="badge badge-warn" x-text="$store.app.pendingApprovalCount"></span>
+                </div>
+                <div class="approval-list" style="margin-top:8px;max-height:120px;overflow-y:auto;">
+                  <template x-for="approval in $store.app.pendingApprovals" :key="approval.id">
+                    <div class="approval-item" style="padding:6px 8px;border-radius:4px;margin-bottom:4px;background:var(--bg);display:flex;align-items:center;gap:8px;" :class="{ selected: $store.app.selectedApprovalId === approval.id }" @click="$store.app.selectedApprovalId = approval.id">
+                      <div style="flex-shrink:0;width:16px;height:16px;border-radius:2px;" :style="'background:' + (approval.risk_level === 'Critical' ? 'var(--danger)' : approval.risk_level === 'High' ? 'var(--warn)' : approval.risk_level === 'Medium' ? 'var(--yellow)' : 'var(--success)')"></div>
+                      <div style="flex:1;min-width:0;">
+                        <div class="text-sm" style="color:var(--text-primary);" x-text="approval.description"></div>
+                        <div class="text-xs" style="color:var(--text-dim);" x-text="'Risk: ' + approval.risk_level + ' | Agent: ' + approval.agent_id"></div>
+                      </div>
+                      <div style="display:flex;gap:4px;">
+                        <button class="btn btn-xs btn-success" @click.stop="approveTool(approval.id)" title="Approve">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/></svg>
+                        </button>
+                        <button class="btn btn-xs btn-danger" @click.stop="rejectTool(approval.id)" title="Reject">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+                <div class="text-xs" style="color:var(--text-dim);margin-top:6px;padding-left:24px;">
+                  <kbd style="background:var(--bg);border:1px solid var(--border);padding:2px 6px;border-radius:3px;font-size:10px;">↑↓</kbd> Navigate 
+                  <kbd style="background:var(--bg);border:1px solid var(--border);padding:2px 6px;border-radius:3px;font-size:10px;">A</kbd> Approve 
+                  <kbd style="background:var(--bg);border:1px solid var(--border);padding:2px 6px;border-radius:3px;font-size:10px;">R</kbd> Reject
+                </div>
               </div>
               <!-- Footer: model switcher + tokens + queue + tips -->
               <div class="input-footer">

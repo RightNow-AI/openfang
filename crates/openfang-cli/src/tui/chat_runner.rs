@@ -223,6 +223,37 @@ impl StandaloneChat {
             ChatAction::SlashCommand(cmd) => self.handle_slash_command(&cmd),
             ChatAction::OpenModelPicker => self.open_model_picker(),
             ChatAction::SwitchModel(model_id) => self.switch_model(&model_id),
+            ChatAction::ApproveTool(approval_id) => {
+                self.handle_approval_action(&approval_id, true);
+            }
+            ChatAction::RejectTool(approval_id) => {
+                self.handle_approval_action(&approval_id, false);
+            }
+            ChatAction::SelectApproval(idx) => {
+                self.chat.selected_approval_idx = Some(idx);
+            }
+        }
+    }
+
+    fn handle_approval_action(&mut self, approval_id: &str, approve: bool) {
+        // Find and remove the approval from the UI
+        let approval = self.chat.pending_approvals.iter()
+            .find(|a| a.id == approval_id)
+            .cloned();
+        
+        if let Some(approval) = approval {
+            self.chat.remove_approval(approval_id);
+            
+            // Here you would typically call the kernel API to approve/reject
+            // For now, we'll just show a status message
+            let action = if approve { "approved" } else { "rejected" };
+            self.chat.status_msg = Some(format!(
+                "{} {} for {}",
+                approval.tool_name, action, approval.agent_id
+            ));
+            
+            // In a real implementation, you would call:
+            // self.approve_tool_execution(approval_id, approve);
         }
     }
 
