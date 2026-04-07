@@ -6,7 +6,7 @@
 //! headers.
 
 use crate::types::{
-    split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
+    ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser, split_message,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, watch, RwLock};
+use tokio::sync::{RwLock, mpsc, watch};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
@@ -24,6 +24,9 @@ const MAX_MESSAGE_LEN: usize = 32000;
 
 /// Polling interval in seconds for the chat endpoint.
 const POLL_INTERVAL_SECS: u64 = 3;
+
+/// Long-poll timeout in seconds for Nextcloud chat polling.
+const CHAT_POLL_TIMEOUT_SECS: u64 = 10;
 
 /// Nextcloud Talk channel adapter using OCS REST API with polling.
 ///
@@ -90,6 +93,13 @@ impl NextcloudAdapter {
             .unwrap_or("unknown")
             .to_string();
         Ok(user_id)
+    }
+
+    fn build_chat_poll_url_for_server(server_url: &str, room_token: &str, last_id: i64) -> String {
+        format!(
+            "{}/ocs/v2.php/apps/spreed/api/v1/chat/{}?lookIntoFuture=1&timeout={}&limit=100&lastKnownMessageId={}",
+            server_url, room_token, CHAT_POLL_TIMEOUT_SECS, last_id
+        )
     }
 
     /// Fetch the list of joined rooms from the Nextcloud Talk API.
@@ -258,10 +268,11 @@ impl ChannelAdapter for NextcloudAdapter {
                         ids.get(room_token).copied().unwrap_or(0)
                     };
 
-                    // Use lookIntoFuture=1 and lastKnownMessageId for incremental polling
-                    let url = format!(
-                        "{}/ocs/v2.php/apps/spreed/api/v4/room/{}/chat?format=json&lookIntoFuture=1&limit=100&lastKnownMessageId={}",
-                        server_url, room_token, last_id
+                    // Use the documented v1 chat endpoint for incremental long polling.
+                    let url = NextcloudAdapter::build_chat_poll_url_for_server(
+                        &server_url,
+                        room_token,
+                        last_id,
                     );
 
                     let resp = match client
@@ -269,7 +280,7 @@ impl ChannelAdapter for NextcloudAdapter {
                         .header("Authorization", format!("Bearer {}", token.as_str()))
                         .header("OCS-APIRequest", "true")
                         .header("Accept", "application/json")
-                        .timeout(Duration::from_secs(30))
+                        .timeout(Duration::from_secs(CHAT_POLL_TIMEOUT_SECS))
                         .send()
                         .await
                     {
@@ -505,5 +516,19 @@ mod tests {
             vec![],
         );
         assert_eq!(adapter.token.as_str(), "secret-token-value");
+    }
+
+    #[test]
+    fn test_nextcloud_chat_poll_url_uses_documented_v1_endpoint() {
+        let adapter = NextcloudAdapter::new(
+            "https://cloud.example.com/".to_string(),
+            "tok".to_string(),
+            vec![],
+        );
+
+        assert_eq!(
+            NextcloudAdapter::build_chat_poll_url_for_server(&adapter.server_url, "room-token", 42,),
+            "https://cloud.example.com/ocs/v2.php/apps/spreed/api/v1/chat/room-token?lookIntoFuture=1&timeout=10&limit=100&lastKnownMessageId=42"
+        );
     }
 }
