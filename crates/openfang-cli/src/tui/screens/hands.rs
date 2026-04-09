@@ -55,7 +55,9 @@ pub enum HandsAction {
     Continue,
     RefreshDefinitions,
     RefreshActive,
-    ActivateHand(String),
+    /// Activate a hand. Second field is the optional instance name.
+    /// TODO: add text-input modal for custom instance names (#878 follow-up).
+    ActivateHand(String, Option<String>),
     DeactivateHand(String),
     PauseHand(String),
     ResumeHand(String),
@@ -124,7 +126,11 @@ impl HandsState {
             KeyCode::Enter | KeyCode::Char('a') => {
                 if let Some(sel) = self.marketplace_list.selected() {
                     if sel < self.definitions.len() {
-                        return HandsAction::ActivateHand(self.definitions[sel].id.clone());
+                        // TODO: add text-input modal for custom instance names (#878 follow-up)
+                        return HandsAction::ActivateHand(
+                            self.definitions[sel].id.clone(),
+                            None,
+                        );
                     }
                 }
             }

@@ -122,6 +122,8 @@ function handsPage() {
             }
           }
         }
+        // Initialize optional instance name (for multi-instance hands).
+        data.instanceName = '';
         this.setupWizard = data;
         // Skip deps step if no requirements
         var hasReqs = data.requirements && data.requirements.length > 0;
@@ -408,8 +410,14 @@ function handsPage() {
       }
       this.activatingId = handId;
       try {
-        var data = await OpenFangAPI.post('/api/hands/' + handId + '/activate', { config: config });
-        this.showToast('Hand "' + handId + '" activated as ' + (data.agent_name || data.instance_id));
+        var payload = { config: config };
+        var name = (this.setupWizard.instanceName || '').trim();
+        if (name) {
+          payload.instance_name = name;
+        }
+        var data = await OpenFangAPI.post('/api/hands/' + handId + '/activate', payload);
+        var label = data.instance_name || data.agent_name || data.instance_id;
+        this.showToast('Hand "' + handId + '" activated as ' + label);
         this.closeSetupWizard();
         await this.loadActive();
         this.tab = 'active';

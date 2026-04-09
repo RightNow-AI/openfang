@@ -1598,9 +1598,14 @@ impl App {
                     event::spawn_fetch_active_hands(backend, self.event_tx.clone());
                 }
             }
-            hands::HandsAction::ActivateHand(hand_id) => {
+            hands::HandsAction::ActivateHand(hand_id, instance_name) => {
                 if let Some(backend) = self.backend.to_ref() {
-                    event::spawn_activate_hand(backend, hand_id, self.event_tx.clone());
+                    event::spawn_activate_hand(
+                        backend,
+                        hand_id,
+                        instance_name,
+                        self.event_tx.clone(),
+                    );
                 }
             }
             hands::HandsAction::DeactivateHand(instance_id) => {

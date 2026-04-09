@@ -519,7 +519,14 @@ function chatPage() {
       try {
         var data = await OpenFangAPI.get('/api/agents/' + agentId + '/session');
         if (data.messages && data.messages.length) {
-          self.messages = data.messages.map(function(m) {
+          // Defense-in-depth (#935): never render system-role messages in the
+          // conversation history view, even if the backend somehow returns
+          // one. The server already filters these out by default, but we
+          // guard here too so a regression cannot leak the system prompt.
+          var visible = data.messages.filter(function(m) {
+            return m && m.role !== 'System' && m.role !== 'system';
+          });
+          self.messages = visible.map(function(m) {
             var role = m.role === 'User' ? 'user' : (m.role === 'System' ? 'system' : 'agent');
             var text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
             // Sanitize any raw function-call text from history
