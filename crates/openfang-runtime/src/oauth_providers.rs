@@ -461,6 +461,20 @@ pub fn read_qwen_credentials() -> Option<OAuthTokenSet> {
     })
 }
 
+/// Start Qwen OAuth flow - reads from credential file.
+pub async fn qwen_start_oauth_flow() -> Result<(), String> {
+    // Qwen OAuth is file-based, just verify we can read the credentials
+    read_qwen_credentials()
+        .ok_or_else(|| "Failed to read Qwen credentials from ~/.qwen/oauth_creds.json".to_string())?;
+    Ok(())
+}
+
+/// Poll Qwen OAuth flow - returns tokens if available.
+pub async fn qwen_poll_oauth_flow() -> Result<OAuthTokenSet, String> {
+    read_qwen_credentials()
+        .ok_or_else(|| "Failed to read Qwen credentials".to_string())
+}
+
 /// Refresh Qwen OAuth token.
 pub async fn refresh_qwen_token(refresh_token: &str) -> Result<OAuthTokenSet, String> {
     let client = Client::new();
@@ -530,6 +544,19 @@ pub async fn refresh_minimax_token(refresh_token: &str, region: &str) -> Result<
         .map_err(|e| format!("Failed to parse token response: {e}"))?;
 
     Ok(OAuthTokenSet::from_response(tokens, "minimax-oauth"))
+}
+
+/// Start MiniMax OAuth flow - initiates the refresh-based flow.
+pub async fn minimax_start_oauth_flow() -> Result<(), String> {
+    // MiniMax OAuth uses refresh token flow - this is a placeholder
+    // In production, would need stored refresh token or OAuth initialization
+    Err("MiniMax OAuth requires stored refresh token. Please configure manually.".to_string())
+}
+
+/// Poll MiniMax OAuth flow - attempts to get/refresh tokens.
+pub async fn minimax_poll_oauth_flow() -> Result<OAuthTokenSet, String> {
+    // For now, return an error - would need actual refresh token storage
+    Err("MiniMax OAuth polling requires stored refresh token".to_string())
 }
 
 // ─── Utility Functions ────────────────────────────────────────────────────────

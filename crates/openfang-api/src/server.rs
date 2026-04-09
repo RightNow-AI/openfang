@@ -134,6 +134,8 @@ pub async fn build_router(
         .route("/favicon.ico", axum::routing::get(webchat::favicon_ico))
         .route("/manifest.json", axum::routing::get(webchat::manifest_json))
         .route("/sw.js", axum::routing::get(webchat::sw_js))
+        .route("/i18n/en.json", axum::routing::get(webchat::i18n_en))
+        .route("/i18n/ru.json", axum::routing::get(webchat::i18n_ru))
         .route(
             "/api/metrics",
             axum::routing::get(routes::prometheus_metrics),
@@ -556,6 +558,42 @@ pub async fn build_router(
         .route(
             "/api/providers/github-copilot/oauth/poll/{poll_id}",
             axum::routing::get(routes::copilot_oauth_poll),
+        )
+        // OpenAI Codex OAuth
+        .route(
+            "/api/providers/openai-codex/oauth/start",
+            axum::routing::post(routes::openai_codex_oauth_start),
+        )
+        .route(
+            "/api/providers/openai-codex/oauth/poll/{poll_id}",
+            axum::routing::get(routes::openai_codex_oauth_poll),
+        )
+        // Gemini OAuth
+        .route(
+            "/api/providers/gemini-oauth/oauth/start",
+            axum::routing::post(routes::gemini_oauth_start),
+        )
+        .route(
+            "/api/providers/gemini-oauth/oauth/poll/{poll_id}",
+            axum::routing::get(routes::gemini_oauth_poll),
+        )
+        // Qwen OAuth
+        .route(
+            "/api/providers/qwen-oauth/oauth/start",
+            axum::routing::post(routes::qwen_oauth_start),
+        )
+        .route(
+            "/api/providers/qwen-oauth/oauth/poll/{poll_id}",
+            axum::routing::get(routes::qwen_oauth_poll),
+        )
+        // MiniMax OAuth
+        .route(
+            "/api/providers/minimax-oauth/oauth/start",
+            axum::routing::post(routes::minimax_oauth_start),
+        )
+        .route(
+            "/api/providers/minimax-oauth/oauth/poll/{poll_id}",
+            axum::routing::get(routes::minimax_oauth_poll),
         )
         .route(
             "/api/providers/{name}/key",
