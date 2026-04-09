@@ -10,9 +10,11 @@ use async_trait::async_trait;
 use futures::{SinkExt, Stream, StreamExt};
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, watch, RwLock};
+use tokio::sync::{mpsc, watch, Mutex, RwLock};
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use zeroize::Zeroizing;
 
@@ -31,6 +33,18 @@ mod opcode {
     pub const INVALID_SESSION: u64 = 9;
     pub const HELLO: u64 = 10;
     pub const HEARTBEAT_ACK: u64 = 11;
+}
+
+/// Build a Discord gateway heartbeat (opcode 1) payload.
+///
+/// Per the Discord gateway spec, the payload `d` field is the last received
+/// dispatch sequence number, or `null` if no dispatch has been received yet.
+/// See: <https://discord.com/developers/docs/topics/gateway#sending-heartbeats>
+fn build_heartbeat_payload(last_sequence: Option<u64>) -> serde_json::Value {
+    serde_json::json!({
+        "op": opcode::HEARTBEAT,
+        "d": last_sequence,
+    })
 }
 
 /// Discord Gateway adapter using WebSocket.
@@ -191,8 +205,15 @@ impl ChannelAdapter for DiscordAdapter {
                 backoff = INITIAL_BACKOFF;
                 info!("Discord gateway connected");
 
-                let (mut ws_tx, mut ws_rx) = ws_stream.split();
-                let mut _heartbeat_interval: Option<u64> = None;
+                let (ws_tx_raw, mut ws_rx) = ws_stream.split();
+                // Wrap the sink so the periodic heartbeat task and the inner
+                // loop can both write to it.
+                let ws_tx = Arc::new(Mutex::new(ws_tx_raw));
+                let mut heartbeat_handle: Option<JoinHandle<()>> = None;
+                // Tracks whether the most recent heartbeat we sent has been
+                // ACKed (opcode 11). Initialized to `true` so the first
+                // heartbeat is always allowed to fire.
+                let heartbeat_acked = Arc::new(AtomicBool::new(true));
 
                 // Inner message loop — returns true if we should reconnect
                 let should_reconnect = 'inner: loop {
@@ -201,7 +222,10 @@ impl ChannelAdapter for DiscordAdapter {
                         _ = shutdown.changed() => {
                             if *shutdown.borrow() {
                                 info!("Discord shutdown requested");
-                                let _ = ws_tx.close().await;
+                                if let Some(h) = heartbeat_handle.take() {
+                                    h.abort();
+                                }
+                                let _ = ws_tx.lock().await.close().await;
                                 return;
                             }
                             continue;
@@ -239,7 +263,8 @@ impl ChannelAdapter for DiscordAdapter {
 
                     let op = payload["op"].as_u64().unwrap_or(999);
 
-                    // Update sequence number
+                    // Update sequence number from any payload that carries one
+                    // (typically dispatch events, opcode 0).
                     if let Some(s) = payload["s"].as_u64() {
                         *sequence.write().await = Some(s);
                     }
@@ -248,8 +273,71 @@ impl ChannelAdapter for DiscordAdapter {
                         opcode::HELLO => {
                             let interval =
                                 payload["d"]["heartbeat_interval"].as_u64().unwrap_or(45000);
-                            _heartbeat_interval = Some(interval);
                             debug!("Discord HELLO: heartbeat_interval={interval}ms");
+
+                            // Spawn the periodic heartbeat task BEFORE we send
+                            // IDENTIFY/RESUME, per the Discord gateway flow.
+                            // Abort any stale handle from a previous attempt
+                            // first (defensive — should normally be None here).
+                            if let Some(h) = heartbeat_handle.take() {
+                                h.abort();
+                            }
+                            heartbeat_acked.store(true, Ordering::Relaxed);
+                            let hb_sink = ws_tx.clone();
+                            let hb_seq = sequence.clone();
+                            let hb_acked = heartbeat_acked.clone();
+                            let mut hb_shutdown = shutdown.clone();
+                            heartbeat_handle = Some(tokio::spawn(async move {
+                                let mut ticker =
+                                    tokio::time::interval(Duration::from_millis(interval));
+                                // Skip the immediate first tick — we want to
+                                // wait one full interval before the first beat.
+                                ticker.tick().await;
+                                loop {
+                                    tokio::select! {
+                                        _ = ticker.tick() => {}
+                                        _ = hb_shutdown.changed() => {
+                                            if *hb_shutdown.borrow() {
+                                                return;
+                                            }
+                                            continue;
+                                        }
+                                    }
+
+                                    // If the previous heartbeat was never
+                                    // ACKed, the connection is zombied — close
+                                    // the sink so the read loop sees EOF and
+                                    // triggers a reconnect (Discord spec).
+                                    if !hb_acked.swap(false, Ordering::Relaxed) {
+                                        warn!(
+                                            "Discord: previous heartbeat not ACKed, \
+                                             forcing reconnect"
+                                        );
+                                        let _ = hb_sink.lock().await.close().await;
+                                        return;
+                                    }
+
+                                    let seq = *hb_seq.read().await;
+                                    let payload = build_heartbeat_payload(seq);
+                                    let text = match serde_json::to_string(&payload) {
+                                        Ok(s) => s,
+                                        Err(e) => {
+                                            error!("Discord: failed to serialize heartbeat: {e}");
+                                            return;
+                                        }
+                                    };
+                                    let send_res = hb_sink
+                                        .lock()
+                                        .await
+                                        .send(tokio_tungstenite::tungstenite::Message::Text(text))
+                                        .await;
+                                    if let Err(e) = send_res {
+                                        warn!("Discord: failed to send heartbeat: {e}");
+                                        return;
+                                    }
+                                    debug!("Discord heartbeat sent (seq={:?})", seq);
+                                }
+                            }));
 
                             // Try RESUME if we have a session, otherwise IDENTIFY
                             let has_session = session_id_store.read().await.is_some();
@@ -284,6 +372,8 @@ impl ChannelAdapter for DiscordAdapter {
                             };
 
                             if let Err(e) = ws_tx
+                                .lock()
+                                .await
                                 .send(tokio_tungstenite::tungstenite::Message::Text(
                                     serde_json::to_string(&gateway_msg).unwrap(),
                                 ))
@@ -350,16 +440,23 @@ impl ChannelAdapter for DiscordAdapter {
                         opcode::HEARTBEAT => {
                             // Server requests immediate heartbeat
                             let seq = *sequence.read().await;
-                            let hb = serde_json::json!({ "op": opcode::HEARTBEAT, "d": seq });
+                            let hb = build_heartbeat_payload(seq);
                             let _ = ws_tx
+                                .lock()
+                                .await
                                 .send(tokio_tungstenite::tungstenite::Message::Text(
                                     serde_json::to_string(&hb).unwrap(),
                                 ))
                                 .await;
+                            // The server-requested heartbeat counts as a fresh
+                            // beat — reset the ACK gate so the periodic task
+                            // doesn't see a stale "unacked" flag.
+                            heartbeat_acked.store(false, Ordering::Relaxed);
                         }
 
                         opcode::HEARTBEAT_ACK => {
                             debug!("Discord heartbeat ACK received");
+                            heartbeat_acked.store(true, Ordering::Relaxed);
                         }
 
                         opcode::RECONNECT => {
@@ -384,6 +481,12 @@ impl ChannelAdapter for DiscordAdapter {
                         }
                     }
                 };
+
+                // Tear down the heartbeat task before we either exit or
+                // reconnect, so it doesn't outlive its WebSocket sink.
+                if let Some(h) = heartbeat_handle.take() {
+                    h.abort();
+                }
 
                 if !should_reconnect || *shutdown.borrow() {
                     break;
@@ -887,6 +990,28 @@ mod tests {
             .await
             .unwrap();
         assert!(!msg.is_group);
+    }
+
+    #[test]
+    fn test_build_heartbeat_payload_with_sequence() {
+        let payload = build_heartbeat_payload(Some(42));
+        assert_eq!(payload["op"], 1);
+        assert_eq!(payload["d"], 42);
+        // Round-trip through serde_json::to_string and re-parse to assert
+        // valid JSON matching {"op":1,"d":42} regardless of key ordering.
+        let s = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, serde_json::json!({"op": 1, "d": 42}));
+    }
+
+    #[test]
+    fn test_build_heartbeat_payload_without_sequence() {
+        let payload = build_heartbeat_payload(None);
+        assert_eq!(payload["op"], 1);
+        assert!(payload["d"].is_null());
+        let s = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, serde_json::json!({"op": 1, "d": serde_json::Value::Null}));
     }
 
     #[test]

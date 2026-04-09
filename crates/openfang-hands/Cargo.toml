@@ -15,6 +15,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 dashmap = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

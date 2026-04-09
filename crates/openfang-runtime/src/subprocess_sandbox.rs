@@ -893,6 +893,41 @@ mod tests {
         assert!(validate_command_allowlist(&cjk_cmd, &policy).is_err());
     }
 
+    /// Regression test for GitHub issue #919.
+    ///
+    /// User reported that `rm /home/jcl/test/test.txt` succeeds in Allowlist
+    /// mode even when `rm` is NOT in `allowed_commands`. The bypass turned out
+    /// to be the `process_start` tool, which spawned subprocesses without
+    /// consulting `exec_policy` at all (fixed in tool_runner.rs).
+    ///
+    /// This test pins down the contract on the validator itself: given the
+    /// EXACT policy from the bug report, `rm /tmp/test.txt` MUST be rejected
+    /// with "not in the exec allowlist" so that any future tool path which
+    /// spawns subprocesses can call it and get a correct answer.
+    #[test]
+    fn test_issue_919_rm_blocked_when_not_in_allowlist() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["ls".to_string(), "echo".to_string()],
+            ..ExecPolicy::default()
+        };
+        // The exact command from the bug report.
+        let result = validate_command_allowlist("rm /tmp/test.txt", &policy);
+        assert!(
+            result.is_err(),
+            "rm must be blocked when not in allowed_commands (issue #919)"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("not in the exec allowlist"),
+            "Error message must indicate allowlist rejection, got: {err}"
+        );
+        assert!(
+            err.contains("rm"),
+            "Error message must name the rejected command, got: {err}"
+        );
+    }
+
     #[test]
     fn test_extract_all_commands_cjk_separators() {
         // Ensure extract_all_commands handles CJK content between separators

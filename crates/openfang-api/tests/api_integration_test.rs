@@ -314,6 +314,115 @@ async fn test_agent_session_empty() {
     assert_eq!(body["messages"].as_array().unwrap().len(), 0);
 }
 
+/// Regression test for #935: the GET /api/agents/:id/session endpoint
+/// must NOT expose internal system-prompt messages to the Web UI.
+///
+/// We construct a session containing a System message + a User message + an
+/// Assistant message, persist it via the kernel's memory store, then call the
+/// HTTP endpoint and assert:
+///   1. The default response excludes the system message entirely.
+///   2. `message_count` reflects only the visible (user + assistant) messages.
+///   3. `raw_message_count` exposes the underlying total.
+///   4. With `?include_system=true`, the system message IS returned (debug
+///      mode opt-in).
+#[tokio::test]
+async fn test_agent_session_filters_system_messages() {
+    use openfang_types::message::{Message, Role};
+
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    // Spawn agent
+    let resp = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let agent_id_str = body["agent_id"].as_str().unwrap().to_string();
+
+    // Look up the agent's session id and inject a forged history that
+    // contains a system-role message (simulating what an OpenAI-compat
+    // client could push, or what a future regression might persist).
+    let agent_id: openfang_types::agent::AgentId = agent_id_str.parse().unwrap();
+    let entry = server.state.kernel.registry.get(agent_id).unwrap();
+    let session_id = entry.session_id;
+    let mut session = server
+        .state
+        .kernel
+        .memory
+        .get_session(session_id)
+        .unwrap()
+        .expect("session should exist after spawn");
+
+    session.messages = vec![
+        Message {
+            role: Role::System,
+            content: openfang_types::message::MessageContent::Text(
+                "INTERNAL SYSTEM PROMPT — must not leak to UI".to_string(),
+            ),
+        },
+        Message::user("hello"),
+        Message::assistant("hi there"),
+    ];
+    server.state.kernel.memory.save_session(&session).unwrap();
+
+    // --- Default request: system message must be filtered out ---
+    let resp = client
+        .get(format!(
+            "{}/api/agents/{}/session",
+            server.base_url, agent_id_str
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2, "should only see user + assistant");
+    assert_eq!(body["message_count"], 2);
+    assert_eq!(body["raw_message_count"], 3);
+
+    // No message in the response should carry the System role label, and
+    // the system prompt text MUST NOT appear anywhere in the payload.
+    for m in messages {
+        let role = m["role"].as_str().unwrap_or("");
+        assert_ne!(role, "System", "system role leaked into UI history");
+        assert_ne!(role, "system", "system role leaked into UI history");
+    }
+    let body_str = serde_json::to_string(&body).unwrap();
+    assert!(
+        !body_str.contains("INTERNAL SYSTEM PROMPT"),
+        "system prompt content leaked into session response: {body_str}"
+    );
+
+    // Verify the visible roles are exactly what we expect.
+    assert_eq!(messages[0]["role"], "User");
+    assert_eq!(messages[0]["content"], "hello");
+    assert_eq!(messages[1]["role"], "Assistant");
+    assert_eq!(messages[1]["content"], "hi there");
+
+    // --- Opt-in debug mode: ?include_system=true returns it ---
+    let resp = client
+        .get(format!(
+            "{}/api/agents/{}/session?include_system=true",
+            server.base_url, agent_id_str
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3, "include_system=true should return all 3");
+    assert_eq!(messages[0]["role"], "System");
+    assert_eq!(messages[0]["content"], "INTERNAL SYSTEM PROMPT — must not leak to UI");
+    assert_eq!(body["message_count"], 3);
+    assert_eq!(body["raw_message_count"], 3);
+}
+
 #[tokio::test]
 async fn test_send_message_with_llm() {
     if std::env::var("GROQ_API_KEY").is_err() {

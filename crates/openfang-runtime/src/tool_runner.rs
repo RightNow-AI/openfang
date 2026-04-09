@@ -21,8 +21,11 @@ const MAX_AGENT_CALL_DEPTH: u32 = 5;
 /// Check if a tool name refers to a shell execution tool.
 ///
 /// Used to determine whether exec_policy settings should bypass the approval gate.
+/// SECURITY (#919): `process_start` is also a shell execution path — it spawns
+/// arbitrary subprocesses via the persistent process manager. It must be gated
+/// by the same approval rules as `shell_exec`.
 fn is_shell_tool(name: &str) -> bool {
-    name == "shell_exec"
+    matches!(name, "shell_exec" | "process_start")
 }
 
 /// Check if a shell command should be blocked by taint tracking.
@@ -353,7 +356,9 @@ pub async fn execute_tool(
         "channel_send" => tool_channel_send(input, kernel, workspace_root).await,
 
         // Persistent process tools
-        "process_start" => tool_process_start(input, process_manager, caller_agent_id).await,
+        "process_start" => {
+            tool_process_start(input, process_manager, caller_agent_id, exec_policy).await
+        }
         "process_poll" => tool_process_poll(input, process_manager).await,
         "process_write" => tool_process_write(input, process_manager).await,
         "process_kill" => tool_process_kill(input, process_manager).await,
@@ -3085,10 +3090,18 @@ async fn tool_docker_exec(
 // ---------------------------------------------------------------------------
 
 /// Start a long-running process (REPL, server, watcher).
+///
+/// SECURITY (#919): process_start previously spawned subprocesses with NO
+/// exec policy enforcement, allowing an LLM in Allowlist mode to bypass
+/// allowed_commands entirely. For example, process_start with command="rm"
+/// args=["/some/file"] would delete the file even though "rm" was not
+/// in the allowlist. This function now performs the same checks as
+/// shell_exec: metacharacter rejection plus exec_policy validation.
 async fn tool_process_start(
     input: &serde_json::Value,
     pm: Option<&crate::process_manager::ProcessManager>,
     caller_agent_id: Option<&str>,
+    exec_policy: Option<&openfang_types::config::ExecPolicy>,
 ) -> Result<String, String> {
     let pm = pm.ok_or("Process manager not available")?;
     let agent_id = caller_agent_id.unwrap_or("default");
@@ -3103,6 +3116,42 @@ async fn tool_process_start(
                 .collect()
         })
         .unwrap_or_default();
+
+    // SECURITY: Reject shell metacharacters in the command name itself.
+    // The command field must be a single binary token.
+    if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
+        return Err(format!(
+            "process_start blocked: command contains {reason}. \
+             Shell metacharacters are never allowed in the command field."
+        ));
+    }
+    // Also reject metacharacters anywhere in the arguments. While direct
+    // spawn does not interpret these, blocking them prevents an LLM from
+    // smuggling a chained command past the allowlist via an argument.
+    for arg in &args {
+        if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(arg) {
+            return Err(format!(
+                "process_start blocked: argument contains {reason}. \
+                 Shell metacharacters are not allowed in process arguments."
+            ));
+        }
+    }
+
+    // SECURITY (#919): Enforce exec policy against the base command. The
+    // shared validate_command_allowlist handles Deny / Full / Allowlist and
+    // falls through to allow commands listed in safe_bins or allowed_commands.
+    if let Some(policy) = exec_policy {
+        if let Err(reason) =
+            crate::subprocess_sandbox::validate_command_allowlist(command, policy)
+        {
+            return Err(format!(
+                "process_start blocked: {reason}. Current exec_policy.mode = '{:?}'. \
+                 To allow this command, add it to exec_policy.allowed_commands or \
+                 set exec_policy.mode = 'full'.",
+                policy.mode
+            ));
+        }
+    }
 
     let proc_id = pm.start(agent_id, command, &args).await?;
     Ok(serde_json::json!({
@@ -4016,5 +4065,131 @@ mod tests {
         assert_eq!(output["title"], "Test");
         // Cleanup
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── Regression: GitHub issue #919 — rm bypass via process_start ──────
+    //
+    // Before the fix, an LLM in Allowlist mode could call process_start
+    // with command="rm" and args=["/some/file"] to delete files even though
+    // "rm" was not in exec_policy.allowed_commands. tool_process_start
+    // spawned the subprocess directly without ever consulting exec_policy.
+    //
+    // These tests pin down the new contract:
+    //   1. process_start with a non-allowlisted binary returns Err.
+    //   2. The Err message identifies allowlist rejection (so callers and
+    //      logs can distinguish it from a generic spawn failure).
+    //   3. process_start with an allowlisted binary still works.
+    //   4. is_shell_tool() now reports process_start as a shell tool so
+    //      the approval-gate path treats it the same as shell_exec.
+
+    #[tokio::test]
+    async fn test_issue_919_process_start_rm_blocked_in_allowlist() {
+        use openfang_types::config::{ExecPolicy, ExecSecurityMode};
+
+        let pm = crate::process_manager::ProcessManager::new(5);
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["ls".to_string(), "echo".to_string()],
+            ..ExecPolicy::default()
+        };
+        let input = serde_json::json!({
+            "command": "rm",
+            "args": ["/tmp/openfang_test_should_not_be_deleted.txt"],
+        });
+
+        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy)).await;
+
+        assert!(
+            result.is_err(),
+            "process_start must reject 'rm' when not in allowlist (issue #919). Got: {:?}",
+            result
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("not in the exec allowlist"),
+            "Error must indicate allowlist rejection, got: {err}"
+        );
+        assert!(
+            err.contains("process_start blocked"),
+            "Error must identify process_start as the blocking tool, got: {err}"
+        );
+        assert_eq!(
+            pm.count(),
+            0,
+            "No process must have been spawned when allowlist rejects the command"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_issue_919_process_start_metachar_in_command_blocked() {
+        use openfang_types::config::{ExecPolicy, ExecSecurityMode};
+
+        let pm = crate::process_manager::ProcessManager::new(5);
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Full,
+            ..ExecPolicy::default()
+        };
+        // Even in Full mode, smuggling shell metacharacters into the command
+        // field must be rejected — process_start does direct exec, not shell.
+        let input = serde_json::json!({
+            "command": "rm; cat /etc/passwd",
+            "args": [],
+        });
+        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("metacharacter") || pm.count() == 0);
+    }
+
+    #[tokio::test]
+    async fn test_issue_919_process_start_metachar_in_arg_blocked() {
+        use openfang_types::config::{ExecPolicy, ExecSecurityMode};
+
+        let pm = crate::process_manager::ProcessManager::new(5);
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["echo".to_string()],
+            ..ExecPolicy::default()
+        };
+        // Smuggling a chained command via an argument: echo "$(rm -rf /)"
+        let input = serde_json::json!({
+            "command": "echo",
+            "args": ["$(rm -rf /)"],
+        });
+        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy)).await;
+        assert!(
+            result.is_err(),
+            "process_start must reject metacharacters in args"
+        );
+        assert_eq!(pm.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_issue_919_process_start_deny_mode_blocks_everything() {
+        use openfang_types::config::{ExecPolicy, ExecSecurityMode};
+
+        let pm = crate::process_manager::ProcessManager::new(5);
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Deny,
+            ..ExecPolicy::default()
+        };
+        let input = serde_json::json!({
+            "command": "echo",
+            "args": ["hello"],
+        });
+        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy)).await;
+        assert!(result.is_err(), "Deny mode must block process_start");
+        assert!(result.unwrap_err().to_lowercase().contains("disabled"));
+        assert_eq!(pm.count(), 0);
+    }
+
+    #[test]
+    fn test_issue_919_is_shell_tool_includes_process_start() {
+        // process_start must be treated as a shell tool by the approval gate
+        // so #772 (full-mode approval bypass) and #919 (allowlist enforcement)
+        // both apply consistently.
+        assert!(is_shell_tool("shell_exec"));
+        assert!(is_shell_tool("process_start"));
+        assert!(!is_shell_tool("file_read"));
+        assert!(!is_shell_tool("web_fetch"));
     }
 }

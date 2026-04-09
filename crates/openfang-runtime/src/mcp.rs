@@ -14,7 +14,6 @@ use rmcp::service::RunningService;
 use rmcp::{RoleClient, ServiceExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use tracing::{debug, info};
 
 // ---------------------------------------------------------------------------

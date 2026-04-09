@@ -124,6 +124,67 @@ impl HandRegistry {
         count
     }
 
+    /// Scan a directory for custom hand definitions and load them into the
+    /// registry. Mirrors `SkillRegistry::load_workspace_skills` — each
+    /// subdirectory containing a `HAND.toml` is treated as a hand, with an
+    /// optional sibling `SKILL.md` attached as the skill content.
+    ///
+    /// Parse failures on individual hands are logged and skipped so a single
+    /// bad manifest cannot take down the whole registry.
+    ///
+    /// Returns the number of hands successfully loaded. A non-existent
+    /// `hands_dir` returns `Ok(0)` — this is the normal case on a fresh
+    /// install where the user has not run `openfang hand install` yet.
+    ///
+    /// Added for issue #984 — custom hands installed via `openfang hand
+    /// install <path>` were only held in memory and lost on daemon restart.
+    pub fn load_workspace_hands(&self, hands_dir: &std::path::Path) -> HandResult<usize> {
+        if !hands_dir.exists() {
+            return Ok(0);
+        }
+        let mut count = 0;
+        let entries = std::fs::read_dir(hands_dir)
+            .map_err(|e| HandError::Config(format!("read_dir {}: {e}", hands_dir.display())))?;
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(error = %e, "Failed to read hands dir entry, skipping");
+                    continue;
+                }
+            };
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let toml_path = path.join("HAND.toml");
+            if !toml_path.exists() {
+                continue;
+            }
+            let contents = match std::fs::read_to_string(&toml_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(path = %toml_path.display(), error = %e, "Failed to read HAND.toml, skipping");
+                    continue;
+                }
+            };
+            let skill_path = path.join("SKILL.md");
+            let skill_content = std::fs::read_to_string(&skill_path).unwrap_or_default();
+            match bundled::parse_bundled("custom", &contents, &skill_content) {
+                Ok(def) => {
+                    let hand_id = def.id.clone();
+                    info!(hand = %hand_id, path = %path.display(), "Loaded workspace hand");
+                    self.definitions.insert(hand_id, def);
+                    count += 1;
+                }
+                Err(e) => {
+                    warn!(path = %toml_path.display(), error = %e, "Invalid HAND.toml, skipping");
+                }
+            }
+        }
+        Ok(count)
+    }
+
     /// Install a hand from a directory containing HAND.toml (and optional SKILL.md).
     pub fn install_from_path(&self, path: &std::path::Path) -> HandResult<HandDefinition> {
         let toml_path = path.join("HAND.toml");
@@ -145,6 +206,33 @@ impl HandRegistry {
 
         info!(hand = %def.id, name = %def.name, path = %path.display(), "Installed hand from path");
         self.definitions.insert(def.id.clone(), def.clone());
+
+        // Persist the hand to the user's data dir so it survives daemon
+        // restart (issue #984). Best-effort: failures are logged but do not
+        // abort the install, because the hand is already registered in
+        // memory and the user gets a working install for the current
+        // session. On next restart, `load_workspace_hands` will pick it up
+        // from disk.
+        if let Some(home) = dirs::home_dir() {
+            let dest_dir = home.join(".openfang").join("hands").join(&def.id);
+            // Canonicalize both paths before comparing so we don't re-copy a
+            // hand that is already being installed from its persistent
+            // location (e.g. `openfang hand install ~/.openfang/hands/foo`).
+            let same_path = match (path.canonicalize(), dest_dir.canonicalize()) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => path == dest_dir,
+            };
+            if !same_path {
+                if let Err(e) = std::fs::create_dir_all(&dest_dir) {
+                    warn!(error = %e, dest = %dest_dir.display(), "Failed to create hands persistence dir");
+                } else if let Err(e) = crate::copy_dir_all(path, &dest_dir) {
+                    warn!(error = %e, dest = %dest_dir.display(), "Failed to persist hand");
+                } else {
+                    info!(hand = %def.id, dest = %dest_dir.display(), "Persisted hand to workspace");
+                }
+            }
+        }
+
         Ok(def)
     }
 
@@ -200,27 +288,42 @@ impl HandRegistry {
     }
 
     /// Activate a hand — creates an instance (agent spawning is done by kernel).
+    ///
+    /// `instance_name` is an optional user-supplied label. When set, multiple
+    /// instances of the same hand can coexist as long as each
+    /// (hand_id, instance_name) pair is unique. When `None`, the legacy
+    /// single-instance-per-hand rule applies — a second unnamed activation of
+    /// the same hand is rejected.
     pub fn activate(
         &self,
         hand_id: &str,
         config: HashMap<String, serde_json::Value>,
+        instance_name: Option<String>,
     ) -> HandResult<HandInstance> {
         let def = self
             .definitions
             .get(hand_id)
             .ok_or_else(|| HandError::NotFound(hand_id.to_string()))?;
 
-        // Check if already active
+        // Reject only when the exact same (hand_id, instance_name) is already active.
+        // This lets multiple uniquely-named instances of the same hand coexist.
         for entry in self.instances.iter() {
-            if entry.hand_id == hand_id && entry.status == HandStatus::Active {
-                return Err(HandError::AlreadyActive(hand_id.to_string()));
+            if entry.hand_id == hand_id
+                && entry.instance_name == instance_name
+                && entry.status == HandStatus::Active
+            {
+                let label = match &instance_name {
+                    Some(name) => format!("{hand_id} (instance: {name})"),
+                    None => hand_id.to_string(),
+                };
+                return Err(HandError::AlreadyActive(label));
             }
         }
 
-        let instance = HandInstance::new(hand_id, &def.agent.name, config);
+        let instance = HandInstance::new(hand_id, &def.agent.name, config, instance_name.clone());
         let id = instance.instance_id;
         self.instances.insert(id, instance.clone());
-        info!(hand = %hand_id, instance = %id, "Hand activated");
+        info!(hand = %hand_id, instance = %id, instance_name = ?instance_name, "Hand activated");
         Ok(instance)
     }
 
@@ -673,7 +776,7 @@ mod tests {
         let reg = HandRegistry::new();
         reg.load_bundled();
 
-        let instance = reg.activate("clip", HashMap::new()).unwrap();
+        let instance = reg.activate("clip", HashMap::new(), None).unwrap();
         assert_eq!(instance.hand_id, "clip");
         assert_eq!(instance.status, HandStatus::Active);
 
@@ -681,7 +784,7 @@ mod tests {
         assert_eq!(instances.len(), 1);
 
         // Can't activate again while active
-        let err = reg.activate("clip", HashMap::new());
+        let err = reg.activate("clip", HashMap::new(), None);
         assert!(err.is_err());
 
         // Deactivate
@@ -695,7 +798,7 @@ mod tests {
         let reg = HandRegistry::new();
         reg.load_bundled();
 
-        let instance = reg.activate("clip", HashMap::new()).unwrap();
+        let instance = reg.activate("clip", HashMap::new(), None).unwrap();
         let id = instance.instance_id;
 
         reg.pause(id).unwrap();
@@ -714,7 +817,7 @@ mod tests {
         let reg = HandRegistry::new();
         reg.load_bundled();
 
-        let instance = reg.activate("clip", HashMap::new()).unwrap();
+        let instance = reg.activate("clip", HashMap::new(), None).unwrap();
         let id = instance.instance_id;
         let agent_id = AgentId::new();
 
@@ -745,7 +848,7 @@ mod tests {
     fn not_found_errors() {
         let reg = HandRegistry::new();
         assert!(reg.get_definition("nonexistent").is_none());
-        assert!(reg.activate("nonexistent", HashMap::new()).is_err());
+        assert!(reg.activate("nonexistent", HashMap::new(), None).is_err());
         assert!(reg.check_requirements("nonexistent").is_err());
         assert!(reg.deactivate(Uuid::new_v4()).is_err());
         assert!(reg.pause(Uuid::new_v4()).is_err());
@@ -757,7 +860,7 @@ mod tests {
         let reg = HandRegistry::new();
         reg.load_bundled();
 
-        let instance = reg.activate("clip", HashMap::new()).unwrap();
+        let instance = reg.activate("clip", HashMap::new(), None).unwrap();
         let id = instance.instance_id;
 
         reg.set_error(id, "something broke".to_string()).unwrap();
@@ -830,7 +933,7 @@ mod tests {
         reg.load_bundled();
 
         // Lead hand has no requirements — activate it
-        let instance = reg.activate("lead", HashMap::new()).unwrap();
+        let instance = reg.activate("lead", HashMap::new(), None).unwrap();
         let r = reg.readiness("lead").unwrap();
         assert!(r.requirements_met);
         assert!(r.active);
@@ -847,7 +950,7 @@ mod tests {
         // Browser hand requires python3 (non-optional) + chromium (optional).
         // requirements_met only reflects non-optional requirements.
         // degraded = active + any requirement (including optional) unsatisfied.
-        let instance = reg.activate("browser", HashMap::new()).unwrap();
+        let instance = reg.activate("browser", HashMap::new(), None).unwrap();
         let r = reg.readiness("browser").unwrap();
         assert!(r.active);
 
@@ -874,7 +977,7 @@ mod tests {
         let reg = HandRegistry::new();
         reg.load_bundled();
 
-        let instance = reg.activate("lead", HashMap::new()).unwrap();
+        let instance = reg.activate("lead", HashMap::new(), None).unwrap();
         reg.pause(instance.instance_id).unwrap();
 
         let r = reg.readiness("lead").unwrap();
@@ -896,5 +999,151 @@ mod tests {
             install: None,
         };
         assert!(!req.optional);
+    }
+
+    #[test]
+    fn test_load_workspace_hands_from_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hands_dir = tmp.path();
+        let hand_dir = hands_dir.join("test-custom-hand");
+        std::fs::create_dir_all(&hand_dir).unwrap();
+        let hand_toml = r#"
+id = "test-custom-hand"
+name = "Test Custom Hand"
+description = "A custom hand loaded from the workspace directory"
+category = "other"
+version = "0.1.0"
+author = "tester"
+
+[agent]
+name = "test-agent"
+description = "A test agent"
+module = "builtin:chat"
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+system_prompt = "You are a test agent."
+"#;
+        std::fs::write(hand_dir.join("HAND.toml"), hand_toml).unwrap();
+
+        let registry = HandRegistry::new();
+        let count = registry.load_workspace_hands(hands_dir).unwrap();
+        assert_eq!(count, 1);
+        assert!(registry.get_definition("test-custom-hand").is_some());
+        let def = registry.get_definition("test-custom-hand").unwrap();
+        assert_eq!(def.name, "Test Custom Hand");
+    }
+
+    #[test]
+    fn test_load_workspace_hands_missing_dir_returns_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        let registry = HandRegistry::new();
+        let count = registry.load_workspace_hands(&missing).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_load_workspace_hands_skips_invalid_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hands_dir = tmp.path();
+
+        // Valid hand
+        let good_dir = hands_dir.join("good-hand");
+        std::fs::create_dir_all(&good_dir).unwrap();
+        let good_toml = r#"
+id = "good-hand"
+name = "Good Hand"
+description = "..."
+category = "other"
+
+[agent]
+name = "good-agent"
+description = "..."
+system_prompt = "You are good."
+"#;
+        std::fs::write(good_dir.join("HAND.toml"), good_toml).unwrap();
+
+        // Invalid hand (missing required agent section)
+        let bad_dir = hands_dir.join("bad-hand");
+        std::fs::create_dir_all(&bad_dir).unwrap();
+        std::fs::write(bad_dir.join("HAND.toml"), "not valid toml {[[[").unwrap();
+
+        // Directory without HAND.toml — should be silently skipped
+        let empty_dir = hands_dir.join("empty-dir");
+        std::fs::create_dir_all(&empty_dir).unwrap();
+
+        let registry = HandRegistry::new();
+        let count = registry.load_workspace_hands(hands_dir).unwrap();
+        assert_eq!(count, 1, "only the valid hand should load");
+        assert!(registry.get_definition("good-hand").is_some());
+        assert!(registry.get_definition("bad-hand").is_none());
+    }
+
+    /// Build a `HandRegistry` pre-populated with a single dummy hand
+    /// definition that has no requirements — used by the multi-instance
+    /// activation tests below.
+    fn test_registry_with_dummy_hand(hand_id: &str) -> HandRegistry {
+        let toml_str = format!(
+            r#"
+id = "{hand_id}"
+name = "Dummy Hand"
+description = "A dummy hand for tests"
+category = "other"
+tools = []
+
+[agent]
+name = "dummy-agent"
+description = "dummy"
+system_prompt = "you are a dummy."
+
+[dashboard]
+metrics = []
+"#
+        );
+        let def = crate::bundled::parse_bundled("dummy", &toml_str, "").unwrap();
+        let reg = HandRegistry::new();
+        reg.definitions.insert(def.id.clone(), def);
+        reg
+    }
+
+    #[test]
+    fn test_activate_same_hand_twice_with_different_instance_names_succeeds() {
+        let reg = test_registry_with_dummy_hand("test-hand");
+        let a = reg
+            .activate("test-hand", HashMap::new(), Some("instance-a".into()))
+            .unwrap();
+        let b = reg
+            .activate("test-hand", HashMap::new(), Some("instance-b".into()))
+            .unwrap();
+        assert_ne!(a.instance_id, b.instance_id);
+        assert_eq!(a.instance_name, Some("instance-a".into()));
+        assert_eq!(b.instance_name, Some("instance-b".into()));
+        let active: Vec<_> = reg
+            .list_instances()
+            .into_iter()
+            .filter(|i| i.status == HandStatus::Active)
+            .collect();
+        assert_eq!(active.len(), 2);
+    }
+
+    #[test]
+    fn test_activate_same_hand_same_instance_name_rejects() {
+        let reg = test_registry_with_dummy_hand("test-hand");
+        reg.activate("test-hand", HashMap::new(), Some("same".into()))
+            .unwrap();
+        let err = reg
+            .activate("test-hand", HashMap::new(), Some("same".into()))
+            .unwrap_err();
+        assert!(matches!(err, HandError::AlreadyActive(_)));
+    }
+
+    #[test]
+    fn test_activate_same_hand_unnamed_twice_still_rejects() {
+        let reg = test_registry_with_dummy_hand("test-hand");
+        reg.activate("test-hand", HashMap::new(), None).unwrap();
+        let err = reg
+            .activate("test-hand", HashMap::new(), None)
+            .unwrap_err();
+        assert!(matches!(err, HandError::AlreadyActive(_)));
     }
 }

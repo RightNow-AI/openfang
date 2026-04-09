@@ -436,9 +436,16 @@ pub async fn send_message(
 }
 
 /// GET /api/agents/:id/session — Get agent session (conversation history).
+///
+/// Query parameters:
+/// - `include_system` — when `true`, system-role messages are included in the
+///   response (intended for debugging only). Defaults to `false` so the
+///   internal system prompt is never leaked into the Web UI conversation
+///   history (issue #935).
 pub async fn get_agent_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let agent_id: AgentId = match id.parse() {
         Ok(id) => id,
@@ -449,6 +456,14 @@ pub async fn get_agent_session(
             );
         }
     };
+
+    // SECURITY (#935): Default to filtering out system-role messages so the
+    // internal system prompt is never exposed in the Web UI conversation
+    // history. Callers can opt-in via `?include_system=true` for debugging.
+    let include_system = params
+        .get("include_system")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "TRUE" | "True"))
+        .unwrap_or(false);
 
     let entry = match state.kernel.registry.get(agent_id) {
         Some(e) => e,
@@ -462,6 +477,18 @@ pub async fn get_agent_session(
 
     match state.kernel.memory.get_session(entry.session_id) {
         Ok(Some(session)) => {
+            // Filter out system-role messages BEFORE any rendering / truncation
+            // logic so the system prompt cannot leak into the response. The
+            // raw message count is preserved separately for the API consumer.
+            let raw_message_count = session.messages.len();
+            let filtered_messages: Vec<&openfang_types::message::Message> = session
+                .messages
+                .iter()
+                .filter(|m| {
+                    include_system || m.role != openfang_types::message::Role::System
+                })
+                .collect();
+
             // Two-pass approach: ToolUse blocks live in Assistant messages while
             // ToolResult blocks arrive in subsequent User messages.  Pass 1
             // collects all tool_use entries keyed by id; pass 2 attaches results.
@@ -472,7 +499,8 @@ pub async fn get_agent_session(
             let mut tool_use_index: std::collections::HashMap<String, (usize, usize)> =
                 std::collections::HashMap::new();
 
-            for m in &session.messages {
+            for m in &filtered_messages {
+                let m = *m;
                 let mut tools: Vec<serde_json::Value> = Vec::new();
                 let mut msg_images: Vec<serde_json::Value> = Vec::new();
                 let content = match &m.content {
@@ -562,8 +590,8 @@ pub async fn get_agent_session(
                 built_messages.push(msg);
             }
 
-            // Pass 2: walk messages again and attach ToolResult to the correct tool
-            for m in &session.messages {
+            // Pass 2: walk filtered messages again and attach ToolResult to the correct tool
+            for m in &filtered_messages {
                 if let openfang_types::message::MessageContent::Blocks(blocks) = &m.content {
                     for b in blocks {
                         if let openfang_types::message::ContentBlock::ToolResult {
@@ -593,12 +621,16 @@ pub async fn get_agent_session(
             }
 
             let messages = built_messages;
+            // `message_count` reflects what the API actually returns (system
+            // messages excluded by default). `raw_message_count` is exposed
+            // for callers that need to know the underlying total.
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "session_id": session.id.0.to_string(),
                     "agent_id": session.agent_id.0.to_string(),
-                    "message_count": session.messages.len(),
+                    "message_count": messages.len(),
+                    "raw_message_count": raw_message_count,
                     "context_window_tokens": session.context_window_tokens,
                     "label": session.label,
                     "messages": messages,
@@ -4038,12 +4070,18 @@ pub async fn list_active_hands(State(state): State<Arc<AppState>>) -> impl IntoR
     let items: Vec<serde_json::Value> = instances
         .iter()
         .map(|i| {
+            // Effective agent name: custom instance_name takes priority, otherwise HAND.toml default.
+            let effective_agent_name = i
+                .instance_name
+                .clone()
+                .unwrap_or_else(|| i.agent_name.clone());
             serde_json::json!({
                 "instance_id": i.instance_id,
                 "hand_id": i.hand_id,
+                "instance_name": i.instance_name,
                 "status": format!("{}", i.status),
                 "agent_id": i.agent_id.map(|a| a.to_string()),
-                "agent_name": i.agent_name,
+                "agent_name": effective_agent_name,
                 "activated_at": i.activated_at.to_rfc3339(),
                 "updated_at": i.updated_at.to_rfc3339(),
             })
@@ -4507,9 +4545,12 @@ pub async fn activate_hand(
     Path(hand_id): Path<String>,
     body: Option<Json<openfang_hands::ActivateHandRequest>>,
 ) -> impl IntoResponse {
-    let config = body.map(|b| b.0.config).unwrap_or_default();
+    let (config, instance_name) = match body.map(|b| b.0) {
+        Some(r) => (r.config, r.instance_name),
+        None => (std::collections::HashMap::new(), None),
+    };
 
-    match state.kernel.activate_hand(&hand_id, config) {
+    match state.kernel.activate_hand(&hand_id, config, instance_name) {
         Ok(instance) => {
             // If the hand agent has a non-reactive schedule (autonomous hands),
             // start its background loop so it begins running immediately.
@@ -4533,14 +4574,19 @@ pub async fn activate_hand(
                     }
                 }
             }
+            let effective_agent_name = instance
+                .instance_name
+                .clone()
+                .unwrap_or_else(|| instance.agent_name.clone());
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "instance_id": instance.instance_id,
                     "hand_id": instance.hand_id,
+                    "instance_name": instance.instance_name,
                     "status": format!("{}", instance.status),
                     "agent_id": instance.agent_id.map(|a| a.to_string()),
-                    "agent_name": instance.agent_name,
+                    "agent_name": effective_agent_name,
                     "activated_at": instance.activated_at.to_rfc3339(),
                 })),
             )

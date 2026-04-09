@@ -790,6 +790,23 @@ impl OpenFangKernel {
             info!("Loaded {hand_count} bundled hand(s)");
         }
 
+        // Load custom hands from the user's workspace (issue #984).
+        // Hands installed via `openfang hand install <path>` are persisted to
+        // `<home>/hands/<hand_id>/` so they survive daemon restarts.
+        let workspace_hands_dir = config.home_dir.join("hands");
+        match hand_registry.load_workspace_hands(&workspace_hands_dir) {
+            Ok(n) if n > 0 => {
+                info!(
+                    "Loaded {n} workspace hand(s) from {}",
+                    workspace_hands_dir.display()
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!("Failed to load workspace hands: {e}");
+            }
+        }
+
         // Initialize extension/integration registry
         let mut extension_registry =
             openfang_extensions::registry::IntegrationRegistry::new(&config.home_dir);
@@ -3317,6 +3334,7 @@ impl OpenFangKernel {
         &self,
         hand_id: &str,
         config: std::collections::HashMap<String, serde_json::Value>,
+        instance_name: Option<String>,
     ) -> KernelResult<openfang_hands::HandInstance> {
         use openfang_hands::HandError;
 
@@ -3333,7 +3351,7 @@ impl OpenFangKernel {
         // Create the instance in the registry
         let instance = self
             .hand_registry
-            .activate(hand_id, config)
+            .activate(hand_id, config, instance_name.clone())
             .map_err(|e| match e {
                 HandError::AlreadyActive(id) => KernelError::OpenFang(OpenFangError::Internal(
                     format!("Hand already active: {id}"),
@@ -3354,8 +3372,15 @@ impl OpenFangKernel {
             def.agent.model.clone()
         };
 
+        // When a custom instance_name is provided, use it as the agent name so multiple
+        // instances of the same hand type can coexist. Falls back to the HAND.toml name
+        // for backward compatibility (single-instance mode).
+        let agent_name = instance_name
+            .clone()
+            .unwrap_or_else(|| def.agent.name.clone());
+
         let mut manifest = AgentManifest {
-            name: def.agent.name.clone(),
+            name: agent_name.clone(),
             description: def.agent.description.clone(),
             module: def.agent.module.clone(),
             model: ModelConfig {
@@ -3460,7 +3485,7 @@ impl OpenFangKernel {
             .registry
             .list()
             .into_iter()
-            .find(|e| e.name == def.agent.name);
+            .find(|e| e.name == agent_name);
         let old_agent_id = existing.as_ref().map(|e| e.id);
         let saved_triggers = old_agent_id
             .map(|id| self.triggers.take_agent_triggers(id))
@@ -3472,7 +3497,14 @@ impl OpenFangKernel {
 
         // Spawn the agent with a fixed ID based on hand_id for stable identity across restarts.
         // This ensures triggers and cron jobs continue to work after daemon restart.
-        let fixed_agent_id = AgentId::from_string(hand_id);
+        // Named instances derive the UUID from instance_id so each coexists with a
+        // unique stable agent id. Unnamed instances keep the legacy "derive from
+        // hand_id" behavior for backward compatibility.
+        let fixed_agent_id = if instance_name.is_some() {
+            AgentId::from_string(&format!("hand_instance_{}", instance.instance_id))
+        } else {
+            AgentId::from_string(hand_id)
+        };
         let agent_id = self.spawn_agent_with_parent(manifest, None, Some(fixed_agent_id))?;
 
         // Restore triggers from the old agent under the new agent ID (#519).
@@ -3884,7 +3916,7 @@ impl OpenFangKernel {
         if !saved_hands.is_empty() {
             info!("Restoring {} persisted hand(s)", saved_hands.len());
             for (hand_id, config, old_agent_id) in saved_hands {
-                match self.activate_hand(&hand_id, config) {
+                match self.activate_hand(&hand_id, config, None) {
                     Ok(inst) => {
                         info!(hand = %hand_id, instance = %inst.instance_id, "Hand restored");
                         // Reassign cron jobs and triggers from the pre-restart
@@ -4678,60 +4710,106 @@ impl OpenFangKernel {
             }
         };
 
-        // If fallback models are configured, wrap in FallbackDriver
-        if !manifest.fallback_models.is_empty() {
-            // Primary driver uses the agent's own model name (already set in request)
-            let mut chain: Vec<(
-                std::sync::Arc<dyn openfang_runtime::llm_driver::LlmDriver>,
-                String,
-            )> = vec![(primary.clone(), String::new())];
-            for fb in &manifest.fallback_models {
-                // Resolve "default" provider/model to the kernel's configured defaults,
-                // mirroring the overlay logic for the primary model.
-                let dm = &self.config.default_model;
-                let fb_provider = if fb.provider.is_empty() || fb.provider == "default" {
-                    dm.provider.clone()
-                } else {
-                    fb.provider.clone()
-                };
-                let fb_model_name = if fb.model.is_empty() || fb.model == "default" {
-                    dm.model.clone()
-                } else {
-                    fb.model.clone()
-                };
-                let _ = &fb_model_name; // used below in strip_provider_prefix
+        // Build the complete fallback chain:
+        //   1. Primary driver (from the agent manifest)
+        //   2. Per-agent `manifest.fallback_models` (#845)
+        //   3. Global `config.fallback_providers` (#1003) — applied to *every* agent
+        //
+        // Wrap in FallbackDriver whenever the chain has more than one entry. This
+        // ensures that when a local provider (e.g. LM Studio) goes offline at
+        // runtime, the agent loop transparently fails over to the next provider
+        // instead of retrying the unreachable primary forever.
+        //
+        // Primary driver uses an empty model name so the request's `model` field
+        // (which is the agent's own model) is used as-is.
+        let mut chain: Vec<(
+            std::sync::Arc<dyn openfang_runtime::llm_driver::LlmDriver>,
+            String,
+        )> = vec![(primary.clone(), String::new())];
 
-                let fb_api_key = if let Some(env) = &fb.api_key_env {
-                    std::env::var(env).ok()
-                } else if fb_provider == dm.provider && !dm.api_key_env.is_empty() {
-                    std::env::var(&dm.api_key_env).ok()
-                } else {
-                    // Resolve using provider_api_keys / convention for custom providers
-                    let env_var = self.config.resolve_api_key_env(&fb_provider);
-                    std::env::var(&env_var).ok()
-                };
-                let config = DriverConfig {
-                    provider: fb_provider.clone(),
-                    api_key: fb_api_key,
-                    base_url: fb
-                        .base_url
-                        .clone()
-                        .or_else(|| dm.base_url.clone())
-                        .or_else(|| self.lookup_provider_url(&fb_provider)),
-                    skip_permissions: true,
-                };
-                match drivers::create_driver(&config) {
-                    Ok(d) => chain.push((d, strip_provider_prefix(&fb_model_name, &fb_provider))),
-                    Err(e) => {
-                        warn!("Fallback driver '{}' failed to init: {e}", fb_provider);
-                    }
+        // 2. Per-agent fallback models from the manifest.
+        for fb in &manifest.fallback_models {
+            // Resolve "default" provider/model to the kernel's configured defaults,
+            // mirroring the overlay logic for the primary model.
+            let dm = &self.config.default_model;
+            let fb_provider = if fb.provider.is_empty() || fb.provider == "default" {
+                dm.provider.clone()
+            } else {
+                fb.provider.clone()
+            };
+            let fb_model_name = if fb.model.is_empty() || fb.model == "default" {
+                dm.model.clone()
+            } else {
+                fb.model.clone()
+            };
+
+            let fb_api_key = if let Some(env) = &fb.api_key_env {
+                self.resolve_credential(env)
+            } else if fb_provider == dm.provider && !dm.api_key_env.is_empty() {
+                self.resolve_credential(&dm.api_key_env)
+            } else {
+                // Resolve using provider_api_keys / convention for custom providers
+                let env_var = self.config.resolve_api_key_env(&fb_provider);
+                self.resolve_credential(&env_var)
+            };
+            let config = DriverConfig {
+                provider: fb_provider.clone(),
+                api_key: fb_api_key,
+                base_url: fb
+                    .base_url
+                    .clone()
+                    .or_else(|| dm.base_url.clone())
+                    .or_else(|| self.lookup_provider_url(&fb_provider)),
+                skip_permissions: true,
+            };
+            match drivers::create_driver(&config) {
+                Ok(d) => chain.push((d, strip_provider_prefix(&fb_model_name, &fb_provider))),
+                Err(e) => {
+                    warn!("Fallback driver '{}' failed to init: {e}", fb_provider);
                 }
             }
-            if chain.len() > 1 {
-                return Ok(Arc::new(
-                    openfang_runtime::drivers::fallback::FallbackDriver::with_models(chain),
-                ));
+        }
+
+        // 3. Global fallback providers from config.toml — `[[fallback_providers]]`.
+        //    These apply to every agent so that when the primary provider becomes
+        //    unreachable at runtime (network failure, daemon shutdown, etc.) the
+        //    agent loop fails over to the next provider in the chain. (#1003)
+        for fb in &self.config.fallback_providers {
+            let fb_api_key = {
+                let env_var = if !fb.api_key_env.is_empty() {
+                    fb.api_key_env.clone()
+                } else {
+                    self.config.resolve_api_key_env(&fb.provider)
+                };
+                self.resolve_credential(&env_var)
+            };
+            let fb_config = DriverConfig {
+                provider: fb.provider.clone(),
+                api_key: fb_api_key,
+                base_url: fb
+                    .base_url
+                    .clone()
+                    .or_else(|| self.lookup_provider_url(&fb.provider)),
+                skip_permissions: true,
+            };
+            match drivers::create_driver(&fb_config) {
+                Ok(d) => {
+                    chain.push((d, strip_provider_prefix(&fb.model, &fb.provider)));
+                }
+                Err(e) => {
+                    warn!(
+                        provider = %fb.provider,
+                        error = %e,
+                        "Global fallback provider init failed — skipped"
+                    );
+                }
             }
+        }
+
+        if chain.len() > 1 {
+            return Ok(Arc::new(
+                openfang_runtime::drivers::fallback::FallbackDriver::with_models(chain),
+            ));
         }
 
         Ok(primary)
@@ -6234,7 +6312,7 @@ impl KernelHandle for OpenFangKernel {
         config: std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         let instance = self
-            .activate_hand(hand_id, config)
+            .activate_hand(hand_id, config, None)
             .map_err(|e| format!("{e}"))?;
 
         Ok(serde_json::json!({
@@ -6865,7 +6943,7 @@ mod tests {
 
         let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
         let instance = kernel
-            .activate_hand("browser", HashMap::new())
+            .activate_hand("browser", HashMap::new(), None)
             .expect("browser hand should activate");
         let agent_id = instance.agent_id.expect("browser hand agent id");
         let entry = kernel

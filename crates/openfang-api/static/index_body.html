@@ -2892,6 +2892,14 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
 
                   <!-- ═══ Step 2: Configure ═══ -->
                   <div class="hand-wizard-body" x-show="setupStep === 2">
+                    <!-- Optional instance name (for running multiple instances of the same hand) -->
+                    <div class="mb-4">
+                      <div class="text-xs text-dim mb-1" style="letter-spacing:0.5px;text-transform:uppercase">
+                        Instance name <span style="text-transform:none;letter-spacing:0;color:#888">(optional)</span>
+                      </div>
+                      <div class="text-xs text-dim mb-2">Leave empty for a single instance of this hand. Set a name to run multiple instances in parallel.</div>
+                      <input type="text" class="form-input" x-model="setupWizard.instanceName" placeholder="e.g. clip-youtube, lead-q4-outreach" style="width:100%">
+                    </div>
                     <template x-if="!setupHasSettings">
                       <div class="text-sm text-dim" style="text-align:center;padding:20px 0">No configuration needed for this hand. Click Next to continue.</div>
                     </template>

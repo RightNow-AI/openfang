@@ -406,6 +406,9 @@ enum HandCommands {
     Activate {
         /// Hand ID (e.g. "clip", "lead", "researcher").
         id: String,
+        /// Optional instance name. Required to run multiple instances of the same hand.
+        #[arg(long, short = 'n')]
+        name: Option<String>,
     },
     /// Deactivate an active hand instance.
     Deactivate {
@@ -1000,7 +1003,7 @@ fn main() {
             HandCommands::List => cmd_hand_list(),
             HandCommands::Active => cmd_hand_active(),
             HandCommands::Install { path } => cmd_hand_install(&path),
-            HandCommands::Activate { id } => cmd_hand_activate(&id),
+            HandCommands::Activate { id, name } => cmd_hand_activate(&id, name),
             HandCommands::Deactivate { id } => cmd_hand_deactivate(&id),
             HandCommands::Info { id } => cmd_hand_info(&id),
             HandCommands::CheckDeps { id } => cmd_hand_check_deps(&id),
@@ -4368,23 +4371,37 @@ fn cmd_hand_active() {
     }
 }
 
-fn cmd_hand_activate(id: &str) {
+fn cmd_hand_activate(id: &str, name: Option<String>) {
     let base = require_daemon("hand activate");
     let client = daemon_client();
+    let request_body = match &name {
+        Some(n) => serde_json::json!({ "instance_name": n }).to_string(),
+        None => "{}".to_string(),
+    };
     let body = daemon_json(
         client
             .post(format!("{base}/api/hands/{id}/activate"))
             .header("content-type", "application/json")
-            .body("{}")
+            .body(request_body)
             .send(),
     );
     if body.get("instance_id").is_some() {
-        println!(
-            "Hand '{}' activated (instance: {}, agent: {})",
-            id,
-            body["instance_id"].as_str().unwrap_or("?"),
-            body["agent_name"].as_str().unwrap_or("?"),
-        );
+        if let Some(n) = &name {
+            println!(
+                "Hand '{}' activated (instance: {}, name: {}, agent: {})",
+                id,
+                body["instance_id"].as_str().unwrap_or("?"),
+                n,
+                body["agent_name"].as_str().unwrap_or("?"),
+            );
+        } else {
+            println!(
+                "Hand '{}' activated (instance: {}, agent: {})",
+                id,
+                body["instance_id"].as_str().unwrap_or("?"),
+                body["agent_name"].as_str().unwrap_or("?"),
+            );
+        }
     } else {
         eprintln!(
             "Failed to activate hand '{}': {}",

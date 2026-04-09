@@ -2226,13 +2226,22 @@ pub fn spawn_fetch_active_hands(backend: BackendRef, tx: mpsc::Sender<AppEvent>)
 }
 
 /// Activate a hand.
-pub fn spawn_activate_hand(backend: BackendRef, hand_id: String, tx: mpsc::Sender<AppEvent>) {
+pub fn spawn_activate_hand(
+    backend: BackendRef,
+    hand_id: String,
+    instance_name: Option<String>,
+    tx: mpsc::Sender<AppEvent>,
+) {
     std::thread::spawn(move || match backend {
         BackendRef::Daemon(base_url) => {
             let client = daemon_client();
+            let payload = match &instance_name {
+                Some(n) => serde_json::json!({ "instance_name": n }),
+                None => serde_json::json!({}),
+            };
             match client
                 .post(format!("{base_url}/api/hands/{hand_id}/activate"))
-                .json(&serde_json::json!({}))
+                .json(&payload)
                 .send()
             {
                 Ok(resp) if resp.status().is_success() => {
@@ -2252,7 +2261,7 @@ pub fn spawn_activate_hand(backend: BackendRef, hand_id: String, tx: mpsc::Sende
             }
         }
         BackendRef::InProcess(kernel) => {
-            match kernel.activate_hand(&hand_id, std::collections::HashMap::new()) {
+            match kernel.activate_hand(&hand_id, std::collections::HashMap::new(), instance_name) {
                 Ok(_) => {
                     let _ = tx.send(AppEvent::HandActivated(hand_id));
                 }
