@@ -120,11 +120,11 @@
 }
 
 .nav-section-title {
-  font-size: 9px;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 1.5px;
   color: var(--text-muted);
-  padding: 12px 12px 4px;
+  padding: 12px 12px 6px 3px;
   font-weight: 600;
 }
 
@@ -154,7 +154,7 @@
 
 .nav-item.active {
   background: var(--accent);
-  color: var(--bg-primary);
+  color: var(--text-on-accent);
   font-weight: 600;
   box-shadow: var(--shadow-sm), 0 2px 8px rgba(255, 92, 0, 0.2);
 }

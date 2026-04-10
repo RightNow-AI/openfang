@@ -50,6 +50,7 @@
   /* Chat-specific */
   --agent-bg: #F5F4F2;
   --user-bg: #FFF3E6;
+  --text-on-accent: #FFFFFF;
 
   /* Layout */
   --sidebar-width: 240px;
@@ -91,16 +92,17 @@
   --bg: #080706;
   --bg-primary: #0F0E0E;
   --bg-elevated: #161413;
-  --surface: #1F1D1C;
-  --surface2: #2A2725;
+  --surface: #242221;
+  --surface2: #2F2D2C;
   --surface3: #1A1817;
-  --border: #2D2A28;
-  --border-light: #3D3A38;
-  --border-subtle: #232120;
-  --text: #F0EFEE;
-  --text-secondary: #C4C0BC;
-  --text-dim: #8A8380;
-  --text-muted: #5C5754;
+  --border: #363230;
+  --border-light: #4A4644;
+  --border-subtle: #2D2A28;
+  --text: #FFFFFF;
+  --text-secondary: #D1D1D1;
+  --text-dim: #9FA0A0;
+  --text-muted: #6B6663;
+  --text-on-accent: #FFFFFF;
   --accent: #FF5C00;
   --accent-light: #FF7A2E;
   --accent-dim: #E05200;
