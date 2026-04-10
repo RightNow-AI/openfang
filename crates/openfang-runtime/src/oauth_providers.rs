@@ -546,17 +546,22 @@ pub async fn refresh_minimax_token(refresh_token: &str, region: &str) -> Result<
     Ok(OAuthTokenSet::from_response(tokens, "minimax-oauth"))
 }
 
-/// Start MiniMax OAuth flow - initiates the refresh-based flow.
+/// Start MiniMax OAuth flow — requires a stored refresh token.
+///
+/// MiniMax does not support device code or authorization code flow;
+/// authentication must be initiated externally (e.g. via their console)
+/// and the resulting refresh token stored in the vault before calling
+/// [`refresh_minimax_token`].
 pub async fn minimax_start_oauth_flow() -> Result<(), String> {
-    // MiniMax OAuth uses refresh token flow - this is a placeholder
-    // In production, would need stored refresh token or OAuth initialization
-    Err("MiniMax OAuth requires stored refresh token. Please configure manually.".to_string())
+    Err("MiniMax does not support browser-based OAuth. Store a refresh token in the vault first, then use the refresh endpoint.".to_string())
 }
 
-/// Poll MiniMax OAuth flow - attempts to get/refresh tokens.
+/// Check whether a MiniMax refresh token is available in the vault.
+///
+/// Returns `Ok(())` if a refresh token exists for MiniMax, `Err` otherwise.
+/// This is not a traditional OAuth poll — MiniMax has no device code flow.
 pub async fn minimax_poll_oauth_flow() -> Result<OAuthTokenSet, String> {
-    // For now, return an error - would need actual refresh token storage
-    Err("MiniMax OAuth polling requires stored refresh token".to_string())
+    Err("MiniMax has no device code flow. Store a refresh token in the vault first.".to_string())
 }
 
 // ─── Utility Functions ────────────────────────────────────────────────────────
@@ -574,18 +579,15 @@ fn url_encode(input: &str) -> String {
         .collect::<String>()
 }
 
-/// Generate PKCE code verifier and challenge.
+/// Generate PKCE code verifier and challenge using a cryptographically secure RNG.
+///
+/// Uses `OsRng` as the entropy source per RFC 7636 §4.1 requirements.
+/// The verifier is 32 bytes (256 bits) of CSPRNG output, base64url-encoded.
+/// The challenge is the SHA-256 hash of the verifier, base64url-encoded.
 pub fn generate_pkce() -> (String, String) {
+    use rand::RngCore;
     let mut bytes = [0u8; 32];
-    // Use SystemTime nanos as pseudo-random source (same as retry.rs)
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    for i in 0..32 {
-        bytes[i] = ((now >> i) & 0xFF) as u8 ^ ((i as u8) * 0x5A);
-    }
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
 
     use sha2::{Digest, Sha256};
@@ -595,17 +597,13 @@ pub fn generate_pkce() -> (String, String) {
     (verifier, challenge)
 }
 
-/// Generate random state.
+/// Generate a cryptographically random OAuth state parameter (128 bits from OsRng).
+///
+/// Per RFC 6749 §10.12, the state parameter must be unguessable to prevent CSRF.
 pub fn generate_state() -> String {
-    use std::time::SystemTime;
+    use rand::RngCore;
     let mut bytes = [0u8; 16];
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    for i in 0..16 {
-        bytes[i] = ((now >> i) & 0xFF) as u8 ^ ((i as u8) * 0xA3);
-    }
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
@@ -627,6 +625,23 @@ mod tests {
         assert!(!verifier.is_empty());
         assert!(!challenge.is_empty());
         assert_ne!(verifier, challenge);
+        // Verifier should be 43 chars (32 bytes base64url no-pad)
+        assert_eq!(verifier.len(), 43, "PKCE verifier must be 43 chars (256-bit base64url)");
+    }
+
+    #[test]
+    fn test_pkce_uniqueness() {
+        // Two consecutive calls must produce different verifiers (CSPRNG)
+        let (v1, _) = generate_pkce();
+        let (v2, _) = generate_pkce();
+        assert_ne!(v1, v2, "CSPRNG must produce unique verifiers");
+    }
+
+    #[test]
+    fn test_state_uniqueness() {
+        let s1 = generate_state();
+        let s2 = generate_state();
+        assert_ne!(s1, s2, "CSPRNG must produce unique state values");
     }
 
     #[test]
