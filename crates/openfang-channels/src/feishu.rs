@@ -160,7 +160,14 @@ impl DedupCache {
 
     /// Returns `true` if the ID was already seen (duplicate).
     fn check_and_insert(&self, id: &str) -> bool {
-        let mut ids = self.ids.lock().unwrap();
+        let mut ids = match self.ids.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                // Recover from a poisoned mutex rather than panicking.
+                warn!("Dedup cache mutex was poisoned, recovering");
+                poisoned.into_inner()
+            }
+        };
         if ids.iter().any(|s| s == id) {
             return true;
         }
@@ -1030,7 +1037,10 @@ fn combine_payload(
         *entry = vec![Vec::new(); sum];
     }
 
-    entry[seq] = payload;
+    match entry.get_mut(seq) {
+        Some(slot) => *slot = payload,
+        None => return None,
+    }
 
     if entry.iter().any(|part| part.is_empty()) {
         return None;
@@ -1105,7 +1115,10 @@ fn extract_text_from_post(content: &serde_json::Value) -> Option<String> {
     let mut text_parts = Vec::new();
 
     for paragraph in paragraphs {
-        let elements = paragraph.as_array()?;
+        let elements = match paragraph.as_array() {
+            Some(elems) => elems,
+            None => continue,
+        };
         for element in elements {
             let tag = element["tag"].as_str().unwrap_or("");
             match tag {
@@ -1165,8 +1178,10 @@ fn should_respond_in_group(text: &str, mentions: &serde_json::Value, bot_names: 
 
 /// Strip @mention placeholders from text (`@_user_N` format).
 fn strip_mention_placeholders(text: &str) -> String {
-    let re = regex_lite::Regex::new(r"@_user_\d+\s*").unwrap();
-    re.replace_all(text, "").trim().to_string()
+    match regex_lite::Regex::new(r"@_user_\d+\s*") {
+        Ok(re) => re.replace_all(text, "").trim().to_string(),
+        Err(_) => text.trim().to_string(),
+    }
 }
 
 /// Decrypt an AES-256-CBC encrypted event payload.

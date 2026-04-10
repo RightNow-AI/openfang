@@ -2986,6 +2986,36 @@ impl OpenFangKernel {
         );
     }
 
+    /// Persist an agent's manifest to its `agent.toml` on disk so that
+    /// dashboard-driven config changes (model, provider, fallback, etc.)
+    /// survive a restart.  The on-disk file lives at
+    /// `<home_dir>/agents/<name>/agent.toml`.
+    ///
+    /// This is best-effort: a failure to write is logged but does not
+    /// propagate as an error — the authoritative copy lives in SQLite.
+    pub fn persist_manifest_to_disk(&self, agent_id: AgentId) {
+        if let Some(entry) = self.registry.get(agent_id) {
+            let dir = self.config.home_dir.join("agents").join(&entry.name);
+            let toml_path = dir.join("agent.toml");
+            match toml::to_string_pretty(&entry.manifest) {
+                Ok(toml_str) => {
+                    if let Err(e) = std::fs::create_dir_all(&dir) {
+                        warn!(agent = %entry.name, "Failed to create agent dir for manifest persist: {e}");
+                        return;
+                    }
+                    if let Err(e) = std::fs::write(&toml_path, toml_str) {
+                        warn!(agent = %entry.name, "Failed to persist manifest to disk: {e}");
+                    } else {
+                        debug!(agent = %entry.name, path = %toml_path.display(), "Persisted manifest to disk");
+                    }
+                }
+                Err(e) => {
+                    warn!(agent = %entry.name, "Failed to serialize manifest to TOML: {e}");
+                }
+            }
+        }
+    }
+
     /// Switch an agent's model.
     ///
     /// When `explicit_provider` is `Some`, that provider name is used as-is
@@ -3071,6 +3101,9 @@ impl OpenFangKernel {
         if let Some(entry) = self.registry.get(agent_id) {
             let _ = self.memory.save_agent(&entry);
         }
+
+        // Write updated manifest to agent.toml so changes survive restart (#996, #1018)
+        self.persist_manifest_to_disk(agent_id);
 
         // Clear canonical session to prevent memory poisoning from old model's responses
         let _ = self.memory.delete_canonical_session(agent_id);

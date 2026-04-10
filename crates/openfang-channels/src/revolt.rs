@@ -94,6 +94,11 @@ impl RevoltAdapter {
         adapter
     }
 
+    /// Set allowed channel IDs (empty = all channels the bot is in).
+    pub fn set_allowed_channels(&mut self, channels: Vec<String>) {
+        self.allowed_channels = channels;
+    }
+
     /// Add the bot token header to a request builder.
     fn auth_header(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         builder.header("x-bot-token", self.bot_token.as_str())
