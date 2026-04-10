@@ -3956,7 +3956,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-api"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "argon2",
  "async-trait",
@@ -3998,7 +3998,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-channels"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "aes",
  "async-trait",
@@ -4037,7 +4037,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-cli"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "clap",
  "clap_complete",
@@ -4065,7 +4065,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-desktop"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "axum",
  "open",
@@ -4091,7 +4091,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-extensions"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -4119,7 +4119,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-hands"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "chrono",
  "dashmap",
@@ -4137,7 +4137,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-kernel"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4176,7 +4176,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-memory"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4196,7 +4196,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-migrate"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -4215,7 +4215,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-runtime"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4251,7 +4251,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-skills"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "chrono",
  "hex",
@@ -4274,7 +4274,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-types"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4293,7 +4293,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-wire"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9326,7 +9326,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.5.7"
+version = "0.5.8"
 
 [[package]]
 name = "yoke"
