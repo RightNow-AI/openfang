@@ -34,27 +34,30 @@ function skillsPage() {
     mcpServers: [],
     mcpLoading: false,
 
-    // Category definitions from the OpenClaw ecosystem
-    categories: [
-      { id: 'coding', name: 'Coding & IDEs' },
-      { id: 'git', name: 'Git & GitHub' },
-      { id: 'web', name: 'Web & Frontend' },
-      { id: 'devops', name: 'DevOps & Cloud' },
-      { id: 'browser', name: 'Browser & Automation' },
-      { id: 'search', name: 'Search & Research' },
-      { id: 'ai', name: 'AI & LLMs' },
-      { id: 'data', name: 'Data & Analytics' },
-      { id: 'productivity', name: 'Productivity' },
-      { id: 'communication', name: 'Communication' },
-      { id: 'media', name: 'Media & Streaming' },
-      { id: 'notes', name: 'Notes & PKM' },
-      { id: 'security', name: 'Security' },
-      { id: 'cli', name: 'CLI Utilities' },
-      { id: 'marketing', name: 'Marketing & Sales' },
-      { id: 'finance', name: 'Finance' },
-      { id: 'smart-home', name: 'Smart Home & IoT' },
-      { id: 'docs', name: 'PDF & Documents' },
-    ],
+    // Category definitions from the OpenClaw ecosystem (loaded from i18n)
+    get categories() {
+      var t = window.i18n ? window.i18n.t.bind(window.i18n) : function(k) { return k; };
+      return [
+        { id: 'coding', name: t('skills.cat_coding') || 'Coding & IDEs' },
+        { id: 'git', name: t('skills.cat_git') || 'Git & GitHub' },
+        { id: 'web', name: t('skills.cat_frontend') || 'Web & Frontend' },
+        { id: 'devops', name: t('skills.cat_devops') || 'DevOps & Cloud' },
+        { id: 'browser', name: t('skills.cat_browser') || 'Browser & Automation' },
+        { id: 'search', name: t('skills.cat_search') || 'Search & Research' },
+        { id: 'ai', name: t('skills.cat_ai') || 'AI & ML' },
+        { id: 'data', name: t('skills.cat_data') || 'Data & Analytics' },
+        { id: 'productivity', name: t('skills.cat_productivity') || 'Productivity' },
+        { id: 'communication', name: t('skills.cat_communication') || 'Communication' },
+        { id: 'media', name: t('skills.cat_media') || 'Media & Streaming' },
+        { id: 'notes', name: t('skills.cat_notes') || 'Notes & PKM' },
+        { id: 'security', name: t('skills.cat_security') || 'Security' },
+        { id: 'cli', name: t('skills.cat_cli') || 'CLI Utilities' },
+        { id: 'marketing', name: t('skills.cat_marketing') || 'Marketing & Sales' },
+        { id: 'finance', name: t('skills.cat_finance') || 'Finance' },
+        { id: 'smart-home', name: t('skills.cat_smarthome') || 'Smart Home & IoT' },
+        { id: 'docs', name: t('skills.cat_docs') || 'Documentation' },
+      ];
+    },
 
     runtimeBadge: function(rt) {
       var r = (rt || '').toLowerCase();
@@ -264,15 +267,20 @@ function skillsPage() {
     // Uninstall
     uninstallSkill: function(name) {
       var self = this;
-      OpenFangToast.confirm('Uninstall Skill', 'Uninstall skill "' + name + '"? This cannot be undone.', async function() {
-        try {
-          await OpenFangAPI.post('/api/skills/uninstall', { name: name });
-          OpenFangToast.success('Skill "' + name + '" uninstalled');
-          await self.loadSkills();
-        } catch(e) {
-          OpenFangToast.error('Failed to uninstall skill: ' + e.message);
+      var t = window.i18n ? window.i18n.t.bind(window.i18n) : function(k) { return k; };
+      OpenFangToast.confirm(
+        t('skills.uninstall_skill') || 'Uninstall Skill',
+        t('skills.uninstall_confirm') + ' "' + name + '"? This cannot be undone.',
+        async function() {
+          try {
+            await OpenFangAPI.post('/api/skills/uninstall', { name: name });
+            OpenFangToast.success('Skill "' + name + '" uninstalled');
+            await self.loadSkills();
+          } catch(e) {
+            OpenFangToast.error('Failed to uninstall skill: ' + e.message);
+          }
         }
-      });
+      );
     },
 
     // Create prompt-only skill
