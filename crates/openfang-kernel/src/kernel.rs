@@ -511,6 +511,13 @@ impl OpenFangKernel {
 
     /// Boot the kernel with an explicit configuration.
     pub fn boot_with_config(mut config: KernelConfig) -> KernelResult<Self> {
+        if rustls::crypto::ring::default_provider()
+            .install_default()
+            .is_err()
+        {
+            debug!("rustls crypto provider already installed, skipping");
+        }
+
         use openfang_types::config::KernelMode;
 
         // Env var overrides — useful for Docker where config.toml is baked in.
