@@ -55,6 +55,7 @@ const OAUTH_SCOPES: &str = "copilot";
 const TOKEN_FILE_NAME: &str = ".copilot-tokens.json";
 
 /// Device flow polling interval (seconds) — GitHub default is 5.
+#[allow(dead_code)]
 const DEVICE_FLOW_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Maximum time to wait for user to authorize the device flow.
@@ -83,14 +84,14 @@ impl PersistedTokens {
     }
 
     /// Load from the OpenFang data directory.
-    pub fn load(openfang_dir: &PathBuf) -> Option<Self> {
+    pub fn load(openfang_dir: &Path) -> Option<Self> {
         let path = openfang_dir.join(TOKEN_FILE_NAME);
         let data = std::fs::read_to_string(&path).ok()?;
         serde_json::from_str(&data).ok()
     }
 
     /// Persist to the OpenFang data directory with restricted permissions.
-    pub fn save(&self, openfang_dir: &PathBuf) -> Result<(), String> {
+    pub fn save(&self, openfang_dir: &Path) -> Result<(), String> {
         let path = openfang_dir.join(TOKEN_FILE_NAME);
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize tokens: {e}"))?;
@@ -138,6 +139,7 @@ impl CachedCopilotToken {
 #[derive(Clone)]
 struct CachedModels {
     models: Vec<String>,
+    #[allow(dead_code)]
     fetched_at: Instant,
 }
 
@@ -169,6 +171,7 @@ struct OAuthTokenResponse {
     #[serde(default)]
     expires_in: Option<i64>,
     #[serde(default)]
+    #[allow(dead_code)]
     refresh_token_expires_in: Option<i64>,
     #[serde(default)]
     error: Option<String>,
@@ -361,7 +364,7 @@ pub async fn exchange_copilot_token(
         .ok_or("Missing 'token' field in Copilot response")?;
 
     let expires_at_unix = body.get("expires_at").and_then(|v| v.as_i64()).unwrap_or(0);
-    let ttl_secs = (expires_at_unix - unix_now() as i64).max(60) as u64;
+    let ttl_secs = (expires_at_unix - unix_now()).max(60) as u64;
 
     // Extract base URL from endpoints.api or proxy-ep in the token.
     let base_url = body
@@ -733,7 +736,7 @@ impl crate::llm_driver::LlmDriver for CopilotDriver {
 /// Called from `openfang config set-key github-copilot`, `openfang init`,
 /// `openfang onboard`, and `openfang configure`.
 pub async fn run_interactive_setup(
-    openfang_dir: &PathBuf,
+    openfang_dir: &Path,
 ) -> Result<PersistedTokens, String> {
     run_device_flow(openfang_dir).await
 }
@@ -743,7 +746,7 @@ pub async fn run_interactive_setup(
 /// Prints the user code and verification URL, attempts to open the browser,
 /// then polls until the user authorizes.
 pub async fn run_device_flow(
-    openfang_dir: &PathBuf,
+    openfang_dir: &Path,
 ) -> Result<PersistedTokens, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -782,6 +785,7 @@ pub async fn run_device_flow(
 }
 
 /// Read a line from stdin with a prompt. Used during interactive setup.
+#[allow(dead_code)]
 fn prompt_line(prompt: &str) -> Result<String, String> {
     use std::io::{self, BufRead, Write};
     print!("{prompt}");
@@ -825,7 +829,7 @@ pub fn open_verification_url(url: &str) -> bool {
 }
 
 /// Check if Copilot OAuth tokens exist on disk.
-pub fn copilot_auth_available(openfang_dir: &PathBuf) -> bool {
+pub fn copilot_auth_available(openfang_dir: &Path) -> bool {
     openfang_dir.join(TOKEN_FILE_NAME).exists()
 }
 
