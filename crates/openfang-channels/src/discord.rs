@@ -1157,6 +1157,7 @@ mod tests {
             vec![],
             true,
             37376,
+            "true".to_string(),
         );
         assert_eq!(adapter.name(), "discord");
         assert_eq!(adapter.channel_type(), ChannelType::Discord);
