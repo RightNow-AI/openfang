@@ -139,8 +139,8 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         }),
         "github-copilot" | "copilot" => Some(ProviderDefaults {
             base_url: copilot::GITHUB_COPILOT_BASE_URL,
-            api_key_env: "GITHUB_TOKEN",
-            key_required: true,
+            api_key_env: "COPILOT_CLIENT_ID",
+            key_required: false, // Auth handled via OAuth device flow, not simple API key
         }),
         "codex" | "openai-codex" => Some(ProviderDefaults {
             base_url: OPENAI_BASE_URL,
@@ -334,27 +334,23 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         )));
     }
 
-    // GitHub Copilot — wraps OpenAI-compatible driver with automatic token exchange.
-    // The CopilotDriver exchanges the GitHub PAT for a Copilot API token on demand,
-    // caches it, and refreshes when expired.
+    // GitHub Copilot — OAuth device flow + OpenAI-compatible completions.
+    // Authentication is handled automatically via persisted tokens from the device flow.
+    // Run `openfang config set-key github-copilot` to authenticate.
     if provider == "github-copilot" || provider == "copilot" {
-        let github_token = config
-            .api_key
-            .clone()
-            .or_else(|| std::env::var("GITHUB_TOKEN").ok())
-            .ok_or_else(|| {
-                LlmError::MissingApiKey(
-                    "Set GITHUB_TOKEN environment variable for GitHub Copilot".to_string(),
-                )
-            })?;
-        let base_url = config
-            .base_url
-            .clone()
-            .unwrap_or_else(|| copilot::GITHUB_COPILOT_BASE_URL.to_string());
-        return Ok(Arc::new(copilot::CopilotDriver::new(
-            github_token,
-            base_url,
-        )));
+        let openfang_dir = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(|h| std::path::PathBuf::from(h).join(".openfang"))
+            .unwrap_or_else(|_| std::path::PathBuf::from(".openfang"));
+
+        if !copilot::copilot_auth_available(&openfang_dir) {
+            return Err(LlmError::MissingApiKey(
+                "Copilot not authenticated. Run `openfang config set-key github-copilot` to sign in."
+                    .to_string(),
+            ));
+        }
+
+        return Ok(Arc::new(copilot::CopilotDriver::new(openfang_dir)));
     }
 
     // Azure OpenAI — deployment-based URL with `api-key` header

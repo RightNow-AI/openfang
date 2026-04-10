@@ -75,6 +75,21 @@ impl ModelCatalog {
                 continue;
             }
 
+            // GitHub Copilot: check for persisted OAuth tokens
+            if provider.id == "github-copilot" || provider.id == "copilot" {
+                let openfang_dir = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .map(|h| std::path::PathBuf::from(h).join(".openfang"))
+                    .unwrap_or_else(|_| std::path::PathBuf::from(".openfang"));
+                provider.auth_status =
+                    if crate::drivers::copilot::copilot_auth_available(&openfang_dir) {
+                        AuthStatus::Configured
+                    } else {
+                        AuthStatus::Missing
+                    };
+                continue;
+            }
+
             if !provider.key_required {
                 provider.auth_status = AuthStatus::NotRequired;
                 continue;
@@ -961,11 +976,10 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("command-r", "command-r-plus"),
         ("command", "command-a"),
         // GitHub Copilot aliases
-        ("copilot", "copilot/gpt-4o"),
-        ("copilot-4o", "copilot/gpt-4o"),
-        ("copilot-4", "copilot/gpt-4"),
-        ("copilot-gpt4o", "copilot/gpt-4o"),
-        ("copilot-gpt4", "copilot/gpt-4"),
+        ("copilot", "gpt-4o"),
+        ("copilot-4o", "gpt-4o"),
+        ("copilot-opus", "claude-opus-4.6"),
+        ("copilot-sonnet", "claude-sonnet-4.6"),
         // Chinese model aliases
         ("qwen", "qwen-plus"),
         ("glm", "glm-5-20250605"),
@@ -2904,36 +2918,9 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
-        // GitHub Copilot (2) — free for subscribers
+        // GitHub Copilot — models fetched dynamically at runtime.
+        // No static entries needed; see kernel.rs fetch_copilot_models().
         // ══════════════════════════════════════════════════════════════
-        ModelCatalogEntry {
-            id: "copilot/gpt-4o".into(),
-            display_name: "GPT-4o (Copilot)".into(),
-            provider: "github-copilot".into(),
-            tier: ModelTier::Smart,
-            context_window: 128_000,
-            max_output_tokens: 4_096,
-            input_cost_per_m: 0.0,
-            output_cost_per_m: 0.0,
-            supports_tools: true,
-            supports_vision: true,
-            supports_streaming: true,
-            aliases: vec!["copilot-gpt4o".into()],
-        },
-        ModelCatalogEntry {
-            id: "copilot/gpt-4".into(),
-            display_name: "GPT-4 (Copilot)".into(),
-            provider: "github-copilot".into(),
-            tier: ModelTier::Frontier,
-            context_window: 128_000,
-            max_output_tokens: 4_096,
-            input_cost_per_m: 0.0,
-            output_cost_per_m: 0.0,
-            supports_tools: true,
-            supports_vision: false,
-            supports_streaming: true,
-            aliases: vec!["copilot-gpt4".into()],
-        },
         // ══════════════════════════════════════════════════════════════
         // Qwen / Alibaba (6)
         // ══════════════════════════════════════════════════════════════

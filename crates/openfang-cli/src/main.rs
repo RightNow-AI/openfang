@@ -2457,6 +2457,18 @@ decay_rate = 0.05
         }
     }
 
+    // Check GitHub Copilot auth (separate from env var checks)
+    {
+        let openfang_dir = cli_openfang_home();
+        if openfang_runtime::drivers::copilot::copilot_auth_available(&openfang_dir) {
+            any_key_set = true;
+            if !json {
+                ui::check_ok("GitHub Copilot (authenticated via device flow)");
+            }
+            checks.push(serde_json::json!({"check": "provider", "name": "GitHub Copilot", "status": "ok"}));
+        }
+    }
+
     if !any_key_set {
         if !json {
             println!();
@@ -4969,6 +4981,27 @@ fn cmd_config_unset(key: &str) {
 }
 
 fn cmd_config_set_key(provider: &str) {
+    // GitHub Copilot uses OAuth device flow, not a simple API key paste.
+    if provider == "github-copilot" || provider == "copilot" {
+        let openfang_dir = cli_openfang_home();
+        let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| {
+            ui::error(&format!("Failed to create async runtime: {e}"));
+            std::process::exit(1);
+        });
+        match rt.block_on(openfang_runtime::drivers::copilot::run_interactive_setup(&openfang_dir)) {
+            Ok(_) => {
+                ui::success("GitHub Copilot configured successfully");
+                ui::hint("Restart the daemon: openfang stop && openfang start");
+            }
+            Err(e) => {
+                ui::error(&format!("Copilot setup failed: {e}"));
+                ui::hint("Check your Client ID/Secret and try again");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let env_var = provider_to_env_var(provider);
 
     let key = prompt_input(&format!("  Paste your {provider} API key: "));

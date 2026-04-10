@@ -509,6 +509,39 @@ impl OpenFangKernel {
         Self::boot_with_config(config)
     }
 
+    /// Fetch live Copilot models by exchanging the persisted token and querying the API.
+    /// Works both inside and outside a tokio runtime.
+    fn fetch_copilot_models(openfang_dir: &Path) -> Result<Vec<String>, String> {
+        use openfang_runtime::drivers::copilot;
+
+        let tokens = copilot::PersistedTokens::load(&openfang_dir.to_path_buf())
+            .ok_or("No persisted Copilot tokens found")?;
+
+        let fetch = async {
+            let http = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|e| format!("HTTP client error: {e}"))?;
+
+            let ct = copilot::exchange_copilot_token(&http, &tokens.access_token).await?;
+            copilot::fetch_models(&http, &ct.base_url, &ct.token).await
+        };
+
+        // If we're already inside a tokio runtime (daemon start), use the existing one.
+        // Otherwise (CLI commands), create a new one.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    handle.block_on(fetch)
+                }).join().unwrap_or(Err("Thread panicked".to_string()))
+            })
+        } else {
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| format!("Failed to create runtime: {e}"))?;
+            rt.block_on(fetch)
+        }
+    }
+
     /// Boot the kernel with an explicit configuration.
     pub fn boot_with_config(mut config: KernelConfig) -> KernelResult<Self> {
         if rustls::crypto::ring::default_provider()
@@ -753,6 +786,21 @@ impl OpenFangKernel {
         // Load user's custom models from ~/.openfang/custom_models.json
         let custom_models_path = config.home_dir.join("custom_models.json");
         model_catalog.load_custom_models(&custom_models_path);
+
+        // Fetch live Copilot models if authenticated
+        if openfang_runtime::drivers::copilot::copilot_auth_available(&config.home_dir) {
+            let copilot_dir = config.home_dir.clone();
+            match Self::fetch_copilot_models(&copilot_dir) {
+                Ok(models) => {
+                    info!(count = models.len(), "Fetched live Copilot model catalog");
+                    model_catalog.merge_discovered_models("github-copilot", &models);
+                }
+                Err(e) => {
+                    warn!("Failed to fetch Copilot models (will use static catalog): {e}");
+                }
+            }
+        }
+
         let available_count = model_catalog.available_models().len();
         let total_count = model_catalog.list_models().len();
         let local_count = model_catalog
