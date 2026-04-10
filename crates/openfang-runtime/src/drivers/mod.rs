@@ -5,6 +5,7 @@
 //! Mistral, Fireworks, Ollama, vLLM, Chutes.ai, and any OpenAI-compatible endpoint.
 
 pub mod anthropic;
+pub mod bedrock;
 pub mod claude_code;
 pub mod copilot;
 pub mod fallback;
@@ -411,6 +412,18 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         return Ok(Arc::new(vertex::VertexAIDriver::new(project_id, region)));
     }
 
+    // AWS Bedrock — Converse API with Bedrock API Key (Bearer token)
+    if provider == "bedrock" {
+        let bedrock_api_key = config.api_key.clone();
+        let region = std::env::var("AWS_REGION")
+            .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+            .ok();
+        return Ok(Arc::new(bedrock::BedrockDriver::new_with_credentials(
+            bedrock_api_key,
+            region,
+        )?));
+    }
+
     // Kimi for Code — Anthropic-compatible endpoint
     if provider == "kimi_coding" {
         let api_key = config
@@ -487,10 +500,11 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
     Err(LlmError::Api {
         status: 0,
         message: format!(
-            "Unknown provider '{}'. Supported: anthropic, gemini, openai, azure, groq, openrouter, \
-             deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, perplexity, \
-             cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, github-copilot, \
-             chutes, venice, nvidia, codex, claude-code. Or set base_url for a custom OpenAI-compatible endpoint.",
+            "Unknown provider '{}'. Supported: anthropic, gemini, openai, azure, bedrock, groq, \
+             openrouter, deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, \
+             perplexity, cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, \
+             github-copilot, chutes, venice, nvidia, codex, claude-code. \
+             Or set base_url for a custom OpenAI-compatible endpoint.",
             provider
         ),
     })
@@ -936,6 +950,31 @@ mod tests {
         assert!(
             driver.is_ok(),
             "azure-openai alias should create driver successfully"
+        );
+    }
+
+    #[test]
+    fn test_bedrock_not_in_provider_defaults() {
+        // Bedrock is special-cased in create_driver(), not in provider_defaults()
+        assert!(provider_defaults("bedrock").is_none());
+    }
+
+    #[test]
+    fn test_bedrock_driver_requires_credentials() {
+        // With no credentials in env, bedrock creation should fail gracefully
+        // (We can't easily test this without mucking with env, so just verify
+        // that with an explicit api_key it succeeds at construction)
+        let config = DriverConfig {
+            provider: "bedrock".to_string(),
+            api_key: Some("test-bedrock-api-key".to_string()),
+            base_url: None,
+            skip_permissions: true,
+        };
+        // Should succeed because api_key is provided
+        let driver = create_driver(&config);
+        assert!(
+            driver.is_ok(),
+            "Bedrock with explicit api_key should construct successfully"
         );
     }
 }

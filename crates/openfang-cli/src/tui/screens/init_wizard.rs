@@ -197,6 +197,14 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
+        name: "bedrock",
+        display: "AWS Bedrock",
+        env_var: "AWS_BEARER_TOKEN_BEDROCK",
+        default_model: "anthropic.claude-sonnet-4-6",
+        needs_key: true,
+        hint: "bearer token",
+    },
+    ProviderInfo {
         name: "claude-code",
         display: "Claude Code",
         env_var: "",
@@ -2608,6 +2616,23 @@ fn draw_complete(f: &mut Frame, area: Rect, state: &mut State) {
                 desc_span,
             ])),
             chunks[11 + i],
+        );
+    }
+
+    // ── Bedrock credentials note ──
+    if p.name == "bedrock" {
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(vec![Span::styled(
+                    "  AWS bearer token required \u{2014} set:",
+                    Style::default().fg(theme::YELLOW),
+                )]),
+                Line::from(vec![Span::styled(
+                    "    AWS_BEARER_TOKEN_BEDROCK",
+                    theme::dim_style(),
+                )]),
+            ]),
+            chunks[14],
         );
     }
 

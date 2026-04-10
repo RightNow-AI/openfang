@@ -2429,6 +2429,7 @@ decay_rate = 0.05
         ("TOGETHER_API_KEY", "Together", "together"),
         ("MISTRAL_API_KEY", "Mistral", "mistral"),
         ("FIREWORKS_API_KEY", "Fireworks", "fireworks"),
+        ("AWS_BEARER_TOKEN_BEDROCK", "AWS Bedrock", "bedrock"),
     ];
 
     let mut any_key_set = false;
@@ -4633,6 +4634,9 @@ pub(crate) fn test_api_key(provider: &str, env_var: &str) -> bool {
             .get("https://openrouter.ai/api/v1/models")
             .bearer_auth(&key)
             .send(),
+        // Bedrock bearer tokens are only valid against bedrock-runtime, not the
+        // management plane. There is no cheap region-agnostic probe, so skip.
+        "bedrock" => return true,
         _ => return true, // unknown provider — skip test
     };
 
