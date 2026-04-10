@@ -3994,7 +3994,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                       <td x-text="formatTokens(m.total_input_tokens)"></td>
                       <td x-text="formatTokens(m.total_output_tokens)"></td>
                       <td x-text="formatCost(m.total_cost_usd)"></td>
-                      <td><div style="background:var(--surface2);border-radius:4px;height:16px;overflow:hidden"><div style="height:100%;border-radius:4px;background:var(--accent);transition:width 0.3s" :style="'width:' + barWidth(m)"></div></div></td>
+                      <td><div style="background:var(--surface2);border-radius:4px;height:16px;overflow:hidden"><div style="height:100%;border-radius:4px;background:var(--accent);transition:width 0.3s" :style="{ width: barWidth(m) }"></div></div></td>
                     </tr>
                   </template>
                 </tbody>
@@ -4119,7 +4119,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                         <td class="font-bold" x-text="formatCost(m.total_cost_usd)"></td>
                         <td>
                           <div style="background:var(--surface2);border-radius:4px;height:16px;overflow:hidden">
-                            <div style="height:100%;border-radius:4px;background:var(--accent);transition:width 0.3s" :style="'width:' + costBarWidth(m)"></div>
+                            <div style="height:100%;border-radius:4px;background:var(--accent);transition:width 0.3s" :style="{ width: costBarWidth(m) }"></div>
                           </div>
                         </td>
                       </tr>
