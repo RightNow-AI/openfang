@@ -220,6 +220,13 @@ pub trait ChannelBridgeHandle: Send + Sync {
         None
     }
 
+    /// Get channel IDs that respond without requiring @mention (free response mode).
+    ///
+    /// Returns an empty vector if the channel type is not configured or has no free response channels.
+    async fn free_response_channels(&self, _channel_type: &str) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Record a delivery result for tracking (optional — default no-op).
     ///
     /// `thread_id` preserves Telegram forum-topic context so cron/workflow
@@ -517,6 +524,7 @@ fn default_output_format_for_channel(channel_type: &str) -> OutputFormat {
         "telegram" => OutputFormat::TelegramHtml,
         "slack" => OutputFormat::SlackMrkdwn,
         "wecom" => OutputFormat::PlainText,
+        "signal" => OutputFormat::PlainText,
         _ => OutputFormat::Markdown,
     }
 }
@@ -659,16 +667,23 @@ async fn dispatch_message(
                     }
                 }
                 GroupPolicy::MentionOnly => {
-                    // Only allow messages where the bot was @mentioned or commands.
-                    let was_mentioned = message
-                        .metadata
-                        .get("was_mentioned")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let is_command = matches!(&message.content, ChannelContent::Command { .. });
-                    if !was_mentioned && !is_command {
-                        debug!("Ignoring group message on {ct_str} (group_policy=mention_only, not mentioned)");
-                        return;
+                    // Check if this channel is in the free_response list - if so, allow all messages
+                    let free_channels = handle.free_response_channels(ct_str).await;
+                    let channel_id = &message.sender.platform_id;
+                    let is_free_channel = free_channels.iter().any(|id| id == channel_id);
+
+                    if !is_free_channel {
+                        // Only allow messages where the bot was @mentioned or commands.
+                        let was_mentioned = message
+                            .metadata
+                            .get("was_mentioned")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let is_command = matches!(&message.content, ChannelContent::Command { .. });
+                        if !was_mentioned && !is_command {
+                            debug!("Ignoring group message on {ct_str} (group_policy=mention_only, not mentioned)");
+                            return;
+                        }
                     }
                 }
                 GroupPolicy::All => {}
@@ -1932,6 +1947,10 @@ mod tests {
             default_output_format_for_channel("discord"),
             OutputFormat::Markdown
         );
+        assert_eq!(
+            default_output_format_for_channel("signal"),
+            OutputFormat::PlainText
+        )
     }
 
     #[tokio::test]

@@ -509,8 +509,48 @@ impl OpenFangKernel {
         Self::boot_with_config(config)
     }
 
+    /// Fetch live Copilot models by exchanging the persisted token and querying the API.
+    /// Works both inside and outside a tokio runtime.
+    fn fetch_copilot_models(openfang_dir: &Path) -> Result<Vec<String>, String> {
+        use openfang_runtime::drivers::copilot;
+
+        let tokens = copilot::PersistedTokens::load(&openfang_dir.to_path_buf())
+            .ok_or("No persisted Copilot tokens found")?;
+
+        let fetch = async {
+            let http = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|e| format!("HTTP client error: {e}"))?;
+
+            let ct = copilot::exchange_copilot_token(&http, &tokens.access_token).await?;
+            copilot::fetch_models(&http, &ct.base_url, &ct.token).await
+        };
+
+        // If we're already inside a tokio runtime (daemon start), use the existing one.
+        // Otherwise (CLI commands), create a new one.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    handle.block_on(fetch)
+                }).join().unwrap_or(Err("Thread panicked".to_string()))
+            })
+        } else {
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| format!("Failed to create runtime: {e}"))?;
+            rt.block_on(fetch)
+        }
+    }
+
     /// Boot the kernel with an explicit configuration.
     pub fn boot_with_config(mut config: KernelConfig) -> KernelResult<Self> {
+        if rustls::crypto::ring::default_provider()
+            .install_default()
+            .is_err()
+        {
+            debug!("rustls crypto provider already installed, skipping");
+        }
+
         use openfang_types::config::KernelMode;
 
         // Env var overrides — useful for Docker where config.toml is baked in.
@@ -746,6 +786,21 @@ impl OpenFangKernel {
         // Load user's custom models from ~/.openfang/custom_models.json
         let custom_models_path = config.home_dir.join("custom_models.json");
         model_catalog.load_custom_models(&custom_models_path);
+
+        // Fetch live Copilot models if authenticated
+        if openfang_runtime::drivers::copilot::copilot_auth_available(&config.home_dir) {
+            let copilot_dir = config.home_dir.clone();
+            match Self::fetch_copilot_models(&copilot_dir) {
+                Ok(models) => {
+                    info!(count = models.len(), "Fetched live Copilot model catalog");
+                    model_catalog.merge_discovered_models("github-copilot", &models);
+                }
+                Err(e) => {
+                    warn!("Failed to fetch Copilot models (will use static catalog): {e}");
+                }
+            }
+        }
+
         let available_count = model_catalog.available_models().len();
         let total_count = model_catalog.list_models().len();
         let local_count = model_catalog
@@ -898,12 +953,12 @@ impl OpenFangKernel {
                 // Auto-detect embedding provider by checking API key env vars in
                 // priority order.  First match wins.
                 const API_KEY_PROVIDERS: &[(&str, &str)] = &[
-                    ("OPENAI_API_KEY",    "openai"),
-                    ("GROQ_API_KEY",      "groq"),
-                    ("MISTRAL_API_KEY",   "mistral"),
-                    ("TOGETHER_API_KEY",  "together"),
+                    ("OPENAI_API_KEY", "openai"),
+                    ("GROQ_API_KEY", "groq"),
+                    ("MISTRAL_API_KEY", "mistral"),
+                    ("TOGETHER_API_KEY", "together"),
                     ("FIREWORKS_API_KEY", "fireworks"),
-                    ("COHERE_API_KEY",    "cohere"),
+                    ("COHERE_API_KEY", "cohere"),
                 ];
 
                 let detected_from_key = API_KEY_PROVIDERS
@@ -1144,8 +1199,7 @@ impl OpenFangKernel {
                                                 != entry.manifest.tool_allowlist
                                             || disk_manifest.tool_blocklist
                                                 != entry.manifest.tool_blocklist
-                                            || disk_manifest.skills
-                                                != entry.manifest.skills
+                                            || disk_manifest.skills != entry.manifest.skills
                                             || disk_manifest.mcp_servers
                                                 != entry.manifest.mcp_servers;
                                         if changed {
@@ -2932,6 +2986,36 @@ impl OpenFangKernel {
         );
     }
 
+    /// Persist an agent's manifest to its `agent.toml` on disk so that
+    /// dashboard-driven config changes (model, provider, fallback, etc.)
+    /// survive a restart.  The on-disk file lives at
+    /// `<home_dir>/agents/<name>/agent.toml`.
+    ///
+    /// This is best-effort: a failure to write is logged but does not
+    /// propagate as an error — the authoritative copy lives in SQLite.
+    pub fn persist_manifest_to_disk(&self, agent_id: AgentId) {
+        if let Some(entry) = self.registry.get(agent_id) {
+            let dir = self.config.home_dir.join("agents").join(&entry.name);
+            let toml_path = dir.join("agent.toml");
+            match toml::to_string_pretty(&entry.manifest) {
+                Ok(toml_str) => {
+                    if let Err(e) = std::fs::create_dir_all(&dir) {
+                        warn!(agent = %entry.name, "Failed to create agent dir for manifest persist: {e}");
+                        return;
+                    }
+                    if let Err(e) = std::fs::write(&toml_path, toml_str) {
+                        warn!(agent = %entry.name, "Failed to persist manifest to disk: {e}");
+                    } else {
+                        debug!(agent = %entry.name, path = %toml_path.display(), "Persisted manifest to disk");
+                    }
+                }
+                Err(e) => {
+                    warn!(agent = %entry.name, "Failed to serialize manifest to TOML: {e}");
+                }
+            }
+        }
+    }
+
     /// Switch an agent's model.
     ///
     /// When `explicit_provider` is `Some`, that provider name is used as-is
@@ -3017,6 +3101,9 @@ impl OpenFangKernel {
         if let Some(entry) = self.registry.get(agent_id) {
             let _ = self.memory.save_agent(&entry);
         }
+
+        // Write updated manifest to agent.toml so changes survive restart (#996, #1018)
+        self.persist_manifest_to_disk(agent_id);
 
         // Clear canonical session to prevent memory poisoning from old model's responses
         let _ = self.memory.delete_canonical_session(agent_id);
@@ -3490,6 +3577,15 @@ impl OpenFangKernel {
         let saved_triggers = old_agent_id
             .map(|id| self.triggers.take_agent_triggers(id))
             .unwrap_or_default();
+        // Snapshot cron jobs before kill_agent destroys them. kill_agent calls
+        // remove_agent_jobs() which deletes the jobs from memory and persists
+        // an empty cron_jobs.json to disk. The reassign_agent_jobs() call below
+        // would always be a no-op without this snapshot — same pattern as
+        // saved_triggers above. Fixes the silent loss of cron jobs across
+        // every daemon restart for hand-style agents.
+        let saved_crons: Vec<openfang_types::scheduler::CronJob> = old_agent_id
+            .map(|id| self.cron_scheduler.list_jobs(id))
+            .unwrap_or_default();
         if let Some(old) = existing {
             info!(agent = %old.name, id = %old.id, "Removing existing hand agent for reactivation");
             let _ = self.kill_agent(old.id);
@@ -3520,9 +3616,38 @@ impl OpenFangKernel {
             }
         }
 
-        // Migrate cron jobs from old agent to new agent so they survive restarts.
-        // Without this, persisted cron jobs would reference the stale old UUID
-        // and fail silently (issue #461).
+        // Restore cron jobs that were snapshotted before kill_agent. They're
+        // re-added under the new agent_id (which equals old.id when fixed_id is
+        // derived from hand_id, but be explicit). Runtime state is reset so
+        // jobs get a fresh start.
+        if !saved_crons.is_empty() {
+            let mut restored = 0usize;
+            for mut job in saved_crons {
+                job.agent_id = agent_id;
+                job.next_run = None;
+                job.last_run = None;
+                if self.cron_scheduler.add_job(job, false).is_ok() {
+                    restored += 1;
+                }
+            }
+            if restored > 0 {
+                info!(
+                    agent = %agent_id,
+                    restored,
+                    "Restored cron jobs after hand reactivation"
+                );
+                if let Err(e) = self.cron_scheduler.persist() {
+                    warn!("Failed to persist cron jobs after restoration: {e}");
+                }
+            }
+        }
+
+        // Belt-and-braces: also reassign any jobs that somehow still reference
+        // the old UUID (shouldn't happen after the snapshot/restore above, but
+        // kept as a safety net for edge cases like out-of-band cron creation
+        // between kill and respawn). Removed reassign as primary path because
+        // kill_agent's remove_agent_jobs always wipes saved_crons before this
+        // could fire — see issue with #461's original fix.
         if let Some(old_id) = old_agent_id {
             let migrated = self.cron_scheduler.reassign_agent_jobs(old_id, agent_id);
             if migrated > 0 {

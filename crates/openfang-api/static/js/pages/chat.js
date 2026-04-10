@@ -516,9 +516,8 @@ function chatPage() {
       var t = typeof window.t === 'function' ? window.t : function(s) { return s; };
       // Show welcome tips on first use
       if (!localStorage.getItem('of-chat-tips-seen')) {
-        var localMsgId = 0;
         this.messages.push({
-          id: ++localMsgId,
+          id: ++msgId,
           role: 'system',
           text: t('chat.welcome_message'),
           meta: '',

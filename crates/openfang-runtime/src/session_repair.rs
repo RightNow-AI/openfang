@@ -196,6 +196,33 @@ pub fn validate_and_repair_with_stats(messages: &[Message]) -> (Vec<Message>, Re
     (merged, stats)
 }
 
+/// Ensure the message history starts with a user turn.
+///
+/// After context trimming the drain boundary may land on an assistant turn,
+/// leaving it at position 0. Providers (especially Gemini) require the first
+/// message to be from the user. This function drops leading assistant messages
+/// and re-validates to clean up newly-orphaned ToolResults.
+///
+/// The loop handles the edge case where the first user turn consisted entirely
+/// of ToolResult blocks that became orphaned (dropped by `validate_and_repair`),
+/// which would re-expose another leading assistant turn.
+pub fn ensure_starts_with_user(mut messages: Vec<Message>) -> Vec<Message> {
+    loop {
+        match messages.iter().position(|m| m.role == Role::User) {
+            Some(0) | None => break,
+            Some(i) => {
+                warn!(
+                    dropped = i,
+                    "Dropping leading assistant turn(s) to ensure history starts with user"
+                );
+                messages.drain(..i);
+                messages = validate_and_repair(&messages);
+            }
+        }
+    }
+    messages
+}
+
 /// Phase 2b: Reorder misplaced ToolResults -- ensure each result follows its use.
 ///
 /// Builds a map of tool_use_id to the index of the assistant message containing it.

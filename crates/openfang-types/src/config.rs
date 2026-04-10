@@ -1792,6 +1792,10 @@ pub struct DiscordConfig {
     /// Default channel ID for outgoing messages when no recipient is specified.
     #[serde(default)]
     pub default_channel_id: Option<String>,
+    /// Channel IDs that respond without requiring @mention (free response mode).
+    /// In these channels, the bot responds to all group messages without needing to be mentioned.
+    #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
+    pub free_response_channels: Vec<String>,
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
@@ -1807,6 +1811,7 @@ impl Default for DiscordConfig {
             intents: 37376,
             ignore_bots: true,
             default_channel_id: None,
+            free_response_channels: vec![],
             overrides: ChannelOverrides::default(),
         }
     }
@@ -2613,8 +2618,13 @@ impl Default for MqttConfig {
 pub struct RevoltConfig {
     /// Env var name holding the bot token.
     pub bot_token_env: String,
-    /// Revolt API URL.
+    /// Revolt API URL (set to your self-hosted instance URL if not using revolt.chat).
     pub api_url: String,
+    /// Revolt WebSocket URL (set to your self-hosted instance WS URL if not using revolt.chat).
+    pub ws_url: String,
+    /// Restrict to specific channel IDs (empty = all channels the bot is in).
+    #[serde(default)]
+    pub allowed_channels: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
     /// Per-channel behavior overrides.
@@ -2627,6 +2637,8 @@ impl Default for RevoltConfig {
         Self {
             bot_token_env: "REVOLT_BOT_TOKEN".to_string(),
             api_url: "https://api.revolt.chat".to_string(),
+            ws_url: "wss://ws.revolt.chat".to_string(),
+            allowed_channels: Vec::new(),
             default_agent: None,
             overrides: ChannelOverrides::default(),
         }
@@ -3704,6 +3716,26 @@ mod tests {
         "#;
         let dc2: DiscordConfig = toml::from_str(toml_str2).unwrap();
         assert!(dc2.ignore_bots);
+    }
+
+    #[test]
+    fn test_discord_config_free_response_channels_deserialization() {
+        // Test with free_response_channels as list of strings
+        let toml_str = r#"
+            bot_token_env = "DISCORD_BOT_TOKEN"
+            free_response_channels = ["123456789", "987654321"]
+        "#;
+        let dc: DiscordConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(dc.free_response_channels.len(), 2);
+        assert_eq!(dc.free_response_channels[0], "123456789");
+        assert_eq!(dc.free_response_channels[1], "987654321");
+
+        // Test default (empty list)
+        let toml_str2 = r#"
+            bot_token_env = "DISCORD_BOT_TOKEN"
+        "#;
+        let dc2: DiscordConfig = toml::from_str(toml_str2).unwrap();
+        assert!(dc2.free_response_channels.is_empty());
     }
 
     #[test]

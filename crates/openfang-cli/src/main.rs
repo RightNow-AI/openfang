@@ -2429,6 +2429,7 @@ decay_rate = 0.05
         ("TOGETHER_API_KEY", "Together", "together"),
         ("MISTRAL_API_KEY", "Mistral", "mistral"),
         ("FIREWORKS_API_KEY", "Fireworks", "fireworks"),
+        ("AWS_BEARER_TOKEN_BEDROCK", "AWS Bedrock", "bedrock"),
     ];
 
     let mut any_key_set = false;
@@ -2454,6 +2455,18 @@ decay_rate = 0.05
                 ui::provider_status(name, env_var, false);
             }
             checks.push(serde_json::json!({"check": "provider", "name": name, "env_var": env_var, "status": "warn"}));
+        }
+    }
+
+    // Check GitHub Copilot auth (separate from env var checks)
+    {
+        let openfang_dir = cli_openfang_home();
+        if openfang_runtime::drivers::copilot::copilot_auth_available(&openfang_dir) {
+            any_key_set = true;
+            if !json {
+                ui::check_ok("GitHub Copilot (authenticated via device flow)");
+            }
+            checks.push(serde_json::json!({"check": "provider", "name": "GitHub Copilot", "status": "ok"}));
         }
     }
 
@@ -4621,6 +4634,9 @@ pub(crate) fn test_api_key(provider: &str, env_var: &str) -> bool {
             .get("https://openrouter.ai/api/v1/models")
             .bearer_auth(&key)
             .send(),
+        // Bedrock bearer tokens are only valid against bedrock-runtime, not the
+        // management plane. There is no cheap region-agnostic probe, so skip.
+        "bedrock" => return true,
         _ => return true, // unknown provider — skip test
     };
 
@@ -4969,6 +4985,27 @@ fn cmd_config_unset(key: &str) {
 }
 
 fn cmd_config_set_key(provider: &str) {
+    // GitHub Copilot uses OAuth device flow, not a simple API key paste.
+    if provider == "github-copilot" || provider == "copilot" {
+        let openfang_dir = cli_openfang_home();
+        let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| {
+            ui::error(&format!("Failed to create async runtime: {e}"));
+            std::process::exit(1);
+        });
+        match rt.block_on(openfang_runtime::drivers::copilot::run_interactive_setup(&openfang_dir)) {
+            Ok(_) => {
+                ui::success("GitHub Copilot configured successfully");
+                ui::hint("Restart the daemon: openfang stop && openfang start");
+            }
+            Err(e) => {
+                ui::error(&format!("Copilot setup failed: {e}"));
+                ui::hint("Check your Client ID/Secret and try again");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let env_var = provider_to_env_var(provider);
 
     let key = prompt_input(&format!("  Paste your {provider} API key: "));

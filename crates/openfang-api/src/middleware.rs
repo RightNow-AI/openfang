@@ -167,13 +167,14 @@ pub async fn auth(
 
     // Also check ?token= query parameter (for EventSource/SSE clients that
     // cannot set custom headers, same approach as WebSocket auth).
-    let query_token = request
+    let query_token_decoded = request
         .uri()
         .query()
-        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")));
+        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
+        .map(crate::percent_decode);
 
     // SECURITY: Use constant-time comparison to prevent timing attacks.
-    let query_auth = query_token.map(|token| {
+    let query_auth = query_token_decoded.as_deref().map(|token| {
         use subtle::ConstantTimeEq;
         if token.len() != api_key.len() {
             return false;

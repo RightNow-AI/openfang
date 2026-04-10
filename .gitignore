@@ -45,3 +45,6 @@ Thumbs.db
 *.swo
 *~
 .serena/
+
+# Personal deploy scripts
+scripts/deploy-remote.sh

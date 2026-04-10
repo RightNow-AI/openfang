@@ -260,7 +260,7 @@ impl ChannelAdapter for NextcloudAdapter {
 
                     // Use lookIntoFuture=1 and lastKnownMessageId for incremental polling
                     let url = format!(
-                        "{}/ocs/v2.php/apps/spreed/api/v4/room/{}/chat?format=json&lookIntoFuture=1&limit=100&lastKnownMessageId={}",
+                        "{}/ocs/v2.php/apps/spreed/api/v1/chat/{}?format=json&lookIntoFuture=1&limit=100&lastKnownMessageId={}",
                         server_url, room_token, last_id
                     );
 
