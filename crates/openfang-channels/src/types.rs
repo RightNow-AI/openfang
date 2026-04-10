@@ -285,9 +285,9 @@ pub trait ChannelAdapter: Send + Sync {
     /// Returns the new thread ID on success.
     async fn create_thread(
         &self,
-        user: &ChannelUser,
-        message_id: &str,
-        thread_name: &str,
+        _user: &ChannelUser,
+        _message_id: &str,
+        _thread_name: &str,
     ) -> Result<String, Box<dyn std::error::Error>> {
         Err("Thread creation not supported for this adapter".into())
     }
