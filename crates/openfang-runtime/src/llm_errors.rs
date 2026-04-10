@@ -11,6 +11,8 @@
 
 use serde::Serialize;
 
+use crate::str_utils::safe_truncate_str;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -534,7 +536,7 @@ fn cap_message(msg: &str, max: usize) -> String {
             .nth(max - 3)
             .map(|(i, _)| i)
             .unwrap_or(msg.len());
-        format!("{}...", &msg[..end])
+        safe_truncate_str(msg, end).to_string() + "..."
     }
 }
 
