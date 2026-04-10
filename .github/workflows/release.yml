@@ -134,7 +134,7 @@ jobs:
           projectPath: crates/openfang-desktop
           args: ${{ matrix.platform.args }}
 
-  # ── CLI Binary (5 platforms) ──────────────────────────────────────────────
+  # ── CLI Binary (7 platforms) ──────────────────────────────────────────────
   cli:
     name: CLI / ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -146,6 +146,9 @@ jobs:
             os: ubuntu-22.04
             archive: tar.gz
           - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            archive: tar.gz
+          - target: armv7-unknown-linux-gnueabihf
             os: ubuntu-22.04
             archive: tar.gz
           - target: x86_64-apple-darwin
@@ -169,17 +172,17 @@ jobs:
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
-      - name: Install cross (Linux aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Install cross (Linux aarch64/armv7)
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'armv7-unknown-linux-gnueabihf'
         run: cargo install cross --locked
       - uses: Swatinem/rust-cache@v2
         with:
           key: cli-${{ matrix.target }}
       - name: Build CLI (cross)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'armv7-unknown-linux-gnueabihf'
         run: cross build --release --target ${{ matrix.target }} --bin openfang
       - name: Build CLI
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        if: matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'armv7-unknown-linux-gnueabihf'
         run: cargo build --release --target ${{ matrix.target }} --bin openfang
       - name: Ad-hoc codesign CLI binary (macOS)
         if: runner.os == 'macOS'
