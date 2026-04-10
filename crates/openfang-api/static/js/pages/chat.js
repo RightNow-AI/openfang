@@ -488,9 +488,8 @@ function chatPage() {
       this.connectWs(agent.id);
       // Show welcome tips on first use
       if (!localStorage.getItem('of-chat-tips-seen')) {
-        var localMsgId = 0;
         this.messages.push({
-          id: ++localMsgId,
+          id: ++msgId,
           role: 'system',
           text: '**Welcome to OpenFang Chat!**\n\n' +
             '- Type `/` to see available commands\n' +
