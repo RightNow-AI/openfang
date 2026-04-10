@@ -56,6 +56,8 @@ pub struct DiscordAdapter {
     allowed_users: Vec<String>,
     ignore_bots: bool,
     intents: u64,
+    /// Auto-thread behavior: "true", "false", or "smart"
+    auto_thread: String,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
     /// Bot's own user ID (populated after READY event).
@@ -73,6 +75,7 @@ impl DiscordAdapter {
         allowed_users: Vec<String>,
         ignore_bots: bool,
         intents: u64,
+        auto_thread: String,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
@@ -82,6 +85,7 @@ impl DiscordAdapter {
             allowed_users,
             ignore_bots,
             intents,
+            auto_thread,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             bot_user_id: Arc::new(RwLock::new(None)),
@@ -147,6 +151,72 @@ impl DiscordAdapter {
             .await?;
         Ok(())
     }
+
+    /// Create a thread from a message in a Discord channel.
+    async fn api_create_thread(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        name: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let url = format!(
+            "{DISCORD_API_BASE}/channels/{channel_id}/messages/{message_id}/threads",
+            channel_id = channel_id,
+            message_id = message_id
+        );
+        let body = serde_json::json!({
+            "name": name,
+            "auto_archive_duration": 1440 // 24 hours
+        });
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bot {}", self.token.as_str()))
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(format!("Discord createThread failed: {}", body_text).into());
+        }
+
+        let response: serde_json::Value = resp.json().await?;
+        Ok(response["id"].as_str().unwrap_or("").to_string())
+    }
+
+    /// Send a message to an existing thread.
+    async fn api_send_thread_message(
+        &self,
+        channel_id: &str,
+        thread_id: &str,
+        text: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!("{DISCORD_API_BASE}/channels/{channel_id}/messages", channel_id = channel_id);
+        let chunks = split_message(text, DISCORD_MSG_LIMIT);
+
+        for chunk in chunks {
+            let body = serde_json::json!({
+                "content": chunk,
+                "message_reference": {
+                    "message_id": thread_id
+                }
+            });
+            let resp = self
+                .client
+                .post(&url)
+                .header("Authorization", format!("Bot {}", self.token.as_str()))
+                .json(&body)
+                .send()
+                .await?;
+
+            if !resp.status().is_success() {
+                let body_text = resp.text().await.unwrap_or_default();
+                warn!("Discord sendThreadMessage failed: {body_text}");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -157,6 +227,39 @@ impl ChannelAdapter for DiscordAdapter {
 
     fn channel_type(&self) -> ChannelType {
         ChannelType::Discord
+    }
+
+    async fn should_auto_thread(&self, message: &ChannelMessage) -> Option<String> {
+        // Only auto-thread in group channels (servers), not DMs
+        if !message.is_group {
+            return None;
+        }
+
+        // Check auto_thread mode
+        match self.auto_thread.as_str() {
+            "true" => {
+                // Always create thread
+                Some(format!("Thread for {}", message.sender.display_name))
+            }
+            "false" => {
+                // Never create thread
+                None
+            }
+            "smart" => {
+                // Only create thread if bot was @mentioned
+                let was_mentioned = message
+                    .metadata
+                    .get("was_mentioned")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if was_mentioned {
+                    Some(format!("Thread for {}", message.sender.display_name))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     async fn start(
@@ -173,6 +276,7 @@ impl ChannelAdapter for DiscordAdapter {
         let allowed_guilds = self.allowed_guilds.clone();
         let allowed_users = self.allowed_users.clone();
         let ignore_bots = self.ignore_bots;
+        let auto_thread = self.auto_thread.clone();
         let bot_user_id = self.bot_user_id.clone();
         let session_id_store = self.session_id.clone();
         let resume_url_store = self.resume_gateway_url.clone();
@@ -530,6 +634,35 @@ impl ChannelAdapter for DiscordAdapter {
 
     async fn send_typing(&self, user: &ChannelUser) -> Result<(), Box<dyn std::error::Error>> {
         self.api_send_typing(&user.platform_id).await
+    }
+
+    async fn send_in_thread(
+        &self,
+        user: &ChannelUser,
+        content: ChannelContent,
+        thread_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let channel_id = &user.platform_id;
+        match content {
+            ChannelContent::Text(text) => {
+                self.api_send_thread_message(channel_id, thread_id, &text).await?;
+            }
+            _ => {
+                self.api_send_thread_message(channel_id, thread_id, "(Unsupported content type)")
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn create_thread(
+        &self,
+        user: &ChannelUser,
+        message_id: &str,
+        thread_name: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let channel_id = &user.platform_id;
+        self.api_create_thread(channel_id, message_id, thread_name).await
     }
 
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {

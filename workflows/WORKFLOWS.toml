@@ -1,0 +1,353 @@
+# Social Media Workflows Configuration
+# Defines all automated workflows for the multi-voice social media system
+
+[[workflows]]
+id = "research_and_draft"
+name = "Research and Draft"
+description = "Discover trending topics and create platform-agnostic content drafts. Runs 3x weekly."
+trigger = { type = "cron", schedule = "0 9 * * 1,3,5" }
+
+[[workflows.steps]]
+name = "discover_topics"
+agent = { type = "builtin", name = "researcher" }
+prompt = """Discover 5 trending topics for the week.
+
+Niche: {{niche}}
+Exclude: {{excluded_topics}}
+
+Return JSON:
+{
+  "topics": [
+    {
+      "title": "...",
+      "angle": "...",
+      "hooks": ["...", "..."],
+      "why_trending": "...",
+      "key_facts": ["...", "..."],
+      "expert_opinions": ["...", "..."]
+    }
+  ]
+}"""
+output_var = "topics"
+mode = "Sequential"
+
+[[workflows.steps]]
+name = "create_draft"
+agent = { type = "builtin", name = "social-media" }
+prompt = """Create a platform-agnostic content draft based on:
+
+Topic: {{topics[0].title}}
+Research: {{topics[0]}}
+
+Format:
+- Headline: ...
+- Core message (1-2 sentences): ...
+- Key points (3-5): ...
+- Supporting evidence: ...
+- Call to action: ...
+
+Target: 300-500 words, adaptable per platform."""
+output_var = "draft"
+mode = "Sequential"
+depends_on = ["discover_topics"]
+
+[[workflows.steps]]
+name = "store_content"
+agent = { type = "builtin", name = "content-manager" }
+prompt = """Store content to content store:
+- Topic: {{topics[0].title}}
+- Research: {{topics[0]}}
+- Draft: {{draft}}
+- Date: {{current_date}}
+
+Save to: ~/.openfang/workspaces/social-content/content-store/{{current_date}}/"""
+output_var = "stored_path"
+mode = "Sequential"
+depends_on = ["create_draft"]
+
+[[workflows]]
+id = "adapt_and_distribute"
+name = "Adapt and Distribute"
+description = "Load content, adapt to each voice, queue for publishing. Runs after research_and_draft."
+trigger = { type = "cron", schedule = "0 10 * * 1,3,5" }
+
+[[workflows.steps]]
+name = "load_latest_content"
+agent = { type = "builtin", name = "content-manager" }
+prompt = """Find and load the latest drafted content from:
+~/.openfang/workspaces/social-content/content-store/
+
+Return: Full content JSON including topic, research, draft."""
+output_var = "content"
+mode = "Sequential"
+
+[[workflows.steps]]
+name = "check_adapted"
+agent = { type = "builtin", name = "content-manager" }
+prompt = """Check metadata for:
+- adapted_for.atlas
+- adapted_for.blaze
+
+If both true, skip adaptation (content already processed).
+If false, proceed with adaptation."""
+output_var = "needs_adaptation"
+mode = "Conditional"
+depends_on = ["load_latest_content"]
+
+[[workflows.steps]]
+name = "adapt_atlas"
+agent = { type = "builtin", name = "voice-adapter" }
+prompt = """Adapt content to Atlas voice (Professional, Authoritative):
+
+Base content:
+{{content.draft}}
+
+Read: ~/.openfang/workspaces/brand-voices/voice-a-atlas/VOICE.md
+
+Output: 4 platform versions (X, IG, FB, Reddit)
+Each version should match Atlas voice style, fit platform constraints, include signature + slogan."""
+output_var = "atlas_versions"
+mode = "Sequential"
+depends_on = ["check_adaptation"]
+
+[[workflows.steps]]
+name = "adapt_blaze"
+agent = { type = "builtin", name = "voice-adapter" }
+prompt = """Adapt content to Blaze voice (Casual, Creative):
+
+Base content:
+{{content.draft}}
+
+Read: ~/.openfang/workspaces/brand-voices/voice-b-blaze/VOICE.md
+
+Output: 4 platform versions (X, IG, FB, Reddit)
+Each version should match Blaze voice style, fit platform constraints, include signature + slogan."""
+output_var = "blaze_versions"
+mode = "Sequential"
+depends_on = ["check_adaptation"]
+
+[[workflows.steps]]
+name = "queue_atlas"
+agent = { type = "builtin", name = "content-manager" }
+prompt = """Queue Atlas content for all platforms:
+
+Content: {{atlas_versions}}
+
+Write to queue folders:
+- ~/.openfang/workspaces/content-queues/atlas/x/pending/
+- ~/.openfang/workspaces/content-queues/atlas/instagram/pending/
+- ~/.openfang/workspaces/content-queues/atlas/facebook/pending/
+- ~/.openfang/workspaces/content-queues/atlas/reddit/pending/
+
+Schedule: Staggered times (X: 08:00, IG: 09:00, FB: 10:00, RD: 11:00)"""
+output_var = "atlas_queue_id"
+mode = "Sequential"
+depends_on = ["adapt_atlas"]
+
+[[workflows.steps]]
+name = "queue_blaze"
+agent = { type = "builtin", name = "content-manager" }
+prompt = """Queue Blaze content for all platforms:
+
+Content: {{blaze_versions}}
+
+Write to queue folders:
+- ~/.openfang/workspaces/content-queues/blaze/x/pending/
+- ~/.openfang/workspaces/content-queues/blaze/instagram/pending/
+- ~/.openfang/workspaces/content-queues/blaze/facebook/pending/
+- ~/.openfang/workspaces/content-queues/blaze/reddit/pending/
+
+Schedule: Staggered times (X: 14:00, IG: 15:00, FB: 16:00, RD: 17:00)"""
+output_var = "blaze_queue_id"
+mode = "Sequential"
+depends_on = ["adapt_blaze"]
+
+[[workflows]]
+id = "publish_twin"
+name = "Publish Twin"
+description = "Publish content to all 4 platforms simultaneously and collect twin links."
+trigger = { type = "scheduled", depends_on = ["adapt_and_distribute"] }
+
+[[workflows.steps]]
+name = "load_queue_item"
+agent = { type = "builtin", name = "content-manager" }
+prompt = """Get next pending item from queue:
+~/.openfang/workspaces/content-queues/{{voice}}/{{platform}}/pending/
+
+Return: Full queue item JSON"""
+output_var = "item"
+mode = "Sequential"
+
+[[workflows.steps]]
+name = "post_all"
+agent = { type = "builtin", name = "content-distributor" }
+prompt = """Post to all 4 platforms simultaneously:
+
+Voice: {{voice}}
+Content: {{item.content}}
+
+Platforms: X, Instagram, Facebook, Reddit
+
+Wait for all responses.
+Return: Array of {platform, url, id, status}"""
+output_var = "post_results"
+mode = "FanOut"
+
+[[workflows.steps]]
+name = "collect_twin_links"
+agent = { type = "builtin", name = "content-manager" }
+prompt = """Extract URLs from post results:
+{{post_results}}
+
+Return: {platform: {url, id}}"""
+output_var = "twin_links"
+mode = "Sequential"
+depends_on = ["post_all"]
+
+[[workflows.steps]]
+name = "update_cross_references"
+agent = { type = "builtin", name = "content-distributor" }
+prompt = """For each platform post, add links to twin posts:
+
+Twin links: {{twin_links}}
+
+Format:
+🔗 See also:
+   X: {url}
+   IG: {url}
+   FB: {url}
+   RD: {url}
+
+Update each post with its twin links."""
+output_var = "updated_posts"
+mode = "Sequential"
+depends_on = ["collect_twin_links"]
+
+[[workflows.steps]]
+name = "store_twin_links"
+agent = { type = "builtin", name = "content-manager" }
+prompt = """Store twin links to:
+~/.openfang/workspaces/social-content/twin-links/{{topic_id}}.json
+
+Content: {{twin_links}}"""
+output_var = "stored"
+mode = "Sequential"
+depends_on = ["update_cross_references"]
+
+[[workflows]]
+id = "engage_organic"
+name = "Engage Organic"
+description = "Full engagement workflow: discover content, like, comment, follow. Runs every 4 hours."
+trigger = { type = "cron", schedule = "0 */4 * * *" }
+
+[[workflows.steps]]
+name = "discover_content"
+agent = { type = "builtin", name = "engagement-hand" }
+prompt = """Discover relevant content for engagement:
+
+Niche: {{niche}}
+Search for:
+- High-engagement posts in niche
+- New posts from influential accounts
+- Trending topics in target communities
+
+Return: Top 20 posts to potentially engage with"""
+output_var = "discovered_posts"
+mode = "Sequential"
+
+[[workflows.steps]]
+name = "filter_quality"
+agent = { type = "builtin", name = "engagement-hand" }
+prompt = """Filter posts for genuine engagement:
+
+Criteria:
+- Quality content (not clickbait)
+- Relevant to niche
+- Not from competitors
+- Not already engaged with
+- Not controversial
+
+Return: Top 10 posts worth engaging with"""
+output_var = "worthy_posts"
+mode = "Sequential"
+depends_on = ["discover_content"]
+
+[[workflows.steps]]
+name = "like_posts"
+agent = { type = "builtin", name = "engagement-hand" }
+prompt = """Like/upvote these posts:
+{{worthy_posts}}
+
+Max: {{max_likes_per_day}} per day
+
+Return: List of liked posts"""
+output_var = "liked_posts"
+mode = "Sequential"
+depends_on = ["filter_quality"]
+
+[[workflows.steps]]
+name = "write_comments"
+agent = { type = "builtin", name = "engagement-hand" }
+prompt = """Write genuine comments for these posts:
+{{worthy_posts}}
+
+Voice: {{brand_voice}}
+Style: {{comment_style}}
+
+Comment guidelines:
+- Add value, don't just say "great post"
+- Ask thoughtful questions
+- Share related experience
+- Be authentic to brand voice
+
+Max: {{max_comments_per_day}} per day
+
+Return: Posts with drafted comments"""
+output_var = "commented_posts"
+mode = "Sequential"
+depends_on = ["filter_quality"]
+
+[[workflows.steps]]
+name = "post_comments"
+agent = { type = "builtin", name = "engagement-hand" }
+prompt = """Post comments on:
+{{commented_posts}}
+
+Return: Posted comments with URLs"""
+output_var = "posted_comments"
+mode = "Sequential"
+depends_on = ["write_comments"]
+
+[[workflows.steps]]
+name = "follow_accounts"
+agent = { type = "builtin", name = "engagement-hand" }
+prompt = """Find and follow relevant accounts:
+
+From: {{worthy_posts}}
+Criteria:
+- Min followers: {{min_followers}}
+- Not already following
+- Not competitor accounts
+
+Max: {{max_follows_per_day}} per day
+
+Return: List of followed accounts"""
+output_var = "followed_accounts"
+mode = "Sequential"
+depends_on = ["post_comments"]
+
+[[workflows.steps]]
+name = "log_engagement"
+agent = { type = "builtin", name = "engagement-hand" }
+prompt = """Log engagement activity:
+
+Date: {{current_date}}
+Liked: {{liked_posts_count}}
+Commented: {{commented_posts_count}}
+Followed: {{followed_accounts_count}}
+
+Save to:
+~/.openfang/workspaces/social-content/engagement-log/{{current_month}}.json"""
+output_var = "logged"
+mode = "Sequential"
+depends_on = ["follow_accounts"]

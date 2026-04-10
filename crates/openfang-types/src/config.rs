@@ -1313,6 +1313,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_auto_thread() -> String {
+    "true".to_string()
+}
+
 fn default_thread_ttl() -> u64 {
     24
 }
@@ -1796,6 +1800,10 @@ pub struct DiscordConfig {
     /// In these channels, the bot responds to all group messages without needing to be mentioned.
     #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub free_response_channels: Vec<String>,
+    /// Auto-thread behavior: "true" (always create thread), "false" (never), "smart" (only when @mentioned).
+    /// Default: "true"
+    #[serde(default = "default_auto_thread")]
+    pub auto_thread: String,
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
@@ -1812,6 +1820,7 @@ impl Default for DiscordConfig {
             ignore_bots: true,
             default_channel_id: None,
             free_response_channels: vec![],
+            auto_thread: "true".to_string(),
             overrides: ChannelOverrides::default(),
         }
     }

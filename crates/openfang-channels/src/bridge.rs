@@ -643,11 +643,36 @@ async fn dispatch_message(
         .as_ref()
         .map(|o| o.lifecycle_reactions)
         .unwrap_or(true);
-    let thread_id = if threading_enabled {
-        message.thread_id.as_deref()
+
+    // --- Auto-thread logic for Discord (smart mode) ---
+    // Check if adapter wants to auto-create a thread for this message
+    let auto_thread_name = if !threading_enabled && message.thread_id.is_none() {
+        adapter.should_auto_thread(message).await
     } else {
         None
     };
+
+    // If auto_thread_name is Some, create the thread and use it
+    let effective_thread_id: Option<String> = if let Some(ref thread_name) = auto_thread_name {
+        // Create thread via adapter
+        match adapter.create_thread(&message.sender, &message.platform_message_id, thread_name).await {
+            Ok(new_thread_id) => {
+                info!("Created auto-thread {} for message {}", thread_name, message.platform_message_id);
+                Some(new_thread_id)
+            }
+            Err(e) => {
+                warn!("Failed to create auto-thread: {}", e);
+                None
+            }
+        }
+    } else if threading_enabled {
+        message.thread_id.clone()
+    } else {
+        None
+    };
+
+    // Convert to Option<&str> for send_response calls
+    let thread_id = effective_thread_id.as_deref();
 
     // --- DM/Group policy check ---
     if let Some(ref ov) = overrides {

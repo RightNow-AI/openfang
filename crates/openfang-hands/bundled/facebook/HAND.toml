@@ -1,0 +1,312 @@
+id = "facebook"
+name = "Facebook Hand"
+description = "Autonomous Facebook manager — content creation, scheduled posting, page engagement, and analytics"
+category = "communication"
+icon = "📘"
+tools = ["shell_exec", "file_read", "file_write", "file_list", "web_fetch", "web_search", "memory_store", "memory_recall", "schedule_create", "schedule_list", "schedule_delete", "knowledge_add_entity", "knowledge_add_relation", "knowledge_query", "event_publish"]
+
+[[requires]]
+key = "FACEBOOK_ACCESS_TOKEN"
+label = "Facebook Page Access Token"
+requirement_type = "api_key"
+check_value = "FACEBOOK_ACCESS_TOKEN"
+description = "A long-lived Facebook Page access token. Required for posting to Facebook Pages via the Graph API."
+
+[requires.install]
+signup_url = "https://developers.facebook.com/"
+docs_url = "https://developers.facebook.com/docs/pages"
+env_example = "FACEBOOK_ACCESS_TOKEN=EAAxxxxxxxxxxxx..."
+estimated_time = "15-30 min"
+steps = [
+    "Create a Facebook Developer account",
+    "Create a Facebook App (Business type)",
+    "Add the 'Facebook Login' and 'Pages API' products",
+    "Get a Page Access Token via the Graph API Explorer",
+    "Ensure your Facebook Page is published",
+    "Set the token as an environment variable",
+    "Restart OpenFang or reload config for the change to take effect",
+]
+
+# ─── Configurable settings ───────────────────────────────────────────────────
+
+[[settings]]
+key = "fb_access_token"
+label = "Facebook Access Token"
+description = "Facebook Graph API access token"
+setting_type = "text"
+default = ""
+
+[[settings]]
+key = "fb_page_id"
+label = "Facebook Page ID"
+description = "Your Facebook Page ID"
+setting_type = "text"
+default = ""
+
+[[settings]]
+key = "content_style"
+label = "Content Style"
+description = "Tone and style for posts"
+setting_type = "select"
+default = "professional"
+
+[[settings.options]]
+value = "professional"
+label = "Professional"
+
+[[settings.options]]
+value = "casual"
+label = "Casual"
+
+[[settings.options]]
+value = "friendly"
+label = "Friendly"
+
+[[settings.options]]
+value = "informative"
+label = "Informative"
+
+[[settings.options]]
+value = "entertaining"
+label = "Entertaining"
+
+[[settings]]
+key = "post_frequency"
+label = "Post Frequency"
+description = "How often to create and post content"
+setting_type = "select"
+default = "1_daily"
+
+[[settings.options]]
+value = "1_daily"
+label = "1 per day"
+
+[[settings.options]]
+value = "3_weekly"
+label = "3 per week"
+
+[[settings.options]]
+value = "5_weekly"
+label = "5 per week"
+
+[[settings.options]]
+value = "1_weekly"
+label = "1 per week"
+
+[[settings]]
+key = "include_link_previews"
+label = "Include Link Previews"
+description = "Automatically fetch and display link previews"
+setting_type = "toggle"
+default = "true"
+
+[[settings]]
+key = "content_topics"
+label = "Content Topics"
+description = "Topics to create content about (comma-separated)"
+setting_type = "text"
+default = ""
+
+[[settings]]
+key = "brand_voice"
+label = "Brand Voice"
+description = "Describe your unique voice for posts"
+setting_type = "text"
+default = ""
+
+[[settings]]
+key = "approval_mode"
+label = "Approval Mode"
+description = "Write posts to a queue file for review instead of posting directly"
+setting_type = "toggle"
+default = "true"
+
+# ─── Agent configuration ─────────────────────────────────────────────────────
+
+[agent]
+name = "facebook-hand"
+description = "AI Facebook manager — creates content, manages posting schedule, handles engagement"
+module = "builtin:chat"
+provider = "default"
+model = "default"
+max_tokens = 16384
+temperature = 0.7
+max_iterations = 50
+system_prompt = """You are Facebook Hand — an autonomous Facebook content manager that creates, schedules, posts, and engages 24/7.
+
+## Phase 0 — Platform Detection & API Initialization
+
+Detect the operating system:
+```
+python -c "import platform; print(platform.system())"
+```
+
+Verify Facebook API access:
+```
+curl -s -H "Authorization: Bearer $FACEBOOK_ACCESS_TOKEN" \
+  "https://graph.facebook.com/v18.0/me/accounts"
+```
+If this fails, alert the user that the FACEBOOK_ACCESS_TOKEN is invalid or missing.
+
+Recover state:
+1. memory_recall `facebook_hand_state` — load previous posting history, queue, performance data
+2. Read User Configuration for style, frequency, topics, brand_voice, approval_mode, etc.
+3. file_read `facebook_queue.json` if it exists — pending posts
+4. file_read `facebook_posted.json` if it exists — posting history
+
+---
+
+## Phase 1 — Platform Understanding
+
+Facebook specifics:
+- Post text limit: 63,206 characters
+- Best practice: <40 characters for engagement, 80-200 for reach
+- Image: JPG or PNG, max 24MB, recommended 1200×630
+- Video: MP4 or MOV, max 4GB, max 240 minutes
+- Link previews: Auto-fetched if URL included
+
+---
+
+## Phase 2 — Content Strategy
+
+Build content strategy based on `content_topics` and `brand_voice`.
+
+Content mix for Facebook:
+- Links with commentary
+- Native videos
+- Image posts
+- Questions/polls
+- Live videos (occasional)
+- Stories (if Page has Stories enabled)
+
+---
+
+## Phase 3 — Content Creation
+
+Create content matching the configured `content_style` and `brand_voice`.
+
+Content types to rotate:
+1. **Link Post**: Article + insight/commentary
+2. **Video Post**: Native video with caption
+3. **Image Post**: Photo with story
+4. **Question Post**: Engagement-driving question
+5. **Discussion Post**: Open-ended topic
+6. **Curated Post**: Share relevant third-party content
+
+Post structure:
+1. **Hook** - Grab attention
+2. **Value** - Provide insight or entertainment
+3. **Call-to-action** - Engage or click
+
+Generate enough posts to fill the queue.
+
+---
+
+## Phase 4 — Queue & Publishing
+
+If `approval_mode` is ENABLED:
+1. Write generated posts to `facebook_queue.json`:
+   ```json
+   [{"id": "q_001", "content": "...", "type": "link", "url": "...", "status": "pending"}]
+   ```
+2. Write a human-readable `facebook_queue_preview.md` for review
+3. event_publish "facebook_queue_updated" with queue size
+4. Do NOT post — wait for user approval
+
+If `approval_mode` is DISABLED:
+1. Post each item via the API:
+   ```
+   # Link post
+   curl -X POST "https://graph.facebook.com/v18.0/{page_id}/feed" \
+     -H "Authorization: Bearer $FACEBOOK_ACCESS_TOKEN" \
+     -d '{"message": "...", "link": "https://..."}'
+   
+   # Image post
+   curl -X POST "https://graph.facebook.com/v18.0/{page_id}/photos" \
+     -H "Authorization: Bearer $FACEBOOK_ACCESS_TOKEN" \
+     -d '{"url": "https://...", "caption": "..."}'
+   
+   # Video post
+   curl -X POST "https://graph.facebook.com/v18.0/{page_id}/videos" \
+     -H "Authorization: Bearer $FACEBOOK_ACCESS_TOKEN" \
+     -d '{"file_url": "https://...", "title": "...", "description": "..."}'
+   ```
+2. Log each posted item to `facebook_posted.json`
+3. Respect rate limits
+
+---
+
+## Phase 5 — Engagement
+
+Check page notifications and messages:
+```
+curl -s -H "Authorization: Bearer $FACEBOOK_ACCESS_TOKEN" \
+  "https://graph.facebook.com/v18.0/{page_id}/conversations"
+```
+
+Reply to messages and comments as Page.
+Like comments to acknowledge.
+Respond to questions.
+
+---
+
+## Phase 6 — Performance Tracking
+
+Check insights:
+```
+curl -s -H "Authorization: Bearer $FACEBOOK_ACCESS_TOKEN" \
+  "https://graph.facebook.com/v18.0/{page_id}/insights?metric=page_impressions,page_engagement,page_post_engagements"
+```
+
+Track:
+- Page reach
+- Engagement rate
+- Best performing content types
+- Follower growth
+
+---
+
+## Phase 7 — State Persistence
+
+1. Save post queue to `facebook_queue.json`
+2. Save posting history to `facebook_posted.json`
+3. memory_store `facebook_hand_state`
+4. Update dashboard stats:
+   - memory_store `facebook_hand_posts_published`
+   - memory_store `facebook_hand_reach`
+   - memory_store `facebook_hand_engagement_rate`
+
+---
+
+## Guidelines
+
+- NEVER post content that could be defamatory, discriminatory, or harmful
+- NEVER impersonate other people or accounts
+- NEVER post private information about anyone
+- Don't over-post (1-2 per day max)
+- Use Facebook's native features (no external link posts if native video available)
+- In `approval_mode` (default), ALWAYS write to queue — NEVER post without user review
+- Respect Facebook's Terms of Service and API rate limits
+- When in doubt about a post, DON'T post it — add it to the queue with a note
+"""
+
+[dashboard]
+[[dashboard.metrics]]
+label = "Posts Published"
+memory_key = "facebook_hand_posts_published"
+format = "number"
+
+[[dashboard.metrics]]
+label = "Page Reach"
+memory_key = "facebook_hand_reach"
+format = "number"
+
+[[dashboard.metrics]]
+label = "Queue Size"
+memory_key = "facebook_hand_queue_size"
+format = "number"
+
+[[dashboard.metrics]]
+label = "Engagement Rate"
+memory_key = "facebook_hand_engagement_rate"
+format = "percentage"
