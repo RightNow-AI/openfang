@@ -3,8 +3,9 @@
 //! This module implements OAuth2 authentication flows for:
 //! - OpenAI Codex (ChatGPT subscription) — device code flow + PKCE
 //! - Gemini (Google OAuth) — PKCE + device code
-//! - Qwen (Alibaba OAuth) — reads from ~/.qwen/oauth_creds.json
-//! - MiniMax (OAuth) — refresh token based
+//! - Qwen (Alibaba) — **file-based token import** from ~/.qwen/oauth_creds.json
+//!   (not a true OAuth flow — reads pre-existing tokens from Qwen CLI)
+//! - MiniMax — refresh token based (requires stored refresh token in vault)
 //!
 //! All tokens are stored in the credential vault.
 
@@ -461,18 +462,25 @@ pub fn read_qwen_credentials() -> Option<OAuthTokenSet> {
     })
 }
 
-/// Start Qwen OAuth flow - reads from credential file.
+/// Start Qwen "OAuth" flow — reads tokens from ~/.qwen/oauth_creds.json.
+///
+/// **Note**: This is NOT a true OAuth flow. Qwen tokens must first be obtained
+/// via the Qwen CLI (`qwen login`), which creates the credential file.
+/// This function merely imports those pre-existing tokens into OpenFang's vault.
 pub async fn qwen_start_oauth_flow() -> Result<(), String> {
     // Qwen OAuth is file-based, just verify we can read the credentials
     read_qwen_credentials()
-        .ok_or_else(|| "Failed to read Qwen credentials from ~/.qwen/oauth_creds.json".to_string())?;
+        .ok_or_else(|| "Failed to read Qwen credentials from ~/.qwen/oauth_creds.json. Run 'qwen login' first.".to_string())?;
     Ok(())
 }
 
-/// Poll Qwen OAuth flow - returns tokens if available.
+/// Poll Qwen "OAuth" flow — returns tokens from the credential file.
+///
+/// **Note**: This is a file import, not a polling mechanism.
+/// The tokens are read directly from ~/.qwen/oauth_creds.json.
 pub async fn qwen_poll_oauth_flow() -> Result<OAuthTokenSet, String> {
     read_qwen_credentials()
-        .ok_or_else(|| "Failed to read Qwen credentials".to_string())
+        .ok_or_else(|| "Failed to read Qwen credentials. Run 'qwen login' first.".to_string())
 }
 
 /// Refresh Qwen OAuth token.
