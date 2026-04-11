@@ -83,7 +83,7 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
 url = "2"
 
 # WASM sandbox
-wasmtime = "41"
+wasmtime = "43"
 
 # HTTP server (for API daemon)
 axum = { version = "0.8", features = ["ws", "multipart"] }
@@ -147,7 +147,7 @@ native-tls = { version = "0.2", features = ["vendored"] }
 mailparse = "0.16"
 
 # MQTT client
-rumqttc = "0.24"
+rumqttc = { version = "0.25", default-features = false, features = ["use-native-tls"] }
 
 # OpenSSL (vendored = statically compiled, no runtime libssl dependency on Linux)
 openssl = { version = "0.10", features = ["vendored"] }
