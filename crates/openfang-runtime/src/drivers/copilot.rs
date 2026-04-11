@@ -10,7 +10,7 @@
 //! `config.toml`. The driver handles the rest — device flow, token persistence,
 //! refresh, and Copilot API token exchange — automatically.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
