@@ -643,11 +643,19 @@ async fn dispatch_message(
         .as_ref()
         .map(|o| o.lifecycle_reactions)
         .unwrap_or(true);
-    let thread_id = if threading_enabled {
-        message.thread_id.as_deref()
+
+    // --- Auto-thread: decide intent now, but create AFTER all policy guards ---
+    let auto_thread_name = if !threading_enabled && message.thread_id.is_none() {
+        adapter.should_auto_thread(message).await
     } else {
         None
     };
+
+    // thread_id is resolved later, after all guards pass.
+    // Always propagate an existing thread_id (message arrived inside a thread),
+    // regardless of threading_enabled — that flag controls explicit threading config,
+    // not auto-detected thread context.
+    let mut effective_thread_id: Option<String> = message.thread_id.clone();
 
     // --- DM/Group policy check ---
     if let Some(ref ov) = overrides {
@@ -709,11 +717,41 @@ async fn dispatch_message(
             if let Err(msg) =
                 rate_limiter.check(ct_str, sender_user_id(message), ov.rate_limit_per_user)
             {
-                send_response(adapter, &message.sender, msg, thread_id, output_format).await;
+                // Rate-limit rejection: don't create a thread, use existing thread if any
+                send_response(
+                    adapter,
+                    &message.sender,
+                    msg,
+                    message.thread_id.as_deref(),
+                    output_format,
+                )
+                .await;
                 return;
             }
         }
     }
+
+    // --- Create auto-thread NOW (after all policy guards have passed) ---
+    if let Some(ref thread_name) = auto_thread_name {
+        match adapter
+            .create_thread(&message.sender, &message.platform_message_id, thread_name)
+            .await
+        {
+            Ok(new_thread_id) => {
+                info!(
+                    "Created auto-thread {} for message {}",
+                    thread_name, message.platform_message_id
+                );
+                effective_thread_id = Some(new_thread_id);
+            }
+            Err(e) => {
+                warn!("Failed to create auto-thread: {}", e);
+            }
+        }
+    }
+
+    // Resolve final thread_id reference used by all downstream send_response calls
+    let thread_id = effective_thread_id.as_deref();
 
     // Handle commands first (early return)
     if let ChannelContent::Command { ref name, ref args } = message.content {

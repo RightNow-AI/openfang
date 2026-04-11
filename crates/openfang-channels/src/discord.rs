@@ -8,7 +8,7 @@ use crate::types::{
 };
 use async_trait::async_trait;
 use futures::{SinkExt, Stream, StreamExt};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -56,6 +56,8 @@ pub struct DiscordAdapter {
     allowed_users: Vec<String>,
     ignore_bots: bool,
     intents: u64,
+    /// Auto-thread behavior: "true", "false", or "smart"
+    auto_thread: String,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
     /// Bot's own user ID (populated after READY event).
@@ -64,6 +66,13 @@ pub struct DiscordAdapter {
     session_id: Arc<RwLock<Option<String>>>,
     /// Resume gateway URL.
     resume_gateway_url: Arc<RwLock<Option<String>>>,
+    /// Thread channel IDs created by this bot (thread_id → parent_channel_id).
+    /// Used to detect when incoming messages are inside a bot-created thread.
+    created_thread_ids: Arc<RwLock<HashMap<String, String>>>,
+    /// Message IDs seen via MESSAGE_CREATE (used to drop duplicate MESSAGE_UPDATE events).
+    /// Populated immediately when MESSAGE_CREATE is forwarded — before bridge processing —
+    /// to eliminate the race window where MESSAGE_UPDATE arrives before thread creation completes.
+    threaded_message_ids: Arc<RwLock<HashSet<String>>>,
 }
 
 impl DiscordAdapter {
@@ -73,6 +82,7 @@ impl DiscordAdapter {
         allowed_users: Vec<String>,
         ignore_bots: bool,
         intents: u64,
+        auto_thread: String,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
@@ -82,11 +92,14 @@ impl DiscordAdapter {
             allowed_users,
             ignore_bots,
             intents,
+            auto_thread,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             bot_user_id: Arc::new(RwLock::new(None)),
             session_id: Arc::new(RwLock::new(None)),
             resume_gateway_url: Arc::new(RwLock::new(None)),
+            created_thread_ids: Arc::new(RwLock::new(HashMap::new())),
+            threaded_message_ids: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -147,6 +160,79 @@ impl DiscordAdapter {
             .await?;
         Ok(())
     }
+
+    /// Create a thread from a message in a Discord channel.
+    async fn api_create_thread(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        name: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let url = format!(
+            "{DISCORD_API_BASE}/channels/{channel_id}/messages/{message_id}/threads",
+            channel_id = channel_id,
+            message_id = message_id
+        );
+        let body = serde_json::json!({
+            "name": name,
+            "auto_archive_duration": 1440 // 24 hours
+        });
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bot {}", self.token.as_str()))
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(format!("Discord createThread failed: {}", body_text).into());
+        }
+
+        let response: serde_json::Value = resp.json().await?;
+        let thread_id = response["id"].as_str().unwrap_or("").to_string();
+
+        // Track thread_id → parent channel_id so we can recognise messages
+        // that arrive inside this thread.
+        if !thread_id.is_empty() {
+            self.created_thread_ids
+                .write()
+                .await
+                .insert(thread_id.clone(), channel_id.to_string());
+        }
+
+        Ok(thread_id)
+    }
+
+    /// Send a message to an existing thread.
+    /// Discord threads are channels — post directly to channels/{thread_id}/messages.
+    async fn api_send_thread_message(
+        &self,
+        _channel_id: &str,
+        thread_id: &str,
+        text: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!("{DISCORD_API_BASE}/channels/{thread_id}/messages");
+        let chunks = split_message(text, DISCORD_MSG_LIMIT);
+
+        for chunk in chunks {
+            let body = serde_json::json!({ "content": chunk });
+            let resp = self
+                .client
+                .post(&url)
+                .header("Authorization", format!("Bot {}", self.token.as_str()))
+                .json(&body)
+                .send()
+                .await?;
+
+            if !resp.status().is_success() {
+                let body_text = resp.text().await.unwrap_or_default();
+                warn!("Discord sendThreadMessage failed: {body_text}");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -157,6 +243,33 @@ impl ChannelAdapter for DiscordAdapter {
 
     fn channel_type(&self) -> ChannelType {
         ChannelType::Discord
+    }
+
+    async fn should_auto_thread(&self, message: &ChannelMessage) -> Option<String> {
+        // Only auto-thread in group channels (servers), not DMs
+        if !message.is_group {
+            return None;
+        }
+
+        // Check auto_thread mode
+        match self.auto_thread.as_str() {
+            "true" => Some(thread_name_from_message(message)),
+            "false" => None,
+            "smart" => {
+                // Only create thread if bot was @mentioned
+                let was_mentioned = message
+                    .metadata
+                    .get("was_mentioned")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if was_mentioned {
+                    Some(thread_name_from_message(message))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     async fn start(
@@ -176,6 +289,8 @@ impl ChannelAdapter for DiscordAdapter {
         let bot_user_id = self.bot_user_id.clone();
         let session_id_store = self.session_id.clone();
         let resume_url_store = self.resume_gateway_url.clone();
+        let created_thread_ids = self.created_thread_ids.clone();
+        let threaded_message_ids = self.threaded_message_ids.clone();
         let mut shutdown = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
@@ -414,16 +529,57 @@ impl ChannelAdapter for DiscordAdapter {
                                         &allowed_guilds,
                                         &allowed_users,
                                         ignore_bots,
+                                        &created_thread_ids,
                                     )
                                     .await
                                     {
+                                        // MESSAGE_UPDATE must be suppressed if we already
+                                        // forwarded a MESSAGE_CREATE for this message ID.
+                                        // The check uses `seen_message_ids` (tracked below)
+                                        // which is populated the moment MESSAGE_CREATE is
+                                        // forwarded — before the bridge even processes it.
+                                        // This closes the race window where MESSAGE_UPDATE
+                                        // arrives before adapter.create_thread() completes.
+                                        if event_name == "MESSAGE_UPDATE"
+                                            && threaded_message_ids
+                                                .read()
+                                                .await
+                                                .contains(&msg.platform_message_id)
+                                        {
+                                            debug!(
+                                                "Discord MESSAGE_UPDATE skipped (already seen {})",
+                                                msg.platform_message_id
+                                            );
+                                            continue;
+                                        }
+
                                         debug!(
                                             "Discord {event_name} from {}: {:?}",
                                             msg.sender.display_name, msg.content
                                         );
+
+                                        // Mark this message as seen immediately so any
+                                        // concurrent or subsequent MESSAGE_UPDATE is dropped.
+                                        if event_name == "MESSAGE_CREATE" {
+                                            threaded_message_ids
+                                                .write()
+                                                .await
+                                                .insert(msg.platform_message_id.clone());
+                                        }
+
                                         if tx.send(msg).await.is_err() {
                                             return;
                                         }
+                                    }
+                                }
+
+                                "THREAD_DELETE" | "CHANNEL_DELETE" => {
+                                    // Clean up tracking when a thread is deleted so the
+                                    // next message in the parent channel is treated fresh.
+                                    if let Some(tid) = d["id"].as_str() {
+                                        created_thread_ids.write().await.remove(tid);
+                                        threaded_message_ids.write().await.retain(|_| true); // keep others
+                                        debug!("Discord thread/channel deleted: {tid}");
                                     }
                                 }
 
@@ -532,6 +688,46 @@ impl ChannelAdapter for DiscordAdapter {
         self.api_send_typing(&user.platform_id).await
     }
 
+    async fn send_in_thread(
+        &self,
+        user: &ChannelUser,
+        content: ChannelContent,
+        thread_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let channel_id = &user.platform_id;
+        match content {
+            ChannelContent::Text(text) => {
+                self.api_send_thread_message(channel_id, thread_id, &text)
+                    .await?;
+            }
+            _ => {
+                self.api_send_thread_message(channel_id, thread_id, "(Unsupported content type)")
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn create_thread(
+        &self,
+        user: &ChannelUser,
+        message_id: &str,
+        thread_name: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let channel_id = &user.platform_id;
+        let thread_id = self
+            .api_create_thread(channel_id, message_id, thread_name)
+            .await?;
+        // Also ensure the message_id is marked as seen (belt-and-suspenders:
+        // the gateway loop already inserts on MESSAGE_CREATE, but keep this
+        // in case create_thread is ever called from another path).
+        self.threaded_message_ids
+            .write()
+            .await
+            .insert(message_id.to_string());
+        Ok(thread_id)
+    }
+
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
@@ -545,6 +741,7 @@ async fn parse_discord_message(
     allowed_guilds: &[String],
     allowed_users: &[String],
     ignore_bots: bool,
+    created_thread_ids: &Arc<RwLock<HashMap<String, String>>>,
 ) -> Option<ChannelMessage> {
     let author = d.get("author")?;
     let author_id = author["id"].as_str()?;
@@ -583,6 +780,20 @@ async fn parse_discord_message(
 
     let channel_id = d["channel_id"].as_str()?;
     let message_id = d["id"].as_str().unwrap_or("0");
+
+    // Detect if this message is inside a bot-created thread.
+    // In Discord, a thread is its own channel — channel_id will be the thread's ID.
+    // If so, use the parent channel as platform_id and set thread_id so that:
+    //  (a) auto-thread logic is skipped (message.thread_id.is_some())
+    //  (b) responses are sent back into the same thread
+    let (effective_channel_id, parsed_thread_id) = {
+        let threads = created_thread_ids.read().await;
+        if let Some(parent_channel_id) = threads.get(channel_id) {
+            (parent_channel_id.clone(), Some(channel_id.to_string()))
+        } else {
+            (channel_id.to_string(), None)
+        }
+    };
     let username = author["username"].as_str().unwrap_or("Unknown");
     let discriminator = author["discriminator"].as_str().unwrap_or("0000");
     let display_name = if discriminator == "0" {
@@ -641,7 +852,7 @@ async fn parse_discord_message(
         channel: ChannelType::Discord,
         platform_message_id: message_id.to_string(),
         sender: ChannelUser {
-            platform_id: channel_id.to_string(),
+            platform_id: effective_channel_id,
             display_name,
             openfang_user: None,
         },
@@ -649,14 +860,49 @@ async fn parse_discord_message(
         target_agent: None,
         timestamp,
         is_group,
-        thread_id: None,
+        thread_id: parsed_thread_id,
         metadata,
     })
 }
 
-#[cfg(test)]
+/// Build a Discord thread name from the message content.
+/// Strips @mention prefixes (`<@...>`), trims whitespace, and truncates to
+/// Discord's 100-character thread name limit. Falls back to the sender's
+/// display name if the message has no usable text (e.g. image-only).
+fn thread_name_from_message(message: &ChannelMessage) -> String {
+    let raw = match &message.content {
+        ChannelContent::Text(t) => t.clone(),
+        ChannelContent::Image { caption, .. } => caption.clone().unwrap_or_default(),
+        _ => String::new(),
+    };
+
+    // Strip leading Discord mention tokens (<@id> / <@!id>)
+    let stripped = regex_lite::Regex::new(r"^(<@!?\d+>\s*)+")
+        .map(|re| re.replace(&raw, "").into_owned())
+        .unwrap_or(raw);
+
+    let trimmed = stripped.trim().to_string();
+
+    if trimmed.is_empty() {
+        return message.sender.display_name.clone();
+    }
+
+    // Truncate to Discord's 100-char limit
+    if trimmed.chars().count() <= 100 {
+        trimmed
+    } else {
+        trimmed.chars().take(97).collect::<String>() + "…"
+    }
+}
+
 mod tests {
     use super::*;
+
+    /// Convenience helper: empty thread-tracking map for tests that don't exercise threading.
+    #[allow(dead_code)]
+    fn empty_threads() -> Arc<RwLock<HashMap<String, String>>> {
+        Arc::new(RwLock::new(HashMap::new()))
+    }
 
     #[tokio::test]
     async fn test_parse_discord_message_basic() {
@@ -674,7 +920,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         assert_eq!(msg.channel, ChannelType::Discord);
@@ -698,7 +944,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads()).await;
         assert!(msg.is_none());
     }
 
@@ -718,7 +964,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads()).await;
         assert!(msg.is_none());
     }
 
@@ -739,7 +985,7 @@ mod tests {
         });
 
         // With ignore_bots=false, other bots' messages should be allowed
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], false).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], false, &empty_threads()).await;
         assert!(msg.is_some());
         let msg = msg.unwrap();
         assert_eq!(msg.sender.display_name, "somebot");
@@ -763,7 +1009,7 @@ mod tests {
         });
 
         // Even with ignore_bots=false, the bot's own messages must still be filtered
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], false).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], false, &empty_threads()).await;
         assert!(msg.is_none());
     }
 
@@ -784,12 +1030,20 @@ mod tests {
         });
 
         // Not in allowed guilds
-        let msg =
-            parse_discord_message(&d, &bot_id, &["111".into(), "222".into()], &[], true).await;
+        let msg = parse_discord_message(
+            &d,
+            &bot_id,
+            &["111".into(), "222".into()],
+            &[],
+            true,
+            &empty_threads(),
+        )
+        .await;
         assert!(msg.is_none());
 
         // In allowed guilds
-        let msg = parse_discord_message(&d, &bot_id, &["999".into()], &[], true).await;
+        let msg =
+            parse_discord_message(&d, &bot_id, &["999".into()], &[], true, &empty_threads()).await;
         assert!(msg.is_some());
     }
 
@@ -808,7 +1062,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         match &msg.content {
@@ -835,7 +1089,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads()).await;
         assert!(msg.is_none());
     }
 
@@ -854,7 +1108,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         assert_eq!(msg.sender.display_name, "alice#1234");
@@ -878,7 +1132,7 @@ mod tests {
         });
 
         // MESSAGE_UPDATE uses the same parse function as MESSAGE_CREATE
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         assert_eq!(msg.channel, ChannelType::Discord);
@@ -909,16 +1163,25 @@ mod tests {
             &[],
             &["user111".into(), "user222".into()],
             true,
+            &empty_threads(),
         )
         .await;
         assert!(msg.is_none());
 
         // In allowed users
-        let msg = parse_discord_message(&d, &bot_id, &[], &["user999".into()], true).await;
+        let msg = parse_discord_message(
+            &d,
+            &bot_id,
+            &[],
+            &["user999".into()],
+            true,
+            &empty_threads(),
+        )
+        .await;
         assert!(msg.is_some());
 
         // Empty allowed_users = allow all
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads()).await;
         assert!(msg.is_some());
     }
 
@@ -941,7 +1204,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         assert!(msg.is_group);
@@ -964,7 +1227,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg2 = parse_discord_message(&d2, &bot_id, &[], &[], true)
+        let msg2 = parse_discord_message(&d2, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         assert!(msg2.is_group);
@@ -986,7 +1249,7 @@ mod tests {
             "timestamp": "2024-01-01T00:00:00+00:00"
         });
 
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         assert!(!msg.is_group);
@@ -1025,6 +1288,7 @@ mod tests {
             vec![],
             true,
             37376,
+            "true".to_string(),
         );
         assert_eq!(adapter.name(), "discord");
         assert_eq!(adapter.channel_type(), ChannelType::Discord);
