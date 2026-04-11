@@ -253,14 +253,8 @@ impl ChannelAdapter for DiscordAdapter {
 
         // Check auto_thread mode
         match self.auto_thread.as_str() {
-            "true" => {
-                // Always create thread
-                Some(format!("Thread for {}", message.sender.display_name))
-            }
-            "false" => {
-                // Never create thread
-                None
-            }
+            "true" => Some(thread_name_from_message(message)),
+            "false" => None,
             "smart" => {
                 // Only create thread if bot was @mentioned
                 let was_mentioned = message
@@ -269,7 +263,7 @@ impl ChannelAdapter for DiscordAdapter {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 if was_mentioned {
-                    Some(format!("Thread for {}", message.sender.display_name))
+                    Some(thread_name_from_message(message))
                 } else {
                     None
                 }
@@ -868,11 +862,42 @@ async fn parse_discord_message(
     })
 }
 
-#[cfg(test)]
+/// Build a Discord thread name from the message content.
+/// Strips @mention prefixes (`<@...>`), trims whitespace, and truncates to
+/// Discord's 100-character thread name limit. Falls back to the sender's
+/// display name if the message has no usable text (e.g. image-only).
+fn thread_name_from_message(message: &ChannelMessage) -> String {
+    let raw = match &message.content {
+        ChannelContent::Text(t) => t.clone(),
+        ChannelContent::Image { caption, .. } => caption.clone().unwrap_or_default(),
+        _ => String::new(),
+    };
+
+    // Strip leading Discord mention tokens (<@id> / <@!id>)
+    let stripped = regex_lite::Regex::new(r"^(<@!?\d+>\s*)+")
+        .map(|re| re.replace(&raw, "").into_owned())
+        .unwrap_or(raw);
+
+    let trimmed = stripped.trim().to_string();
+
+    if trimmed.is_empty() {
+        return message.sender.display_name.clone();
+    }
+
+    // Truncate to Discord's 100-char limit
+    if trimmed.chars().count() <= 100 {
+        trimmed
+    } else {
+        trimmed.chars().take(97).collect::<String>() + "…"
+    }
+}
+
+
 mod tests {
     use super::*;
 
     /// Convenience helper: empty thread-tracking map for tests that don't exercise threading.
+    #[allow(dead_code)]
     fn empty_threads() -> Arc<RwLock<HashMap<String, String>>> {
         Arc::new(RwLock::new(HashMap::new()))
     }
