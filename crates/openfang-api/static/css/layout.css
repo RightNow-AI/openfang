@@ -1,5 +1,7 @@
 /* OpenFang Layout — Grid + Sidebar + Responsive */
 
+[x-cloak] { display: none !important; }
+
 .app-layout {
   display: flex;
   height: 100vh;
