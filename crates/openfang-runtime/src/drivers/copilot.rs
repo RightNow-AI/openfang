@@ -10,7 +10,7 @@
 //! `config.toml`. The driver handles the rest — device flow, token persistence,
 //! refresh, and Copilot API token exchange — automatically.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -85,14 +85,14 @@ impl PersistedTokens {
     }
 
     /// Load from the OpenFang data directory.
-    pub fn load(openfang_dir: &PathBuf) -> Option<Self> {
+    pub fn load(openfang_dir: &Path) -> Option<Self> {
         let path = openfang_dir.join(TOKEN_FILE_NAME);
         let data = std::fs::read_to_string(&path).ok()?;
         serde_json::from_str(&data).ok()
     }
 
     /// Persist to the OpenFang data directory with restricted permissions.
-    pub fn save(&self, openfang_dir: &PathBuf) -> Result<(), String> {
+    pub fn save(&self, openfang_dir: &Path) -> Result<(), String> {
         let path = openfang_dir.join(TOKEN_FILE_NAME);
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize tokens: {e}"))?;
@@ -737,7 +737,7 @@ impl crate::llm_driver::LlmDriver for CopilotDriver {
 ///
 /// Called from `openfang config set-key github-copilot`, `openfang init`,
 /// `openfang onboard`, and `openfang configure`.
-pub async fn run_interactive_setup(openfang_dir: &PathBuf) -> Result<PersistedTokens, String> {
+pub async fn run_interactive_setup(openfang_dir: &Path) -> Result<PersistedTokens, String> {
     run_device_flow(openfang_dir).await
 }
 
@@ -745,7 +745,7 @@ pub async fn run_interactive_setup(openfang_dir: &PathBuf) -> Result<PersistedTo
 ///
 /// Prints the user code and verification URL, attempts to open the browser,
 /// then polls until the user authorizes.
-pub async fn run_device_flow(openfang_dir: &PathBuf) -> Result<PersistedTokens, String> {
+pub async fn run_device_flow(openfang_dir: &Path) -> Result<PersistedTokens, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -823,7 +823,7 @@ pub fn open_verification_url(url: &str) -> bool {
 }
 
 /// Check if Copilot OAuth tokens exist on disk.
-pub fn copilot_auth_available(openfang_dir: &PathBuf) -> bool {
+pub fn copilot_auth_available(openfang_dir: &Path) -> bool {
     openfang_dir.join(TOKEN_FILE_NAME).exists()
 }
 
