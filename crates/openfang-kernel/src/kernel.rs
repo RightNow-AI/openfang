@@ -509,6 +509,39 @@ impl OpenFangKernel {
         Self::boot_with_config(config)
     }
 
+    /// Fetch live Copilot models by exchanging the persisted token and querying the API.
+    /// Works both inside and outside a tokio runtime.
+    fn fetch_copilot_models(openfang_dir: &Path) -> Result<Vec<String>, String> {
+        use openfang_runtime::drivers::copilot;
+
+        let tokens = copilot::PersistedTokens::load(&openfang_dir.to_path_buf())
+            .ok_or("No persisted Copilot tokens found")?;
+
+        let fetch = async {
+            let http = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|e| format!("HTTP client error: {e}"))?;
+
+            let ct = copilot::exchange_copilot_token(&http, &tokens.access_token).await?;
+            copilot::fetch_models(&http, &ct.base_url, &ct.token).await
+        };
+
+        // If we're already inside a tokio runtime (daemon start), use the existing one.
+        // Otherwise (CLI commands), create a new one.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    handle.block_on(fetch)
+                }).join().unwrap_or(Err("Thread panicked".to_string()))
+            })
+        } else {
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| format!("Failed to create runtime: {e}"))?;
+            rt.block_on(fetch)
+        }
+    }
+
     /// Boot the kernel with an explicit configuration.
     pub fn boot_with_config(mut config: KernelConfig) -> KernelResult<Self> {
         if rustls::crypto::ring::default_provider()
@@ -753,6 +786,21 @@ impl OpenFangKernel {
         // Load user's custom models from ~/.openfang/custom_models.json
         let custom_models_path = config.home_dir.join("custom_models.json");
         model_catalog.load_custom_models(&custom_models_path);
+
+        // Fetch live Copilot models if authenticated
+        if openfang_runtime::drivers::copilot::copilot_auth_available(&config.home_dir) {
+            let copilot_dir = config.home_dir.clone();
+            match Self::fetch_copilot_models(&copilot_dir) {
+                Ok(models) => {
+                    info!(count = models.len(), "Fetched live Copilot model catalog");
+                    model_catalog.merge_discovered_models("github-copilot", &models);
+                }
+                Err(e) => {
+                    warn!("Failed to fetch Copilot models (will use static catalog): {e}");
+                }
+            }
+        }
+
         let available_count = model_catalog.available_models().len();
         let total_count = model_catalog.list_models().len();
         let local_count = model_catalog
@@ -2938,6 +2986,36 @@ impl OpenFangKernel {
         );
     }
 
+    /// Persist an agent's manifest to its `agent.toml` on disk so that
+    /// dashboard-driven config changes (model, provider, fallback, etc.)
+    /// survive a restart.  The on-disk file lives at
+    /// `<home_dir>/agents/<name>/agent.toml`.
+    ///
+    /// This is best-effort: a failure to write is logged but does not
+    /// propagate as an error — the authoritative copy lives in SQLite.
+    pub fn persist_manifest_to_disk(&self, agent_id: AgentId) {
+        if let Some(entry) = self.registry.get(agent_id) {
+            let dir = self.config.home_dir.join("agents").join(&entry.name);
+            let toml_path = dir.join("agent.toml");
+            match toml::to_string_pretty(&entry.manifest) {
+                Ok(toml_str) => {
+                    if let Err(e) = std::fs::create_dir_all(&dir) {
+                        warn!(agent = %entry.name, "Failed to create agent dir for manifest persist: {e}");
+                        return;
+                    }
+                    if let Err(e) = std::fs::write(&toml_path, toml_str) {
+                        warn!(agent = %entry.name, "Failed to persist manifest to disk: {e}");
+                    } else {
+                        debug!(agent = %entry.name, path = %toml_path.display(), "Persisted manifest to disk");
+                    }
+                }
+                Err(e) => {
+                    warn!(agent = %entry.name, "Failed to serialize manifest to TOML: {e}");
+                }
+            }
+        }
+    }
+
     /// Switch an agent's model.
     ///
     /// When `explicit_provider` is `Some`, that provider name is used as-is
@@ -3023,6 +3101,9 @@ impl OpenFangKernel {
         if let Some(entry) = self.registry.get(agent_id) {
             let _ = self.memory.save_agent(&entry);
         }
+
+        // Write updated manifest to agent.toml so changes survive restart (#996, #1018)
+        self.persist_manifest_to_disk(agent_id);
 
         // Clear canonical session to prevent memory poisoning from old model's responses
         let _ = self.memory.delete_canonical_session(agent_id);

@@ -23,7 +23,7 @@
 .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 .btn-primary {
   background: var(--accent);
-  color: var(--bg-primary);
+  color: var(--text-on-accent);
   box-shadow: var(--shadow-xs), var(--shadow-inset);
 }
 .btn-primary:hover { background: var(--accent-dim); box-shadow: var(--shadow-sm), var(--shadow-accent); transform: translateY(-1px); }
@@ -538,7 +538,7 @@ tr:hover td { background: var(--surface2); }
   height: 14px;
   border-radius: 50%;
   background: var(--accent);
-  color: var(--bg-primary);
+  color: var(--text-on-accent);
   font-size: 9px;
   font-weight: 700;
   display: flex;
@@ -864,7 +864,7 @@ mark.search-highlight {
   border-radius: 50%;
   border: none;
   background: var(--accent);
-  color: var(--bg-primary);
+  color: var(--text-on-accent);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1994,7 +1994,7 @@ mark.search-highlight {
 }
 
 .filter-pill:hover { border-color: var(--accent); color: var(--text); }
-.filter-pill.active { background: var(--accent); color: var(--bg-primary); border-color: var(--accent); }
+.filter-pill.active { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
 
 /* ── Difficulty badges ── */
 .difficulty-badge {
@@ -2258,7 +2258,7 @@ mark.search-highlight {
 .wizard-progress-step.wiz-active .wizard-progress-circle {
   border-color: var(--accent);
   background: var(--accent);
-  color: var(--bg-primary);
+  color: var(--text-on-accent);
   box-shadow: 0 0 0 4px var(--accent-glow);
 }
 
@@ -2485,7 +2485,7 @@ mark.search-highlight {
 /* ── Try-It Mini Chat ── */
 .tryit-messages { max-height: 200px; overflow-y: auto; margin: 12px 0; }
 .tryit-msg { padding: 6px 10px; border-radius: 6px; margin: 4px 0; font-size: 12px; line-height: 1.5; word-break: break-word; }
-.tryit-msg-user { background: var(--accent); color: var(--bg-primary); margin-left: 40px; }
+.tryit-msg-user { background: var(--accent); color: var(--text-on-accent); margin-left: 40px; }
 .tryit-msg-agent { background: var(--surface2); margin-right: 40px; }
 
 /* ── Suggested Message Chips ── */
@@ -2503,7 +2503,7 @@ mark.search-highlight {
 .channel-steps { display: flex; align-items: center; gap: 0; margin-bottom: 20px; }
 .channel-step-item { display: flex; align-items: center; gap: 6px; flex: 1; }
 .channel-step-num { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; border: 2px solid var(--border); color: var(--text-dim); flex-shrink: 0; transition: all 0.2s; }
-.channel-step-num.active { border-color: var(--accent); background: var(--accent); color: var(--bg-primary); }
+.channel-step-num.active { border-color: var(--accent); background: var(--accent); color: var(--text-on-accent); }
 .channel-step-num.done { border-color: var(--success); background: var(--success); color: #000; }
 .channel-step-label { font-size: 11px; color: var(--text-dim); }
 .channel-step-label.active { color: var(--accent); font-weight: 600; }
@@ -2520,7 +2520,7 @@ mark.search-highlight {
 .wizard-category-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
 .wizard-category-pill { padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--text-dim); transition: all 0.15s; font-family: var(--font-mono); }
 .wizard-category-pill:hover { border-color: var(--accent); color: var(--text); }
-.wizard-category-pill.active { background: var(--accent); color: var(--bg-primary); border-color: var(--accent); }
+.wizard-category-pill.active { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
 
 /* ── Capability Preview Panel ── */
 .capability-preview { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px; margin-top: 12px; }
@@ -2626,7 +2626,7 @@ mark.search-highlight {
 .personality-pill.active {
   border-color: var(--accent);
   background: var(--accent);
-  color: var(--bg-primary);
+  color: var(--text-on-accent);
   box-shadow: 0 0 12px var(--accent-subtle);
 }
 
@@ -2693,7 +2693,7 @@ mark.search-highlight {
   justify-content: space-between;
 }
 .nav-section-chevron {
-  font-size: 8px;
+  font-size: 16px;
   transition: transform var(--transition-fast);
   color: var(--text-muted);
 }
@@ -2799,7 +2799,7 @@ mark.search-highlight {
 .hand-step-item.active .hand-step-num {
   border-color: var(--accent);
   background: var(--accent);
-  color: var(--bg-primary);
+  color: var(--text-on-accent);
 }
 .hand-step-item.done .hand-step-num {
   border-color: var(--success);

@@ -273,6 +273,22 @@ struct OaiUsage {
     completion_tokens: u64,
 }
 
+/// Strip trailing empty assistant messages without tool calls.
+/// Some API proxies reject empty assistant messages as "prefill".
+fn strip_trailing_empty_assistant(messages: &mut Vec<OaiMessage>) {
+    while messages.last().map_or(false, |m| {
+        m.role == "assistant"
+            && m.tool_calls.is_none()
+            && match &m.content {
+                None => true,
+                Some(OaiMessageContent::Text(t)) => t.trim().is_empty(),
+                _ => false,
+            }
+    }) {
+        messages.pop();
+    }
+}
+
 #[async_trait]
 impl LlmDriver for OpenAIDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
@@ -428,6 +444,8 @@ impl LlmDriver for OpenAIDriver {
             }
         }
 
+        strip_trailing_empty_assistant(&mut oai_messages);
+
         let oai_tools: Vec<OaiTool> = request
             .tools
             .iter()
@@ -455,6 +473,7 @@ impl LlmDriver for OpenAIDriver {
         } else {
             (Some(request.max_tokens), None)
         };
+
         let mut oai_request = OaiRequest {
             model: request.model.clone(),
             messages: oai_messages,
@@ -883,6 +902,8 @@ impl LlmDriver for OpenAIDriver {
                 _ => {}
             }
         }
+
+        strip_trailing_empty_assistant(&mut oai_messages);
 
         let oai_tools: Vec<OaiTool> = request
             .tools
@@ -1328,6 +1349,16 @@ impl LlmDriver for OpenAIDriver {
             }
 
             for (id, name, arguments) in &tool_accum {
+                // Skip malformed tool calls (empty ID or name can happen if
+                // streaming chunks arrive out of order or are dropped by proxy).
+                if id.is_empty() || name.is_empty() {
+                    warn!(
+                        tool_id = %id,
+                        tool_name = %name,
+                        "Skipping tool call with empty ID or name from streaming response"
+                    );
+                    continue;
+                }
                 let input: serde_json::Value =
                     serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::json!({}));
                 content.push(ContentBlock::ToolUse {

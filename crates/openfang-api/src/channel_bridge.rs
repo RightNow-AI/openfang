@@ -1470,8 +1470,15 @@ pub async fn start_channel_bridge_with_config(
     // Revolt
     if let Some(ref rv_config) = config.revolt {
         if let Some(token) = read_token(&rv_config.bot_token_env, "Revolt") {
-            let adapter = Arc::new(RevoltAdapter::new(token));
-            adapters.push((adapter, rv_config.default_agent.clone()));
+            let mut adapter = RevoltAdapter::with_urls(
+                token,
+                rv_config.api_url.clone(),
+                rv_config.ws_url.clone(),
+            );
+            if !rv_config.allowed_channels.is_empty() {
+                adapter.set_allowed_channels(rv_config.allowed_channels.clone());
+            }
+            adapters.push((Arc::new(adapter), rv_config.default_agent.clone()));
         }
     }
 
