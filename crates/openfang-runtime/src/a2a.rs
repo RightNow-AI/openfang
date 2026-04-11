@@ -403,7 +403,7 @@ impl A2aClient {
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(300))
                 .build()
                 .unwrap_or_default(),
         }
