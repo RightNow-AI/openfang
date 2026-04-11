@@ -55,6 +55,8 @@ const OAUTH_SCOPES: &str = "copilot";
 const TOKEN_FILE_NAME: &str = ".copilot-tokens.json";
 
 /// Device flow polling interval (seconds) — GitHub default is 5.
+// NOTE: not fixing unused warning — expected to be wired up in a future commit
+#[allow(dead_code)]
 const DEVICE_FLOW_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Maximum time to wait for user to authorize the device flow.
@@ -138,6 +140,8 @@ impl CachedCopilotToken {
 #[derive(Clone)]
 struct CachedModels {
     models: Vec<String>,
+    // NOTE: not fixing unused warning — expected to be read in a future commit
+    #[allow(dead_code)]
     fetched_at: Instant,
 }
 
@@ -168,6 +172,8 @@ struct OAuthTokenResponse {
     refresh_token: Option<String>,
     #[serde(default)]
     expires_in: Option<i64>,
+    // NOTE: not fixing unused warning — expected to be read in a future commit
+    #[allow(dead_code)]
     #[serde(default)]
     refresh_token_expires_in: Option<i64>,
     #[serde(default)]
@@ -772,6 +778,8 @@ pub async fn run_device_flow(openfang_dir: &PathBuf) -> Result<PersistedTokens, 
 }
 
 /// Read a line from stdin with a prompt. Used during interactive setup.
+// NOTE: not fixing unused warning — expected to be called in a future commit
+#[allow(dead_code)]
 fn prompt_line(prompt: &str) -> Result<String, String> {
     use std::io::{self, BufRead, Write};
     print!("{prompt}");
