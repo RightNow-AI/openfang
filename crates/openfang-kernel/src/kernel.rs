@@ -531,9 +531,9 @@ impl OpenFangKernel {
         // Otherwise (CLI commands), create a new one.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             std::thread::scope(|s| {
-                s.spawn(|| {
-                    handle.block_on(fetch)
-                }).join().unwrap_or(Err("Thread panicked".to_string()))
+                s.spawn(|| handle.block_on(fetch))
+                    .join()
+                    .unwrap_or(Err("Thread panicked".to_string()))
             })
         } else {
             let rt = tokio::runtime::Runtime::new()
