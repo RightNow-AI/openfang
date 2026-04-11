@@ -192,13 +192,13 @@ fn extract_shell_wrapper_commands(command: &str) -> Vec<String> {
     let base_lower = base.to_lowercase();
     // Also strip .exe suffix for Windows
     let base_normalized = base_lower.strip_suffix(".exe").unwrap_or(&base_lower);
-    if !SHELL_WRAPPERS.iter().any(|w| *w == base_normalized) {
+    if !SHELL_WRAPPERS.contains(&base_normalized) {
         return Vec::new();
     }
 
     // Find the inline flag and extract everything after it
     for (wrappers, flag) in SHELL_INLINE_FLAGS {
-        if !wrappers.iter().any(|w| *w == base_normalized) {
+        if !wrappers.contains(&base_normalized) {
             continue;
         }
         // Search for the flag in the command args (case-insensitive for PowerShell)

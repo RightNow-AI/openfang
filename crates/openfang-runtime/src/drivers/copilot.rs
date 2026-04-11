@@ -169,6 +169,7 @@ struct OAuthTokenResponse {
     #[serde(default)]
     expires_in: Option<i64>,
     #[serde(default)]
+    #[allow(dead_code)]
     refresh_token_expires_in: Option<i64>,
     #[serde(default)]
     error: Option<String>,
@@ -772,6 +773,7 @@ pub async fn run_device_flow(openfang_dir: &PathBuf) -> Result<PersistedTokens, 
 }
 
 /// Read a line from stdin with a prompt. Used during interactive setup.
+#[allow(dead_code)]
 fn prompt_line(prompt: &str) -> Result<String, String> {
     use std::io::{self, BufRead, Write};
     print!("{prompt}");
