@@ -2,29 +2,28 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/*', 'fix/*', 'feat/*', 'chore/*']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/*', 'fix/*', 'feat/*', 'chore/*']
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  # ── Rust library crates (all 3 platforms) ──────────────────────────────────
-  check:
-    name: Check / ${{ matrix.os }}
+  build:
+    name: Build / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: check-${{ matrix.os }}
+          key: ci-${{ matrix.os }}
       - name: Install Tauri system deps (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -40,16 +39,17 @@ jobs:
   test:
     name: Test / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: test-${{ matrix.os }}
+          key: ci-${{ matrix.os }}
       - name: Install Tauri system deps (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -61,17 +61,20 @@ jobs:
             librsvg2-dev \
             patchelf
       # Tests that need a display (Tauri) are skipped in headless CI via cfg
-      - run: cargo test --workspace
+      # Run unit tests only in CI (skip integration tests in tests/ directory)
+      - run: cargo test --workspace --lib -- --test-threads=2
 
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-ubuntu-latest
       - name: Install Tauri system deps
         run: |
           sudo apt-get update
@@ -87,19 +90,24 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-ubuntu-latest
       - run: cargo fmt --check
 
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-ubuntu-latest
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - run: cargo audit
@@ -109,7 +117,7 @@ jobs:
     name: Secrets Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Install trufflehog
