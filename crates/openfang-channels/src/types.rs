@@ -274,10 +274,7 @@ pub trait ChannelAdapter: Send + Sync {
     /// Determine whether to auto-create a thread for an incoming message.
     /// Returns Some(thread_name) to create a thread, or None to reply directly.
     /// Default implementation returns None (no auto-threading).
-    async fn should_auto_thread(
-        &self,
-        _message: &ChannelMessage,
-    ) -> Option<String> {
+    async fn should_auto_thread(&self, _message: &ChannelMessage) -> Option<String> {
         None
     }
 

@@ -718,7 +718,14 @@ async fn dispatch_message(
                 rate_limiter.check(ct_str, sender_user_id(message), ov.rate_limit_per_user)
             {
                 // Rate-limit rejection: don't create a thread, use existing thread if any
-                send_response(adapter, &message.sender, msg, message.thread_id.as_deref(), output_format).await;
+                send_response(
+                    adapter,
+                    &message.sender,
+                    msg,
+                    message.thread_id.as_deref(),
+                    output_format,
+                )
+                .await;
                 return;
             }
         }
@@ -726,9 +733,15 @@ async fn dispatch_message(
 
     // --- Create auto-thread NOW (after all policy guards have passed) ---
     if let Some(ref thread_name) = auto_thread_name {
-        match adapter.create_thread(&message.sender, &message.platform_message_id, thread_name).await {
+        match adapter
+            .create_thread(&message.sender, &message.platform_message_id, thread_name)
+            .await
+        {
             Ok(new_thread_id) => {
-                info!("Created auto-thread {} for message {}", thread_name, message.platform_message_id);
+                info!(
+                    "Created auto-thread {} for message {}",
+                    thread_name, message.platform_message_id
+                );
                 effective_thread_id = Some(new_thread_id);
             }
             Err(e) => {

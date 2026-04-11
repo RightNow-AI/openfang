@@ -697,7 +697,8 @@ impl ChannelAdapter for DiscordAdapter {
         let channel_id = &user.platform_id;
         match content {
             ChannelContent::Text(text) => {
-                self.api_send_thread_message(channel_id, thread_id, &text).await?;
+                self.api_send_thread_message(channel_id, thread_id, &text)
+                    .await?;
             }
             _ => {
                 self.api_send_thread_message(channel_id, thread_id, "(Unsupported content type)")
@@ -714,7 +715,9 @@ impl ChannelAdapter for DiscordAdapter {
         thread_name: &str,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let channel_id = &user.platform_id;
-        let thread_id = self.api_create_thread(channel_id, message_id, thread_name).await?;
+        let thread_id = self
+            .api_create_thread(channel_id, message_id, thread_name)
+            .await?;
         // Also ensure the message_id is marked as seen (belt-and-suspenders:
         // the gateway loop already inserts on MESSAGE_CREATE, but keep this
         // in case create_thread is ever called from another path).
@@ -892,7 +895,6 @@ fn thread_name_from_message(message: &ChannelMessage) -> String {
     }
 }
 
-
 mod tests {
     use super::*;
 
@@ -1028,12 +1030,20 @@ mod tests {
         });
 
         // Not in allowed guilds
-        let msg =
-            parse_discord_message(&d, &bot_id, &["111".into(), "222".into()], &[], true, &empty_threads()).await;
+        let msg = parse_discord_message(
+            &d,
+            &bot_id,
+            &["111".into(), "222".into()],
+            &[],
+            true,
+            &empty_threads(),
+        )
+        .await;
         assert!(msg.is_none());
 
         // In allowed guilds
-        let msg = parse_discord_message(&d, &bot_id, &["999".into()], &[], true, &empty_threads()).await;
+        let msg =
+            parse_discord_message(&d, &bot_id, &["999".into()], &[], true, &empty_threads()).await;
         assert!(msg.is_some());
     }
 
@@ -1159,7 +1169,15 @@ mod tests {
         assert!(msg.is_none());
 
         // In allowed users
-        let msg = parse_discord_message(&d, &bot_id, &[], &["user999".into()], true, &empty_threads()).await;
+        let msg = parse_discord_message(
+            &d,
+            &bot_id,
+            &[],
+            &["user999".into()],
+            true,
+            &empty_threads(),
+        )
+        .await;
         assert!(msg.is_some());
 
         // Empty allowed_users = allow all
