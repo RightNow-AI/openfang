@@ -1,7 +1,7 @@
 //! Multi-provider web search engine with auto-fallback.
 //!
-//! Supports 4 providers: Tavily (AI-agent-native), Brave, Perplexity, and
-//! DuckDuckGo (zero-config fallback). Auto mode cascades through available
+//! Supports 5 providers: Tavily (AI-agent-native), Brave, Perplexity,
+//! Searxng (self-hosted), and DuckDuckGo (zero-config fallback). Auto mode cascades through available
 //! providers based on configured API keys.
 //!
 //! All API keys use `Zeroizing<String>` via `resolve_api_key()` to auto-wipe
@@ -55,7 +55,7 @@ impl WebSearchEngine {
             SearchProvider::Tavily => self.search_tavily(query, max_results).await,
             SearchProvider::Perplexity => self.search_perplexity(query).await,
             SearchProvider::DuckDuckGo => self.search_duckduckgo(query, max_results).await,
-            SearchProvider::Searxng => self.search_searxng(query, max_results, None, 1).await,
+            SearchProvider::Searxng => self.search_searxng(query, max_results).await,
             SearchProvider::Auto => self.search_auto(query, max_results).await,
         };
 
@@ -100,7 +100,7 @@ impl WebSearchEngine {
         // Searxng fourth (self-hosted, no API key needed)
         if !self.config.searxng.url.is_empty() {
             debug!("Auto: trying Searxng");
-            match self.search_searxng(query, max_results, None, 1).await {
+            match self.search_searxng(query, max_results).await {
                 Ok(result) => return Ok(result),
                 Err(e) => warn!("Searxng failed, falling back: {e}"),
             }
@@ -325,31 +325,12 @@ impl WebSearchEngine {
     }
 
     /// Search via SearXNG self-hosted instance.
-    async fn search_searxng(
-        &self,
-        query: &str,
-        max_results: usize,
-        category: Option<&str>,
-        page: u32,
-    ) -> Result<String, String> {
+    ///
+    /// Uses the `!category` syntax embedded in the query string (e.g., `!news rust latest`).
+    /// Without a category prefix, SearXNG defaults to `general` search.
+    async fn search_searxng(&self, query: &str, max_results: usize) -> Result<String, String> {
         if self.config.searxng.url.is_empty() {
             return Err("SearXNG URL is not configured".to_string());
-        }
-
-        let category = category.unwrap_or("general");
-
-        // Validate category against SearXNG instance
-        match self.list_searxng_categories().await {
-            Ok(cats) => {
-                if !cats.iter().any(|c| c == category) {
-                    return Err(format!(
-                        "Invalid SearXNG category '{}'. Available: {}",
-                        category,
-                        cats.join(", ")
-                    ));
-                }
-            }
-            Err(e) => warn!("Could not validate SearXNG category: {e}"),
         }
 
         let limit = max_results;
@@ -362,12 +343,7 @@ impl WebSearchEngine {
                 "{}/search",
                 self.config.searxng.url.trim_end_matches('/')
             ))
-            .query(&[
-                ("q", query),
-                ("format", "json"),
-                ("categories", category),
-                ("page", &page.to_string()),
-            ])
+            .query(&[("q", query), ("format", "json")])
             .header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)")
             .send()
             .await

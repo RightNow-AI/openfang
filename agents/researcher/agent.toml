@@ -44,7 +44,7 @@ api_key_env = "GROQ_API_KEY"
 max_llm_tokens_per_hour = 150000
 
 [capabilities]
-tools = ["web_search", "web_fetch", "file_read", "file_write", "file_list", "memory_store", "memory_recall"]
+tools = ["web_search", "list_searxng_categories", "web_fetch", "file_read", "file_write", "file_list", "memory_store", "memory_recall"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

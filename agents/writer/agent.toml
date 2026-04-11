@@ -38,7 +38,7 @@ api_key_env = "GEMINI_API_KEY"
 max_llm_tokens_per_hour = 100000
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "web_search", "web_fetch", "memory_store", "memory_recall"]
+tools = ["file_read", "file_write", "file_list", "web_search", "list_searxng_categories", "web_fetch", "memory_store", "memory_recall"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*"]

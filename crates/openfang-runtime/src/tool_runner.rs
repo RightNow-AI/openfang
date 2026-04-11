@@ -238,6 +238,18 @@ pub async fn execute_tool(
                 tool_web_search_legacy(input).await
             }
         }
+        "list_searxng_categories" => {
+            if let Some(ctx) = web_ctx {
+                match ctx.search.list_searxng_categories().await {
+                    Ok(categories) => {
+                        Ok(serde_json::to_string(&categories).unwrap_or_else(|_| "[]".to_string()))
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                Err("SearXNG is not configured".to_string())
+            }
+        }
 
         // Shell tool — metacharacter check + exec policy + taint check
         "shell_exec" => {
@@ -625,7 +637,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "web_search".to_string(),
-            description: "Search the web using multiple providers (Tavily, Brave, Perplexity, DuckDuckGo) with automatic fallback. Returns structured results with titles, URLs, and snippets.".to_string(),
+            description: "Search the web using multiple providers (Tavily, Brave, Perplexity, Searxng, DuckDuckGo) with automatic fallback. Returns structured results with titles, URLs, and snippets.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -633,6 +645,15 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "max_results": { "type": "integer", "description": "Maximum number of results to return (default: 5, max: 20)" }
                 },
                 "required": ["query"]
+            }),
+        },
+        ToolDefinition {
+            name: "list_searxng_categories".to_string(),
+            description: "List available search categories from the SearXNG instance. Returns the list of categories the instance supports (e.g., 'general', 'images', 'news', 'videos'). Only works when SearXNG is configured as the search provider.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
             }),
         },
         // --- Shell tool ---
