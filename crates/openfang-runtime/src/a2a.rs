@@ -9,6 +9,7 @@
 //! - `build_agent_card` — expose OpenFang agents via A2A
 //! - `A2aClient` — discover and interact with external A2A agents
 
+use futures::StreamExt;
 use openfang_types::agent::AgentManifest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -477,6 +478,97 @@ impl A2aClient {
         } else {
             Err("Empty A2A response".to_string())
         }
+    }
+
+    /// Send a task to an external A2A agent using SSE streaming (`tasks/sendSubscribe`).
+    ///
+    /// Accumulates text chunks from the SSE stream and returns the final task once
+    /// the server sends a `"final": true` event. Uses no connection timeout since
+    /// the response streams progressively.
+    pub async fn send_task_streaming(
+        &self,
+        url: &str,
+        message: &str,
+        session_id: Option<&str>,
+    ) -> Result<A2aTask, String> {
+        // Build a client with no timeout for the streaming connection.
+        let streaming_client = reqwest::Client::builder()
+            .build()
+            .map_err(|e| format!("Failed to build streaming client: {e}"))?;
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tasks/sendSubscribe",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"type": "text", "text": message}]
+                },
+                "sessionId": session_id,
+            }
+        });
+
+        let response = streaming_client
+            .post(url)
+            .header("Accept", "text/event-stream")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| format!("A2A send_task_streaming failed: {e}"))?;
+
+        if !response.status().is_success() {
+            return Err(format!(
+                "A2A send_task_streaming returned {}",
+                response.status()
+            ));
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut buf = String::new();
+        let mut last_task: Option<A2aTask> = None;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("SSE stream error: {e}"))?;
+            let text =
+                std::str::from_utf8(&chunk).map_err(|e| format!("SSE non-UTF8 data: {e}"))?;
+            buf.push_str(text);
+
+            // Process all complete lines in the buffer.
+            while let Some(newline_pos) = buf.find('\n') {
+                let line = buf[..newline_pos].trim_end_matches('\r').to_string();
+                buf = buf[newline_pos + 1..].to_string();
+
+                if let Some(data) = line.strip_prefix("data: ") {
+                    let data = data.trim();
+                    if data.is_empty() {
+                        continue;
+                    }
+                    let parsed: serde_json::Value = serde_json::from_str(data)
+                        .map_err(|e| format!("Failed to parse SSE JSON: {e} — data: {data}"))?;
+
+                    if let Some(result) = parsed.get("result") {
+                        // Deserialize into A2aTask (best-effort; ignore unknown fields).
+                        if let Ok(task) = serde_json::from_value::<A2aTask>(result.clone()) {
+                            let is_final = result
+                                .get("final")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            last_task = Some(task);
+                            if is_final {
+                                return last_task
+                                    .ok_or_else(|| "No task in final SSE event".to_string());
+                            }
+                        }
+                    } else if let Some(error) = parsed.get("error") {
+                        return Err(format!("A2A SSE error: {error}"));
+                    }
+                }
+            }
+        }
+
+        // Stream ended without a final event — return whatever we have.
+        last_task.ok_or_else(|| "SSE stream ended without a final event".to_string())
     }
 
     /// Get the status of a task from an external A2A agent.

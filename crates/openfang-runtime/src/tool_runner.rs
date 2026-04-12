@@ -2580,7 +2580,9 @@ async fn tool_a2a_send(
 
     let session_id = input["session_id"].as_str();
     let client = crate::a2a::A2aClient::new();
-    let task = client.send_task(&url, message, session_id).await?;
+    let task = client
+        .send_task_streaming(&url, message, session_id)
+        .await?;
 
     serde_json::to_string_pretty(&task).map_err(|e| format!("Serialization error: {e}"))
 }
