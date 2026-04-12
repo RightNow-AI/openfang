@@ -23,8 +23,10 @@
       }: {
         rust-project.src = lib.sources.cleanSource ./.;
         rust-project.defaults.perCrate.crane.args.buildInputs = with pkgs; [
-          clang
           openssl
+        ];
+        rust-project.defaults.perCrate.crane.args.nativeBuildInputs = with pkgs; [
+          clang
           perl
           pkg-config
         ];
