@@ -996,6 +996,16 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         }
         msg
     }
+
+    fn set_channel_context(
+        &self,
+        agent_id: openfang_types::agent::AgentId,
+        context: openfang_types::ChannelCallbackContext,
+    ) {
+        use openfang_runtime::kernel_handle::KernelHandle as _;
+        self.kernel
+            .set_channel_context(&agent_id.to_string(), context);
+    }
 }
 
 /// Parse a trigger pattern string from chat into a `TriggerPattern`.

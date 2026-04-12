@@ -161,6 +161,9 @@ pub struct OpenFangKernel {
     agent_msg_locks: dashmap::DashMap<AgentId, Arc<tokio::sync::Mutex<()>>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
+    /// Channel callback contexts — tracks the originating channel for each agent
+    /// so async tool results can be delivered back to the correct channel/user.
+    channel_contexts: dashmap::DashMap<AgentId, openfang_types::ChannelCallbackContext>,
 }
 
 /// Bounded in-memory delivery receipt tracker.
@@ -1158,6 +1161,7 @@ impl OpenFangKernel {
             default_model_override: std::sync::RwLock::new(None),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
+            channel_contexts: dashmap::DashMap::new(),
         };
 
         // Restore persisted agents from SQLite
@@ -6965,6 +6969,59 @@ impl KernelHandle for OpenFangKernel {
             "File '{}' sent to {} via {}",
             filename, recipient, channel
         ))
+    }
+
+    fn get_channel_context(
+        &self,
+        agent_id: &str,
+    ) -> Option<openfang_types::ChannelCallbackContext> {
+        let id: AgentId = agent_id.parse().ok()?;
+        self.channel_contexts.get(&id).map(|r| r.clone())
+    }
+
+    fn set_channel_context(&self, agent_id: &str, context: openfang_types::ChannelCallbackContext) {
+        if let Ok(id) = agent_id.parse::<AgentId>() {
+            self.channel_contexts.insert(id, context);
+        }
+    }
+
+    async fn inject_async_callback(
+        &self,
+        context: openfang_types::ChannelCallbackContext,
+        agent_name: &str,
+        result_text: &str,
+    ) -> Result<(), String> {
+        tracing::info!(
+            agent_id = %context.agent_id,
+            agent_name = %agent_name,
+            channel = %context.channel_type,
+            recipient = %context.reply_to_platform_id,
+            "inject_async_callback: delivering async result to channel"
+        );
+
+        // Build the callback message — present the result to the agent so it can
+        // format a response for the end user.
+        let callback_msg = format!(
+            "claude-code completed: {result_text}\n\n(Present these findings to the user.)"
+        );
+
+        // Send to the agent and get its formatted response
+        let agent_response = self
+            .send_to_agent(&context.agent_id, &callback_msg)
+            .await
+            .map_err(|e| format!("inject_async_callback: send_to_agent failed: {e}"))?;
+
+        // Deliver the agent's response to the originating channel
+        self.send_channel_message(
+            &context.channel_type,
+            &context.reply_to_platform_id,
+            &agent_response,
+            context.thread_id.as_deref(),
+        )
+        .await
+        .map_err(|e| format!("inject_async_callback: channel send failed: {e}"))?;
+
+        Ok(())
     }
 
     async fn spawn_agent_checked(

@@ -317,6 +317,17 @@ pub trait ChannelBridgeHandle: Send + Sync {
     async fn a2a_agents_text(&self) -> String {
         "A2A agents not available.".to_string()
     }
+
+    /// Store the originating channel context for an agent so async callbacks
+    /// can deliver results back to the correct channel/user later.
+    /// Default: no-op (channel context tracking not available).
+    fn set_channel_context(
+        &self,
+        agent_id: openfang_types::agent::AgentId,
+        context: openfang_types::ChannelCallbackContext,
+    ) {
+        let _ = (agent_id, context);
+    }
 }
 
 /// Per-channel rate limiter tracking message timestamps per user.
@@ -1017,6 +1028,19 @@ async fn dispatch_message(
             .await;
         return;
     }
+
+    // Capture the channel callback context so async tools (e.g. a2a_send_async) can
+    // deliver their results back to this channel/user later via inject_async_callback.
+    handle.set_channel_context(
+        agent_id,
+        openfang_types::ChannelCallbackContext {
+            channel_type: ct_str.to_string(),
+            reply_to_platform_id: message.sender.platform_id.clone(),
+            reply_to_display_name: message.sender.display_name.clone(),
+            thread_id: thread_id.map(|t| t.to_string()),
+            agent_id: agent_id.to_string(),
+        },
+    );
 
     // Send typing indicator (best-effort)
     let _ = adapter.send_typing(&message.sender).await;
