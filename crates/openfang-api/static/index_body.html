@@ -1156,7 +1156,7 @@
                   <div x-show="spawnStep === 2">
                     <div class="form-group">
                       <label>Provider</label>
-                      <select class="form-select" x-model="spawnForm.provider">
+                      <select class="form-select" x-model="spawnForm.provider" @change="loadProviderModels(spawnForm.provider)">
                         <template x-if="spawnProvidersLoading">
                           <option disabled>Loading providers…</option>
                         </template>
@@ -1181,7 +1181,17 @@
                     </div>
                     <div class="form-group">
                       <label>Model</label>
-                      <input class="form-input" x-model="spawnForm.model" placeholder="e.g. llama-3.3-70b-versatile">
+                      <select class="form-select" x-model="spawnForm.model" x-show="providerModels.length > 0 && !providerModelsLoading">
+                        <template x-for="m in providerModels" :key="m.id">
+                          <option :value="m.id" x-text="m.display_name || m.id"></option>
+                        </template>
+                      </select>
+                      <div x-show="providerModelsLoading" style="padding:8px;color:var(--text-dim)">
+                        Loading models...
+                      </div>
+                      <div x-show="providerModels.length === 0 && !providerModelsLoading" style="padding:8px 0">
+                        <input class="form-input" x-model="spawnForm.model" placeholder="e.g. openrouter/free">
+                      </div>
                     </div>
                     <div class="form-group">
                       <label>System Prompt</label>
@@ -3478,9 +3488,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                             <template x-if="field.type === 'select' && field.options">
                               <select class="form-select" style="width:180px"
                                 :value="configValues[section] && configValues[section][field.name]"
-                                @change="configValues[section] = configValues[section] || {}; configValues[section][field.name] = $event.target.value; markConfigDirty(section, field.name)">
-                                <template x-for="opt in field.options" :key="typeof opt === 'object' ? opt.id : opt">
-                                  <option :value="typeof opt === 'object' ? opt.id : opt" x-text="typeof opt === 'object' ? (opt.name || opt.display_name || opt.id) : opt" :selected="configValues[section] && configValues[section][field.name] === (typeof opt === 'object' ? opt.id : opt)"></option>
+                                @change="configValues[section] = configValues[section] || {}; configValues[section][field.name] = $event.target.value; (section === 'default_model' && field.name === 'provider') ? onProviderChange('default_model', 'model', $event.target.value) : markConfigDirty(section, field.name)">
+                                <template x-for="opt in (section === 'default_model' && field.name === 'model') ? getModelOptionsForProvider(configValues.default_model && configValues.default_model.provider || '') : field.options" :key="typeof opt === 'object' ? opt.id : opt">
+                                  <option :value="typeof opt === 'object' ? opt.id : opt" x-text="typeof opt === 'object' ? (opt.display_name || opt.name || opt.id) : opt" :selected="configValues[section] && configValues[section][field.name] === (typeof opt === 'object' ? opt.id : opt)"></option>
                                 </template>
                               </select>
                             </template>
@@ -3490,8 +3500,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                                 @input="configValues[section] = configValues[section] || {}; configValues[section][field.name] = $event.target.value; markConfigDirty(section, field.name)">
                             </template>
                             <button class="btn btn-primary btn-sm" x-show="isConfigDirty(section, field.name)"
-                              @click="saveConfigField(section, field.name, configValues[section] && configValues[section][field.name])"
-                              :disabled="configSaving[section + '.' + field.name]">
+                              @click="saveConfigField(section, field.name, configValues[section] && configValues[section][field.name])">
                               <span x-show="!configSaving[section + '.' + field.name]">Save</span>
                               <span x-show="configSaving[section + '.' + field.name]" class="spinner" style="width:12px;height:12px;border-width:2px"></span>
                             </button>

@@ -39,6 +39,7 @@ function settingsPage() {
     configValues: {},
     configDirty: {},
     configSaving: {},
+    modelOptionsByProvider: {},
 
     // -- Security state --
     securityData: null,
@@ -282,6 +283,10 @@ function settingsPage() {
         ]);
         this.configSchema = results[0].sections || null;
         this.configValues = results[1] || {};
+        var currentProvider = this.configValues.default_model && this.configValues.default_model.provider;
+        if (currentProvider) {
+          await this.loadModelsForProvider(currentProvider);
+        }
       } catch(e) { /* silent */ }
     },
 
@@ -293,9 +298,36 @@ function settingsPage() {
       this.configDirty[section + '.' + field] = true;
     },
 
+    async loadModelsForProvider(provider) {
+      if (this.modelOptionsByProvider[provider]) return this.modelOptionsByProvider[provider];
+      try {
+        var resp = await OpenFangAPI.get('/api/providers/' + provider + '/models');
+        this.modelOptionsByProvider[provider] = resp.models || [];
+      } catch(e) {
+        this.modelOptionsByProvider[provider] = [];
+      }
+      return this.modelOptionsByProvider[provider];
+    },
+
+    getModelOptionsForProvider(provider) {
+      return this.modelOptionsByProvider[provider] || [];
+    },
+
+    async onProviderChange(section, field, newProvider) {
+      this.configValues[section] = this.configValues[section] || {};
+      this.configValues[section][field] = newProvider;
+      this.markConfigDirty(section, field);
+      var provider = newProvider;
+      var models = await this.loadModelsForProvider(provider);
+      if (models.length > 0) {
+        var defaultModel = models[0].id;
+        this.configValues[section].model = defaultModel;
+        this.markConfigDirty(section, 'model');
+      }
+    },
+
     async saveConfigField(section, field, value) {
       var key = section + '.' + field;
-      // Root-level fields (api_key, api_listen, log_level) use just the field name
       var sectionMeta = this.configSchema && this.configSchema[section];
       var path = (sectionMeta && sectionMeta.root_level) ? field : key;
       this.configSaving[key] = true;

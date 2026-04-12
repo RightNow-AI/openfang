@@ -548,6 +548,12 @@ pub async fn build_router(
         )
         .route("/api/models/{*id}", axum::routing::get(routes::get_model))
         .route("/api/providers", axum::routing::get(routes::list_providers))
+        .route(
+            "/api/providers/{name}/models",
+            axum::routing::get(move |state: axum::extract::State<Arc<crate::routes::AppState>>, path: axum::extract::Path<String>| async move {
+                routes::list_provider_models(state, path).await
+            }),
+        )
         // Copilot OAuth (must be before parametric {name} routes)
         .route(
             "/api/providers/github-copilot/oauth/start",

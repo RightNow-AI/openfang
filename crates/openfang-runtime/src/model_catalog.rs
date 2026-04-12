@@ -267,6 +267,10 @@ impl ModelCatalog {
         if let Some(model_id) = self.aliases.get(provider) {
             return Some(model_id.clone());
         }
+        // Use auto router for OpenRouter to support all 300+ models dynamically
+        if provider == "openrouter" {
+            return Some("openrouter/auto".to_string());
+        }
         // Fall back to the first model registered for this provider
         self.models
             .iter()
@@ -328,14 +332,17 @@ impl ModelCatalog {
     ///
     /// Each entry maps a provider ID to a custom base URL.
     /// Unknown providers are automatically added as custom OpenAI-compatible entries.
-    /// Providers with explicit URL overrides are marked as configured since
-    /// the user intentionally set them up (e.g. local proxies, custom endpoints).
+    /// Provider is marked as configured only if there's ALSO an API key set.
+    /// URL override without key means "custom endpoint needs key" (Missing).
     pub fn apply_url_overrides(&mut self, overrides: &HashMap<String, String>) {
         for (provider, url) in overrides {
             if self.set_provider_url(provider, url) {
-                // Mark as configured so models from this provider show as available
+                // Only mark as configured if there's also an API key.
+                // URL override without key = custom endpoint that still needs auth.
                 if let Some(p) = self.providers.iter_mut().find(|p| p.id == *provider) {
-                    if p.auth_status == AuthStatus::Missing {
+                    let has_key =
+                        !p.api_key_env.is_empty() && std::env::var(&p.api_key_env).is_ok();
+                    if p.auth_status == AuthStatus::Missing && has_key {
                         p.auth_status = AuthStatus::Configured;
                     }
                 }
@@ -1005,6 +1012,7 @@ fn builtin_aliases() -> HashMap<String, String> {
         ),
         ("free", "openrouter/meta-llama/llama-3.1-8b-instruct:free"),
         ("free-reasoning", "openrouter/deepseek/deepseek-r1:free"),
+        ("auto", "openrouter/auto"),
     ];
     pairs
         .into_iter()
@@ -1948,7 +1956,35 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec!["hunter-alpha".into()],
         },
-        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "openrouter/auto".into(),
+            display_name: "Auto Router (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Balanced,
+            context_window: 1_000_000,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["auto".into()],
+        },
+        ModelCatalogEntry {
+            id: "openrouter/free".into(),
+            display_name: "Free Models Router (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Fast,
+            context_window: 200_000,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["free".into()],
+        },
+        // ══════════════════════════════════════════════════════════════════════
         // Mistral (6)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {

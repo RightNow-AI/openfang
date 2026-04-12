@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **API**: New `/api/providers/:id/models` endpoint returns available models for a specific provider
+- **ModelCatalog**: New `default_model_for_provider()` method to get default model per provider
+- **Docker Compose**: Updated `network_mode: host` for local development
+
 ### Changed
 
 - **BREAKING:** Dashboard password hashing switched from SHA256 to Argon2id. Existing `password_hash` values in `config.toml` must be regenerated with `openfang auth hash-password`. Only affects users with `[auth] enabled = true`.
@@ -14,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Dashboard passwords were hashed with plain SHA256 (no salt), making them vulnerable to rainbow table and GPU-accelerated brute force attacks. Now uses Argon2id with random salts.
+- Save buttons in Settings > Config tab were inactive due to CSP blocking inline Alpine.js scripts. Added 'unsafe-inline' to script-src.
+- Provider auth_status incorrectly showed as "configured" when only URL override was set without API key.
+- Agent spawn form now properly shows provider model selection with available models.
+- Fixed unused variable and lock handling consistency in model catalog.
+- **Settings > Config**: Model dropdown now filters to only show models for selected provider. When provider changes, model auto-resets to provider's default.
 
 ## [0.1.0] - 2026-02-24
 

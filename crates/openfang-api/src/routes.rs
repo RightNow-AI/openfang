@@ -15,6 +15,7 @@ use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_runtime::tool_runner::builtin_tool_definitions;
 use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest};
+use reqwest;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
@@ -7459,8 +7460,10 @@ pub async fn set_provider_key(
                 .kernel
                 .model_catalog
                 .read()
-                .unwrap_or_else(|e| e.into_inner());
-            catalog.default_model_for_provider(&name)
+                .ok();
+            catalog
+                .as_ref()
+                .and_then(|cat| cat.default_model_for_provider(&name))
         };
         if let Some(model_id) = default_model {
             // Update config.toml to persist the switch
@@ -7698,6 +7701,98 @@ pub async fn test_provider(
             })),
         ),
     }
+}
+
+/// GET /api/providers/{name}/models — List models for a provider.
+/// Uses catalog cache first, falls back to provider API for custom providers not in catalog.
+pub async fn list_provider_models(
+    state: State<Arc<AppState>>,
+    path: Path<String>,
+) -> impl IntoResponse {
+    let name = path.0;
+    
+    // First, try to get models from the catalog
+    let (catalog_models, base_url, api_key) = {
+        let catalog = state
+            .kernel
+            .model_catalog
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        
+        let models: Vec<serde_json::Value> = catalog
+            .models_by_provider(&name)
+            .iter()
+            .map(|m| serde_json::json!({
+                "id": m.id,
+                "display_name": m.display_name,
+                "provider": m.provider,
+                "tier": format!("{:?}", m.tier),
+                "context_window": m.context_window,
+                "supports_tools": m.supports_tools,
+                "supports_vision": m.supports_vision,
+            }))
+            .collect();
+        
+        // Get provider info before dropping catalog
+        let (base_url, api_key) = {
+            let provider = catalog.get_provider(&name);
+            if let Some(p) = provider {
+                let key = std::env::var(&p.api_key_env).ok();
+                (p.base_url.clone(), key)
+            } else {
+                (String::new(), None)
+            }
+        };
+        
+        (models, base_url, api_key)
+    }; // catalog guard dropped here
+    
+    // If we have catalog models, return them
+    if !catalog_models.is_empty() {
+        return Json(serde_json::json!({ "models": catalog_models }));
+    }
+    
+    // For providers not in catalog (custom), fetch from their /models endpoint
+    if !base_url.is_empty() {
+        let Some(api_key) = api_key else {
+            return Json(serde_json::json!({ "models": [] }));
+        };
+        
+        let client = reqwest::Client::new();
+        let models_url = format!("{}/models", base_url.trim_end_matches('/'));
+        
+        let resp = client.get(&models_url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()
+            .await;
+        
+        if let Ok(resp) = resp {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                // Handle OpenRouter-style response: {"data": [{"id": "..."}]}
+                if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+                    let model_list: Vec<serde_json::Value> = data.iter()
+                        .filter_map(|m| {
+                            let id = m.get("id")?.as_str()?.to_string();
+                            let display_name = m.get("id").or(m.get("name")).and_then(|n| n.as_str()).unwrap_or(&id).to_string();
+                            Some(serde_json::json!({
+                                "id": id,
+                                "display_name": display_name,
+                                "provider": name,
+                                "tier": "Custom",
+                                "context_window": m.get("context_window").or(m.get("max_tokens")).and_then(|v| v.as_i64()).unwrap_or(128000),
+                                "supports_tools": true,
+                                "supports_vision": false,
+                            }))
+                        })
+                        .collect();
+                    return Json(serde_json::json!({ "models": model_list }));
+                }
+            }
+        }
+    }
+    
+    // No models found
+    Json(serde_json::json!({ "models": [] }))
 }
 
 /// PUT /api/providers/{name}/url — Set a custom base URL for a provider.

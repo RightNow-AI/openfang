@@ -39,6 +39,10 @@ function agentsPage() {
       caps: { memory_read: true, memory_write: true, network: false, shell: false, agent_spawn: false }
     },
 
+    // -- Model dropdown for provider --
+    providerModels: [],
+    providerModelsLoading: false,
+
     // -- Multi-step wizard state --
     spawnProviders: [],       // populated from /api/providers on wizard open
     spawnProvidersLoading: false,
@@ -399,10 +403,30 @@ function agentsPage() {
         if (status.default_provider) this.spawnForm.provider = status.default_provider;
         if (status.default_model) this.spawnForm.model = status.default_model;
         this.spawnProviders = provData.providers || [];
+        // Load models for the default provider
+        if (status.default_provider) {
+          this.loadProviderModels(status.default_provider);
+        }
       } catch(e) {
         this.spawnProviders = [];
       }
       this.spawnProvidersLoading = false;
+    },
+
+    async loadProviderModels(providerId) {
+      this.providerModelsLoading = true;
+      this.providerModels = [];
+      try {
+        var resp = await OpenFangAPI.get('/api/providers/' + encodeURIComponent(providerId) + '/models');
+        this.providerModels = resp.models || [];
+        // Auto-select first model if available
+        if (this.providerModels.length > 0) {
+          this.spawnForm.model = this.providerModels[0].id;
+        }
+      } catch(e) {
+        this.providerModels = [];
+      }
+      this.providerModelsLoading = false;
     },
 
     nextStep() {
