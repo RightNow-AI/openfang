@@ -18,6 +18,15 @@ use tracing::{debug, warn};
 /// Maximum inter-agent call depth to prevent infinite recursion (A->B->C->...).
 const MAX_AGENT_CALL_DEPTH: u32 = 5;
 
+/// In-flight async agent tasks, keyed by a caller-chosen task ID.
+static ASYNC_TASKS: std::sync::LazyLock<dashmap::DashMap<String, tokio::task::JoinHandle<()>>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// Live accumulated progress from async A2A tasks, keyed by task ID.
+static A2A_TASK_PROGRESS: std::sync::LazyLock<
+    dashmap::DashMap<String, std::sync::Arc<std::sync::Mutex<String>>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
 /// Check if a tool name refers to a shell execution tool.
 ///
 /// Used to determine whether exec_policy settings should bypass the approval gate.
@@ -373,6 +382,9 @@ pub async fn execute_tool(
         // A2A outbound tools (cross-instance agent communication)
         "a2a_discover" => tool_a2a_discover(input).await,
         "a2a_send" => tool_a2a_send(input, kernel).await,
+        "a2a_send_async" => tool_a2a_send_async(input, kernel, caller_agent_id).await,
+        "a2a_check_task" => tool_a2a_check_task(input),
+        "a2a_cancel_task" => tool_a2a_cancel_task(input),
 
         // Browser automation tools
         "browser_navigate" => {
@@ -1145,7 +1157,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "a2a_send".to_string(),
-            description: "Send a task/message to an external A2A agent and get the response. Use agent_name to send to a previously discovered agent, or agent_url for direct addressing.".to_string(),
+            description: "Send a task/message to an external A2A agent and get the response synchronously. Use for quick tasks expected to complete in <30s. Use agent_name to send to a previously discovered agent, or agent_url for direct addressing.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1155,6 +1167,43 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "session_id": { "type": "string", "description": "Optional session ID for multi-turn conversations" }
                 },
                 "required": ["message"]
+            }),
+        },
+        ToolDefinition {
+            name: "a2a_send_async".to_string(),
+            description: "Send a task to an external A2A agent asynchronously. Returns immediately with a task_id. The result is delivered back to the channel when the remote agent finishes. Use for long-running tasks (implement a feature, run tests, etc.). Use a2a_check_task to poll live progress.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string", "description": "The task/message to send to the remote agent" },
+                    "agent_url": { "type": "string", "description": "Direct URL of the remote agent's A2A endpoint" },
+                    "agent_name": { "type": "string", "description": "Name of a previously discovered A2A agent (looked up from kernel)" },
+                    "session_id": { "type": "string", "description": "Optional session ID for multi-turn conversations" },
+                    "task_id": { "type": "string", "description": "A unique ID for this task (for polling/cancellation). Auto-generated if omitted." }
+                },
+                "required": ["message"]
+            }),
+        },
+        ToolDefinition {
+            name: "a2a_check_task".to_string(),
+            description: "Check the live accumulated output from a running async A2A task. Returns whatever the remote agent has produced so far.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string", "description": "The task ID returned by a2a_send_async" }
+                },
+                "required": ["task_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "a2a_cancel_task".to_string(),
+            description: "Cancel a running async A2A task by its task ID.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string", "description": "The task ID to cancel" }
+                },
+                "required": ["task_id"]
             }),
         },
         // --- TTS/STT tools ---
@@ -2585,6 +2634,147 @@ async fn tool_a2a_send(
         .await?;
 
     serde_json::to_string_pretty(&task).map_err(|e| format!("Serialization error: {e}"))
+}
+
+/// Fire an A2A task in the background and return a task_id immediately.
+///
+/// Progress is accumulated in `A2A_TASK_PROGRESS` as SSE chunks arrive.
+/// On completion the final result is delivered via `inject_async_callback`
+/// to the originating channel.
+async fn tool_a2a_send_async(
+    input: &serde_json::Value,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
+) -> Result<String, String> {
+    let kh = require_kernel(kernel)?.clone();
+    let message = input["message"]
+        .as_str()
+        .ok_or("Missing 'message' parameter")?
+        .to_string();
+
+    // Resolve agent URL
+    let url = if let Some(url) = input["agent_url"].as_str() {
+        if crate::web_fetch::check_ssrf(url).is_err() {
+            return Err("SSRF blocked: URL resolves to a private or metadata address".to_string());
+        }
+        url.to_string()
+    } else if let Some(name) = input["agent_name"].as_str() {
+        kh.get_a2a_agent_url(name)
+            .ok_or_else(|| format!("No known A2A agent with name '{name}'. Use a2a_discover first or provide agent_url directly."))?
+    } else {
+        return Err("Missing 'agent_url' or 'agent_name' parameter".to_string());
+    };
+
+    let agent_label = input["agent_name"]
+        .as_str()
+        .unwrap_or("remote-agent")
+        .to_string();
+    let task_id = input["task_id"]
+        .as_str()
+        .map(String::from)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let session_id = input["session_id"].as_str().map(String::from);
+
+    // Capture the caller's channel context for the final callback.
+    let channel_ctx = caller_agent_id.and_then(|id| kh.get_channel_context(id));
+    if channel_ctx.is_none() {
+        warn!(
+            task_id = %task_id,
+            "a2a_send_async: no channel context — result will not be delivered to channel"
+        );
+    }
+
+    // Shared progress buffer updated as SSE chunks arrive.
+    let progress: std::sync::Arc<std::sync::Mutex<String>> =
+        std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    A2A_TASK_PROGRESS.insert(task_id.clone(), progress.clone());
+
+    let tid = task_id.clone();
+    let agent_label_cb = agent_label.clone();
+    let handle = tokio::spawn(async move {
+        let client = crate::a2a::A2aClient::new();
+        let result = client
+            .send_task_streaming_with_progress(
+                &url,
+                &message,
+                session_id.as_deref(),
+                progress.clone(),
+            )
+            .await;
+
+        let result_text = match result {
+            Ok(task) => {
+                serde_json::to_string_pretty(&task).unwrap_or_else(|_| "Task completed".to_string())
+            }
+            Err(e) => format!("Error: {e}"),
+        };
+
+        // Update the progress buffer with the final result.
+        if let Ok(mut buf) = progress.lock() {
+            *buf = result_text.clone();
+        }
+
+        // Deliver the result to the originating channel.
+        if let Some(ctx) = channel_ctx {
+            let _ = kh
+                .inject_async_callback(ctx, &agent_label_cb, &result_text)
+                .await;
+        }
+
+        ASYNC_TASKS.remove(&tid);
+        A2A_TASK_PROGRESS.remove(&tid);
+    });
+
+    ASYNC_TASKS.insert(task_id.clone(), handle);
+
+    Ok(format!(
+        "Task submitted to {agent_label} (task_id: {task_id}). \
+         Results will be delivered to the channel when complete. \
+         Use a2a_check_task(\"{task_id}\") to poll live progress."
+    ))
+}
+
+/// Return the live accumulated output from a running async A2A task.
+fn tool_a2a_check_task(input: &serde_json::Value) -> Result<String, String> {
+    let task_id = input["task_id"]
+        .as_str()
+        .ok_or("Missing 'task_id' parameter")?;
+
+    if let Some(entry) = A2A_TASK_PROGRESS.get(task_id) {
+        let text = entry
+            .value()
+            .lock()
+            .map(|buf| buf.clone())
+            .unwrap_or_default();
+        if text.is_empty() {
+            Ok("Task is running — no output yet.".to_string())
+        } else {
+            Ok(text)
+        }
+    } else {
+        Ok(format!("No active task with ID '{task_id}'."))
+    }
+}
+
+/// Abort a running async A2A task and clean up both maps.
+fn tool_a2a_cancel_task(input: &serde_json::Value) -> Result<String, String> {
+    let task_id = input["task_id"]
+        .as_str()
+        .ok_or("Missing 'task_id' parameter")?;
+
+    let had_task = if let Some((_, handle)) = ASYNC_TASKS.remove(task_id) {
+        handle.abort();
+        true
+    } else {
+        false
+    };
+    A2A_TASK_PROGRESS.remove(task_id);
+
+    if had_task {
+        Ok(format!("Task {task_id} cancelled."))
+    } else {
+        Ok(format!("No active task with ID '{task_id}'."))
+    }
 }
 
 // ---------------------------------------------------------------------------

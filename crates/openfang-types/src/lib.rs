@@ -22,6 +22,16 @@ pub mod tool;
 pub mod tool_compat;
 pub mod webhook;
 
+/// Context for delivering async agent results back to the originating channel.
+#[derive(Debug, Clone)]
+pub struct ChannelCallbackContext {
+    pub channel_type: String,
+    pub reply_to_platform_id: String,
+    pub reply_to_display_name: String,
+    pub thread_id: Option<String>,
+    pub agent_id: String,
+}
+
 /// Safely truncate a string to at most `max_bytes`, never splitting a UTF-8 char.
 pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
