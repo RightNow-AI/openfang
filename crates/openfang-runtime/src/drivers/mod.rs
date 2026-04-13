@@ -16,14 +16,15 @@ pub mod vertex;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
-    AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL,
-    COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, NOVITA_BASE_URL,
-    OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL,
-    QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL,
-    VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    AI21_BASE_URL, ALIBABA_CODING_PLAN_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL,
+    CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL,
+    GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL,
+    LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL,
+    NVIDIA_NIM_BASE_URL, NOVITA_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
+    PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL,
+    TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -206,6 +207,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         "volcengine_coding" => Some(ProviderDefaults {
             base_url: VOLCENGINE_CODING_BASE_URL,
             api_key_env: "VOLCENGINE_API_KEY",
+            key_required: true,
+        }),
+        "alibaba_coding_plan" => Some(ProviderDefaults {
+            base_url: ALIBABA_CODING_PLAN_BASE_URL,
+            api_key_env: "ALIBABA_CODING_PLAN_API_KEY",
             key_required: true,
         }),
         "chutes" => Some(ProviderDefaults {
@@ -608,6 +614,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "claude-code",
         "qwen-code",
         "azure",
+        "alibaba_coding_plan",
     ]
 }
 
@@ -713,7 +720,9 @@ mod tests {
         assert!(providers.contains(&"claude-code"));
         assert!(providers.contains(&"qwen-code"));
         assert!(providers.contains(&"azure"));
-        assert_eq!(providers.len(), 38);
+        // Alibaba Coding Plan
+        assert!(providers.contains(&"alibaba_coding_plan"));
+        assert_eq!(providers.len(), 39);
     }
 
     #[test]
@@ -976,5 +985,73 @@ mod tests {
             driver.is_ok(),
             "Bedrock with explicit api_key should construct successfully"
         );
+    }
+
+    #[test]
+    fn test_alibaba_coding_plan_defaults() {
+        let d = provider_defaults("alibaba_coding_plan").unwrap();
+        assert_eq!(d.base_url, "https://coding-intl.dashscope.aliyuncs.com/v1");
+        assert_eq!(d.api_key_env, "ALIBABA_CODING_PLAN_API_KEY");
+        assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_alibaba_coding_plan_driver_with_key() {
+        let config = DriverConfig {
+            provider: "alibaba_coding_plan".to_string(),
+            api_key: Some("sk-sp-test-key-12345".to_string()),
+            base_url: None,
+            skip_permissions: true,
+        };
+        let driver = create_driver(&config);
+        assert!(
+            driver.is_ok(),
+            "Alibaba Coding Plan with API key should succeed"
+        );
+    }
+
+    #[test]
+    fn test_alibaba_coding_plan_driver_from_env() {
+        let unique_key = "sk-sp-test-env-key-67890";
+        std::env::set_var("ALIBABA_CODING_PLAN_API_KEY", unique_key);
+        let config = DriverConfig {
+            provider: "alibaba_coding_plan".to_string(),
+            api_key: None,
+            base_url: None,
+            skip_permissions: true,
+        };
+        let driver = create_driver(&config);
+        assert!(
+            driver.is_ok(),
+            "Alibaba Coding Plan with env var should succeed"
+        );
+        std::env::remove_var("ALIBABA_CODING_PLAN_API_KEY");
+    }
+
+    #[test]
+    fn test_alibaba_coding_plan_no_key_errors() {
+        // Clear env var first to avoid pollution from parallel tests
+        std::env::remove_var("ALIBABA_CODING_PLAN_API_KEY");
+        
+        let config = DriverConfig {
+            provider: "alibaba_coding_plan".to_string(),
+            api_key: None,
+            base_url: None,
+            skip_permissions: true,
+        };
+        let result = create_driver(&config);
+        assert!(result.is_err(), "Should fail without API key");
+    }
+
+    #[test]
+    fn test_alibaba_coding_plan_custom_base_url() {
+        let config = DriverConfig {
+            provider: "alibaba_coding_plan".to_string(),
+            api_key: Some("sk-sp-test-key".to_string()),
+            base_url: Some("https://custom-endpoint.example.com/v1".to_string()),
+            skip_permissions: true,
+        };
+        let driver = create_driver(&config);
+        assert!(driver.is_ok());
     }
 }
