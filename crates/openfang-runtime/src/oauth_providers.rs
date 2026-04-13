@@ -30,7 +30,8 @@ pub const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth"
 pub const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 pub const GOOGLE_DEVICE_URL: &str = "https://oauth2.googleapis.com/device/code";
 pub const GOOGLE_CALLBACK_URI: &str = "http://localhost:1456/auth/callback";
-pub const GEMINI_SCOPES: &str = "openid profile email https://www.googleapis.com/auth/cloud-platform";
+pub const GEMINI_SCOPES: &str =
+    "openid profile email https://www.googleapis.com/auth/cloud-platform";
 
 // Qwen OAuth
 pub const QWEN_OAUTH_TOKEN_ENDPOINT: &str = "https://chat.qwen.ai/api/v1/oauth2/token";
@@ -64,7 +65,9 @@ impl OAuthTokenSet {
 
     /// Create from token response.
     pub fn from_response(resp: TokenResponse, provider: &str) -> Self {
-        let expires_at = resp.expires_in.map(|secs| Utc::now() + chrono::Duration::seconds(secs as i64));
+        let expires_at = resp
+            .expires_in
+            .map(|secs| Utc::now() + chrono::Duration::seconds(secs));
         Self {
             access_token: resp.access_token,
             refresh_token: resp.refresh_token,
@@ -146,10 +149,7 @@ pub async fn openai_codex_start_device_flow() -> Result<DeviceCodeResponse, Stri
 
 /// Poll OpenAI Codex device flow.
 pub async fn openai_codex_poll_device_flow(device_code: &str) -> DeviceFlowStatus {
-    let client = match Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-    {
+    let client = match Client::builder().timeout(Duration::from_secs(15)).build() {
         Ok(c) => c,
         Err(e) => return DeviceFlowStatus::Error(format!("HTTP client error: {e}")),
     };
@@ -178,7 +178,9 @@ pub async fn openai_codex_poll_device_flow(device_code: &str) -> DeviceFlowStatu
                     "authorization_pending" => DeviceFlowStatus::Pending,
                     "slow_down" => {
                         let interval = err.get("interval").and_then(|v| v.as_u64()).unwrap_or(10);
-                        DeviceFlowStatus::SlowDown { new_interval: interval }
+                        DeviceFlowStatus::SlowDown {
+                            new_interval: interval,
+                        }
                     }
                     "expired_token" => DeviceFlowStatus::Expired,
                     "access_denied" => DeviceFlowStatus::AccessDenied,
@@ -220,7 +222,10 @@ pub fn openai_codex_build_authorize_url(state: &str, code_challenge: &str) -> St
 }
 
 /// Exchange authorization code for tokens.
-pub async fn openai_codex_exchange_code(code: &str, code_verifier: &str) -> Result<OAuthTokenSet, String> {
+pub async fn openai_codex_exchange_code(
+    code: &str,
+    code_verifier: &str,
+) -> Result<OAuthTokenSet, String> {
     let client = Client::new();
 
     let form = [
@@ -305,14 +310,12 @@ pub async fn gemini_start_device_flow() -> Result<DeviceCodeResponse, String> {
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
-    let scope_str = "openid profile email https://www.googleapis.com/auth/cloud-platform".to_string();
+    let scope_str =
+        "openid profile email https://www.googleapis.com/auth/cloud-platform".to_string();
     let resp = client
         .post(GOOGLE_DEVICE_URL)
         .header("Accept", "application/json")
-        .form(&[
-            ("client_id", &client_id),
-            ("scope", &scope_str),
-        ])
+        .form(&[("client_id", &client_id), ("scope", &scope_str)])
         .send()
         .await
         .map_err(|e| format!("Device code request failed: {e}"))?;
@@ -354,10 +357,7 @@ pub async fn gemini_poll_device_flow(device_code: &str) -> DeviceFlowStatus {
         None => return DeviceFlowStatus::Error("Missing OAuth credentials".to_string()),
     };
 
-    let client = match Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-    {
+    let client = match Client::builder().timeout(Duration::from_secs(15)).build() {
         Ok(c) => c,
         Err(e) => return DeviceFlowStatus::Error(format!("HTTP client error: {e}")),
     };
@@ -388,7 +388,9 @@ pub async fn gemini_poll_device_flow(device_code: &str) -> DeviceFlowStatus {
                     "authorization_pending" => DeviceFlowStatus::Pending,
                     "slow_down" => {
                         let interval = err.get("interval").and_then(|v| v.as_u64()).unwrap_or(5);
-                        DeviceFlowStatus::SlowDown { new_interval: interval }
+                        DeviceFlowStatus::SlowDown {
+                            new_interval: interval,
+                        }
                     }
                     "expired_token" => DeviceFlowStatus::Expired,
                     "access_denied" => DeviceFlowStatus::AccessDenied,
@@ -469,8 +471,10 @@ pub fn read_qwen_credentials() -> Option<OAuthTokenSet> {
 /// This function merely imports those pre-existing tokens into OpenFang's vault.
 pub async fn qwen_start_oauth_flow() -> Result<(), String> {
     // Qwen OAuth is file-based, just verify we can read the credentials
-    read_qwen_credentials()
-        .ok_or_else(|| "Failed to read Qwen credentials from ~/.qwen/oauth_creds.json. Run 'qwen login' first.".to_string())?;
+    read_qwen_credentials().ok_or_else(|| {
+        "Failed to read Qwen credentials from ~/.qwen/oauth_creds.json. Run 'qwen login' first."
+            .to_string()
+    })?;
     Ok(())
 }
 
@@ -518,7 +522,10 @@ pub async fn refresh_qwen_token(refresh_token: &str) -> Result<OAuthTokenSet, St
 // ─── MiniMax OAuth ───────────────────────────────────────────────────────────
 
 /// Refresh MiniMax OAuth token.
-pub async fn refresh_minimax_token(refresh_token: &str, region: &str) -> Result<OAuthTokenSet, String> {
+pub async fn refresh_minimax_token(
+    refresh_token: &str,
+    region: &str,
+) -> Result<OAuthTokenSet, String> {
     let endpoint = match region {
         "cn" => "https://api.minimaxi.com/oauth/token",
         _ => MINIMAX_OAUTH_TOKEN_ENDPOINT,
@@ -634,7 +641,11 @@ mod tests {
         assert!(!challenge.is_empty());
         assert_ne!(verifier, challenge);
         // Verifier should be 43 chars (32 bytes base64url no-pad)
-        assert_eq!(verifier.len(), 43, "PKCE verifier must be 43 chars (256-bit base64url)");
+        assert_eq!(
+            verifier.len(),
+            43,
+            "PKCE verifier must be 43 chars (256-bit base64url)"
+        );
     }
 
     #[test]

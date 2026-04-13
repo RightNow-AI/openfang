@@ -127,10 +127,7 @@ impl HandsState {
                 if let Some(sel) = self.marketplace_list.selected() {
                     if sel < self.definitions.len() {
                         // TODO: add text-input modal for custom instance names (#878 follow-up)
-                        return HandsAction::ActivateHand(
-                            self.definitions[sel].id.clone(),
-                            None,
-                        );
+                        return HandsAction::ActivateHand(self.definitions[sel].id.clone(), None);
                     }
                 }
             }

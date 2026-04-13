@@ -1117,7 +1117,11 @@ mod tests {
                         is_error,
                         content,
                         ..
-                    } => tool_use_id == "memory_store:0" && *is_error && content.contains("interrupted"),
+                    } => {
+                        tool_use_id == "memory_store:0"
+                            && *is_error
+                            && content.contains("interrupted")
+                    }
                     _ => false,
                 })
             } else {

@@ -1011,7 +1011,10 @@ mod tests {
         assert!(payload["d"].is_null());
         let s = serde_json::to_string(&payload).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
-        assert_eq!(parsed, serde_json::json!({"op": 1, "d": serde_json::Value::Null}));
+        assert_eq!(
+            parsed,
+            serde_json::json!({"op": 1, "d": serde_json::Value::Null})
+        );
     }
 
     #[test]

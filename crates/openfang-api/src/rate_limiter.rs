@@ -100,7 +100,13 @@ mod tests {
         assert_eq!(operation_cost("POST", "/api/skills/install").get(), 50);
         assert_eq!(operation_cost("POST", "/api/migrate").get(), 100);
         // OAuth rate limiting
-        assert_eq!(operation_cost("POST", "/api/providers/openai-codex/oauth/start").get(), 100);
-        assert_eq!(operation_cost("GET", "/api/providers/openai-codex/oauth/poll/abc").get(), 1);
+        assert_eq!(
+            operation_cost("POST", "/api/providers/openai-codex/oauth/start").get(),
+            100
+        );
+        assert_eq!(
+            operation_cost("GET", "/api/providers/openai-codex/oauth/poll/abc").get(),
+            1
+        );
     }
 }

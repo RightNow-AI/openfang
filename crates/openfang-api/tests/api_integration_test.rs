@@ -418,7 +418,10 @@ async fn test_agent_session_filters_system_messages() {
     let messages = body["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 3, "include_system=true should return all 3");
     assert_eq!(messages[0]["role"], "System");
-    assert_eq!(messages[0]["content"], "INTERNAL SYSTEM PROMPT — must not leak to UI");
+    assert_eq!(
+        messages[0]["content"],
+        "INTERNAL SYSTEM PROMPT — must not leak to UI"
+    );
     assert_eq!(body["message_count"], 3);
     assert_eq!(body["raw_message_count"], 3);
 }

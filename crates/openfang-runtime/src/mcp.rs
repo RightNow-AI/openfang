@@ -306,8 +306,8 @@ impl McpConnection {
             }
         }
 
-        let config = StreamableHttpClientTransportConfig::with_uri(url)
-            .custom_headers(custom_headers);
+        let config =
+            StreamableHttpClientTransportConfig::with_uri(url).custom_headers(custom_headers);
 
         let transport = StreamableHttpClientTransport::from_config(config);
 

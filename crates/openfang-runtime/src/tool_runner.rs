@@ -3141,8 +3141,7 @@ async fn tool_process_start(
     // shared validate_command_allowlist handles Deny / Full / Allowlist and
     // falls through to allow commands listed in safe_bins or allowed_commands.
     if let Some(policy) = exec_policy {
-        if let Err(reason) =
-            crate::subprocess_sandbox::validate_command_allowlist(command, policy)
+        if let Err(reason) = crate::subprocess_sandbox::validate_command_allowlist(command, policy)
         {
             return Err(format!(
                 "process_start blocked: {reason}. Current exec_policy.mode = '{:?}'. \

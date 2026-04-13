@@ -1141,9 +1141,7 @@ metrics = []
     fn test_activate_same_hand_unnamed_twice_still_rejects() {
         let reg = test_registry_with_dummy_hand("test-hand");
         reg.activate("test-hand", HashMap::new(), None).unwrap();
-        let err = reg
-            .activate("test-hand", HashMap::new(), None)
-            .unwrap_err();
+        let err = reg.activate("test-hand", HashMap::new(), None).unwrap_err();
         assert!(matches!(err, HandError::AlreadyActive(_)));
     }
 }

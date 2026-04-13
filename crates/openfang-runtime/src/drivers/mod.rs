@@ -16,13 +16,12 @@ pub mod vertex;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
-    AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL,
-    COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, NOVITA_BASE_URL,
-    OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL,
-    QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL,
-    VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
+    AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
+    DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL,
+    KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL,
+    NVIDIA_NIM_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL,
+    QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL,
+    VENICE_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
     ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
@@ -51,44 +50,182 @@ impl ProviderDefaults {
 /// Get defaults for known providers.
 fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
     match provider {
-        "groq" => Some(ProviderDefaults::simple(GROQ_BASE_URL, "GROQ_API_KEY", true)),
-        "openrouter" => Some(ProviderDefaults::simple(OPENROUTER_BASE_URL, "OPENROUTER_API_KEY", true)),
-        "deepseek" => Some(ProviderDefaults::simple(DEEPSEEK_BASE_URL, "DEEPSEEK_API_KEY", true)),
-        "together" => Some(ProviderDefaults::simple(TOGETHER_BASE_URL, "TOGETHER_API_KEY", true)),
-        "mistral" => Some(ProviderDefaults::simple(MISTRAL_BASE_URL, "MISTRAL_API_KEY", true)),
-        "fireworks" => Some(ProviderDefaults::simple(FIREWORKS_BASE_URL, "FIREWORKS_API_KEY", true)),
-        "openai" | "openai-gpt4" | "gpt4" | "gpt-4" | "chatgpt" => Some(ProviderDefaults::simple(OPENAI_BASE_URL, "OPENAI_API_KEY", true)),
-        "gemini" | "google" => Some(ProviderDefaults::simple(GEMINI_BASE_URL, "GEMINI_API_KEY", true)),
-        "ollama" => Some(ProviderDefaults::simple("http://localhost:11434/v1", "OLLAMA_HOST", false)),
-        "vllm" => Some(ProviderDefaults::simple("http://localhost:8000/v1", "OPENAI_API_KEY", true)),
-        "lmstudio" => Some(ProviderDefaults::simple("http://localhost:1234/v1", "OPENAI_API_KEY", true)),
-        "lemonade" => Some(ProviderDefaults::simple(LEMONADE_BASE_URL, "LEMONADE_API_KEY", true)),
-        "perplexity" => Some(ProviderDefaults::simple(PERPLEXITY_BASE_URL, "PERPLEXITY_API_KEY", true)),
-        "cohere" => Some(ProviderDefaults::simple(COHERE_BASE_URL, "COHERE_API_KEY", true)),
-        "ai21" => Some(ProviderDefaults::simple(AI21_BASE_URL, "AI21_API_KEY", true)),
-        "cerebras" => Some(ProviderDefaults::simple(CEREBRAS_BASE_URL, "CEREBRAS_API_KEY", true)),
-        "sambanova" => Some(ProviderDefaults::simple(SAMBANOVA_BASE_URL, "SAMBANOVA_API_KEY", true)),
-        "huggingface" => Some(ProviderDefaults::simple(HUGGINGFACE_BASE_URL, "HF_TOKEN", true)),
+        "groq" => Some(ProviderDefaults::simple(
+            GROQ_BASE_URL,
+            "GROQ_API_KEY",
+            true,
+        )),
+        "openrouter" => Some(ProviderDefaults::simple(
+            OPENROUTER_BASE_URL,
+            "OPENROUTER_API_KEY",
+            true,
+        )),
+        "deepseek" => Some(ProviderDefaults::simple(
+            DEEPSEEK_BASE_URL,
+            "DEEPSEEK_API_KEY",
+            true,
+        )),
+        "together" => Some(ProviderDefaults::simple(
+            TOGETHER_BASE_URL,
+            "TOGETHER_API_KEY",
+            true,
+        )),
+        "mistral" => Some(ProviderDefaults::simple(
+            MISTRAL_BASE_URL,
+            "MISTRAL_API_KEY",
+            true,
+        )),
+        "fireworks" => Some(ProviderDefaults::simple(
+            FIREWORKS_BASE_URL,
+            "FIREWORKS_API_KEY",
+            true,
+        )),
+        "openai" | "openai-gpt4" | "gpt4" | "gpt-4" | "chatgpt" => Some(ProviderDefaults::simple(
+            OPENAI_BASE_URL,
+            "OPENAI_API_KEY",
+            true,
+        )),
+        "gemini" | "google" => Some(ProviderDefaults::simple(
+            GEMINI_BASE_URL,
+            "GEMINI_API_KEY",
+            true,
+        )),
+        "ollama" => Some(ProviderDefaults::simple(
+            "http://localhost:11434/v1",
+            "OLLAMA_HOST",
+            false,
+        )),
+        "vllm" => Some(ProviderDefaults::simple(
+            "http://localhost:8000/v1",
+            "OPENAI_API_KEY",
+            true,
+        )),
+        "lmstudio" => Some(ProviderDefaults::simple(
+            "http://localhost:1234/v1",
+            "OPENAI_API_KEY",
+            true,
+        )),
+        "lemonade" => Some(ProviderDefaults::simple(
+            LEMONADE_BASE_URL,
+            "LEMONADE_API_KEY",
+            true,
+        )),
+        "perplexity" => Some(ProviderDefaults::simple(
+            PERPLEXITY_BASE_URL,
+            "PERPLEXITY_API_KEY",
+            true,
+        )),
+        "cohere" => Some(ProviderDefaults::simple(
+            COHERE_BASE_URL,
+            "COHERE_API_KEY",
+            true,
+        )),
+        "ai21" => Some(ProviderDefaults::simple(
+            AI21_BASE_URL,
+            "AI21_API_KEY",
+            true,
+        )),
+        "cerebras" => Some(ProviderDefaults::simple(
+            CEREBRAS_BASE_URL,
+            "CEREBRAS_API_KEY",
+            true,
+        )),
+        "sambanova" => Some(ProviderDefaults::simple(
+            SAMBANOVA_BASE_URL,
+            "SAMBANOVA_API_KEY",
+            true,
+        )),
+        "huggingface" => Some(ProviderDefaults::simple(
+            HUGGINGFACE_BASE_URL,
+            "HF_TOKEN",
+            true,
+        )),
         "xai" => Some(ProviderDefaults::simple(XAI_BASE_URL, "XAI_API_KEY", true)),
-        "replicate" => Some(ProviderDefaults::simple(REPLICATE_BASE_URL, "REPLICATE_API_TOKEN", true)),
-        "github-copilot" | "copilot" => Some(ProviderDefaults::simple(copilot::GITHUB_COPILOT_BASE_URL, "GITHUB_TOKEN", true)),
-        "codex" | "openai-codex" => Some(ProviderDefaults::simple(OPENAI_BASE_URL, "OPENAI_API_KEY", true)),
+        "replicate" => Some(ProviderDefaults::simple(
+            REPLICATE_BASE_URL,
+            "REPLICATE_API_TOKEN",
+            true,
+        )),
+        "github-copilot" | "copilot" => Some(ProviderDefaults::simple(
+            copilot::GITHUB_COPILOT_BASE_URL,
+            "GITHUB_TOKEN",
+            true,
+        )),
+        "codex" | "openai-codex" => Some(ProviderDefaults::simple(
+            OPENAI_BASE_URL,
+            "OPENAI_API_KEY",
+            true,
+        )),
         "claude-code" => Some(ProviderDefaults::simple("", "", false)),
-        "moonshot" | "kimi" | "kimi2" => Some(ProviderDefaults::simple(MOONSHOT_BASE_URL, "MOONSHOT_API_KEY", true)),
-        "kimi_coding" => Some(ProviderDefaults::simple(KIMI_CODING_BASE_URL, "KIMI_API_KEY", true)),
-        "qwen" | "dashscope" | "model_studio" => Some(ProviderDefaults::simple(QWEN_BASE_URL, "DASHSCOPE_API_KEY", true)),
-        "minimax" => Some(ProviderDefaults::simple(MINIMAX_BASE_URL, "MINIMAX_API_KEY", true)),
-        "zhipu" | "glm" => Some(ProviderDefaults::simple(ZHIPU_BASE_URL, "ZHIPU_API_KEY", true)),
-        "zhipu_coding" | "codegeex" => Some(ProviderDefaults::simple(ZHIPU_CODING_BASE_URL, "ZHIPU_API_KEY", true)),
+        "moonshot" | "kimi" | "kimi2" => Some(ProviderDefaults::simple(
+            MOONSHOT_BASE_URL,
+            "MOONSHOT_API_KEY",
+            true,
+        )),
+        "kimi_coding" => Some(ProviderDefaults::simple(
+            KIMI_CODING_BASE_URL,
+            "KIMI_API_KEY",
+            true,
+        )),
+        "qwen" | "dashscope" | "model_studio" => Some(ProviderDefaults::simple(
+            QWEN_BASE_URL,
+            "DASHSCOPE_API_KEY",
+            true,
+        )),
+        "minimax" => Some(ProviderDefaults::simple(
+            MINIMAX_BASE_URL,
+            "MINIMAX_API_KEY",
+            true,
+        )),
+        "zhipu" | "glm" => Some(ProviderDefaults::simple(
+            ZHIPU_BASE_URL,
+            "ZHIPU_API_KEY",
+            true,
+        )),
+        "zhipu_coding" | "codegeex" => Some(ProviderDefaults::simple(
+            ZHIPU_CODING_BASE_URL,
+            "ZHIPU_API_KEY",
+            true,
+        )),
         "zai" | "z.ai" => Some(ProviderDefaults::simple(ZAI_BASE_URL, "ZAI_API_KEY", true)),
-        "zai_coding" => Some(ProviderDefaults::simple(ZAI_CODING_BASE_URL, "ZAI_API_KEY", true)),
-        "qianfan" | "baidu" => Some(ProviderDefaults::simple(QIANFAN_BASE_URL, "QIANFAN_API_KEY", true)),
-        "volcengine" | "doubao" => Some(ProviderDefaults::simple(VOLCENGINE_BASE_URL, "VOLCENGINE_API_KEY", true)),
-        "volcengine_coding" => Some(ProviderDefaults::simple(VOLCENGINE_CODING_BASE_URL, "VOLCENGINE_API_KEY", true)),
-        "chutes" => Some(ProviderDefaults::simple(CHUTES_BASE_URL, "CHUTES_API_KEY", true)),
-        "venice" => Some(ProviderDefaults::simple(VENICE_BASE_URL, "VENICE_API_KEY", true)),
-        "nvidia" | "nvidia-nim" => Some(ProviderDefaults::simple(NVIDIA_NIM_BASE_URL, "NVIDIA_API_KEY", true)),
-        "azure" | "azure-openai" => Some(ProviderDefaults::simple("", "AZURE_OPENAI_API_KEY", true)),
+        "zai_coding" => Some(ProviderDefaults::simple(
+            ZAI_CODING_BASE_URL,
+            "ZAI_API_KEY",
+            true,
+        )),
+        "qianfan" | "baidu" => Some(ProviderDefaults::simple(
+            QIANFAN_BASE_URL,
+            "QIANFAN_API_KEY",
+            true,
+        )),
+        "volcengine" | "doubao" => Some(ProviderDefaults::simple(
+            VOLCENGINE_BASE_URL,
+            "VOLCENGINE_API_KEY",
+            true,
+        )),
+        "volcengine_coding" => Some(ProviderDefaults::simple(
+            VOLCENGINE_CODING_BASE_URL,
+            "VOLCENGINE_API_KEY",
+            true,
+        )),
+        "chutes" => Some(ProviderDefaults::simple(
+            CHUTES_BASE_URL,
+            "CHUTES_API_KEY",
+            true,
+        )),
+        "venice" => Some(ProviderDefaults::simple(
+            VENICE_BASE_URL,
+            "VENICE_API_KEY",
+            true,
+        )),
+        "nvidia" | "nvidia-nim" => Some(ProviderDefaults::simple(
+            NVIDIA_NIM_BASE_URL,
+            "NVIDIA_API_KEY",
+            true,
+        )),
+        "azure" | "azure-openai" => {
+            Some(ProviderDefaults::simple("", "AZURE_OPENAI_API_KEY", true))
+        }
         // Note: vertex-ai uses a special VertexAIDriver, not the simple pattern
         "vertex-ai" | "vertex" | "google-vertex" => None, // Handled specially in create_driver
         // OAuth-based providers
@@ -115,6 +252,12 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "",
             key_required: false,
             oauth_provider: Some("minimax"),
+        }),
+        "novita" | "novita-ai" => Some(ProviderDefaults {
+            base_url: "https://api.novita.ai/openai/v1",
+            api_key_env: "NOVITA_API_KEY",
+            key_required: true,
+            oauth_provider: None,
         }),
         _ => None,
     }
@@ -346,7 +489,10 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .clone()
             .unwrap_or_else(|| defaults.base_url.to_string());
 
-        return Ok(Arc::new(openai::OpenAIDriver::new(effective_api_key, base_url)));
+        return Ok(Arc::new(openai::OpenAIDriver::new(
+            effective_api_key,
+            base_url,
+        )));
     }
 
     // Unknown provider — if base_url is set, treat as custom OpenAI-compatible.
@@ -636,7 +782,7 @@ mod tests {
     fn test_provider_defaults_huggingface() {
         let d = provider_defaults("huggingface").unwrap();
         assert_eq!(d.base_url, "https://api-inference.huggingface.co/v1");
-        assert_eq!(d.api_key_env, "HF_API_KEY");
+        assert_eq!(d.api_key_env, "HF_TOKEN");
         assert!(d.key_required);
     }
 

@@ -484,9 +484,7 @@ pub async fn get_agent_session(
             let filtered_messages: Vec<&openfang_types::message::Message> = session
                 .messages
                 .iter()
-                .filter(|m| {
-                    include_system || m.role != openfang_types::message::Role::System
-                })
+                .filter(|m| include_system || m.role != openfang_types::message::Role::System)
                 .collect();
 
             // Two-pass approach: ToolUse blocks live in Assistant messages while
@@ -10982,12 +10980,15 @@ pub async fn openai_codex_oauth_start() -> impl IntoResponse {
         Ok(resp) => {
             let poll_id = uuid::Uuid::new_v4().to_string();
             let interval = resp.interval.unwrap_or(5);
-            
-            CODEX_FLOWS.insert(poll_id.clone(), CodexFlowState {
-                device_code: resp.device_code,
-                interval,
-                expires_at: Instant::now() + std::time::Duration::from_secs(resp.expires_in),
-            });
+
+            CODEX_FLOWS.insert(
+                poll_id.clone(),
+                CodexFlowState {
+                    device_code: resp.device_code,
+                    interval,
+                    expires_at: Instant::now() + std::time::Duration::from_secs(resp.expires_in),
+                },
+            );
 
             (
                 StatusCode::OK,
@@ -11031,7 +11032,7 @@ pub async fn openai_codex_oauth_poll(Path(poll_id): Path<String>) -> impl IntoRe
     }
 
     let device_code = flow.device_code.clone();
-    let interval = flow.interval;
+    let _interval = flow.interval;
     drop(flow);
 
     match openai_codex_poll_device_flow(&device_code).await {
@@ -11082,8 +11083,10 @@ pub async fn openai_codex_oauth_poll(Path(poll_id): Path<String>) -> impl IntoRe
 /// Active Gemini OAuth flows, keyed by poll_id.
 static GEMINI_FLOWS: LazyLock<DashMap<String, GeminiFlowState>> = LazyLock::new(DashMap::new);
 
+#[allow(dead_code)]
 struct GeminiFlowState {
     device_code: String,
+    #[allow(dead_code)]
     interval: u64,
     expires_at: Instant,
 }
@@ -11099,12 +11102,15 @@ pub async fn gemini_oauth_start() -> impl IntoResponse {
         Ok(resp) => {
             let poll_id = uuid::Uuid::new_v4().to_string();
             let interval = resp.interval.unwrap_or(5);
-            
-            GEMINI_FLOWS.insert(poll_id.clone(), GeminiFlowState {
-                device_code: resp.device_code,
-                interval,
-                expires_at: Instant::now() + std::time::Duration::from_secs(resp.expires_in),
-            });
+
+            GEMINI_FLOWS.insert(
+                poll_id.clone(),
+                GeminiFlowState {
+                    device_code: resp.device_code,
+                    interval,
+                    expires_at: Instant::now() + std::time::Duration::from_secs(resp.expires_in),
+                },
+            );
 
             (
                 StatusCode::OK,
@@ -11208,16 +11214,21 @@ pub async fn qwen_oauth_start() -> impl IntoResponse {
     use openfang_runtime::oauth_providers::qwen_start_oauth_flow;
 
     // Clean up expired flows first
-    QWEN_FLOWS.retain(|_, state| state.start_time + std::time::Duration::from_secs(state.expires_in) > Instant::now());
+    QWEN_FLOWS.retain(|_, state| {
+        state.start_time + std::time::Duration::from_secs(state.expires_in) > Instant::now()
+    });
 
     match qwen_start_oauth_flow().await {
         Ok(_) => {
             let poll_id = uuid::Uuid::new_v4().to_string();
-            QWEN_FLOWS.insert(poll_id.clone(), QwenFlowState {
-                start_time: Instant::now(),
-                expires_in: 300, // 5 minutes for Qwen
-            });
-            
+            QWEN_FLOWS.insert(
+                poll_id.clone(),
+                QwenFlowState {
+                    start_time: Instant::now(),
+                    expires_in: 300, // 5 minutes for Qwen
+                },
+            );
+
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -11257,8 +11268,8 @@ pub async fn qwen_oauth_poll(Path(poll_id): Path<String>) -> impl IntoResponse {
         );
     }
 
-    let start_time = flow.start_time;
-    let expires_in = flow.expires_in;
+    let _start_time = flow.start_time;
+    let _expires_in = flow.expires_in;
     drop(flow);
 
     match qwen_poll_oauth_flow().await {
@@ -11297,16 +11308,21 @@ pub async fn minimax_oauth_start() -> impl IntoResponse {
     use openfang_runtime::oauth_providers::minimax_start_oauth_flow;
 
     // Clean up expired flows first
-    MINIMAX_FLOWS.retain(|_, state| state.start_time + std::time::Duration::from_secs(state.expires_in) > Instant::now());
+    MINIMAX_FLOWS.retain(|_, state| {
+        state.start_time + std::time::Duration::from_secs(state.expires_in) > Instant::now()
+    });
 
     match minimax_start_oauth_flow().await {
         Ok(_) => {
             let poll_id = uuid::Uuid::new_v4().to_string();
-            MINIMAX_FLOWS.insert(poll_id.clone(), MiniMaxFlowState {
-                start_time: Instant::now(),
-                expires_in: 300, // 5 minutes for MiniMax
-            });
-            
+            MINIMAX_FLOWS.insert(
+                poll_id.clone(),
+                MiniMaxFlowState {
+                    start_time: Instant::now(),
+                    expires_in: 300, // 5 minutes for MiniMax
+                },
+            );
+
             (
                 StatusCode::OK,
                 Json(serde_json::json!({

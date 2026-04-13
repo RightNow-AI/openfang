@@ -134,8 +134,6 @@ pub async fn build_router(
         .route("/favicon.ico", axum::routing::get(webchat::favicon_ico))
         .route("/manifest.json", axum::routing::get(webchat::manifest_json))
         .route("/sw.js", axum::routing::get(webchat::sw_js))
-        .route("/i18n/en.json", axum::routing::get(webchat::i18n_en))
-        .route("/i18n/ru.json", axum::routing::get(webchat::i18n_ru))
         .route(
             "/api/metrics",
             axum::routing::get(routes::prometheus_metrics),

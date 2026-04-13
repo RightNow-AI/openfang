@@ -4230,6 +4230,7 @@ dependencies = [
  "openfang-memory",
  "openfang-skills",
  "openfang-types",
+ "rand 0.8.5",
  "regex-lite",
  "reqwest 0.12.28",
  "rmcp",
