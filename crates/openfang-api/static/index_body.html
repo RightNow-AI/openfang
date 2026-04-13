@@ -6,21 +6,21 @@
     <!-- Session login mode -->
     <template x-if="$store.app.authMode === 'session'">
       <div>
-        <h3 style="margin:0 0 0.5rem;font-size:1.1rem">Sign In</h3>
-        <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 1rem">Enter your dashboard credentials.</p>
-        <input type="text" x-model="loginUser" placeholder="Username" autocomplete="username" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.5rem">
-        <input type="password" x-model="loginPass" placeholder="Password" autocomplete="current-password" @keydown.enter="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
-        <button @click="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Sign In</button>
+        <h3 style="margin:0 0 0.5rem;font-size:1.1rem" data-i18n="auth.sign_in">Sign In</h3>
+        <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 1rem" data-i18n="auth.enter_credentials">Enter your dashboard credentials.</p>
+        <input type="text" x-model="loginUser" data-i18n-placeholder="auth.username" placeholder="Username" autocomplete="username" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.5rem">
+        <input type="password" x-model="loginPass" data-i18n-placeholder="auth.password" placeholder="Password" autocomplete="current-password" @keydown.enter="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
+        <button @click="$store.app.sessionLogin(loginUser, loginPass)" data-i18n="auth.sign_in" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Sign In</button>
       </div>
     </template>
     <!-- API key mode -->
     <template x-if="$store.app.authMode === 'apikey'">
       <div>
-        <h3 style="margin:0 0 0.5rem;font-size:1.1rem">API Key Required</h3>
-        <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 0.5rem">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
-        <p style="color:var(--text-dim,#666);font-size:0.75rem;margin:0 0 1rem">Add <code style="color:var(--accent-light,#a78bfa);background:var(--bg,#111);padding:1px 4px;border-radius:2px">api_key = "your-key"</code> at the <strong>top</strong> of <code>~/.openfang/config.toml</code> (not under any [section]).</p>
-        <input type="password" x-model="apiKeyInput" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
-        <button @click="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Unlock Dashboard</button>
+        <h3 style="margin:0 0 0.5rem;font-size:1.1rem" data-i18n="auth.api_key_required">API Key Required</h3>
+        <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 0.5rem" data-i18n="auth.api_key_desc">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
+        <p style="color:var(--text-dim,#666);font-size:0.75rem;margin:0 0 1rem" data-i18n="auth.api_key_hint">Add <code style="color:var(--accent-light,#a78bfa);background:var(--bg,#111);padding:1px 4px;border-radius:2px">api_key = "your-key"</code> at the <strong>top</strong> of <code>~/.openfang/config.toml</code> (not under any [section]).</p>
+        <input type="password" x-model="apiKeyInput" data-i18n-placeholder="auth.enter_api_key" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
+        <button @click="$store.app.submitApiKey(apiKeyInput)" data-i18n="auth.unlock_dashboard" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Unlock Dashboard</button>
       </div>
     </template>
   </div>
@@ -48,24 +48,58 @@
 
     <div class="sidebar-status" :class="{ offline: !connected && !$store.app.booting }">
       <span class="status-dot"></span>
-      <span class="sidebar-label" x-show="connected" x-text="agentCount + ' agent(s) running'"></span>
-      <span class="sidebar-label" x-show="$store.app.booting && !connected" class="conn-reconnecting">Connecting...</span>
-      <span class="sidebar-label" x-show="!connected && !$store.app.booting && $store.app.connectionState === 'reconnecting'" class="conn-reconnecting">Reconnecting...</span>
-      <span class="sidebar-label" x-show="!connected && !$store.app.booting && $store.app.connectionState !== 'reconnecting'" x-text="'disconnected' + ($store.app.lastError ? ' — ' + $store.app.lastError : '')">disconnected</span>
-      <span class="conn-badge sidebar-label" :class="wsConnected ? 'ws' : 'http'" x-text="wsConnected ? 'WS' : 'HTTP'" x-show="connected"></span>
+      <span class="sidebar-label" x-show="connected" x-text="agentCount + ' ' + t('status.agents_running')"></span>
+      <span class="sidebar-label" x-show="$store.app.booting && !connected" class="conn-reconnecting" data-i18n="status.connecting">Connecting...</span>
+      <span class="sidebar-label" x-show="!connected && !$store.app.booting && $store.app.connectionState === 'reconnecting'" class="conn-reconnecting" data-i18n="status.reconnecting">Reconnecting...</span>
+      <span class="sidebar-label" x-show="!connected && !$store.app.booting && $store.app.connectionState !== 'reconnecting'" x-text="t('status.disconnected') + ($store.app.lastError ? ' — ' + $store.app.lastError : '')" data-i18n="status.disconnected">disconnected</span>
+      <span class="conn-badge sidebar-label" :class="wsConnected ? 'ws' : 'http'" x-text="wsConnected ? t('status.ws') : t('status.http')" x-show="connected"></span>
     </div>
 
     <div class="sidebar-nav" role="navigation" aria-label="Main navigation">
-      <!-- Overview — primary action as first screen -->
-            <a class="nav-item" :class="{ active: page === 'overview' }" @click="navigate('overview')" :aria-current="page === 'overview' ? 'page' : false" style="margin-bottom: 4px;">
-              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg></span>
-              <span class="nav-label">Overview</span>
+      <!-- Chat — primary action -->
+      <div class="nav-section" x-data="{ collapsed: false }" aria-label="Chat">
+        <div class="nav-section-title" @click="collapsed = !collapsed">
+          <span class="nav-label" data-i18n="nav.chat">Chat</span>
+          <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
+        </div>
+        <template x-if="!collapsed">
+          <div x-transition>
+            <a class="nav-item" :class="{ active: page === 'agents' }" @click="navigate('agents')" :aria-current="page === 'agents' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+              <span class="nav-label" data-i18n="nav.chat">Chat</span>
             </a>
+          </div>
+        </template>
+      </div>
+
+      <!-- Monitor -->
+      <div class="nav-section" x-data="{ collapsed: false }" aria-label="Monitor">
+        <div class="nav-section-title" @click="collapsed = !collapsed">
+          <span class="nav-label" data-i18n="nav.monitor">Monitor</span>
+          <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
+        </div>
+        <template x-if="!collapsed">
+          <div x-transition>
+            <a class="nav-item" :class="{ active: page === 'overview' }" @click="navigate('overview')" :aria-current="page === 'overview' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg></span>
+              <span class="nav-label" data-i18n="nav.overview">Overview</span>
+            </a>
+            <a class="nav-item" :class="{ active: page === 'analytics' }" @click="navigate('analytics')" :aria-current="page === 'analytics' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg></span>
+              <span class="nav-label" data-i18n="nav.analytics">Analytics</span>
+            </a>
+            <a class="nav-item" :class="{ active: page === 'logs' }" @click="navigate('logs')" :aria-current="page === 'logs' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></span>
+              <span class="nav-label" data-i18n="nav.logs">Logs</span>
+            </a>
+          </div>
+        </template>
+      </div>
 
       <!-- Agents -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="Agents">
         <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">Agents</span>
+          <span class="nav-label" data-i18n="nav.agents">Agents</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
         <template x-if="!collapsed">
@@ -76,16 +110,16 @@
             </a>
             <a class="nav-item" :class="{ active: page === 'sessions' }" @click="navigate('sessions')" :aria-current="page === 'sessions' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m12 2-10 5 10 5 10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg></span>
-              <span class="nav-label">Sessions</span>
+              <span class="nav-label" data-i18n="nav.sessions">Sessions</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'approvals' }" @click="navigate('approvals')" :aria-current="page === 'approvals' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg></span>
-              <span class="nav-label">Approvals</span>
+              <span class="nav-label" data-i18n="nav.approvals">Approvals</span>
               <span class="badge badge-warn" x-show="$store.app.pendingApprovalCount > 0" x-text="$store.app.pendingApprovalCount"></span>
             </a>
             <a class="nav-item" :class="{ active: page === 'comms' }" @click="navigate('comms')" :aria-current="page === 'comms' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg></span>
-              <span class="nav-label">Comms</span>
+              <span class="nav-label" data-i18n="nav.comms">Comms</span>
             </a>
           </div>
         </template>
@@ -94,18 +128,18 @@
       <!-- Automation -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="Automation">
         <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">Automation</span>
+          <span class="nav-label" data-i18n="nav.automation">Automation</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
         <template x-if="!collapsed">
           <div x-transition>
             <a class="nav-item" :class="{ active: page === 'workflows' }" @click="navigate('workflows')" :aria-current="page === 'workflows' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M6 3v12M18 9a9 9 0 0 1-9 9"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/></svg></span>
-              <span class="nav-label">Workflows</span>
+              <span class="nav-label" data-i18n="nav.workflows">Workflows</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'scheduler' }" @click="navigate('scheduler')" :aria-current="page === 'scheduler' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span>
-              <span class="nav-label">Scheduler</span>
+              <span class="nav-label" data-i18n="nav.scheduler">Scheduler</span>
             </a>
           </div>
         </template>
@@ -114,22 +148,22 @@
       <!-- Extensions -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="Extensions">
         <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">Extensions</span>
+          <span class="nav-label" data-i18n="nav.extensions">Extensions</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
         <template x-if="!collapsed">
           <div x-transition>
             <a class="nav-item" :class="{ active: page === 'channels' }" @click="navigate('channels')" :aria-current="page === 'channels' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3l-2 18M16 3l-2 18"/></svg></span>
-              <span class="nav-label">Channels</span>
+              <span class="nav-label" data-i18n="nav.channels">Channels</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'skills' }" @click="navigate('skills')" :aria-current="page === 'skills' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></svg></span>
-              <span class="nav-label">Skills</span>
+              <span class="nav-label" data-i18n="nav.skills">Skills</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'hands' }" @click="navigate('hands')" :aria-current="page === 'hands' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v6"/><path d="M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-5.7-2.4L3.4 16a2 2 0 0 1 3.2-2.4L8 15"/></svg></span>
-              <span class="nav-label">Hands</span>
+              <span class="nav-label" data-i18n="nav.hands">Hands</span>
             </a>
           </div>
         </template>
@@ -158,18 +192,18 @@
       <!-- System -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="System">
         <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">System</span>
+          <span class="nav-label" data-i18n="nav.system">System</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
         <template x-if="!collapsed">
           <div x-transition>
             <a class="nav-item" :class="{ active: page === 'runtime' }" @click="navigate('runtime')" :aria-current="page === 'runtime' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>
-              <span class="nav-label">Runtime</span>
+              <span class="nav-label" data-i18n="nav.runtime">Runtime</span>
             </a>
             <a class="nav-item" :class="{ active: page === 'settings' }" @click="navigate('settings')" :aria-current="page === 'settings' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></svg></span>
-              <span class="nav-label">Settings</span>
+              <span class="nav-label" data-i18n="nav.settings">Settings</span>
             </a>
           </div>
         </template>
@@ -179,9 +213,9 @@
     <div class="sidebar-footer">
       <div x-show="$store.app.sessionUser" style="padding:4px 16px;display:flex;align-items:center;justify-content:space-between">
         <span class="text-xs text-dim" x-text="$store.app.sessionUser" style="letter-spacing:0.5px"></span>
-        <button @click="$store.app.sessionLogout()" class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px;opacity:0.7" title="Sign out">Logout</button>
+        <button @click="$store.app.sessionLogout()" class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px;opacity:0.7" data-i18n-title="actions.logout" title="Logout">Logout</button>
       </div>
-      <div class="sidebar-label text-xs text-dim" style="padding:0 16px 4px;letter-spacing:0.5px">Ctrl+K agents | Ctrl+N new</div>
+      <div class="sidebar-label text-xs text-dim" style="padding:0 16px 4px;letter-spacing:0.5px" data-i18n="footer.shortcuts">Ctrl+K agents | Ctrl+N new</div>
     </div>
     <div class="sidebar-toggle" @click="toggleSidebar()" x-text="sidebarCollapsed ? '\u276F' : '\u276E'"></div>
   </nav>
@@ -199,10 +233,10 @@
     <template x-if="page === 'overview'">
       <div x-data="overviewPage" x-init="loadOverview().then(() => startAutoRefresh())" @page-leave.window="stopAutoRefresh()">
         <div class="page-header">
-          <h2>Overview</h2>
+          <h2 data-i18n="nav.overview">Overview</h2>
           <div class="flex items-center gap-2">
-            <span class="health-indicator" :class="health.status === 'ok' ? 'health-ok' : 'health-down'" x-text="health.status === 'ok' ? 'Healthy' : 'Unreachable'"></span>
-            <button class="btn btn-ghost btn-sm" @click="silentRefresh()" title="Refresh" style="padding:4px 8px">
+            <span class="health-indicator" :class="health.status === 'ok' ? 'health-ok' : 'health-down'" x-text="health.status === 'ok' ? t('overview.healthy') : t('overview.unreachable')"></span>
+            <button class="btn btn-ghost btn-sm" @click="silentRefresh()" data-i18n-title="actions.refresh" title="Refresh" style="padding:4px 8px">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
             </button>
           </div>
@@ -224,21 +258,21 @@
             <div class="empty-state-icon">
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--error)" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
             </div>
-            <h3 style="color:var(--error)">Connection Error</h3>
+            <h3 style="color:var(--error)" data-i18n="errors.connection_error">Connection Error</h3>
             <p class="text-xs text-dim" x-text="loadError"></p>
-            <button class="btn btn-primary btn-sm" @click="loadData()" style="margin-top:8px">Retry</button>
+            <button class="btn btn-primary btn-sm" @click="loadData()" data-i18n="actions.retry" style="margin-top:8px">Retry</button>
           </div>
           <!-- Setup Checklist -->
           <div class="setup-checklist" x-show="!loading && !loadError && setupProgress < 100 && !checklistDismissed" style="animation:slideUp 0.3s var(--ease-spring)">
             <div class="card" style="border-left:4px solid var(--accent)">
               <div class="flex justify-between items-center mb-2">
                 <div>
-                  <div class="card-header" style="margin:0">Getting Started</div>
-                  <div class="text-xs text-dim" x-text="setupDoneCount + ' of 5 steps completed'"></div>
+                  <div class="card-header" style="margin:0" data-i18n="overview.getting_started">Getting Started</div>
+                  <div class="text-xs text-dim" x-text="setupDoneCount + ' ' + t('overview.steps_completed')"></div>
                 </div>
                 <div class="flex gap-2">
-                  <button class="btn btn-primary btn-sm" @click="location.hash='wizard'">Setup Wizard</button>
-                  <button class="btn btn-ghost btn-sm" @click="dismissChecklist()">Dismiss</button>
+                  <button class="btn btn-primary btn-sm" @click="location.hash='wizard'" data-i18n="overview.setup_wizard">Setup Wizard</button>
+                  <button class="btn btn-ghost btn-sm" @click="dismissChecklist()" data-i18n="actions.dismiss">Dismiss</button>
                 </div>
               </div>
               <div class="progress-bar mb-2" style="margin-top:8px">
@@ -260,12 +294,12 @@
           </div>
           <!-- Onboarding banner -->
           <div class="onboarding-banner" x-show="!loading && !loadError && $store.app.showOnboarding && checklistDismissed">
-            <h3>Welcome to OpenFang</h3>
+            <h3 data-i18n="overview.welcome">Welcome to OpenFang</h3>
             <p style="font-size:12px;color:var(--text-dim)">Get started quickly with the guided Setup Wizard, or configure manually:</p>
             <div class="flex gap-2">
-              <button class="btn btn-primary" @click="location.hash='wizard'">Launch Setup Wizard</button>
-              <button class="btn btn-ghost" @click="location.hash='settings'">Configure Manually</button>
-              <button class="btn btn-ghost" @click="$store.app.dismissOnboarding()">Dismiss</button>
+              <button class="btn btn-primary" @click="location.hash='wizard'" data-i18n="overview.setup_wizard">Launch Setup Wizard</button>
+              <button class="btn btn-ghost" @click="location.hash='settings'" data-i18n="actions.configure_manually">Configure Manually</button>
+              <button class="btn btn-ghost" @click="$store.app.dismissOnboarding()" data-i18n="actions.dismiss">Dismiss</button>
             </div>
           </div>
           <div x-show="!loading && !loadError" style="animation:fadeIn 0.3s">
@@ -279,7 +313,7 @@
                 </div>
                 <div>
                   <div class="stat-value" :class="(status.agent_count || 0) > 0 ? 'stat-value-success' : ''" x-text="status.agent_count || 0"></div>
-                  <div class="stat-label">Agents Running</div>
+                  <div class="stat-label" data-i18n="overview.agents_running">Agents Running</div>
                 </div>
               </div>
             </div>
@@ -290,7 +324,7 @@
                 </div>
                 <div>
                   <div class="stat-value" x-text="formatNumber(usageSummary.total_tokens)"></div>
-                  <div class="stat-label">Tokens Used</div>
+                  <div class="stat-label" data-i18n="overview.tokens_used">Tokens Used</div>
                 </div>
               </div>
             </div>
@@ -301,7 +335,7 @@
                 </div>
                 <div>
                   <div class="stat-value stat-value-accent" x-text="formatCost(usageSummary.total_cost)"></div>
-                  <div class="stat-label">Total Cost</div>
+                  <div class="stat-label" data-i18n="overview.total_cost">Total Cost</div>
                 </div>
               </div>
             </div>
@@ -312,7 +346,7 @@
                 </div>
                 <div>
                   <div class="stat-value" x-text="formatUptime(status.uptime_seconds)"></div>
-                  <div class="stat-label">Uptime</div>
+                  <div class="stat-label" data-i18n="overview.uptime">Uptime</div>
                 </div>
               </div>
             </div>
@@ -322,23 +356,23 @@
           <div class="stats-row animate-entry stagger-5" style="margin-bottom:16px">
             <div class="stat-card" @click="location.hash='channels'" style="cursor:pointer">
               <div class="stat-value" style="font-size:18px" x-text="channels.length"></div>
-              <div class="stat-label">Channels</div>
+              <div class="stat-label" data-i18n="overview.channels">Channels</div>
             </div>
             <div class="stat-card" @click="location.hash='skills'" style="cursor:pointer">
               <div class="stat-value" style="font-size:18px" x-text="skillCount"></div>
-              <div class="stat-label">Skills</div>
+              <div class="stat-label" data-i18n="overview.skills">Skills</div>
             </div>
             <div class="stat-card">
               <div class="stat-value" style="font-size:18px" x-text="connectedMcp.length"></div>
-              <div class="stat-label">MCP Servers</div>
+              <div class="stat-label" data-i18n="overview.mcp_servers">MCP Servers</div>
             </div>
             <div class="stat-card">
               <div class="stat-value" style="font-size:18px" x-text="formatNumber(usageSummary.total_tools)"></div>
-              <div class="stat-label">Tool Calls</div>
+              <div class="stat-label" data-i18n="overview.tool_calls">Tool Calls</div>
             </div>
             <div class="stat-card">
               <div class="stat-value" :class="configuredProviders.length > 0 ? 'stat-value-success' : ''" style="font-size:18px" x-text="configuredProviders.length"></div>
-              <div class="stat-label">Providers</div>
+              <div class="stat-label" data-i18n="overview.providers">Providers</div>
             </div>
           </div>
 
@@ -347,7 +381,7 @@
             <div class="flex justify-between items-center mb-2">
               <div class="card-header" style="margin:0">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;margin-right:4px;vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-                LLM Providers
+                <span data-i18n="overview.llm_providers">LLM Providers</span>
               </div>
               <span class="text-xs text-dim" x-text="configuredProviders.length + '/' + providers.length + ' configured'"></span>
             </div>
@@ -366,7 +400,7 @@
             <div class="card">
               <div class="card-header">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;margin-right:4px;vertical-align:-2px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-                System Health
+                <span data-i18n="overview.system_health">System Health</span>
               </div>
               <div class="detail-grid" style="margin-top:8px">
                 <div class="detail-row"><span class="detail-label">Status</span><span class="badge" :class="health.status === 'ok' ? 'badge-running' : 'badge-crashed'" x-text="health.status || 'unknown'"></span></div>
@@ -380,7 +414,7 @@
             <div class="card">
               <div class="card-header">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;margin-right:4px;vertical-align:-2px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                Security Systems
+                <span data-i18n="overview.security_systems">Security Systems</span>
               </div>
               <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px">
                 <span class="badge badge-success" style="font-size:9px;padding:2px 8px">Merkle Audit</span>
@@ -393,14 +427,14 @@
                 <span class="badge badge-success" style="font-size:9px;padding:2px 8px">Loop Guard</span>
                 <span class="badge badge-success" style="font-size:9px;padding:2px 8px">Session Repair</span>
               </div>
-              <div class="text-xs text-dim" style="margin-top:8px">9 defense-in-depth systems active</div>
+              <div class="text-xs text-dim" style="margin-top:8px" data-i18n="overview.defense_active">9 defense-in-depth systems active</div>
             </div>
 
             <!-- Connected Channels -->
             <div class="card" x-show="channels.length">
               <div class="card-header">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;margin-right:4px;vertical-align:-2px"><path d="M4 9h16M4 15h16M10 3l-2 18M16 3l-2 18"/></svg>
-                Connected Channels
+                <span data-i18n="nav.channels">Connected Channels</span>
               </div>
               <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px">
                 <template x-for="ch in channels" :key="ch.name">
@@ -414,7 +448,7 @@
             <div class="card" x-show="mcpServers.length">
               <div class="card-header">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;margin-right:4px;vertical-align:-2px"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><path d="M6 6h.01M6 18h.01"/></svg>
-                MCP Servers
+                <span data-i18n="overview.mcp_servers">MCP Servers</span>
               </div>
               <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px">
                 <template x-for="s in mcpServers" :key="s.name">
@@ -430,27 +464,27 @@
 
           <!-- Quick Actions -->
           <div class="card mt-4" style="background:var(--bg-elevated)">
-            <div class="card-header" style="margin-bottom:8px">Quick Actions</div>
+            <div class="card-header" style="margin-bottom:8px" data-i18n="overview.quick_actions">Quick Actions</div>
             <div style="display:flex;flex-wrap:wrap;gap:8px">
               <button class="btn btn-ghost btn-sm" @click="location.hash='agents'" style="display:flex;align-items:center;gap:4px">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
-                New Agent
+                <span data-i18n="actions.new_agent">New Agent</span>
               </button>
               <button class="btn btn-ghost btn-sm" @click="location.hash='skills'" style="display:flex;align-items:center;gap:4px">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></svg>
-                Browse Skills
+                <span data-i18n="actions.browse_skills">Browse Skills</span>
               </button>
               <button class="btn btn-ghost btn-sm" @click="location.hash='channels'" style="display:flex;align-items:center;gap:4px">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h16M4 15h16M10 3l-2 18M16 3l-2 18"/></svg>
-                Add Channel
+                <span data-i18n="actions.add_channel">Add Channel</span>
               </button>
               <button class="btn btn-ghost btn-sm" @click="location.hash='workflows'" style="display:flex;align-items:center;gap:4px">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3v12M18 9a9 9 0 0 1-9 9"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/></svg>
-                Create Workflow
+                <span data-i18n="actions.create_workflow">Create Workflow</span>
               </button>
               <button class="btn btn-ghost btn-sm" @click="location.hash='settings'" style="display:flex;align-items:center;gap:4px">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></svg>
-                Settings
+                <span data-i18n="actions.settings">Settings</span>
               </button>
             </div>
           </div>
@@ -460,9 +494,9 @@
             <div class="flex justify-between items-center">
               <div class="card-header" style="margin:0">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;margin-right:4px;vertical-align:-2px"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-                Recent Activity
+                <span data-i18n="overview.recent_activity">Recent Activity</span>
               </div>
-              <a class="btn btn-ghost btn-sm" @click="location.hash='logs'" style="font-size:10px;padding:2px 8px">View All</a>
+              <a class="btn btn-ghost btn-sm" @click="location.hash='logs'" data-i18n="actions.view_all" style="font-size:10px;padding:2px 8px">View All</a>
             </div>
             <div style="margin-top:12px;display:flex;flex-direction:column;gap:1px">
               <template x-for="(e, idx) in recentAudit" :key="e.seq">
@@ -489,9 +523,9 @@
               <div class="empty-state-icon" style="margin:0 auto 8px">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
               </div>
-              <h3 style="color:var(--text-secondary);margin-bottom:4px">No Recent Activity</h3>
+              <h3 style="color:var(--text-secondary);margin-bottom:4px" data-i18n="overview.no_recent_activity">No Recent Activity</h3>
               <p class="text-xs text-dim">Activity will appear here once agents start processing.</p>
-              <button class="btn btn-primary btn-sm" @click="location.hash='agents'" style="margin-top:12px">Chat with an Agent</button>
+              <button class="btn btn-primary btn-sm" @click="location.hash='agents'" data-i18n="overview.chat_with_agent" style="margin-top:12px">Chat with an Agent</button>
             </div>
           </div>
 
@@ -3222,26 +3256,27 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
     <!-- Page: Settings -->
     <template x-if="page === 'settings'">
       <div x-data="settingsPage">
-        <div class="page-header"><h2>Settings</h2></div>
+        <div class="page-header"><h2 data-i18n="settings.title">Settings</h2></div>
         <div class="page-body" x-init="loadSettings()">
-          <div x-show="loading" class="loading-state"><div class="spinner"></div><span>Loading settings...</span></div>
+          <div x-show="loading" class="loading-state"><div class="spinner"></div><span data-i18n="status.loading">Loading...</span></div>
           <div x-show="!loading && loadError" class="error-state">
             <span class="error-icon">!</span>
             <p x-text="loadError"></p>
-            <button class="btn btn-ghost btn-sm" @click="loadData()">Retry</button>
+            <button class="btn btn-ghost btn-sm" @click="loadData()" data-i18n="actions.retry">Retry</button>
           </div>
           <div x-show="!loading && !loadError">
           <div class="tabs" role="tablist">
-            <div class="tab" role="tab" :class="{ active: tab === 'providers' }" @click="tab = 'providers'">Providers</div>
-            <div class="tab" role="tab" :class="{ active: tab === 'models' }" @click="tab = 'models'">Models</div>
-            <div class="tab" role="tab" :class="{ active: tab === 'config' }" @click="tab = 'config'; if (!configSchema) loadConfigSchema()">Config</div>
+            <div class="tab" role="tab" :class="{ active: tab === 'providers' }" @click="tab = 'providers'" data-i18n="settings.providers">Providers</div>
+            <div class="tab" role="tab" :class="{ active: tab === 'models' }" @click="tab = 'models'" data-i18n="settings.models">Models</div>
+            <div class="tab" role="tab" :class="{ active: tab === 'config' }" @click="tab = 'config'; if (!configSchema) loadConfigSchema()" data-i18n="settings.config">Config</div>
             <div class="tabs-separator"></div>
-            <div class="tab tab-secondary" role="tab" :class="{ active: tab === 'tools' }" @click="tab = 'tools'">Tools</div>
+            <div class="tab tab-secondary" role="tab" :class="{ active: tab === 'language' }" @click="tab = 'language'" data-i18n="settings.language">Language</div>
+            <div class="tab tab-secondary" role="tab" :class="{ active: tab === 'tools' }" @click="tab = 'tools'" data-i18n="settings.tools">Tools</div>
             <div class="tab tab-secondary" role="tab" :class="{ active: tab === 'security' }" @click="tab = 'security'; if (!securityData && !secLoading) loadSecurity()">Security</div>
             <div class="tab tab-secondary" role="tab" :class="{ active: tab === 'network' }" @click="tab = 'network'; if (!peers.length && !peersLoading) { loadPeers(); startPeerPolling(); }">Network</div>
             <div class="tab tab-secondary" role="tab" :class="{ active: tab === 'budget' }" @click="tab = 'budget'">Budget</div>
             <div class="tab tab-secondary" role="tab" :class="{ active: tab === 'info' }" @click="tab = 'info'">System</div>
-            <div class="tab tab-secondary" role="tab" :class="{ active: tab === 'migration' }" @click="tab = 'migration'">Migration</div>
+            <div class="tab tab-secondary" role="tab" :class="{ active: tab === 'migration' }" @click="tab = 'migration'" data-i18n="settings.migration">Migration</div>
           </div>
 
           <!-- Providers tab -->
@@ -3278,6 +3313,42 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                         <div style="font-size:24px;font-weight:bold;letter-spacing:4px;margin:8px 0;color:var(--accent-light)" x-text="copilotOAuth.userCode"></div>
                         <div class="text-xs text-dim"><span class="spinner" style="width:10px;height:10px;border-width:2px;display:inline-block;vertical-align:middle"></span> Waiting for authorization...</div>
                       </div>
+                    </div>
+                  </template>
+                  <!-- OpenAI Codex OAuth button -->
+                  <template x-if="p.id === 'openai-codex' && p.auth_status !== 'configured'">
+                    <div class="mt-2">
+                      <button class="btn btn-primary btn-sm" @click="startCodexOAuth()" :disabled="codexOAuth.polling" x-show="!codexOAuth.userCode">Login with OpenAI</button>
+                      <div x-show="codexOAuth.userCode" class="mt-2">
+                        <div class="text-sm">Visit <a :href="codexOAuth.verificationUri" target="_blank" x-text="codexOAuth.verificationUri" style="color:var(--accent-light)"></a> and enter:</div>
+                        <div style="font-size:24px;font-weight:bold;letter-spacing:4px;margin:8px 0;color:var(--accent-light)" x-text="codexOAuth.userCode"></div>
+                        <div class="text-xs text-dim"><span class="spinner" style="width:10px;height:10px;border-width:2px;display:inline-block;vertical-align:middle"></span> Waiting for authorization...</div>
+                      </div>
+                    </div>
+                  </template>
+                  <!-- Gemini OAuth button -->
+                  <template x-if="p.id === 'gemini-oauth' && p.auth_status !== 'configured'">
+                    <div class="mt-2">
+                      <button class="btn btn-primary btn-sm" @click="startGeminiOAuth()" :disabled="geminiOAuth.polling" x-show="!geminiOAuth.userCode">Login with Google</button>
+                      <div x-show="geminiOAuth.userCode" class="mt-2">
+                        <div class="text-sm">Visit <a :href="geminiOAuth.verificationUri" target="_blank" x-text="geminiOAuth.verificationUri" style="color:var(--accent-light)"></a> and enter:</div>
+                        <div style="font-size:24px;font-weight:bold;letter-spacing:4px;margin:8px 0;color:var(--accent-light)" x-text="geminiOAuth.userCode"></div>
+                        <div class="text-xs text-dim"><span class="spinner" style="width:10px;height:10px;border-width:2px;display:inline-block;vertical-align:middle"></span> Waiting for authorization...</div>
+                      </div>
+                    </div>
+                  </template>
+                  <!-- Qwen OAuth button -->
+                  <template x-if="p.id === 'qwen-oauth' && p.auth_status !== 'configured'">
+                    <div class="mt-2">
+                      <button class="btn btn-primary btn-sm" @click="startQwenOAuth()" :disabled="qwenOAuth.polling">Load Qwen Credentials</button>
+                      <div x-show="qwenOAuth.message" class="mt-2 text-sm" style="color:var(--accent-light)" x-text="qwenOAuth.message"></div>
+                    </div>
+                  </template>
+                  <!-- MiniMax OAuth button -->
+                  <template x-if="p.id === 'minimax-oauth' && p.auth_status !== 'configured'">
+                    <div class="mt-2">
+                      <button class="btn btn-primary btn-sm" @click="startMiniMaxOAuth()" :disabled="minimaxOAuth.polling">Login with MiniMax</button>
+                      <div x-show="minimaxOAuth.message" class="mt-2 text-sm" style="color:var(--accent-light)" x-text="minimaxOAuth.message"></div>
                     </div>
                   </template>
                   <!-- Claude Code install hint -->
@@ -3527,6 +3598,24 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             <div class="card mt-4" style="border-left:3px solid var(--border)">
               <div class="card-header" style="font-size:12px;cursor:pointer" @click="$el.nextElementSibling.style.display = $el.nextElementSibling.style.display === 'none' ? 'block' : 'none'">Raw Config JSON (click to toggle)</div>
               <pre style="font-size:11px;white-space:pre-wrap;overflow:auto;max-height:400px;color:var(--text-dim);line-height:1.5;display:none" x-text="JSON.stringify(config, null, 2)"></pre>
+            </div>
+          </div>
+
+          <!-- Language tab -->
+          <div x-show="tab === 'language'">
+            <div class="info-card">
+              <h4 data-i18n="settings.language">Language</h4>
+              <p>Select your preferred language for the OpenFang dashboard interface.</p>
+            </div>
+            <div class="card">
+              <div class="form-group">
+                <label class="form-label" data-i18n="settings.language">Language</label>
+                <select class="form-select" x-model="selectedLanguage" @change="changeLanguage(selectedLanguage)" style="width:200px">
+                  <option value="en">English</option>
+                  <option value="ru">Русский</option>
+                </select>
+              </div>
+              <div class="text-xs text-dim mt-2">Language preference is saved locally and can be changed at any time.</div>
             </div>
           </div>
 

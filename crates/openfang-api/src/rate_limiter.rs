@@ -31,6 +31,9 @@ pub fn operation_cost(method: &str, path: &str) -> NonZeroU32 {
         ("POST", "/api/skills/uninstall") => NonZeroU32::new(10).unwrap(),
         ("POST", "/api/skills/reload") => NonZeroU32::new(5).unwrap(),
         ("POST", "/api/migrate") => NonZeroU32::new(100).unwrap(),
+        // OAuth endpoints — higher cost to prevent device code spam
+        ("POST", p) if p.contains("/oauth/start") => NonZeroU32::new(100).unwrap(),
+        ("GET", p) if p.contains("/oauth/poll") => NonZeroU32::new(1).unwrap(),
         ("PUT", p) if p.contains("/update") => NonZeroU32::new(10).unwrap(),
         _ => NonZeroU32::new(5).unwrap(),
     }
@@ -96,5 +99,14 @@ mod tests {
         assert_eq!(operation_cost("GET", "/api/audit/recent").get(), 5);
         assert_eq!(operation_cost("POST", "/api/skills/install").get(), 50);
         assert_eq!(operation_cost("POST", "/api/migrate").get(), 100);
+        // OAuth rate limiting
+        assert_eq!(
+            operation_cost("POST", "/api/providers/openai-codex/oauth/start").get(),
+            100
+        );
+        assert_eq!(
+            operation_cost("GET", "/api/providers/openai-codex/oauth/poll/abc").get(),
+            1
+        );
     }
 }

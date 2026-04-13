@@ -306,8 +306,6 @@ impl McpConnection {
             }
         }
 
-        // rmcp 1.3+ marks StreamableHttpClientTransportConfig as #[non_exhaustive].
-        // Use the official builder API (credit: @jefflower, PR #986).
         let config =
             StreamableHttpClientTransportConfig::with_uri(url).custom_headers(custom_headers);
 

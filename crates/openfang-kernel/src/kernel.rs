@@ -514,7 +514,7 @@ impl OpenFangKernel {
     fn fetch_copilot_models(openfang_dir: &Path) -> Result<Vec<String>, String> {
         use openfang_runtime::drivers::copilot;
 
-        let tokens = copilot::PersistedTokens::load(&openfang_dir.to_path_buf())
+        let tokens = copilot::PersistedTokens::load(openfang_dir)
             .ok_or("No persisted Copilot tokens found")?;
 
         let fetch = async {
@@ -531,9 +531,9 @@ impl OpenFangKernel {
         // Otherwise (CLI commands), create a new one.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             std::thread::scope(|s| {
-                s.spawn(|| {
-                    handle.block_on(fetch)
-                }).join().unwrap_or(Err("Thread panicked".to_string()))
+                s.spawn(|| handle.block_on(fetch))
+                    .join()
+                    .unwrap_or(Err("Thread panicked".to_string()))
             })
         } else {
             let rt = tokio::runtime::Runtime::new()

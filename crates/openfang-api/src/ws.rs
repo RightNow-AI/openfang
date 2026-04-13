@@ -169,7 +169,7 @@ pub async fn agent_ws(
         let query_auth = uri
             .query()
             .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
-            .map(|raw| crate::percent_decode(raw))
+            .map(crate::percent_decode)
             .map(|token| ct_eq(&token, api_key))
             .unwrap_or(false);
 
