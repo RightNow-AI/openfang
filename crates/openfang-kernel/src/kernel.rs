@@ -514,7 +514,7 @@ impl OpenFangKernel {
     fn fetch_copilot_models(openfang_dir: &Path) -> Result<Vec<String>, String> {
         use openfang_runtime::drivers::copilot;
 
-        let tokens = copilot::PersistedTokens::load(&openfang_dir.to_path_buf())
+        let tokens = copilot::PersistedTokens::load(openfang_dir)
             .ok_or("No persisted Copilot tokens found")?;
 
         let fetch = async {

@@ -276,7 +276,7 @@ struct OaiUsage {
 /// Strip trailing empty assistant messages without tool calls.
 /// Some API proxies reject empty assistant messages as "prefill".
 fn strip_trailing_empty_assistant(messages: &mut Vec<OaiMessage>) {
-    while messages.last().map_or(false, |m| {
+    while messages.last().is_some_and(|m| {
         m.role == "assistant"
             && m.tool_calls.is_none()
             && match &m.content {
