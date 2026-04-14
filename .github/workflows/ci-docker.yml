@@ -1,0 +1,16 @@
+name: Docker Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  docker:
+    uses: Ai-road-4-You/enterprise-ci-cd/.github/workflows/ci-docker.yml@v1
+    secrets: inherit
