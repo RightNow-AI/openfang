@@ -25,6 +25,7 @@
         rust-project.defaults.perCrate.crane.args.buildInputs = with pkgs; [
           clang
           openssl
+          perl
           pkg-config
         ];
         rust-project.crates.openfang-desktop.crane.args.buildInputs = with pkgs; [

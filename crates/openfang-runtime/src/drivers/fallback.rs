@@ -245,4 +245,75 @@ mod tests {
         // All drivers rate-limited — error should bubble up
         assert!(matches!(result, Err(LlmError::RateLimited { .. })));
     }
+
+    /// Regression test for #1003: when the primary driver returns a network /
+    /// connection error (e.g. LM Studio shut down → reqwest connection refused),
+    /// the FallbackDriver MUST escalate to the next driver in the chain instead
+    /// of bubbling the error up to the agent loop (which would then retry the
+    /// dead primary forever).
+    #[tokio::test]
+    async fn test_network_error_falls_through_to_secondary() {
+        struct NetworkFailDriver;
+
+        #[async_trait]
+        impl LlmDriver for NetworkFailDriver {
+            async fn complete(
+                &self,
+                _req: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                // Simulates `reqwest::Error` from a connection refused — exactly
+                // what an offline LM Studio looks like in production.
+                Err(LlmError::Http(
+                    "error sending request: connection refused (os error 10061)".to_string(),
+                ))
+            }
+        }
+
+        let driver = FallbackDriver::new(vec![
+            Arc::new(NetworkFailDriver) as Arc<dyn LlmDriver>,
+            Arc::new(OkDriver) as Arc<dyn LlmDriver>,
+        ]);
+        let result = driver.complete(test_request()).await;
+        assert!(
+            result.is_ok(),
+            "FallbackDriver should escalate network errors to the next driver"
+        );
+        assert_eq!(result.unwrap().text(), "OK");
+    }
+
+    /// Same as above but for streaming. The streaming path is what the agent
+    /// loop hits in practice for LM Studio etc., so it must also fall through.
+    #[tokio::test]
+    async fn test_network_error_falls_through_streaming() {
+        struct NetworkFailDriver;
+
+        #[async_trait]
+        impl LlmDriver for NetworkFailDriver {
+            async fn complete(
+                &self,
+                _req: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                Err(LlmError::Http("connection refused".to_string()))
+            }
+
+            async fn stream(
+                &self,
+                _req: CompletionRequest,
+                _tx: tokio::sync::mpsc::Sender<StreamEvent>,
+            ) -> Result<CompletionResponse, LlmError> {
+                Err(LlmError::Http("connection refused".to_string()))
+            }
+        }
+
+        let driver = FallbackDriver::new(vec![
+            Arc::new(NetworkFailDriver) as Arc<dyn LlmDriver>,
+            Arc::new(OkDriver) as Arc<dyn LlmDriver>,
+        ]);
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let result = driver.stream(test_request(), tx).await;
+        assert!(
+            result.is_ok(),
+            "FallbackDriver::stream should also escalate network errors"
+        );
+    }
 }

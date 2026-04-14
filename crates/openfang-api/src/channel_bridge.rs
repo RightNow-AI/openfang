@@ -816,6 +816,19 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         }
     }
 
+    async fn free_response_channels(&self, channel_type: &str) -> Vec<String> {
+        let channels = &self.kernel.config.channels;
+        match channel_type {
+            "discord" => channels
+                .discord
+                .as_ref()
+                .map(|c| c.free_response_channels.clone())
+                .unwrap_or_default(),
+            // Add other channel types here as needed (e.g., "telegram" => ...)
+            _ => Vec::new(),
+        }
+    }
+
     async fn authorize_channel_user(
         &self,
         channel_type: &str,
@@ -1457,8 +1470,15 @@ pub async fn start_channel_bridge_with_config(
     // Revolt
     if let Some(ref rv_config) = config.revolt {
         if let Some(token) = read_token(&rv_config.bot_token_env, "Revolt") {
-            let adapter = Arc::new(RevoltAdapter::new(token));
-            adapters.push((adapter, rv_config.default_agent.clone()));
+            let mut adapter = RevoltAdapter::with_urls(
+                token,
+                rv_config.api_url.clone(),
+                rv_config.ws_url.clone(),
+            );
+            if !rv_config.allowed_channels.is_empty() {
+                adapter.set_allowed_channels(rv_config.allowed_channels.clone());
+            }
+            adapters.push((Arc::new(adapter), rv_config.default_agent.clone()));
         }
     }
 

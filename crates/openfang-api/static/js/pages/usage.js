@@ -191,6 +191,33 @@ function analyticsPage() {
       return segments;
     },
 
+    donutSegmentsSvg() {
+      var segments = this.donutSegments();
+      if (!segments.length) return '';
+
+      function escapeXml(value) {
+        return String(value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&apos;');
+      }
+
+      var out = [];
+      for (var i = 0; i < segments.length; i++) {
+        var seg = segments[i];
+        var title = seg.provider + ': ' + seg.percent + '% (' + this.formatCost(seg.cost) + ')';
+        out.push(
+          '<circle cx="80" cy="80" r="60" fill="none" stroke="' + escapeXml(seg.color) + '" stroke-width="24" stroke-dasharray="' + escapeXml(seg.dasharray) + '" stroke-dashoffset="' + escapeXml(seg.dashoffset) + '" transform="rotate(-90 80 80)" class="donut-segment">' +
+          '<title>' + escapeXml(title) + '</title>' +
+          '</circle>'
+        );
+      }
+
+      return out.join('');
+    },
+
     // ── Bar chart (last 7 days) ──
 
     barChartData() {
@@ -216,6 +243,42 @@ function analyticsPage() {
         });
       }
       return result;
+    },
+
+    barChartSvg() {
+      var bars = this.barChartData();
+      if (!bars.length) return '';
+
+      function escapeXml(value) {
+        return String(value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&apos;');
+      }
+
+      var out = [];
+      for (var i = 0; i < bars.length; i++) {
+        var bar = bars[i];
+        var x = i * 50 + 18;
+        var labelX = i * 50 + 30;
+        var y = 150 - bar.barHeight;
+        var costLabelY = y - 4;
+        var title = bar.date + ': ' + this.formatCost(bar.cost) + ' (' + bar.calls + ' calls)';
+
+        out.push(
+          '<g>' +
+          '<rect x="' + x + '" y="' + y + '" width="24" height="' + bar.barHeight + '" rx="3" fill="var(--accent)" class="cost-bar" style="opacity:0.85">' +
+          '<title>' + escapeXml(title) + '</title>' +
+          '</rect>' +
+          '<text x="' + labelX + '" y="166" text-anchor="middle" fill="var(--text-muted)" style="font-size:9px;font-family:var(--font-mono)">' + escapeXml(bar.dayName) + '</text>' +
+          '<text x="' + labelX + '" y="' + costLabelY + '" text-anchor="middle" fill="var(--text-dim)" style="font-size:8px;font-family:var(--font-mono)">' + escapeXml(this.formatCost(bar.cost)) + '</text>' +
+          '</g>'
+        );
+      }
+
+      return out.join('');
     },
 
     // ── Cost by model table (sorted by cost descending) ──

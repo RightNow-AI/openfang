@@ -33,7 +33,8 @@ subtle = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 reqwest = { workspace = true }
-cron = "0.15"
+rustls = { workspace = true }
+cron = "0.16"
 zeroize = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

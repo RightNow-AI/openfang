@@ -169,6 +169,19 @@ fn normalize_schema_recursive(schema: &serde_json::Value) -> serde_json::Value {
         result.insert(key.clone(), value.clone());
     }
 
+    // Gemini requires `items` for every array-typed parameter.
+    // JSON Schema allows arrays without `items`, but the Gemini API rejects
+    // such schemas with INVALID_ARGUMENT. Inject a default string items schema
+    // so MCP tools (and any other source) don't break Gemini requests.
+    if result.get("type").and_then(|t| t.as_str()) == Some("array")
+        && !result.contains_key("items")
+    {
+        result.insert(
+            "items".to_string(),
+            serde_json::json!({"type": "string"}),
+        );
+    }
+
     serde_json::Value::Object(result)
 }
 
@@ -614,6 +627,38 @@ mod tests {
         let result = normalize_schema_for_provider(&schema, "gemini");
         let payload_prop = &result["properties"]["payload"];
         assert!(payload_prop.get("anyOf").is_none());
+    }
+
+    #[test]
+    fn test_normalize_injects_items_for_array_without_items() {
+        // MCP tools often send array params without `items` — Gemini rejects these.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "fields": { "type": "array", "description": "List of fields" },
+                "filters": { "type": "array" }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        // Both array properties must have `items` injected
+        assert_eq!(result["properties"]["fields"]["items"]["type"], "string");
+        assert_eq!(result["properties"]["filters"]["items"]["type"], "string");
+    }
+
+    #[test]
+    fn test_normalize_preserves_existing_items() {
+        // If `items` already exists, it must not be overwritten
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": { "type": "integer" }
+                }
+            }
+        });
+        let result = normalize_schema_for_provider(&schema, "gemini");
+        assert_eq!(result["properties"]["ids"]["items"]["type"], "integer");
     }
 
     #[test]

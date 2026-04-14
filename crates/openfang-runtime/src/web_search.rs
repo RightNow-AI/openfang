@@ -358,7 +358,10 @@ impl WebSearchEngine {
 
         let resp = self
             .client
-            .get(format!("{}/search", self.config.searxng.url.trim_end_matches('/')))
+            .get(format!(
+                "{}/search",
+                self.config.searxng.url.trim_end_matches('/')
+            ))
             .query(&[
                 ("q", query),
                 ("format", "json"),
@@ -451,7 +454,10 @@ impl WebSearchEngine {
 
         let resp = self
             .client
-            .get(format!("{}/config", self.config.searxng.url.trim_end_matches('/')))
+            .get(format!(
+                "{}/config",
+                self.config.searxng.url.trim_end_matches('/')
+            ))
             .header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)")
             .send()
             .await

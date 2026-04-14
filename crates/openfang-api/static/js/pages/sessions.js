@@ -64,15 +64,20 @@ function sessionsPage() {
 
     deleteSession(sessionId) {
       var self = this;
-      OpenFangToast.confirm('Delete Session', 'This will permanently remove the session and its messages.', async function() {
-        try {
-          await OpenFangAPI.del('/api/sessions/' + sessionId);
-          self.sessions = self.sessions.filter(function(s) { return s.session_id !== sessionId; });
-          OpenFangToast.success('Session deleted');
-        } catch(e) {
-          OpenFangToast.error('Failed to delete session: ' + e.message);
+      var t = window.i18n ? window.i18n.t.bind(window.i18n) : function(k) { return k; };
+      OpenFangToast.confirm(
+        t('sessions.delete_session') || 'Delete Session',
+        t('sessions.delete_confirm') || 'This will permanently remove the session and its messages.',
+        async function() {
+          try {
+            await OpenFangAPI.del('/api/sessions/' + sessionId);
+            self.sessions = self.sessions.filter(function(s) { return s.session_id !== sessionId; });
+            OpenFangToast.success('Session deleted');
+          } catch(e) {
+            OpenFangToast.error('Failed to delete session: ' + e.message);
+          }
         }
-      });
+      );
     },
 
     // -- Memory methods --
@@ -108,15 +113,20 @@ function sessionsPage() {
 
     deleteKey(key) {
       var self = this;
-      OpenFangToast.confirm('Delete Key', 'Delete key "' + key + '"? This cannot be undone.', async function() {
-        try {
-          await OpenFangAPI.del('/api/memory/agents/' + self.memAgentId + '/kv/' + encodeURIComponent(key));
-          OpenFangToast.success('Key "' + key + '" deleted');
-          await self.loadKv();
-        } catch(e) {
-          OpenFangToast.error('Failed to delete key: ' + e.message);
+      var t = window.i18n ? window.i18n.t.bind(window.i18n) : function(k) { return k; };
+      OpenFangToast.confirm(
+        t('sessions.delete_key') || 'Delete Key',
+        (t('sessions.delete_key_confirm') || 'Delete key') + ' "' + key + '"? This cannot be undone.',
+        async function() {
+          try {
+            await OpenFangAPI.del('/api/memory/agents/' + self.memAgentId + '/kv/' + encodeURIComponent(key));
+            OpenFangToast.success('Key "' + key + '" deleted');
+            await self.loadKv();
+          } catch(e) {
+            OpenFangToast.error('Failed to delete key: ' + e.message);
+          }
         }
-      });
+      );
     },
 
     startEdit(kv) {

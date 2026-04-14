@@ -4,6 +4,8 @@
 //! Replaces the scattered `push_str` prompt injection throughout the codebase
 //! with a single, testable, ordered prompt builder.
 
+use crate::str_utils::safe_truncate_str;
+
 /// All the context needed to build a system prompt for an agent.
 #[derive(Debug, Clone, Default)]
 pub struct PromptContext {
@@ -627,7 +629,7 @@ fn cap_str(s: &str, max_chars: usize) -> String {
             .nth(max_chars)
             .map(|(i, _)| i)
             .unwrap_or(s.len());
-        format!("{}...", &s[..end])
+        safe_truncate_str(s, end).to_string() + "..."
     }
 }
 

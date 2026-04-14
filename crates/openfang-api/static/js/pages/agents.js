@@ -53,14 +53,23 @@ function agentsPage() {
       '\u{2764}\uFE0F', '\u{1F31F}', '\u{1F527}', '\u{1F4DD}', '\u{1F4A1}', '\u{1F3A8}'
     ],
     archetypeOptions: ['Assistant', 'Researcher', 'Coder', 'Writer', 'DevOps', 'Support', 'Analyst', 'Custom'],
-    personalityPresets: [
-      { id: 'professional', label: 'Professional', soul: 'Communicate in a clear, professional tone. Be direct and structured. Use formal language and data-driven reasoning. Prioritize accuracy over personality.' },
-      { id: 'friendly', label: 'Friendly', soul: 'Be warm, approachable, and conversational. Use casual language and show genuine interest in the user. Add personality to your responses while staying helpful.' },
-      { id: 'technical', label: 'Technical', soul: 'Focus on technical accuracy and depth. Use precise terminology. Show your work and reasoning. Prefer code examples and structured explanations.' },
-      { id: 'creative', label: 'Creative', soul: 'Be imaginative and expressive. Use vivid language, analogies, and unexpected connections. Encourage creative thinking and explore multiple perspectives.' },
-      { id: 'concise', label: 'Concise', soul: 'Be extremely brief and to the point. No filler, no pleasantries. Answer in the fewest words possible while remaining accurate and complete.' },
-      { id: 'mentor', label: 'Mentor', soul: 'Be patient and encouraging like a great teacher. Break down complex topics step by step. Ask guiding questions. Celebrate progress and build confidence.' }
-    ],
+    _personalityPresetsLoaded: false,
+    personalityPresets: [], // Loaded dynamically with i18n
+
+    // Load personality presets with i18n
+    loadPersonalityPresets: function() {
+      if (this._personalityPresetsLoaded) return;
+      var t = typeof window.t === 'function' ? window.t : function(s) { return s; };
+      this.personalityPresets = [
+        { id: 'professional', label: t('presets.professional'), soul: t('presets.professional_soul') },
+        { id: 'friendly', label: t('presets.friendly'), soul: t('presets.friendly_soul') },
+        { id: 'technical', label: t('presets.technical'), soul: t('presets.technical_soul') },
+        { id: 'creative', label: t('presets.creative'), soul: t('presets.creative_soul') },
+        { id: 'concise', label: t('presets.concise'), soul: t('presets.concise_soul') },
+        { id: 'mentor', label: t('presets.mentor'), soul: t('presets.mentor_soul') }
+      ];
+      this._personalityPresetsLoaded = true;
+    },
 
     // -- Detail modal tabs --
     detailTab: 'info',
@@ -99,21 +108,31 @@ function agentsPage() {
     // Load templates from API
     async init() {
       await this.loadTemplates();
+      // Load personality presets with i18n
+      this.loadPersonalityPresets();
     },
 
-    // ── Profile Descriptions ──
-    profileDescriptions: {
-      minimal: { label: 'Minimal', desc: 'Read-only file access' },
-      coding: { label: 'Coding', desc: 'Files + shell + web fetch' },
-      research: { label: 'Research', desc: 'Web search + file read/write' },
-      messaging: { label: 'Messaging', desc: 'Agents + memory access' },
-      automation: { label: 'Automation', desc: 'All tools except custom' },
-      balanced: { label: 'Balanced', desc: 'General-purpose tool set' },
-      precise: { label: 'Precise', desc: 'Focused tool set for accuracy' },
-      creative: { label: 'Creative', desc: 'Full tools with creative emphasis' },
-      full: { label: 'Full', desc: 'All 35+ tools' }
+    // ── Profile Descriptions (loaded dynamically with i18n) ──
+    _profileDescriptionsLoaded: false,
+    profileDescriptions: {},
+    loadProfileDescriptions: function() {
+      if (this._profileDescriptionsLoaded) return;
+      var t = typeof window.t === 'function' ? window.t : function(s) { return s; };
+      this.profileDescriptions = {
+        minimal: { label: t('agents.profile.minimal'), desc: t('agents.profile.minimal_desc') },
+        coding: { label: t('agents.profile.coding'), desc: t('agents.profile.coding_desc') },
+        research: { label: t('agents.profile.research'), desc: t('agents.profile.research_desc') },
+        messaging: { label: t('agents.profile.messaging'), desc: t('agents.profile.messaging_desc') },
+        automation: { label: t('agents.profile.automation'), desc: t('agents.profile.automation_desc') },
+        balanced: { label: t('agents.profile.balanced'), desc: t('agents.profile.balanced_desc') },
+        precise: { label: t('agents.profile.precise'), desc: t('agents.profile.precise_desc') },
+        creative: { label: t('agents.profile.creative'), desc: t('agents.profile.creative_desc') },
+        full: { label: t('agents.profile.full'), desc: t('agents.profile.full_desc') }
+      };
+      this._profileDescriptionsLoaded = true;
     },
     profileInfo: function(name) {
+      this.loadProfileDescriptions();
       return this.profileDescriptions[name] || { label: name, desc: '' };
     },
 
@@ -197,6 +216,8 @@ function agentsPage() {
       try {
         await Alpine.store('app').refreshAgents();
         await this.loadTemplates();
+        this.loadPersonalityPresets();
+        this.loadProfileDescriptions();
       } catch(e) {
         this.loadError = e.message || 'Could not load agents. Is the daemon running?';
       }
@@ -240,61 +261,61 @@ function agentsPage() {
             name: 'General Assistant',
             description: 'A versatile conversational agent that can help with everyday tasks, answer questions, and provide recommendations.',
             category: 'General',
-            provider: 'groq',
-            model: 'llama-3.3-70b-versatile',
+            provider: 'default',
+            model: 'default',
             profile: 'full',
             system_prompt: 'You are a helpful, friendly assistant. Provide clear, accurate, and concise responses. Ask clarifying questions when needed.',
-            manifest_toml: 'name = "General Assistant"\ndescription = "A versatile conversational agent that can help with everyday tasks, answer questions, and provide recommendations."\nmodule = "builtin:chat"\nprofile = "full"\n\n[model]\nprovider = "groq"\nmodel = "llama-3.3-70b-versatile"\nsystem_prompt = """\nYou are a helpful, friendly assistant. Provide clear, accurate, and concise responses. Ask clarifying questions when needed.\n"""'
+            manifest_toml: 'name = "General Assistant"\ndescription = "A versatile conversational agent that can help with everyday tasks, answer questions, and provide recommendations."\nmodule = "builtin:chat"\nprofile = "full"\n\n[model]\nprovider = "default"\nmodel = "default"\nsystem_prompt = """\nYou are a helpful, friendly assistant. Provide clear, accurate, and concise responses. Ask clarifying questions when needed.\n"""'
           },
           {
             name: 'Code Helper',
             description: 'A programming-focused agent that writes, reviews, and debugs code across multiple languages.',
             category: 'Development',
-            provider: 'groq',
-            model: 'llama-3.3-70b-versatile',
+            provider: 'default',
+            model: 'default',
             profile: 'coding',
             system_prompt: 'You are an expert programmer. Help users write clean, efficient code. Explain your reasoning. Follow best practices and conventions for the language being used.',
-            manifest_toml: 'name = "Code Helper"\ndescription = "A programming-focused agent that writes, reviews, and debugs code across multiple languages."\nmodule = "builtin:chat"\nprofile = "coding"\n\n[model]\nprovider = "groq"\nmodel = "llama-3.3-70b-versatile"\nsystem_prompt = """\nYou are an expert programmer. Help users write clean, efficient code. Explain your reasoning. Follow best practices and conventions for the language being used.\n"""'
+            manifest_toml: 'name = "Code Helper"\ndescription = "A programming-focused agent that writes, reviews, and debugs code across multiple languages."\nmodule = "builtin:chat"\nprofile = "coding"\n\n[model]\nprovider = "default"\nmodel = "default"\nsystem_prompt = """\nYou are an expert programmer. Help users write clean, efficient code. Explain your reasoning. Follow best practices and conventions for the language being used.\n"""'
           },
           {
             name: 'Researcher',
             description: 'An analytical agent that breaks down complex topics, synthesizes information, and provides cited summaries.',
             category: 'Research',
-            provider: 'groq',
-            model: 'llama-3.3-70b-versatile',
+            provider: 'default',
+            model: 'default',
             profile: 'research',
             system_prompt: 'You are a research analyst. Break down complex topics into clear explanations. Provide structured analysis with key findings. Cite sources when available.',
-            manifest_toml: 'name = "Researcher"\ndescription = "An analytical agent that breaks down complex topics, synthesizes information, and provides cited summaries."\nmodule = "builtin:chat"\nprofile = "research"\n\n[model]\nprovider = "groq"\nmodel = "llama-3.3-70b-versatile"\nsystem_prompt = """\nYou are a research analyst. Break down complex topics into clear explanations. Provide structured analysis with key findings. Cite sources when available.\n"""'
+            manifest_toml: 'name = "Researcher"\ndescription = "An analytical agent that breaks down complex topics, synthesizes information, and provides cited summaries."\nmodule = "builtin:chat"\nprofile = "research"\n\n[model]\nprovider = "default"\nmodel = "default"\nsystem_prompt = """\nYou are a research analyst. Break down complex topics into clear explanations. Provide structured analysis with key findings. Cite sources when available.\n"""'
           },
           {
             name: 'Writer',
             description: 'A creative writing agent that helps with drafting, editing, and improving written content of all kinds.',
             category: 'Writing',
-            provider: 'groq',
-            model: 'llama-3.3-70b-versatile',
+            provider: 'default',
+            model: 'default',
             profile: 'full',
             system_prompt: 'You are a skilled writer and editor. Help users create polished content. Adapt your tone and style to match the intended audience. Offer constructive suggestions for improvement.',
-            manifest_toml: 'name = "Writer"\ndescription = "A creative writing agent that helps with drafting, editing, and improving written content of all kinds."\nmodule = "builtin:chat"\nprofile = "full"\n\n[model]\nprovider = "groq"\nmodel = "llama-3.3-70b-versatile"\nsystem_prompt = """\nYou are a skilled writer and editor. Help users create polished content. Adapt your tone and style to match the intended audience. Offer constructive suggestions for improvement.\n"""'
+            manifest_toml: 'name = "Writer"\ndescription = "A creative writing agent that helps with drafting, editing, and improving written content of all kinds."\nmodule = "builtin:chat"\nprofile = "full"\n\n[model]\nprovider = "default"\nmodel = "default"\nsystem_prompt = """\nYou are a skilled writer and editor. Help users create polished content. Adapt your tone and style to match the intended audience. Offer constructive suggestions for improvement.\n"""'
           },
           {
             name: 'Data Analyst',
             description: 'A data-focused agent that helps analyze datasets, create queries, and interpret statistical results.',
             category: 'Development',
-            provider: 'groq',
-            model: 'llama-3.3-70b-versatile',
+            provider: 'default',
+            model: 'default',
             profile: 'coding',
             system_prompt: 'You are a data analysis expert. Help users understand their data, write SQL/Python queries, and interpret results. Present findings clearly with actionable insights.',
-            manifest_toml: 'name = "Data Analyst"\ndescription = "A data-focused agent that helps analyze datasets, create queries, and interpret statistical results."\nmodule = "builtin:chat"\nprofile = "coding"\n\n[model]\nprovider = "groq"\nmodel = "llama-3.3-70b-versatile"\nsystem_prompt = """\nYou are a data analysis expert. Help users understand their data, write SQL/Python queries, and interpret results. Present findings clearly with actionable insights.\n"""'
+            manifest_toml: 'name = "Data Analyst"\ndescription = "A data-focused agent that helps analyze datasets, create queries, and interpret statistical results."\nmodule = "builtin:chat"\nprofile = "coding"\n\n[model]\nprovider = "default"\nmodel = "default"\nsystem_prompt = """\nYou are a data analysis expert. Help users understand their data, write SQL/Python queries, and interpret results. Present findings clearly with actionable insights.\n"""'
           },
           {
             name: 'DevOps Engineer',
             description: 'A systems-focused agent for CI/CD, infrastructure, Docker, and deployment troubleshooting.',
             category: 'Development',
-            provider: 'groq',
-            model: 'llama-3.3-70b-versatile',
+            provider: 'default',
+            model: 'default',
             profile: 'automation',
             system_prompt: 'You are a DevOps engineer. Help with CI/CD pipelines, Docker, Kubernetes, infrastructure as code, and deployment. Prioritize reliability and security.',
-            manifest_toml: 'name = "DevOps Engineer"\ndescription = "A systems-focused agent for CI/CD, infrastructure, Docker, and deployment troubleshooting."\nmodule = "builtin:chat"\nprofile = "automation"\n\n[model]\nprovider = "groq"\nmodel = "llama-3.3-70b-versatile"\nsystem_prompt = """\nYou are a DevOps engineer. Help with CI/CD pipelines, Docker, Kubernetes, infrastructure as code, and deployment. Prioritize reliability and security.\n"""'
+            manifest_toml: 'name = "DevOps Engineer"\ndescription = "A systems-focused agent for CI/CD, infrastructure, Docker, and deployment troubleshooting."\nmodule = "builtin:chat"\nprofile = "automation"\n\n[model]\nprovider = "default"\nmodel = "default"\nsystem_prompt = """\nYou are a DevOps engineer. Help with CI/CD pipelines, Docker, Kubernetes, infrastructure as code, and deployment. Prioritize reliability and security.\n"""'
           },
           ...results[0].templates || []
         ];
@@ -383,8 +404,8 @@ function agentsPage() {
       this.selectedPreset = '';
       this.soulContent = '';
       this.spawnForm.name = '';
-      this.spawnForm.provider = 'groq';
-      this.spawnForm.model = 'llama-3.3-70b-versatile';
+      this.spawnForm.provider = 'default';
+      this.spawnForm.model = 'default';
       this.spawnForm.systemPrompt = 'You are a helpful assistant.';
       this.spawnForm.profile = 'full';
       // Fetch status defaults and dynamic provider list concurrently

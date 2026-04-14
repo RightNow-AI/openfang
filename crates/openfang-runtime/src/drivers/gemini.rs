@@ -370,7 +370,11 @@ fn sanitize_gemini_turns(contents: Vec<GeminiContent>) -> Vec<GeminiContent> {
     }
 
     // Step 2: Drop orphaned functionCall parts from model turns.
-    // A model turn with functionCall must be followed by a user turn with functionResponse.
+    // A model turn with functionCall must be:
+    //   (a) followed by a user turn with functionResponse, AND
+    //   (b) preceded by a user turn (i.e. not at position 0).
+    // Gemini rejects with INVALID_ARGUMENT if a functionCall turn is at
+    // position 0 with no preceding user turn, even when (a) is satisfied.
     let len = merged.len();
     for i in 0..len {
         let is_model = merged[i].role.as_deref() == Some("model");
@@ -394,7 +398,9 @@ fn sanitize_gemini_turns(contents: Vec<GeminiContent>) -> Vec<GeminiContent> {
                 .iter()
                 .any(|p| matches!(p, GeminiPart::FunctionResponse { .. }));
 
-        if !next_has_response {
+        // After Step 1 merge, i > 0 guarantees a user turn precedes this model
+        // turn (alternating roles). i == 0 means no preceding user turn.
+        if i == 0 || !next_has_response {
             // Drop the functionCall parts from this model turn (keep text parts)
             merged[i]
                 .parts

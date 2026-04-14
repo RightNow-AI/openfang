@@ -330,6 +330,31 @@ pub fn parse_hand_toml(content: &str) -> Result<HandDefinition, toml::de::Error>
     Ok(wrapper.hand)
 }
 
+/// Recursively copy a directory and all its contents.
+///
+/// Used by `HandRegistry::install_from_path` to persist a custom hand's
+/// source directory into `~/.openfang/hands/<hand_id>/` so installed hands
+/// survive daemon restarts (issue #984).
+pub(crate) fn copy_dir_all(
+    src: impl AsRef<std::path::Path>,
+    dst: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
 /// Complete Hand definition — parsed from HAND.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandDefinition {
@@ -396,6 +421,12 @@ pub struct HandInstance {
     pub instance_id: Uuid,
     /// Which hand definition this is an instance of.
     pub hand_id: String,
+    /// Optional user-supplied instance label. When set, multiple instances of
+    /// the same hand can coexist as long as each (hand_id, instance_name) pair
+    /// is unique. When `None`, the legacy single-instance-per-hand rule
+    /// applies.
+    #[serde(default)]
+    pub instance_name: Option<String>,
     /// Current status.
     pub status: HandStatus,
     /// The agent that was spawned for this hand.
@@ -416,11 +447,13 @@ impl HandInstance {
         hand_id: &str,
         agent_name: &str,
         config: HashMap<String, serde_json::Value>,
+        instance_name: Option<String>,
     ) -> Self {
         let now = Utc::now();
         Self {
             instance_id: Uuid::new_v4(),
             hand_id: hand_id.to_string(),
+            instance_name,
             status: HandStatus::Active,
             agent_id: None,
             agent_name: agent_name.to_string(),
@@ -437,6 +470,10 @@ pub struct ActivateHandRequest {
     /// Optional configuration overrides.
     #[serde(default)]
     pub config: HashMap<String, serde_json::Value>,
+    /// Optional unique instance label. Allows multiple instances of the same
+    /// hand to coexist as long as each name is distinct.
+    #[serde(default)]
+    pub instance_name: Option<String>,
 }
 
 #[cfg(test)]
@@ -462,11 +499,12 @@ mod tests {
 
     #[test]
     fn hand_instance_new() {
-        let instance = HandInstance::new("clip", "clip-hand", HashMap::new());
+        let instance = HandInstance::new("clip", "clip-hand", HashMap::new(), None);
         assert_eq!(instance.hand_id, "clip");
         assert_eq!(instance.agent_name, "clip-hand");
         assert_eq!(instance.status, HandStatus::Active);
         assert!(instance.agent_id.is_none());
+        assert!(instance.instance_name.is_none());
     }
 
     #[test]
