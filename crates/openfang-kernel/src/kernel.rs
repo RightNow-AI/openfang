@@ -2101,12 +2101,14 @@ impl OpenFangKernel {
 
                     // Persist usage to database (same as non-streaming path)
                     let model = &manifest.model.model;
+                    let provider = &manifest.model.provider;
                     let cost = MeteringEngine::estimate_cost_with_catalog(
                         &kernel_clone
                             .model_catalog
                             .read()
                             .unwrap_or_else(|e| e.into_inner()),
                         model,
+                        provider,
                         result.total_usage.input_tokens,
                         result.total_usage.output_tokens,
                     );
@@ -2658,9 +2660,11 @@ impl OpenFangKernel {
 
         // Record usage in the metering engine (uses catalog pricing as single source of truth)
         let model = &manifest.model.model;
+        let provider = &manifest.model.provider;
         let cost = MeteringEngine::estimate_cost_with_catalog(
             &self.model_catalog.read().unwrap_or_else(|e| e.into_inner()),
             model,
+            provider,
             result.total_usage.input_tokens,
             result.total_usage.output_tokens,
         );
@@ -3148,9 +3152,11 @@ impl OpenFangKernel {
             .unwrap_or((0, 0));
 
         let model = &entry.manifest.model.model;
+        let provider = &entry.manifest.model.provider;
         let cost = MeteringEngine::estimate_cost_with_catalog(
             &self.model_catalog.read().unwrap_or_else(|e| e.into_inner()),
             model,
+            provider,
             input_tokens,
             output_tokens,
         );

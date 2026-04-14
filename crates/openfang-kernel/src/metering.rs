@@ -192,15 +192,28 @@ impl MeteringEngine {
 
     /// Estimate cost using the model catalog as the pricing source.
     ///
-    /// Falls back to the default rate ($1/$3 per million) if the model is not
-    /// found in the catalog.
+    /// If the model is in the catalog, its pricing is used verbatim.
+    /// Otherwise:
+    /// - Local providers (ollama, vllm, lmstudio, lemonade, llamacpp, local)
+    ///   default to $0/$0 — inference is running on the user's own hardware
+    ///   and has no per-token cost. This covers custom Ollama Modelfiles and
+    ///   any other locally-served model that isn't explicitly cataloged.
+    /// - Everything else (cloud providers) falls back to $1/$3 per million,
+    ///   a conservative placeholder that surfaces the cost of an unknown
+    ///   cloud model rather than silently hiding it.
     pub fn estimate_cost_with_catalog(
         catalog: &openfang_runtime::model_catalog::ModelCatalog,
         model: &str,
+        provider: &str,
         input_tokens: u64,
         output_tokens: u64,
     ) -> f64 {
-        let (input_per_m, output_per_m) = catalog.pricing(model).unwrap_or((1.0, 3.0));
+        let fallback = if is_local_provider(provider) {
+            (0.0, 0.0)
+        } else {
+            (1.0, 3.0)
+        };
+        let (input_per_m, output_per_m) = catalog.pricing(model).unwrap_or(fallback);
         let input_cost = (input_tokens as f64 / 1_000_000.0) * input_per_m;
         let output_cost = (output_tokens as f64 / 1_000_000.0) * output_per_m;
         input_cost + output_cost
@@ -210,6 +223,26 @@ impl MeteringEngine {
     pub fn cleanup(&self, days: u32) -> OpenFangResult<usize> {
         self.store.cleanup_old(days)
     }
+}
+
+/// True when the provider runs inference locally (zero per-token cost).
+///
+/// Used by `estimate_cost_with_catalog` to pick a $0/$0 fallback for
+/// models that aren't explicitly registered in the catalog. A custom
+/// Ollama Modelfile like `my-model:latest` will miss the catalog but
+/// still cost nothing to run, so it should not trip budget quotas.
+fn is_local_provider(provider: &str) -> bool {
+    matches!(
+        provider.to_lowercase().as_str(),
+        "ollama"
+            | "vllm"
+            | "lmstudio"
+            | "lm-studio"
+            | "lemonade"
+            | "llamacpp"
+            | "llama.cpp"
+            | "local"
+    )
 }
 
 /// Budget status snapshot — current spend vs limits for all time windows.
@@ -758,6 +791,7 @@ mod tests {
         let cost = MeteringEngine::estimate_cost_with_catalog(
             &catalog,
             "claude-sonnet-4-20250514",
+            "anthropic",
             1_000_000,
             1_000_000,
         );
@@ -768,22 +802,88 @@ mod tests {
     fn test_estimate_cost_with_catalog_alias() {
         let catalog = openfang_runtime::model_catalog::ModelCatalog::new();
         // "sonnet" alias should resolve to same pricing
-        let cost =
-            MeteringEngine::estimate_cost_with_catalog(&catalog, "sonnet", 1_000_000, 1_000_000);
+        let cost = MeteringEngine::estimate_cost_with_catalog(
+            &catalog,
+            "sonnet",
+            "anthropic",
+            1_000_000,
+            1_000_000,
+        );
         assert!((cost - 18.0).abs() < 0.01);
     }
 
     #[test]
-    fn test_estimate_cost_with_catalog_unknown_uses_default() {
+    fn test_estimate_cost_with_catalog_unknown_cloud_uses_default() {
         let catalog = openfang_runtime::model_catalog::ModelCatalog::new();
-        // Unknown model falls back to $1/$3
+        // Unknown cloud model falls back to $1/$3 — surfaces cost, doesn't hide it.
         let cost = MeteringEngine::estimate_cost_with_catalog(
             &catalog,
             "totally-unknown-model",
+            "openai",
             1_000_000,
             1_000_000,
         );
         assert!((cost - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_estimate_cost_with_catalog_unknown_local_is_free() {
+        let catalog = openfang_runtime::model_catalog::ModelCatalog::new();
+        // Unknown local model (e.g. custom Ollama Modelfile) → $0.
+        // This prevents false budget-quota trips on zero-cost inference.
+        for provider in [
+            "ollama",
+            "Ollama",
+            "OLLAMA",
+            "vllm",
+            "lmstudio",
+            "lm-studio",
+            "lemonade",
+            "llamacpp",
+            "llama.cpp",
+            "local",
+        ] {
+            let cost = MeteringEngine::estimate_cost_with_catalog(
+                &catalog,
+                "gemma4-agent",
+                provider,
+                1_000_000,
+                1_000_000,
+            );
+            assert_eq!(cost, 0.0, "provider {provider} must default to $0");
+        }
+    }
+
+    #[test]
+    fn test_estimate_cost_with_catalog_known_model_ignores_provider_hint() {
+        let catalog = openfang_runtime::model_catalog::ModelCatalog::new();
+        // When the model IS in the catalog, catalog pricing wins regardless
+        // of the provider hint. This guards against a caller mislabeling a
+        // known cloud model with a "local" provider tag.
+        let cost = MeteringEngine::estimate_cost_with_catalog(
+            &catalog,
+            "claude-sonnet-4-20250514",
+            "ollama",
+            1_000_000,
+            1_000_000,
+        );
+        assert!((cost - 18.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_is_local_provider() {
+        assert!(super::is_local_provider("ollama"));
+        assert!(super::is_local_provider("OLLAMA"));
+        assert!(super::is_local_provider("vllm"));
+        assert!(super::is_local_provider("lmstudio"));
+        assert!(super::is_local_provider("lm-studio"));
+        assert!(super::is_local_provider("lemonade"));
+        assert!(super::is_local_provider("llamacpp"));
+        assert!(super::is_local_provider("llama.cpp"));
+        assert!(super::is_local_provider("local"));
+        assert!(!super::is_local_provider("anthropic"));
+        assert!(!super::is_local_provider("openai"));
+        assert!(!super::is_local_provider(""));
     }
 
     #[test]
