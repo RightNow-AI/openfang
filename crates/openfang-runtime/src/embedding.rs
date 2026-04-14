@@ -2,12 +2,13 @@
 //!
 //! Provides an `EmbeddingDriver` trait and an OpenAI-compatible implementation
 //! that works with any provider offering a `/v1/embeddings` endpoint (OpenAI,
-//! Groq, Together, Fireworks, Ollama, etc.).
+//! Groq, Together, Fireworks, Ollama, etc.), plus a native Google Gemini
+//! `batchEmbedContents` driver (`embedding_provider = "gemini"`).
 
 use async_trait::async_trait;
 use openfang_types::model_catalog::{
-    FIREWORKS_BASE_URL, GROQ_BASE_URL, LMSTUDIO_BASE_URL, MISTRAL_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL,
+    FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, LMSTUDIO_BASE_URL, MISTRAL_BASE_URL,
+    OLLAMA_BASE_URL, OPENAI_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -102,6 +103,23 @@ impl OpenAIEmbeddingDriver {
     }
 }
 
+/// Maximum texts per Gemini `batchEmbedContents` request.
+const GEMINI_BATCH_LIMIT: usize = 100;
+
+/// Warn once when an embedding driver is configured to send data to an external API.
+fn warn_external_api(provider: &str, base_url: &str) {
+    let is_local = base_url.contains("localhost")
+        || base_url.contains("127.0.0.1")
+        || base_url.contains("[::1]");
+    if !is_local {
+        warn!(
+            provider = %provider,
+            base_url = %base_url,
+            "Embedding driver configured to send data to external API — text content will leave this machine"
+        );
+    }
+}
+
 /// Infer embedding dimensions from model name.
 fn infer_dimensions(model: &str) -> usize {
     match model {
@@ -109,6 +127,8 @@ fn infer_dimensions(model: &str) -> usize {
         "text-embedding-3-small" => 1536,
         "text-embedding-3-large" => 3072,
         "text-embedding-ada-002" => 1536,
+        "gemini-embedding-001" => 3072,
+        "text-embedding-004" => 768,
         // Sentence Transformers / local models
         "all-MiniLM-L6-v2" => 384,
         "all-MiniLM-L12-v2" => 384,
@@ -174,6 +194,150 @@ impl EmbeddingDriver for OpenAIEmbeddingDriver {
     }
 }
 
+/// Google Gemini embedding driver using the `v1beta` `batchEmbedContents` API.
+///
+/// Supports models such as `gemini-embedding-001` and `text-embedding-004`.
+/// Authentication is via the `x-goog-api-key` header — not OpenAI-compatible.
+/// Batches requests in groups of up to [`GEMINI_BATCH_LIMIT`] texts per call.
+pub struct GeminiEmbeddingDriver {
+    api_key: Zeroizing<String>,
+    base_url: String,
+    model: String,
+    client: reqwest::Client,
+    dims: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiBatchEmbedRequest<'a> {
+    requests: Vec<GeminiBatchEmbedItem<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiBatchEmbedItem<'a> {
+    model: String,
+    content: GeminiEmbedContent<'a>,
+}
+
+#[derive(Serialize)]
+struct GeminiEmbedContent<'a> {
+    parts: Vec<GeminiEmbedPart<'a>>,
+}
+
+#[derive(Serialize)]
+struct GeminiEmbedPart<'a> {
+    text: &'a str,
+}
+
+#[derive(Deserialize)]
+struct GeminiBatchEmbedResponse {
+    embeddings: Vec<GeminiEmbeddingValues>,
+}
+
+#[derive(Deserialize)]
+struct GeminiEmbeddingValues {
+    values: Vec<f32>,
+}
+
+impl GeminiEmbeddingDriver {
+    pub fn new(api_key: String, base_url: String, model: String) -> Result<Self, EmbeddingError> {
+        if model.trim().is_empty() {
+            return Err(EmbeddingError::Parse(
+                "Gemini embedding model name is empty".to_string(),
+            ));
+        }
+        if api_key.is_empty() {
+            return Err(EmbeddingError::MissingApiKey(
+                "GEMINI_API_KEY (or embedding_api_key_env)".to_string(),
+            ));
+        }
+        let dims = infer_dimensions(model.trim());
+        Ok(Self {
+            api_key: Zeroizing::new(api_key),
+            base_url: base_url.trim_end_matches('/').to_string(),
+            model: model.trim().to_string(),
+            client: reqwest::Client::new(),
+            dims,
+        })
+    }
+
+}
+
+#[async_trait]
+impl EmbeddingDriver for GeminiEmbeddingDriver {
+    async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let model_resource = format!("models/{}", self.model);
+        let url = format!("{}/v1beta/models/{}:batchEmbedContents", self.base_url, self.model);
+        let mut all = Vec::with_capacity(texts.len());
+
+        for chunk in texts.chunks(GEMINI_BATCH_LIMIT) {
+            let requests: Vec<GeminiBatchEmbedItem<'_>> = chunk
+                .iter()
+                .map(|t| GeminiBatchEmbedItem {
+                    model: model_resource.clone(),
+                    content: GeminiEmbedContent {
+                        parts: vec![GeminiEmbedPart { text: *t }],
+                    },
+                })
+                .collect();
+
+            let body = GeminiBatchEmbedRequest { requests };
+
+            let resp = self
+                .client
+                .post(&url)
+                .header("x-goog-api-key", self.api_key.as_str())
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| EmbeddingError::Http(e.to_string()))?;
+
+            let status = resp.status().as_u16();
+            if status != 200 {
+                let body_text = resp.text().await.unwrap_or_default();
+                return Err(EmbeddingError::Api {
+                    status,
+                    message: body_text,
+                });
+            }
+
+            let parsed: GeminiBatchEmbedResponse = resp
+                .json()
+                .await
+                .map_err(|e| EmbeddingError::Parse(e.to_string()))?;
+
+            if parsed.embeddings.len() != chunk.len() {
+                return Err(EmbeddingError::Parse(format!(
+                    "Gemini batchEmbedContents: expected {} embeddings, got {}",
+                    chunk.len(),
+                    parsed.embeddings.len()
+                )));
+            }
+
+            for e in parsed.embeddings {
+                all.push(e.values);
+            }
+        }
+
+        debug!(
+            "Gemini embedded {} texts (dims={})",
+            all.len(),
+            all.first().map(|e| e.len()).unwrap_or(0)
+        );
+
+        Ok(all)
+    }
+
+    fn dimensions(&self) -> usize {
+        self.dims
+    }
+}
+
 /// Create an embedding driver from kernel config.
 pub fn create_embedding_driver(
     provider: &str,
@@ -186,6 +350,27 @@ pub fn create_embedding_driver(
     } else {
         std::env::var(api_key_env).unwrap_or_default()
     };
+
+    if provider == "gemini" {
+        if api_key.is_empty() {
+            let hint = if api_key_env.is_empty() {
+                "set memory.embedding_api_key_env and export that variable (e.g. GEMINI_API_KEY)"
+                    .to_string()
+            } else {
+                format!("set environment variable {api_key_env}")
+            };
+            return Err(EmbeddingError::MissingApiKey(hint));
+        }
+        let base_url = custom_base_url
+            .filter(|u| !u.is_empty())
+            .map(|u| u.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| GEMINI_BASE_URL.to_string());
+
+        warn_external_api(provider, &base_url);
+
+        let driver = GeminiEmbeddingDriver::new(api_key, base_url, model.to_string())?;
+        return Ok(Box::new(driver));
+    }
 
     let base_url = custom_base_url
         .filter(|u| !u.is_empty())
@@ -226,17 +411,7 @@ pub fn create_embedding_driver(
             }
         });
 
-    // SECURITY: Warn when embedding requests will be sent to an external API
-    let is_local = base_url.contains("localhost")
-        || base_url.contains("127.0.0.1")
-        || base_url.contains("[::1]");
-    if !is_local {
-        warn!(
-            provider = %provider,
-            base_url = %base_url,
-            "Embedding driver configured to send data to external API — text content will leave this machine"
-        );
-    }
+    warn_external_api(provider, &base_url);
 
     let config = EmbeddingConfig {
         provider: provider.to_string(),
@@ -379,6 +554,14 @@ mod tests {
         let driver = create_embedding_driver("ollama", "all-MiniLM-L6-v2", "", None);
         assert!(driver.is_ok());
         assert_eq!(driver.unwrap().dimensions(), 384);
+    }
+
+    #[test]
+    fn test_create_embedding_driver_gemini_requires_api_key() {
+        let key = "__OPENFANG_TEST_GEMINI_EMBED_KEY_UNSET__";
+        std::env::remove_var(key);
+        let err = create_embedding_driver("gemini", "gemini-embedding-001", key, None);
+        assert!(matches!(err, Err(EmbeddingError::MissingApiKey(_))));
     }
 
     #[test]
