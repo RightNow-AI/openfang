@@ -970,11 +970,11 @@ pub fn run() -> InitResult {
                             if matches!(
                                 state.copilot_auth_status,
                                 CopilotAuthStatus::WaitingForUser
-                            ) && !state.copilot_verification_uri.is_empty() {
-                                let _ =
-                                    openfang_runtime::drivers::copilot::open_verification_url(
-                                        &state.copilot_verification_uri,
-                                    );
+                            ) && !state.copilot_verification_uri.is_empty()
+                            {
+                                let _ = openfang_runtime::drivers::copilot::open_verification_url(
+                                    &state.copilot_verification_uri,
+                                );
                             }
                         }
                         _ => {}
