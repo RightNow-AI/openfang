@@ -173,13 +173,9 @@ fn normalize_schema_recursive(schema: &serde_json::Value) -> serde_json::Value {
     // JSON Schema allows arrays without `items`, but the Gemini API rejects
     // such schemas with INVALID_ARGUMENT. Inject a default string items schema
     // so MCP tools (and any other source) don't break Gemini requests.
-    if result.get("type").and_then(|t| t.as_str()) == Some("array")
-        && !result.contains_key("items")
+    if result.get("type").and_then(|t| t.as_str()) == Some("array") && !result.contains_key("items")
     {
-        result.insert(
-            "items".to_string(),
-            serde_json::json!({"type": "string"}),
-        );
+        result.insert("items".to_string(), serde_json::json!({"type": "string"}));
     }
 
     serde_json::Value::Object(result)
