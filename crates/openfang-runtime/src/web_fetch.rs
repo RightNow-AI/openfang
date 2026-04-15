@@ -366,7 +366,10 @@ fn is_private_ip(ip: &IpAddr) -> bool {
 }
 
 /// Extract host:port from a URL.
-fn extract_host(url: &str) -> String {
+///
+/// Handles IPv6 bracket notation (`[::1]:8080`), and infers default
+/// ports (80 for HTTP, 443 for HTTPS) when no explicit port is given.
+pub(crate) fn extract_host(url: &str) -> String {
     if let Some(after_scheme) = url.split("://").nth(1) {
         let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
         // Handle IPv6 bracket notation: [::1]:8080

@@ -42,6 +42,9 @@ pub struct SandboxConfig {
     /// Wall-clock timeout in seconds for epoch-based interruption.
     /// Defaults to 30 seconds if None.
     pub timeout_secs: Option<u64>,
+    /// Hosts allowed to bypass SSRF private-IP checks.
+    /// Forwarded from `[web.fetch] ssrf_allowed_hosts` in config.toml.
+    pub ssrf_allowed_hosts: Vec<String>,
 }
 
 impl Default for SandboxConfig {
@@ -51,6 +54,7 @@ impl Default for SandboxConfig {
             max_memory_bytes: 16 * 1024 * 1024,
             capabilities: Vec::new(),
             timeout_secs: None,
+            ssrf_allowed_hosts: Vec::new(),
         }
     }
 }
@@ -65,6 +69,8 @@ pub struct GuestState {
     pub agent_id: String,
     /// Tokio runtime handle for async operations in sync host functions.
     pub tokio_handle: tokio::runtime::Handle,
+    /// Hosts allowed to bypass SSRF private-IP checks (from config).
+    pub ssrf_allowed_hosts: Vec<String>,
 }
 
 /// Result of executing a WASM module.
@@ -164,6 +170,7 @@ impl WasmSandbox {
                 kernel,
                 agent_id: agent_id.to_string(),
                 tokio_handle,
+                ssrf_allowed_hosts: config.ssrf_allowed_hosts.clone(),
             },
         );
 

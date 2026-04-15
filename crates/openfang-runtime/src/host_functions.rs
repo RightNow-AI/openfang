@@ -7,9 +7,9 @@
 //! They receive `&GuestState` (not `&mut`) and return JSON values.
 
 use crate::sandbox::GuestState;
+use crate::web_fetch;
 use openfang_types::capability::{capability_matches, Capability};
 use serde_json::json;
-use std::net::ToSocketAddrs;
 use std::path::{Component, Path};
 use tracing::debug;
 
@@ -117,63 +117,8 @@ fn safe_resolve_parent(path: &str) -> Result<std::path::PathBuf, serde_json::Val
 }
 
 // ---------------------------------------------------------------------------
-// SSRF protection
+// SSRF protection — delegates to the canonical implementation in web_fetch.rs
 // ---------------------------------------------------------------------------
-
-/// SSRF protection: check if a hostname resolves to a private/internal IP.
-/// This defeats DNS rebinding by checking the RESOLVED address, not the hostname.
-fn is_ssrf_target(url: &str) -> Result<(), serde_json::Value> {
-    // Only allow http:// and https:// schemes (block file://, gopher://, ftp://)
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(json!({"error": "Only http:// and https:// URLs are allowed"}));
-    }
-
-    let host = extract_host_from_url(url);
-    let hostname = host.split(':').next().unwrap_or(&host);
-
-    // Check hostname-based blocklist first (catches metadata endpoints)
-    let blocked_hostnames = [
-        "localhost",
-        "metadata.google.internal",
-        "metadata.aws.internal",
-        "instance-data",
-        "169.254.169.254",
-    ];
-    if blocked_hostnames.contains(&hostname) {
-        return Err(json!({"error": format!("SSRF blocked: {hostname} is a restricted hostname")}));
-    }
-
-    // Resolve DNS and check every returned IP
-    let port = if url.starts_with("https") { 443 } else { 80 };
-    let socket_addr = format!("{hostname}:{port}");
-    if let Ok(addrs) = socket_addr.to_socket_addrs() {
-        for addr in addrs {
-            let ip = addr.ip();
-            if ip.is_loopback() || ip.is_unspecified() || is_private_ip(&ip) {
-                return Err(json!({"error": format!(
-                    "SSRF blocked: {hostname} resolves to private IP {ip}"
-                )}));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn is_private_ip(ip: &std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            matches!(
-                octets,
-                [10, ..] | [172, 16..=31, ..] | [192, 168, ..] | [169, 254, ..]
-            )
-        }
-        std::net::IpAddr::V6(v6) => {
-            let segments = v6.segments();
-            (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Always-allowed functions
@@ -279,13 +224,15 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
         .unwrap_or("GET");
     let body = params.get("body").and_then(|b| b.as_str()).unwrap_or("");
 
-    // SECURITY: SSRF protection — check resolved IP against private ranges
-    if let Err(e) = is_ssrf_target(url) {
-        return e;
+    // SECURITY: SSRF protection — delegates to the canonical check in web_fetch
+    // which includes the full blocklist, metadata IP detection, IPv6 support,
+    // and respects the ssrf_allowed_hosts configuration.
+    if let Err(msg) = web_fetch::check_ssrf(url, &state.ssrf_allowed_hosts) {
+        return json!({"error": msg});
     }
 
     // Extract host:port from URL for capability check
-    let host = extract_host_from_url(url);
+    let host = web_fetch::extract_host(url);
     if let Err(e) = check_capability(&state.capabilities, &Capability::NetConnect(host)) {
         return e;
     }
@@ -311,21 +258,6 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
     })
 }
 
-/// Extract host:port from a URL for capability checking.
-fn extract_host_from_url(url: &str) -> String {
-    if let Some(after_scheme) = url.split("://").nth(1) {
-        let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
-        if host_port.contains(':') {
-            host_port.to_string()
-        } else if url.starts_with("https") {
-            format!("{host_port}:443")
-        } else {
-            format!("{host_port}:80")
-        }
-    } else {
-        url.to_string()
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Shell (capability-checked)
@@ -501,6 +433,7 @@ mod tests {
             kernel: None,
             agent_id: "test-agent".to_string(),
             tokio_handle: tokio::runtime::Handle::current(),
+            ssrf_allowed_hosts: Vec::new(),
         }
     }
 
@@ -618,51 +551,65 @@ mod tests {
         assert!(safe_resolve_parent("/tmp/../../etc/shadow").is_err());
     }
 
+    // SSRF tests now exercise the canonical implementation in web_fetch.rs,
+    // which is the same code path used by host_net_fetch at runtime.
+    // This verifies the integration works end-to-end for WASM host calls.
+
     #[test]
     fn test_ssrf_private_ips_blocked() {
-        assert!(is_ssrf_target("http://127.0.0.1:8080/secret").is_err());
-        assert!(is_ssrf_target("http://localhost:3000/api").is_err());
-        assert!(is_ssrf_target("http://169.254.169.254/metadata").is_err());
-        assert!(is_ssrf_target("http://metadata.google.internal/v1/instance").is_err());
+        let no_allow: Vec<String> = vec![];
+        assert!(web_fetch::check_ssrf("http://127.0.0.1:8080/secret", &no_allow).is_err());
+        assert!(web_fetch::check_ssrf("http://localhost:3000/api", &no_allow).is_err());
+        assert!(web_fetch::check_ssrf("http://169.254.169.254/metadata", &no_allow).is_err());
+        assert!(web_fetch::check_ssrf("http://metadata.google.internal/v1/instance", &no_allow).is_err());
+        // These were previously missing from host_functions — now covered:
+        assert!(web_fetch::check_ssrf("http://[::1]:8080/secret", &no_allow).is_err());
+        assert!(web_fetch::check_ssrf("http://100.100.100.200/metadata", &no_allow).is_err());
     }
 
     #[test]
     fn test_ssrf_public_ips_allowed() {
-        assert!(is_ssrf_target("https://api.openai.com/v1/chat").is_ok());
-        assert!(is_ssrf_target("https://google.com").is_ok());
+        let no_allow: Vec<String> = vec![];
+        assert!(web_fetch::check_ssrf("https://api.openai.com/v1/chat", &no_allow).is_ok());
+        assert!(web_fetch::check_ssrf("https://google.com", &no_allow).is_ok());
     }
 
     #[test]
     fn test_ssrf_scheme_validation() {
-        assert!(is_ssrf_target("file:///etc/passwd").is_err());
-        assert!(is_ssrf_target("gopher://evil.com").is_err());
-        assert!(is_ssrf_target("ftp://example.com").is_err());
+        let no_allow: Vec<String> = vec![];
+        assert!(web_fetch::check_ssrf("file:///etc/passwd", &no_allow).is_err());
+        assert!(web_fetch::check_ssrf("gopher://evil.com", &no_allow).is_err());
+        assert!(web_fetch::check_ssrf("ftp://example.com", &no_allow).is_err());
     }
 
     #[test]
-    fn test_is_private_ip() {
-        use std::net::IpAddr;
-        assert!(is_private_ip(&"10.0.0.1".parse::<IpAddr>().unwrap()));
-        assert!(is_private_ip(&"172.16.0.1".parse::<IpAddr>().unwrap()));
-        assert!(is_private_ip(&"192.168.1.1".parse::<IpAddr>().unwrap()));
-        assert!(is_private_ip(&"169.254.169.254".parse::<IpAddr>().unwrap()));
-        assert!(!is_private_ip(&"8.8.8.8".parse::<IpAddr>().unwrap()));
-        assert!(!is_private_ip(&"1.1.1.1".parse::<IpAddr>().unwrap()));
+    fn test_ssrf_allowlist_respected() {
+        let allowed = vec!["192.168.1.0/24".to_string()];
+        // Private IP that matches allowlist — should pass
+        assert!(web_fetch::check_ssrf("http://192.168.1.100:8080/api", &allowed).is_ok());
+        // Private IP outside allowlist — should still block
+        let no_allow: Vec<String> = vec![];
+        assert!(web_fetch::check_ssrf("http://192.168.1.100:8080/api", &no_allow).is_err());
     }
 
     #[test]
-    fn test_extract_host_from_url() {
+    fn test_extract_host_delegates_to_web_fetch() {
         assert_eq!(
-            extract_host_from_url("https://api.openai.com/v1/chat"),
+            web_fetch::extract_host("https://api.openai.com/v1/chat"),
             "api.openai.com:443"
         );
         assert_eq!(
-            extract_host_from_url("http://localhost:8080/api"),
+            web_fetch::extract_host("http://localhost:8080/api"),
             "localhost:8080"
         );
         assert_eq!(
-            extract_host_from_url("http://example.com"),
+            web_fetch::extract_host("http://example.com"),
             "example.com:80"
+        );
+        // IPv6 — previously not handled by host_functions
+        assert_eq!(
+            web_fetch::extract_host("http://[::1]:9090/test"),
+            "[::1]:9090"
         );
     }
 }
