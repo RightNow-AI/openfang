@@ -53,7 +53,11 @@ impl MatrixAdapter {
             homeserver_url,
             user_id,
             access_token: Zeroizing::new(access_token),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(90))
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             allowed_rooms,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
@@ -240,13 +244,29 @@ impl ChannelAdapter for MatrixAdapter {
 
         tokio::spawn(async move {
             let mut backoff = Duration::from_secs(1);
+            let mut sync_iteration: u64 = 0;
             // Track recently seen event IDs to prevent duplicate processing
             // on sync token races or reconnects.
             let mut seen_events: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
             const MAX_SEEN: usize = 500;
 
+            info!("Matrix sync loop started");
+
             loop {
+                sync_iteration += 1;
+
+                // Log every 10th iteration to confirm loop is alive
+                if sync_iteration % 10 == 1 {
+                    info!("Matrix sync loop alive, iteration={sync_iteration}");
+                }
+
+                // Check if shutdown was already signaled before entering select
+                if *shutdown_rx.borrow() {
+                    info!("Matrix sync loop: shutdown already signaled, exiting");
+                    break;
+                }
+
                 // Build /sync URL
                 let since = since_token.read().await.clone();
                 let mut url = format!(
@@ -257,16 +277,25 @@ impl ChannelAdapter for MatrixAdapter {
                     url.push_str(&format!("&since={token}"));
                 }
 
+                debug!("Matrix sync request iter={sync_iteration} has_since={}", since.is_some());
+
                 let resp = tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        info!("Matrix adapter shutting down");
+                    result = shutdown_rx.changed() => {
+                        match result {
+                            Ok(()) => {
+                                info!("Matrix sync loop: shutdown signal received, exiting");
+                            }
+                            Err(e) => {
+                                warn!("Matrix sync loop: shutdown channel error (sender dropped): {e}");
+                            }
+                        }
                         break;
                     }
                     result = client.get(&url).bearer_auth(access_token.as_str()).send() => {
                         match result {
                             Ok(r) => r,
                             Err(e) => {
-                                warn!("Matrix sync error: {e}");
+                                warn!("Matrix sync error (iter={sync_iteration}): {e}");
                                 tokio::time::sleep(backoff).await;
                                 backoff = (backoff * 2).min(Duration::from_secs(60));
                                 continue;
@@ -276,7 +305,7 @@ impl ChannelAdapter for MatrixAdapter {
                 };
 
                 if !resp.status().is_success() {
-                    warn!("Matrix sync returned {}", resp.status());
+                    warn!("Matrix sync returned {} (iter={sync_iteration})", resp.status());
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_secs(60));
                     continue;
@@ -287,7 +316,7 @@ impl ChannelAdapter for MatrixAdapter {
                 let body: serde_json::Value = match resp.json().await {
                     Ok(b) => b,
                     Err(e) => {
-                        warn!("Matrix sync parse error: {e}");
+                        warn!("Matrix sync parse error (iter={sync_iteration}): {e}");
                         continue;
                     }
                 };
@@ -370,38 +399,18 @@ impl ChannelAdapter for MatrixAdapter {
                                     ChannelContent::Text(content.to_string())
                                 };
 
-                                // FIX #2: Detect @mentions in message text.
+                                // Detect @mentions: check body, formatted_body, and m.mentions
                                 let mut metadata = HashMap::new();
-                                if content.contains(&user_id) {
-                                    metadata.insert(
-                                        "was_mentioned".to_string(),
-                                        serde_json::json!(true),
-                                    );
-                                }
-
-                                // FIX #3: Determine if room is a DM (2 members) or group.
-                                let is_group = get_room_member_count(
-                                    &client,
-                                    &homeserver,
-                                    access_token.as_str(),
-                                    room_id,
-                                )
-                                .await
-                                .map(|count| count > 2)
-                                .unwrap_or(true);
-
-                                // For DMs, auto-set was_mentioned so dm_policy works.
-                                if !is_group {
-                                    metadata.insert(
-                                        "was_mentioned".to_string(),
-                                        serde_json::json!(true),
-                                    );
-                                    metadata.insert("is_dm".to_string(), serde_json::json!(true));
-                                }
-
-                                // FIX #2: Detect @mentions in message text.
-                                let mut metadata = HashMap::new();
-                                if content.contains(&user_id) {
+                                let mentioned_in_body = content.contains(&user_id);
+                                let mentioned_in_html = event["content"]["formatted_body"]
+                                    .as_str()
+                                    .map(|html| html.contains(&user_id))
+                                    .unwrap_or(false);
+                                let mentioned_in_m_mentions = event["content"]["m.mentions"]["user_ids"]
+                                    .as_array()
+                                    .map(|ids| ids.iter().any(|id| id.as_str() == Some(&user_id)))
+                                    .unwrap_or(false);
+                                if mentioned_in_body || mentioned_in_html || mentioned_in_m_mentions {
                                     metadata.insert(
                                         "was_mentioned".to_string(),
                                         serde_json::json!(true),
@@ -444,7 +453,9 @@ impl ChannelAdapter for MatrixAdapter {
                                     metadata,
                                 };
 
+                                info!("Matrix: dispatching message from {sender} in {room_id} (iter={sync_iteration})");
                                 if tx.send(channel_msg).await.is_err() {
+                                    warn!("Matrix sync loop: tx.send failed (receiver dropped), exiting (iter={sync_iteration})");
                                     return;
                                 }
                             }
@@ -452,6 +463,8 @@ impl ChannelAdapter for MatrixAdapter {
                     }
                 }
             }
+
+            info!("Matrix sync loop exited (iter={sync_iteration})");
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
@@ -505,6 +518,9 @@ impl ChannelAdapter for MatrixAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::{method, path, path_regex};
 
     #[test]
     fn test_matrix_adapter_creation() {
@@ -538,5 +554,636 @@ mod tests {
             false,
         );
         assert!(open.is_allowed_room("!any:matrix.org"));
+    }
+
+    /// Helper: create a Matrix sync response with a message in a room
+    fn sync_response_with_message(
+        next_batch: &str,
+        room_id: &str,
+        sender: &str,
+        event_id: &str,
+        body: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "next_batch": next_batch,
+            "rooms": {
+                "join": {
+                    room_id: {
+                        "timeline": {
+                            "events": [{
+                                "type": "m.room.message",
+                                "sender": sender,
+                                "event_id": event_id,
+                                "origin_server_ts": 1234567890,
+                                "content": {
+                                    "msgtype": "m.text",
+                                    "body": body
+                                }
+                            }]
+                        }
+                    }
+                },
+                "invite": {}
+            }
+        })
+    }
+
+    /// Helper: empty sync response (no new messages)
+    fn sync_response_empty(next_batch: &str) -> serde_json::Value {
+        serde_json::json!({
+            "next_batch": next_batch,
+            "rooms": {
+                "join": {},
+                "invite": {}
+            }
+        })
+    }
+
+    /// Helper: whoami response
+    fn whoami_response(user_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "user_id": user_id,
+            "is_guest": false,
+            "device_id": "TESTDEVICE"
+        })
+    }
+
+    /// Helper: joined_members response
+    fn joined_members_response(count: usize) -> serde_json::Value {
+        let mut members = serde_json::Map::new();
+        for i in 0..count {
+            members.insert(
+                format!("@user{i}:test.org"),
+                serde_json::json!({"display_name": format!("User {i}")}),
+            );
+        }
+        serde_json::json!({ "joined": members })
+    }
+
+    // ─── Test 1: Adapter authenticates and starts sync ───
+
+    #[tokio::test]
+    async fn test_adapter_auth_and_start() {
+        let server = MockServer::start().await;
+
+        // Mock /whoami
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/account/whoami"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(whoami_response("@bot:test.org")))
+            .mount(&server)
+            .await;
+
+        // Mock initial /sync (timeout=0)
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/sync"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(sync_response_empty("batch_0"))
+            )
+            .mount(&server)
+            .await;
+
+        let adapter = MatrixAdapter::new(
+            server.uri(),
+            "@bot:test.org".to_string(),
+            "test_token".to_string(),
+            vec![],
+            false,
+        );
+
+        let stream_result = adapter.start().await;
+        assert!(stream_result.is_ok(), "Adapter should start successfully");
+
+        // Clean shutdown
+        adapter.stop().await.unwrap();
+    }
+
+    // ─── Test 2: Auth failure returns error ───
+
+    #[tokio::test]
+    async fn test_adapter_auth_failure() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/account/whoami"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "errcode": "M_UNKNOWN_TOKEN",
+                "error": "Invalid token"
+            })))
+            .mount(&server)
+            .await;
+
+        let adapter = MatrixAdapter::new(
+            server.uri(),
+            "@bot:test.org".to_string(),
+            "bad_token".to_string(),
+            vec![],
+            false,
+        );
+
+        let result = adapter.start().await;
+        assert!(result.is_err(), "Should fail with bad token");
+        let err = result.err().unwrap();
+        assert!(
+            err.to_string().contains("authentication failed"),
+            "Error should mention auth failure, got: {err}"
+        );
+    }
+
+    // ─── Test 3: Sync loop receives and dispatches a message ───
+
+    #[tokio::test]
+    async fn test_sync_receives_message() {
+        let server = MockServer::start().await;
+
+        // Mock /whoami
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/account/whoami"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(whoami_response("@bot:test.org")))
+            .mount(&server)
+            .await;
+
+        // Mock /joined_members (DM = 2 members)
+        Mock::given(method("GET"))
+            .and(path_regex(r"/_matrix/client/v3/rooms/.*/joined_members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(joined_members_response(2)))
+            .mount(&server)
+            .await;
+
+        // Sync call counter via closure
+        let sync_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let sync_count_clone = sync_count.clone();
+
+        // Mock /sync: first call returns initial batch, second returns a message
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/sync"))
+            .respond_with(move |req: &wiremock::Request| {
+                let count = sync_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let query = req.url.query().unwrap_or_default();
+
+                if !query.contains("since=") || count == 0 {
+                    // Initial sync (timeout=0)
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_empty("batch_1"))
+                } else {
+                    // Subsequent sync: return a message
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_with_message(
+                            "batch_2",
+                            "!testroom:test.org",
+                            "@alice:test.org",
+                            "$event1",
+                            "Hello OpenFang!",
+                        ))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let adapter = MatrixAdapter::new(
+            server.uri(),
+            "@bot:test.org".to_string(),
+            "test_token".to_string(),
+            vec![],
+            false,
+        );
+
+        let mut stream = adapter.start().await.unwrap();
+
+        // Wait for a message with timeout
+        let msg = tokio::time::timeout(Duration::from_secs(10), stream.next()).await;
+        assert!(msg.is_ok(), "Should receive message within timeout");
+
+        let msg = msg.unwrap();
+        assert!(msg.is_some(), "Stream should produce a message");
+
+        let msg = msg.unwrap();
+        assert_eq!(msg.sender.display_name, "@alice:test.org");
+        assert_eq!(msg.sender.platform_id, "!testroom:test.org");
+        match &msg.content {
+            ChannelContent::Text(text) => assert_eq!(text, "Hello OpenFang!"),
+            _ => panic!("Expected text message"),
+        }
+
+        adapter.stop().await.unwrap();
+    }
+
+    // ─── Test 4: Own messages are skipped ───
+
+    #[tokio::test]
+    async fn test_sync_skips_own_messages() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/account/whoami"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(whoami_response("@bot:test.org")))
+            .mount(&server)
+            .await;
+
+        let sync_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let sync_count_clone = sync_count.clone();
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/sync"))
+            .respond_with(move |req: &wiremock::Request| {
+                let count = sync_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let query = req.url.query().unwrap_or_default();
+
+                if !query.contains("since=") || count == 0 {
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_empty("batch_1"))
+                } else if count == 1 {
+                    // Bot's own message — should be skipped
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_with_message(
+                            "batch_2",
+                            "!room:test.org",
+                            "@bot:test.org", // ← own message
+                            "$own_event",
+                            "I am the bot",
+                        ))
+                } else {
+                    // Real user message
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_with_message(
+                            "batch_3",
+                            "!room:test.org",
+                            "@human:test.org",
+                            "$human_event",
+                            "This should arrive",
+                        ))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/_matrix/client/v3/rooms/.*/joined_members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(joined_members_response(2)))
+            .mount(&server)
+            .await;
+
+        let adapter = MatrixAdapter::new(
+            server.uri(),
+            "@bot:test.org".to_string(),
+            "test_token".to_string(),
+            vec![],
+            false,
+        );
+
+        let mut stream = adapter.start().await.unwrap();
+
+        let msg = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .expect("Should get message within timeout")
+            .expect("Stream should not end");
+
+        // The first message we get should be from the human, not the bot
+        assert_eq!(msg.sender.display_name, "@human:test.org");
+        match &msg.content {
+            ChannelContent::Text(text) => assert_eq!(text, "This should arrive"),
+            _ => panic!("Expected text"),
+        }
+
+        adapter.stop().await.unwrap();
+    }
+
+    // ─── Test 5: Sync loop survives errors and retries ───
+
+    #[tokio::test]
+    async fn test_sync_retries_on_error() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/account/whoami"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(whoami_response("@bot:test.org")))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/_matrix/client/v3/rooms/.*/joined_members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(joined_members_response(2)))
+            .mount(&server)
+            .await;
+
+        let sync_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let sync_count_clone = sync_count.clone();
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/sync"))
+            .respond_with(move |req: &wiremock::Request| {
+                let count = sync_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let query = req.url.query().unwrap_or_default();
+
+                if !query.contains("since=") || count == 0 {
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_empty("batch_1"))
+                } else if count <= 2 {
+                    // Return 500 errors — sync should retry
+                    ResponseTemplate::new(500)
+                        .set_body_json(serde_json::json!({"error": "Internal Server Error"}))
+                } else {
+                    // After retries, return a valid message
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_with_message(
+                            "batch_2",
+                            "!room:test.org",
+                            "@user:test.org",
+                            "$after_error",
+                            "Message after errors",
+                        ))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let adapter = MatrixAdapter::new(
+            server.uri(),
+            "@bot:test.org".to_string(),
+            "test_token".to_string(),
+            vec![],
+            false,
+        );
+
+        let mut stream = adapter.start().await.unwrap();
+
+        // Should eventually get the message despite errors (with backoff retries)
+        let msg = tokio::time::timeout(Duration::from_secs(15), stream.next())
+            .await
+            .expect("Should recover from errors")
+            .expect("Stream should produce message");
+
+        match &msg.content {
+            ChannelContent::Text(text) => assert_eq!(text, "Message after errors"),
+            _ => panic!("Expected text"),
+        }
+
+        adapter.stop().await.unwrap();
+    }
+
+    // ─── Test 6: Shutdown stops the sync loop cleanly ───
+
+    #[tokio::test]
+    async fn test_shutdown_stops_sync() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/account/whoami"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(whoami_response("@bot:test.org")))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/sync"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(sync_response_empty("batch_1"))
+                    // Simulate long-poll delay
+                    .set_delay(Duration::from_secs(30))
+            )
+            .mount(&server)
+            .await;
+
+        let adapter = MatrixAdapter::new(
+            server.uri(),
+            "@bot:test.org".to_string(),
+            "test_token".to_string(),
+            vec![],
+            false,
+        );
+
+        let mut stream = adapter.start().await.unwrap();
+
+        // Shutdown after a brief delay
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        adapter.stop().await.unwrap();
+
+        // Stream should end (return None) after shutdown
+        let result = tokio::time::timeout(Duration::from_secs(5), stream.next()).await;
+        assert!(result.is_ok(), "Stream should end promptly after shutdown");
+        assert!(result.unwrap().is_none(), "Stream should return None after shutdown");
+    }
+
+    // ─── Test 7: Commands are parsed correctly ───
+
+    #[tokio::test]
+    async fn test_command_parsing() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/account/whoami"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(whoami_response("@bot:test.org")))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/_matrix/client/v3/rooms/.*/joined_members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(joined_members_response(2)))
+            .mount(&server)
+            .await;
+
+        let sync_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let sync_count_clone = sync_count.clone();
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/sync"))
+            .respond_with(move |req: &wiremock::Request| {
+                let count = sync_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let query = req.url.query().unwrap_or_default();
+
+                if !query.contains("since=") || count == 0 {
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_empty("batch_1"))
+                } else {
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_with_message(
+                            "batch_2",
+                            "!room:test.org",
+                            "@user:test.org",
+                            "$cmd_event",
+                            "/help me now",
+                        ))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let adapter = MatrixAdapter::new(
+            server.uri(),
+            "@bot:test.org".to_string(),
+            "test_token".to_string(),
+            vec![],
+            false,
+        );
+
+        let mut stream = adapter.start().await.unwrap();
+
+        let msg = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+
+        match &msg.content {
+            ChannelContent::Command { name, args } => {
+                assert_eq!(name, "help");
+                assert_eq!(args, &["me", "now"]);
+            }
+            _ => panic!("Expected command, got {:?}", msg.content),
+        }
+
+        adapter.stop().await.unwrap();
+    }
+
+    // ─── Test 8: Duplicate events are deduplicated ───
+
+    #[tokio::test]
+    async fn test_dedup_events() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/account/whoami"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(whoami_response("@bot:test.org")))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/_matrix/client/v3/rooms/.*/joined_members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(joined_members_response(2)))
+            .mount(&server)
+            .await;
+
+        let sync_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let sync_count_clone = sync_count.clone();
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/sync"))
+            .respond_with(move |req: &wiremock::Request| {
+                let count = sync_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let query = req.url.query().unwrap_or_default();
+
+                if !query.contains("since=") || count == 0 {
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_empty("batch_1"))
+                } else if count <= 2 {
+                    // Same event ID returned twice
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_with_message(
+                            "batch_2",
+                            "!room:test.org",
+                            "@user:test.org",
+                            "$same_event", // ← same ID
+                            "Duplicate message",
+                        ))
+                } else {
+                    // New unique event
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_with_message(
+                            "batch_3",
+                            "!room:test.org",
+                            "@user:test.org",
+                            "$unique_event",
+                            "Unique message",
+                        ))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let adapter = MatrixAdapter::new(
+            server.uri(),
+            "@bot:test.org".to_string(),
+            "test_token".to_string(),
+            vec![],
+            false,
+        );
+
+        let mut stream = adapter.start().await.unwrap();
+
+        // First message should be the duplicate (first occurrence)
+        let msg1 = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await.unwrap().unwrap();
+        assert!(matches!(&msg1.content, ChannelContent::Text(t) if t == "Duplicate message"));
+
+        // Second message should be the unique one (duplicate was skipped)
+        let msg2 = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await.unwrap().unwrap();
+        assert!(matches!(&msg2.content, ChannelContent::Text(t) if t == "Unique message"));
+
+        adapter.stop().await.unwrap();
+    }
+
+    // ─── Test 9: Allowed rooms filter works ───
+
+    #[tokio::test]
+    async fn test_allowed_rooms_filter() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/account/whoami"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(whoami_response("@bot:test.org")))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/_matrix/client/v3/rooms/.*/joined_members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(joined_members_response(2)))
+            .mount(&server)
+            .await;
+
+        let sync_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let sync_count_clone = sync_count.clone();
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/sync"))
+            .respond_with(move |req: &wiremock::Request| {
+                let count = sync_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let query = req.url.query().unwrap_or_default();
+
+                if !query.contains("since=") || count == 0 {
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_empty("batch_1"))
+                } else if count == 1 {
+                    // Message in blocked room
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_with_message(
+                            "batch_2",
+                            "!blocked:test.org",
+                            "@user:test.org",
+                            "$blocked",
+                            "Should be filtered",
+                        ))
+                } else {
+                    // Message in allowed room
+                    ResponseTemplate::new(200)
+                        .set_body_json(sync_response_with_message(
+                            "batch_3",
+                            "!allowed:test.org",
+                            "@user:test.org",
+                            "$allowed",
+                            "Should pass through",
+                        ))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let adapter = MatrixAdapter::new(
+            server.uri(),
+            "@bot:test.org".to_string(),
+            "test_token".to_string(),
+            vec!["!allowed:test.org".to_string()], // ← only this room
+            false,
+        );
+
+        let mut stream = adapter.start().await.unwrap();
+
+        let msg = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await.unwrap().unwrap();
+
+        // Should only get the allowed room message
+        assert_eq!(msg.sender.platform_id, "!allowed:test.org");
+        assert!(matches!(&msg.content, ChannelContent::Text(t) if t == "Should pass through"));
+
+        adapter.stop().await.unwrap();
     }
 }
