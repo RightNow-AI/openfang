@@ -22,20 +22,35 @@
         ...
       }: {
         rust-project.src = lib.sources.cleanSource ./.;
+        rust-project.defaults.perCrate.crane.args.nativeBuildInputs = with pkgs; [
+          clang
+          perl
+          pkg-config
+        ];
         rust-project.defaults.perCrate.crane.args.buildInputs = with pkgs; [
           clang
           openssl
           perl
           pkg-config
         ];
+        rust-project.crates.openfang-desktop.crane.args.nativeBuildInputs = with pkgs; [
+          pkg-config
+          wrapGAppsHook3
+        ];
         rust-project.crates.openfang-desktop.crane.args.buildInputs = with pkgs; [
           atk
           glib
           gtk3
+          libayatana-appindicator
           openssl
           pkg-config
           webkitgtk_4_1
         ];
+        rust-project.crates.openfang-desktop.crane.args.preFixup = ''
+          gappsWrapperArgs+=(
+            --prefix LD_LIBRARY_PATH : "${pkgs.libayatana-appindicator}/lib"
+          )
+        '';
 
         packages.default = self'.packages.openfang-cli;
         apps = {
