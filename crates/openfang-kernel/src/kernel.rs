@@ -7002,7 +7002,7 @@ impl KernelHandle for OpenFangKernel {
         // Build the callback message — present the result to the agent so it can
         // format a response for the end user.
         let callback_msg = format!(
-            "claude-code completed: {result_text}\n\n(Present these findings to the user.)"
+            "{agent_name} completed: {result_text}\n\n(Present these findings to the user.)"
         );
 
         // Send to the agent and get its formatted response
