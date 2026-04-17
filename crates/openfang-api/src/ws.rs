@@ -145,11 +145,27 @@ pub async fn agent_ws(
     headers: axum::http::HeaderMap,
     uri: axum::http::Uri,
 ) -> impl IntoResponse {
-    // SECURITY: Authenticate WebSocket upgrades (bypasses middleware).
-    // Trim whitespace so empty/whitespace-only api_key disables auth.
+    // SECURITY: Authenticate WebSocket upgrades (bypasses HTTP middleware).
+    // Trim whitespace so empty/whitespace-only api_key still triggers the
+    // fail-closed path for non-loopback origins (see issue #1034 B2).
     let api_key_raw = &state.kernel.config.api_key;
     let api_key = api_key_raw.trim();
-    if !api_key.is_empty() {
+    let is_loopback = addr.ip().is_loopback();
+
+    if api_key.is_empty() {
+        // No key configured. Only allow loopback, unless the operator has
+        // explicitly opted in to running open via OPENFANG_ALLOW_NO_AUTH=1.
+        let allow_no_auth = std::env::var("OPENFANG_ALLOW_NO_AUTH")
+            .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
+            .unwrap_or(false);
+        if !is_loopback && !allow_no_auth {
+            warn!(
+                ip = %addr.ip(),
+                "WebSocket upgrade rejected: no api_key configured and origin is not loopback"
+            );
+            return axum::http::StatusCode::UNAUTHORIZED.into_response();
+        }
+    } else {
         // SECURITY: Use constant-time comparison to prevent timing attacks on API key
         let ct_eq = |token: &str, key: &str| -> bool {
             use subtle::ConstantTimeEq;
