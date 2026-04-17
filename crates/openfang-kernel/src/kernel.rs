@@ -4287,6 +4287,11 @@ impl OpenFangKernel {
             }
         }
 
+        // One-shot migration of legacy shared-memory `__openfang_schedules`
+        // entries (from the old broken `schedule_create` path) into the real
+        // cron scheduler. Idempotent via a marker key.
+        self.migrate_shared_memory_schedules();
+
         // Cron scheduler tick loop — fires due jobs every 15 seconds
         {
             let kernel = Arc::clone(self);
@@ -4647,6 +4652,192 @@ impl OpenFangKernel {
                     }
                 })
             });
+    }
+
+    /// Migrate legacy `__openfang_schedules` shared-memory entries into the
+    /// real cron scheduler.
+    ///
+    /// The old `schedule_create` tool and `/api/schedules` POST route wrote
+    /// to a shared-memory key that no executor ever read — so jobs registered
+    /// that way never fired (#1069). This migration runs once at startup, is
+    /// idempotent via a marker key, and leaves an empty array behind so the
+    /// old key is no longer written to.
+    ///
+    /// Entries with unresolved target agents are skipped (logged at warn
+    /// level). Successfully migrated entries are added to the cron scheduler
+    /// and the scheduler is persisted.
+    pub(crate) fn migrate_shared_memory_schedules(&self) {
+        const LEGACY_KEY: &str = "__openfang_schedules";
+        const MARKER_KEY: &str = "__openfang_schedules_migrated_v1";
+
+        let shared = shared_memory_agent_id();
+
+        // Idempotency: if marker is already set, don't re-read.
+        if let Ok(Some(serde_json::Value::Bool(true))) =
+            self.memory.structured_get(shared, MARKER_KEY)
+        {
+            return;
+        }
+
+        let entries: Vec<serde_json::Value> = match self.memory.structured_get(shared, LEGACY_KEY) {
+            Ok(Some(serde_json::Value::Array(arr))) => arr,
+            Ok(_) => {
+                // No entries ever written. Mark as migrated and exit.
+                let _ =
+                    self.memory
+                        .structured_set(shared, MARKER_KEY, serde_json::Value::Bool(true));
+                return;
+            }
+            Err(e) => {
+                warn!("Schedule migration: failed to read legacy key: {e}");
+                return;
+            }
+        };
+
+        if entries.is_empty() {
+            let _ = self
+                .memory
+                .structured_set(shared, MARKER_KEY, serde_json::Value::Bool(true));
+            return;
+        }
+
+        let mut migrated = 0usize;
+        let mut skipped = 0usize;
+
+        for entry in &entries {
+            match self.migrate_single_schedule_entry(entry) {
+                Ok(()) => migrated += 1,
+                Err(reason) => {
+                    skipped += 1;
+                    warn!(
+                        reason = %reason,
+                        entry = %entry,
+                        "Schedule migration: skipping legacy entry"
+                    );
+                }
+            }
+        }
+
+        info!(
+            migrated,
+            skipped,
+            total = entries.len(),
+            "Migrated legacy __openfang_schedules entries to cron scheduler"
+        );
+
+        // Clear the legacy key (store an empty array) and mark migrated so
+        // the old location is never written to again.
+        if let Err(e) =
+            self.memory
+                .structured_set(shared, LEGACY_KEY, serde_json::Value::Array(Vec::new()))
+        {
+            warn!("Schedule migration: failed to clear legacy key: {e}");
+        }
+        if let Err(e) =
+            self.memory
+                .structured_set(shared, MARKER_KEY, serde_json::Value::Bool(true))
+        {
+            warn!("Schedule migration: failed to set marker: {e}");
+        }
+
+        if migrated > 0 {
+            if let Err(e) = self.cron_scheduler.persist() {
+                warn!("Schedule migration: cron persist failed: {e}");
+            }
+        }
+    }
+
+    /// Convert a single legacy schedule entry into a `CronJob` and add it to
+    /// the cron scheduler. Returns `Err` with a human-readable reason when
+    /// the entry cannot be migrated (so the caller can log and skip).
+    fn migrate_single_schedule_entry(&self, entry: &serde_json::Value) -> Result<(), String> {
+        use openfang_types::scheduler::{
+            CronAction, CronDelivery, CronJob, CronJobId, CronSchedule,
+        };
+
+        let cron_expr = entry["cron"]
+            .as_str()
+            .ok_or_else(|| "missing 'cron' field".to_string())?
+            .trim()
+            .to_string();
+        if cron_expr.is_empty() {
+            return Err("empty cron expression".to_string());
+        }
+
+        // Resolve target agent. Tool-shape uses `agent` (name or UUID);
+        // HTTP-shape uses `agent_id` (UUID or name). Try both.
+        let agent_hint = entry["agent_id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| entry["agent"].as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        let target_agent = if agent_hint.is_empty() {
+            return Err("no target agent specified".to_string());
+        } else if let Ok(uuid) = uuid::Uuid::parse_str(&agent_hint) {
+            let aid = AgentId(uuid);
+            if self.registry.get(aid).is_none() {
+                return Err(format!("agent {agent_hint} not in registry"));
+            }
+            aid
+        } else {
+            let found = self
+                .registry
+                .list()
+                .into_iter()
+                .find(|a| a.name == agent_hint);
+            match found {
+                Some(a) => a.id,
+                None => return Err(format!("agent '{agent_hint}' not found")),
+            }
+        };
+
+        // Message for the agent turn: prefer explicit `message`, fallback to
+        // `description` (tool shape), else a default string.
+        let message = entry["message"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| entry["description"].as_str())
+            .unwrap_or("Scheduled task")
+            .to_string();
+
+        // Job name: prefer `name`, else sanitize description, else a default.
+        let raw_name = entry["name"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| entry["description"].as_str())
+            .unwrap_or("migrated-schedule")
+            .to_string();
+        let name = sanitize_cron_job_name(&raw_name);
+
+        let enabled = entry["enabled"].as_bool().unwrap_or(true);
+
+        let job = CronJob {
+            id: CronJobId::new(),
+            agent_id: target_agent,
+            name,
+            enabled,
+            schedule: CronSchedule::Cron {
+                expr: cron_expr,
+                tz: None,
+            },
+            action: CronAction::AgentTurn {
+                message,
+                model_override: None,
+                timeout_secs: None,
+            },
+            delivery: CronDelivery::None,
+            created_at: chrono::Utc::now(),
+            last_run: None,
+            next_run: None,
+        };
+
+        self.cron_scheduler
+            .add_job(job, false)
+            .map_err(|e| format!("add_job failed: {e}"))?;
+        Ok(())
     }
 
     /// Gracefully shutdown the kernel.
@@ -6018,6 +6209,31 @@ pub fn shared_memory_agent_id() -> AgentId {
     ]))
 }
 
+/// Sanitize a human-readable string into a valid `CronJob.name`.
+///
+/// `CronJob::validate` requires the name to be 1..=128 chars and composed
+/// of alphanumeric, space, hyphen, and underscore characters only. This is
+/// used by the legacy schedule migration path where the source "name" may
+/// contain punctuation or be too long.
+fn sanitize_cron_job_name(raw: &str) -> String {
+    let filtered: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = filtered.trim();
+    if trimmed.is_empty() {
+        return "migrated-schedule".to_string();
+    }
+    let truncated: String = trimmed.chars().take(128).collect();
+    truncated
+}
+
 /// Deliver a cron job's agent response to the configured delivery target.
 async fn cron_deliver_response(
     kernel: &OpenFangKernel,
@@ -7096,6 +7312,230 @@ mod tests {
             entry.manifest.tool_blocklist.is_empty(),
             "hand activation should not set a runtime blocklist by default"
         );
+
+        kernel.shutdown();
+    }
+
+    // ----------------------------------------------------------------------
+    // Issue #1069: sanitize_cron_job_name + shared-memory schedule migration
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_cron_job_name_basic() {
+        assert_eq!(super::sanitize_cron_job_name("hello"), "hello");
+        assert_eq!(super::sanitize_cron_job_name("hello world"), "hello world");
+        assert_eq!(super::sanitize_cron_job_name("job_name-1"), "job_name-1");
+    }
+
+    #[test]
+    fn test_sanitize_cron_job_name_strips_punctuation() {
+        let out = super::sanitize_cron_job_name("Remind me: report!!");
+        assert!(!out.contains(':'));
+        assert!(!out.contains('!'));
+        assert!(out
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == ' ' || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn test_sanitize_cron_job_name_empty_fallback() {
+        assert_eq!(super::sanitize_cron_job_name(""), "migrated-schedule");
+        assert_eq!(super::sanitize_cron_job_name("   "), "migrated-schedule");
+    }
+
+    #[test]
+    fn test_sanitize_cron_job_name_caps_128_chars() {
+        let long = "x".repeat(500);
+        let out = super::sanitize_cron_job_name(&long);
+        assert!(out.chars().count() <= 128);
+    }
+
+    /// Register a minimal test agent in a booted kernel and return its ID.
+    /// Kept local to the tests module to avoid widening the kernel's public
+    /// surface.
+    fn register_test_agent(kernel: &OpenFangKernel, name: &str) -> AgentId {
+        let agent_id = AgentId::new();
+        let entry = AgentEntry {
+            id: agent_id,
+            name: name.to_string(),
+            manifest: test_manifest(name, "migration test", vec![]),
+            state: AgentState::Running,
+            mode: AgentMode::default(),
+            created_at: chrono::Utc::now(),
+            last_active: chrono::Utc::now(),
+            parent: None,
+            children: vec![],
+            session_id: SessionId::new(),
+            tags: vec![],
+            identity: Default::default(),
+            onboarding_completed: false,
+            onboarding_completed_at: None,
+        };
+        kernel.registry.register(entry).unwrap();
+        agent_id
+    }
+
+    #[test]
+    fn test_migrate_shared_memory_schedules_imports_legacy_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-migrate");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+
+        // Register a target agent the legacy entries can point at.
+        let agent = register_test_agent(&kernel, "report-agent");
+
+        // Pre-populate the legacy shared-memory key with two entries in the
+        // two shapes that actually shipped: (a) tool-shape (description +
+        // agent name) and (b) HTTP-shape (name + agent_id UUID).
+        let shared = super::shared_memory_agent_id();
+        let legacy_entries = serde_json::json!([
+            {
+                "description": "Send the daily report",
+                "cron": "0 9 * * *",
+                "agent": "report-agent",
+            },
+            {
+                "name": "weekly/summary: monday!",
+                "message": "Post the weekly summary",
+                "cron": "0 10 * * 1",
+                "agent_id": agent.0.to_string(),
+            },
+        ]);
+        kernel
+            .memory
+            .structured_set(shared, "__openfang_schedules", legacy_entries)
+            .unwrap();
+
+        // Sanity: before migration, the cron scheduler is empty.
+        assert_eq!(kernel.cron_scheduler.total_jobs(), 0);
+
+        kernel.migrate_shared_memory_schedules();
+
+        // Both legacy entries should now live in the cron scheduler.
+        let jobs = kernel.cron_scheduler.list_jobs(agent);
+        assert_eq!(jobs.len(), 2, "both legacy entries should migrate");
+
+        let names: Vec<&str> = jobs.iter().map(|j| j.name.as_str()).collect();
+        assert!(names.iter().any(|n| n.contains("Send the daily report")));
+        // Punctuation in the second entry's name is sanitized to hyphens.
+        assert!(
+            names.iter().any(|n| !n.contains('/') && !n.contains(':')),
+            "sanitized name must not contain '/' or ':' ({names:?})"
+        );
+
+        // The legacy key is cleared and the marker is set so we never read
+        // it again.
+        let remaining = kernel
+            .memory
+            .structured_get(shared, "__openfang_schedules")
+            .unwrap();
+        assert_eq!(remaining, Some(serde_json::Value::Array(vec![])));
+        let marker = kernel
+            .memory
+            .structured_get(shared, "__openfang_schedules_migrated_v1")
+            .unwrap();
+        assert_eq!(marker, Some(serde_json::Value::Bool(true)));
+
+        kernel.shutdown();
+    }
+
+    #[test]
+    fn test_migrate_shared_memory_schedules_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-migrate-idem");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let agent = register_test_agent(&kernel, "idem-agent");
+        let shared = super::shared_memory_agent_id();
+
+        kernel
+            .memory
+            .structured_set(
+                shared,
+                "__openfang_schedules",
+                serde_json::json!([{
+                    "description": "Ping",
+                    "cron": "*/5 * * * *",
+                    "agent_id": agent.0.to_string(),
+                }]),
+            )
+            .unwrap();
+
+        kernel.migrate_shared_memory_schedules();
+        assert_eq!(kernel.cron_scheduler.list_jobs(agent).len(), 1);
+
+        // Second call must not re-import anything even if someone re-writes
+        // the legacy key by accident; the marker gates us.
+        kernel
+            .memory
+            .structured_set(
+                shared,
+                "__openfang_schedules",
+                serde_json::json!([{
+                    "description": "Ping again",
+                    "cron": "*/5 * * * *",
+                    "agent_id": agent.0.to_string(),
+                }]),
+            )
+            .unwrap();
+        kernel.migrate_shared_memory_schedules();
+        assert_eq!(
+            kernel.cron_scheduler.list_jobs(agent).len(),
+            1,
+            "migration must be idempotent via the marker key"
+        );
+
+        kernel.shutdown();
+    }
+
+    #[test]
+    fn test_migrate_shared_memory_schedules_skips_unknown_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-migrate-skip");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let shared = super::shared_memory_agent_id();
+
+        // Entry references an agent that does not exist in the registry.
+        kernel
+            .memory
+            .structured_set(
+                shared,
+                "__openfang_schedules",
+                serde_json::json!([{
+                    "description": "Ping",
+                    "cron": "*/5 * * * *",
+                    "agent": "does-not-exist",
+                }]),
+            )
+            .unwrap();
+
+        kernel.migrate_shared_memory_schedules();
+
+        // Nothing migrated, but the marker is still set so we don't retry.
+        assert_eq!(kernel.cron_scheduler.total_jobs(), 0);
+        let marker = kernel
+            .memory
+            .structured_get(shared, "__openfang_schedules_migrated_v1")
+            .unwrap();
+        assert_eq!(marker, Some(serde_json::Value::Bool(true)));
 
         kernel.shutdown();
     }
