@@ -279,7 +279,18 @@ pub async fn run_agent_loop(
     // Add the user message to session history.
     // When content blocks are provided (e.g. text + image from a channel),
     // use multimodal message format so the LLM receives the image for vision.
-    if let Some(blocks) = user_content_blocks {
+    // The text message is prepended to the blocks so the LLM sees both the
+    // user's question AND any attached images in a single turn.
+    if let Some(mut blocks) = user_content_blocks {
+        if !user_message.is_empty() {
+            blocks.insert(
+                0,
+                ContentBlock::Text {
+                    text: user_message.to_string(),
+                    provider_metadata: None,
+                },
+            );
+        }
         session.messages.push(Message::user_with_blocks(blocks));
     } else {
         session.messages.push(Message::user(user_message));
@@ -1480,7 +1491,18 @@ pub async fn run_agent_loop_streaming(
     // Add the user message to session history.
     // When content blocks are provided (e.g. text + image from a channel),
     // use multimodal message format so the LLM receives the image for vision.
-    if let Some(blocks) = user_content_blocks {
+    // The text message is prepended to the blocks so the LLM sees both the
+    // user's question AND any attached images in a single turn.
+    if let Some(mut blocks) = user_content_blocks {
+        if !user_message.is_empty() {
+            blocks.insert(
+                0,
+                ContentBlock::Text {
+                    text: user_message.to_string(),
+                    provider_metadata: None,
+                },
+            );
+        }
         session.messages.push(Message::user_with_blocks(blocks));
     } else {
         session.messages.push(Message::user(user_message));
