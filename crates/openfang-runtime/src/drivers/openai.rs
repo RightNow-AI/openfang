@@ -308,9 +308,7 @@ impl LlmDriver for OpenAIDriver {
         // Convert messages
         for msg in &request.messages {
             match (&msg.role, &msg.content) {
-                (Role::System, MessageContent::Text(text))
-                    if request.system.is_none() =>
-                {
+                (Role::System, MessageContent::Text(text)) if request.system.is_none() => {
                     oai_messages.push(OaiMessage {
                         role: "system".to_string(),
                         content: Some(OaiMessageContent::Text(text.clone())),
@@ -793,9 +791,7 @@ impl LlmDriver for OpenAIDriver {
 
         for msg in &request.messages {
             match (&msg.role, &msg.content) {
-                (Role::System, MessageContent::Text(text))
-                    if request.system.is_none() =>
-                {
+                (Role::System, MessageContent::Text(text)) if request.system.is_none() => {
                     oai_messages.push(OaiMessage {
                         role: "system".to_string(),
                         content: Some(OaiMessageContent::Text(text.clone())),
