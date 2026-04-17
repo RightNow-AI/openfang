@@ -115,6 +115,32 @@ pub async fn build_router(
 
     // Trim whitespace so `api_key = ""` or `api_key = "  "` both disable auth.
     let api_key = state.kernel.config.api_key.trim().to_string();
+    let allow_no_auth = std::env::var("OPENFANG_ALLOW_NO_AUTH")
+        .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .unwrap_or(false);
+
+    // Fail-closed warning: if no api_key and no dashboard auth, and the
+    // server is bound to a non-loopback address without an explicit opt-in,
+    // shout about it. The middleware will reject non-loopback traffic.
+    let bind_is_loopback = listen_addr.ip().is_loopback();
+    if api_key.is_empty() && !state.kernel.config.auth.enabled && !bind_is_loopback {
+        if allow_no_auth {
+            tracing::warn!(
+                "OPENFANG_ALLOW_NO_AUTH=1 is set. Running WITHOUT authentication on {}. \
+                 Anyone reachable at this address can read/write agents, channels, and keys.",
+                listen_addr
+            );
+        } else {
+            tracing::warn!(
+                "No api_key configured and server is bound to {} (non-loopback). \
+                 Non-loopback requests will be rejected with 401. \
+                 Set OPENFANG_API_KEY (or api_key in config.toml), or bind to 127.0.0.1, \
+                 or set OPENFANG_ALLOW_NO_AUTH=1 to explicitly run open.",
+                listen_addr
+            );
+        }
+    }
+
     let auth_state = crate::middleware::AuthState {
         api_key: api_key.clone(),
         auth_enabled: state.kernel.config.auth.enabled,
@@ -125,6 +151,7 @@ pub async fn build_router(
         } else {
             String::new()
         },
+        allow_no_auth,
     };
     let gcra_limiter = rate_limiter::create_rate_limiter();
 
