@@ -46,6 +46,10 @@ curl -fsSL https://openfang.sh/install | sh
 openfang init
 openfang start
 # Dashboard live at http://localhost:4200
+
+> **Status**: active | **Version**: unversioned | **README refreshed**: 2026-04-17
+>
+> Since README was last updated (2026-03-15): 104 tracked commits (21 feat, 72 fix, 11 chore). Fork with upstream-mirror sync.
 ```
 
 <details>
