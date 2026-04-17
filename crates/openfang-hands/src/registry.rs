@@ -1144,4 +1144,60 @@ metrics = []
         let err = reg.activate("test-hand", HashMap::new(), None).unwrap_err();
         assert!(matches!(err, HandError::AlreadyActive(_)));
     }
+
+    /// Integration test for issue #809: `hand config` round-trip.
+    ///
+    /// Simulates what `openfang hand config <id> --set KEY=VAL` does against
+    /// the registry: read current config, merge updates, write back, read
+    /// again. Persists to a tempdir so the restart path also sees the change.
+    #[test]
+    fn test_hand_config_round_trip_via_registry() {
+        let reg = test_registry_with_dummy_hand("browser");
+        let inst = reg.activate("browser", HashMap::new(), None).unwrap();
+
+        // Read-modify-write cycle mirroring the CLI's --set behavior.
+        let mut cfg = reg.get_instance(inst.instance_id).unwrap().config;
+        cfg.insert(
+            "headless".to_string(),
+            serde_json::Value::String("true".into()),
+        );
+        cfg.insert(
+            "user_agent".to_string(),
+            serde_json::Value::String("openfang/1".into()),
+        );
+        reg.update_config(inst.instance_id, cfg.clone()).unwrap();
+
+        let after = reg.get_instance(inst.instance_id).unwrap();
+        assert_eq!(
+            after.config.get("headless"),
+            Some(&serde_json::Value::String("true".into()))
+        );
+        assert_eq!(
+            after.config.get("user_agent"),
+            Some(&serde_json::Value::String("openfang/1".into()))
+        );
+
+        // --unset path: drop a key and confirm it's gone.
+        cfg.remove("user_agent");
+        reg.update_config(inst.instance_id, cfg).unwrap();
+        let after_unset = reg.get_instance(inst.instance_id).unwrap();
+        assert!(!after_unset.config.contains_key("user_agent"));
+        assert_eq!(
+            after_unset.config.get("headless"),
+            Some(&serde_json::Value::String("true".into()))
+        );
+
+        // State survives a persist+load round-trip through a tempdir sidecar.
+        let tmp = tempfile::tempdir().unwrap();
+        let state_file = tmp.path().join("hands.json");
+        reg.persist_state(&state_file).unwrap();
+        let reloaded = HandRegistry::load_state(&state_file);
+        assert_eq!(reloaded.len(), 1);
+        let (hand_id, config, _agent_id) = &reloaded[0];
+        assert_eq!(hand_id, "browser");
+        assert_eq!(
+            config.get("headless"),
+            Some(&serde_json::Value::String("true".into()))
+        );
+    }
 }

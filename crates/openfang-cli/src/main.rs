@@ -440,6 +440,27 @@ enum HandCommands {
         /// Instance ID (from `hand active`).
         id: String,
     },
+    /// Get, set, or list settings for an active hand instance.
+    ///
+    /// With no flags, prints the current settings. Use `--set KEY=VAL`
+    /// (repeatable) to update values, `--unset KEY` to remove a value,
+    /// or `--get KEY` to print a single value.
+    Config {
+        /// Hand ID (e.g. "browser", "clip").
+        id: String,
+        /// Print a single setting value.
+        #[arg(long, value_name = "KEY", conflicts_with_all = ["set", "unset", "list"])]
+        get: Option<String>,
+        /// Set a setting value. Format: `KEY=VALUE`. May be repeated.
+        #[arg(long, value_name = "KEY=VALUE")]
+        set: Vec<String>,
+        /// Unset a setting key. May be repeated.
+        #[arg(long, value_name = "KEY")]
+        unset: Vec<String>,
+        /// List the current settings (default when no other flag is given).
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1010,6 +1031,13 @@ fn main() {
             HandCommands::InstallDeps { id } => cmd_hand_install_deps(&id),
             HandCommands::Pause { id } => cmd_hand_pause(&id),
             HandCommands::Resume { id } => cmd_hand_resume(&id),
+            HandCommands::Config {
+                id,
+                get,
+                set,
+                unset,
+                list,
+            } => cmd_hand_config(&id, get.as_deref(), &set, &unset, list),
         },
         Some(Commands::Config(sub)) => match sub {
             ConfigCommands::Show => cmd_config_show(),
@@ -4565,6 +4593,167 @@ fn cmd_hand_resume(id: &str) {
     }
 }
 
+/// Parse a `KEY=VALUE` pair passed to `--set`.
+///
+/// Empty keys are rejected so `--set =foo` or `--set  =bar` surface a clear
+/// error rather than silently writing a blank setting name.
+fn parse_hand_config_pair(pair: &str) -> Result<(String, String), String> {
+    let (key, value) = pair
+        .split_once('=')
+        .ok_or_else(|| format!("Invalid --set '{pair}': expected KEY=VALUE"))?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(format!("Invalid --set '{pair}': empty key"));
+    }
+    Ok((key.to_string(), value.to_string()))
+}
+
+fn cmd_hand_config(
+    id: &str,
+    get: Option<&str>,
+    set_pairs: &[String],
+    unset_keys: &[String],
+    list: bool,
+) {
+    let base = require_daemon("hand config");
+    let client = daemon_client();
+
+    // Always fetch current state first so we can merge updates and print
+    // a useful view even when the target hand has no active instance.
+    let url = format!("{base}/api/hands/{id}/settings");
+    let body = daemon_json(client.get(&url).send());
+
+    if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
+        ui::error(&format!("Hand '{id}': {err}"));
+        std::process::exit(1);
+    }
+
+    let mut current: std::collections::BTreeMap<String, serde_json::Value> = body
+        .get("current_values")
+        .and_then(|v| v.as_object())
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+
+    let schema_defaults: std::collections::BTreeMap<String, String> = body
+        .get("settings")
+        .and_then(|v| v.get("settings"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| {
+                    let key = s.get("key").and_then(|v| v.as_str())?.to_string();
+                    let default = s
+                        .get("default")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some((key, default))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Pure read paths — no mutation, no daemon round-trip beyond the GET.
+    if let Some(key) = get {
+        match current
+            .get(key)
+            .map(value_to_display)
+            .or_else(|| schema_defaults.get(key).cloned())
+        {
+            Some(val) => println!("{val}"),
+            None => {
+                ui::error(&format!("No setting '{key}' on hand '{id}'"));
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    let is_mutation = !set_pairs.is_empty() || !unset_keys.is_empty();
+    if !is_mutation {
+        print_hand_config(id, &current, &schema_defaults, list);
+        return;
+    }
+
+    for pair in set_pairs {
+        match parse_hand_config_pair(pair) {
+            Ok((k, v)) => {
+                current.insert(k, serde_json::Value::String(v));
+            }
+            Err(e) => {
+                ui::error(&e);
+                std::process::exit(1);
+            }
+        }
+    }
+    for key in unset_keys {
+        let key = key.trim();
+        if key.is_empty() {
+            ui::error("Invalid --unset: empty key");
+            std::process::exit(1);
+        }
+        current.remove(key);
+    }
+
+    let payload: serde_json::Map<String, serde_json::Value> = current.clone().into_iter().collect();
+    let resp = daemon_json(
+        client
+            .put(&url)
+            .json(&serde_json::Value::Object(payload))
+            .send(),
+    );
+    if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+        ui::error(&format!("Failed to update hand '{id}' settings: {err}"));
+        if err.contains("No active instance") {
+            ui::hint(&format!(
+                "Activate the hand first: openfang hand activate {id}"
+            ));
+        }
+        std::process::exit(1);
+    }
+    ui::success(&format!("Updated settings for hand '{id}'."));
+    print_hand_config(id, &current, &schema_defaults, true);
+}
+
+/// Human-readable display for a JSON setting value.
+fn value_to_display(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn print_hand_config(
+    id: &str,
+    current: &std::collections::BTreeMap<String, serde_json::Value>,
+    schema_defaults: &std::collections::BTreeMap<String, String>,
+    _list: bool,
+) {
+    if current.is_empty() && schema_defaults.is_empty() {
+        println!("No settings configured for hand '{id}'.");
+        return;
+    }
+
+    println!("Settings for hand '{id}':");
+    let mut keys: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for k in current.keys() {
+        keys.insert(k.as_str());
+    }
+    for k in schema_defaults.keys() {
+        keys.insert(k.as_str());
+    }
+    for key in keys {
+        match current.get(key) {
+            Some(v) => println!("  {key} = {}", value_to_display(v)),
+            None => {
+                let default = schema_defaults.get(key).map(|s| s.as_str()).unwrap_or("");
+                println!("  {key} = {default}  (default)");
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Provider / API key helpers
 // ---------------------------------------------------------------------------
@@ -7026,6 +7215,55 @@ args = ["-y", "@modelcontextprotocol/server-github"]
     }
 
     // --- Uninstall command unit tests ---
+
+    // --- hand config command unit tests ---
+
+    #[test]
+    fn test_hand_config_parse_pair_ok() {
+        let (k, v) = super::parse_hand_config_pair("headless=true").unwrap();
+        assert_eq!(k, "headless");
+        assert_eq!(v, "true");
+    }
+
+    #[test]
+    fn test_hand_config_parse_pair_value_may_contain_equals() {
+        let (k, v) = super::parse_hand_config_pair("url=https://example.com?a=b").unwrap();
+        assert_eq!(k, "url");
+        assert_eq!(v, "https://example.com?a=b");
+    }
+
+    #[test]
+    fn test_hand_config_parse_pair_value_may_be_empty() {
+        // Empty values are valid (useful to explicitly blank a setting before
+        // PUT). Empty keys are the failure case.
+        let (k, v) = super::parse_hand_config_pair("foo=").unwrap();
+        assert_eq!(k, "foo");
+        assert_eq!(v, "");
+    }
+
+    #[test]
+    fn test_hand_config_parse_pair_rejects_empty_key() {
+        assert!(super::parse_hand_config_pair("=bar").is_err());
+        assert!(super::parse_hand_config_pair("   =bar").is_err());
+    }
+
+    #[test]
+    fn test_hand_config_parse_pair_requires_equals() {
+        assert!(super::parse_hand_config_pair("headless").is_err());
+    }
+
+    #[test]
+    fn test_hand_config_parse_multiple_pairs_round_trip() {
+        let inputs = ["a=1", "b=two", "c=http://x.y"];
+        let mut map = std::collections::BTreeMap::new();
+        for pair in inputs {
+            let (k, v) = super::parse_hand_config_pair(pair).unwrap();
+            map.insert(k, v);
+        }
+        assert_eq!(map.get("a"), Some(&"1".to_string()));
+        assert_eq!(map.get("b"), Some(&"two".to_string()));
+        assert_eq!(map.get("c"), Some(&"http://x.y".to_string()));
+    }
 
     #[test]
     fn test_uninstall_path_line_filter() {
