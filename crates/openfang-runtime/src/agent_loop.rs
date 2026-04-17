@@ -165,6 +165,30 @@ pub struct AgentLoopResult {
     pub directives: openfang_types::message::ReplyDirectives,
 }
 
+/// Build the user-turn message, combining text with any image content blocks.
+///
+/// When the turn has both text and image blocks the text is emitted as the
+/// first block followed by the images so the LLM sees the full multimodal
+/// turn. When only one is present the single-mode representation is used.
+fn build_user_turn_message(user_message: &str, blocks: Option<Vec<ContentBlock>>) -> Message {
+    match blocks {
+        Some(blocks) if !blocks.is_empty() => {
+            if user_message.trim().is_empty() {
+                Message::user_with_blocks(blocks)
+            } else {
+                let mut combined = Vec::with_capacity(blocks.len() + 1);
+                combined.push(ContentBlock::Text {
+                    text: user_message.to_string(),
+                    provider_metadata: None,
+                });
+                combined.extend(blocks);
+                Message::user_with_blocks(combined)
+            }
+        }
+        _ => Message::user(user_message),
+    }
+}
+
 /// Run the agent execution loop for a single user message.
 ///
 /// This is the core of OpenFang: it loads session context, recalls memories,
@@ -278,12 +302,10 @@ pub async fn run_agent_loop(
 
     // Add the user message to session history.
     // When content blocks are provided (e.g. text + image from a channel),
-    // use multimodal message format so the LLM receives the image for vision.
-    if let Some(blocks) = user_content_blocks {
-        session.messages.push(Message::user_with_blocks(blocks));
-    } else {
-        session.messages.push(Message::user(user_message));
-    }
+    // combine them with the user text so the LLM sees the full multimodal turn.
+    session
+        .messages
+        .push(build_user_turn_message(user_message, user_content_blocks));
 
     // Build the messages for the LLM, filtering system messages
     // System prompt goes into the separate `system` field.
@@ -1479,12 +1501,10 @@ pub async fn run_agent_loop_streaming(
 
     // Add the user message to session history.
     // When content blocks are provided (e.g. text + image from a channel),
-    // use multimodal message format so the LLM receives the image for vision.
-    if let Some(blocks) = user_content_blocks {
-        session.messages.push(Message::user_with_blocks(blocks));
-    } else {
-        session.messages.push(Message::user(user_message));
-    }
+    // combine them with the user text so the LLM sees the full multimodal turn.
+    session
+        .messages
+        .push(build_user_turn_message(user_message, user_content_blocks));
 
     let llm_messages: Vec<Message> = session
         .messages
@@ -3126,6 +3146,77 @@ mod tests {
     #[test]
     fn test_max_history_messages() {
         assert_eq!(MAX_HISTORY_MESSAGES, 20);
+    }
+
+    fn sample_image_block() -> ContentBlock {
+        ContentBlock::Image {
+            media_type: "image/png".to_string(),
+            data: "aGVsbG8=".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_build_user_turn_text_only() {
+        let msg = build_user_turn_message("hello", None);
+        assert_eq!(msg.role, Role::User);
+        match msg.content {
+            MessageContent::Text(text) => assert_eq!(text, "hello"),
+            MessageContent::Blocks(_) => panic!("expected Text content for text-only turn"),
+        }
+    }
+
+    #[test]
+    fn test_build_user_turn_images_only() {
+        let msg = build_user_turn_message("", Some(vec![sample_image_block()]));
+        assert_eq!(msg.role, Role::User);
+        match msg.content {
+            MessageContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                assert!(matches!(blocks[0], ContentBlock::Image { .. }));
+            }
+            MessageContent::Text(_) => panic!("expected Blocks content for images-only turn"),
+        }
+    }
+
+    #[test]
+    fn test_build_user_turn_text_and_images_combined() {
+        let msg =
+            build_user_turn_message("what is in this image?", Some(vec![sample_image_block()]));
+        assert_eq!(msg.role, Role::User);
+        match msg.content {
+            MessageContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2, "text must be combined with images");
+                match &blocks[0] {
+                    ContentBlock::Text { text, .. } => {
+                        assert_eq!(text, "what is in this image?");
+                    }
+                    _ => panic!("expected first block to be user text"),
+                }
+                assert!(matches!(blocks[1], ContentBlock::Image { .. }));
+            }
+            MessageContent::Text(_) => panic!("expected Blocks content for multimodal turn"),
+        }
+    }
+
+    #[test]
+    fn test_build_user_turn_whitespace_text_treated_as_empty() {
+        let msg = build_user_turn_message("   \n", Some(vec![sample_image_block()]));
+        match msg.content {
+            MessageContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                assert!(matches!(blocks[0], ContentBlock::Image { .. }));
+            }
+            MessageContent::Text(_) => panic!("expected Blocks content"),
+        }
+    }
+
+    #[test]
+    fn test_build_user_turn_empty_blocks_falls_back_to_text() {
+        let msg = build_user_turn_message("hi", Some(Vec::new()));
+        match msg.content {
+            MessageContent::Text(text) => assert_eq!(text, "hi"),
+            MessageContent::Blocks(_) => panic!("expected Text content when blocks are empty"),
+        }
     }
 
     // --- Integration tests for empty response guards ---
