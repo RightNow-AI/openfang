@@ -8,6 +8,7 @@
 pub const USER_AGENT: &str = "openfang/0.3.48";
 
 pub mod a2a;
+pub mod agent_context;
 pub mod agent_loop;
 pub mod apply_patch;
 pub mod audit;
