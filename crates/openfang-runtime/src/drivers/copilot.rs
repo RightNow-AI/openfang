@@ -10,7 +10,7 @@
 //! `config.toml`. The driver handles the rest — device flow, token persistence,
 //! refresh, and Copilot API token exchange — automatically.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -55,6 +55,7 @@ const OAUTH_SCOPES: &str = "copilot";
 const TOKEN_FILE_NAME: &str = ".copilot-tokens.json";
 
 /// Device flow polling interval (seconds) — GitHub default is 5.
+#[allow(dead_code)]
 const DEVICE_FLOW_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Maximum time to wait for user to authorize the device flow.
@@ -83,14 +84,14 @@ impl PersistedTokens {
     }
 
     /// Load from the OpenFang data directory.
-    pub fn load(openfang_dir: &PathBuf) -> Option<Self> {
+    pub fn load(openfang_dir: &Path) -> Option<Self> {
         let path = openfang_dir.join(TOKEN_FILE_NAME);
         let data = std::fs::read_to_string(&path).ok()?;
         serde_json::from_str(&data).ok()
     }
 
     /// Persist to the OpenFang data directory with restricted permissions.
-    pub fn save(&self, openfang_dir: &PathBuf) -> Result<(), String> {
+    pub fn save(&self, openfang_dir: &Path) -> Result<(), String> {
         let path = openfang_dir.join(TOKEN_FILE_NAME);
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize tokens: {e}"))?;
@@ -138,6 +139,7 @@ impl CachedCopilotToken {
 #[derive(Clone)]
 struct CachedModels {
     models: Vec<String>,
+    #[allow(dead_code)]
     fetched_at: Instant,
 }
 
@@ -169,6 +171,7 @@ struct OAuthTokenResponse {
     #[serde(default)]
     expires_in: Option<i64>,
     #[serde(default)]
+    #[allow(dead_code)]
     refresh_token_expires_in: Option<i64>,
     #[serde(default)]
     error: Option<String>,
@@ -177,9 +180,7 @@ struct OAuthTokenResponse {
 }
 
 /// Request a device code from GitHub using the Copilot client ID.
-pub async fn request_device_code(
-    client: &reqwest::Client,
-) -> Result<DeviceCodeResponse, String> {
+pub async fn request_device_code(client: &reqwest::Client) -> Result<DeviceCodeResponse, String> {
     let resp = client
         .post(GITHUB_DEVICE_CODE_URL)
         .header("Accept", "application/json")
@@ -259,9 +260,7 @@ pub async fn poll_for_token(
         let access_token = token_resp
             .access_token
             .ok_or("Missing access_token in response")?;
-        let refresh_token = token_resp
-            .refresh_token
-            .unwrap_or_default(); // Empty if token expiration is disabled on the OAuth App
+        let refresh_token = token_resp.refresh_token.unwrap_or_default(); // Empty if token expiration is disabled on the OAuth App
         let expires_in = token_resp.expires_in.unwrap_or(0); // 0 = non-expiring
 
         return Ok(PersistedTokens {
@@ -361,7 +360,7 @@ pub async fn exchange_copilot_token(
         .ok_or("Missing 'token' field in Copilot response")?;
 
     let expires_at_unix = body.get("expires_at").and_then(|v| v.as_i64()).unwrap_or(0);
-    let ttl_secs = (expires_at_unix - unix_now() as i64).max(60) as u64;
+    let ttl_secs = (expires_at_unix - unix_now()).max(60) as u64;
 
     // Extract base URL from endpoints.api or proxy-ep in the token.
     let base_url = body
@@ -444,7 +443,11 @@ pub async fn fetch_models(
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|m| m.get("id").and_then(|id| id.as_str()).map(|s| s.to_string()))
+                .filter_map(|m| {
+                    m.get("id")
+                        .and_then(|id| id.as_str())
+                        .map(|s| s.to_string())
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -514,12 +517,7 @@ impl CopilotDriver {
         };
 
         if let Some(ref rt) = refresh_token {
-            match refresh_access_token(
-                &self.http_client,
-                rt,
-            )
-            .await
-            {
+            match refresh_access_token(&self.http_client, rt).await {
                 Ok(new_tokens) => {
                     info!("Copilot access token refreshed successfully");
                     if let Err(e) = new_tokens.save(&self.openfang_dir) {
@@ -547,8 +545,9 @@ impl CopilotDriver {
     }
 
     /// Ensure we have a valid Copilot API token (tid=…).
-    async fn ensure_copilot_token(&self) -> Result<CachedCopilotToken, crate::llm_driver::LlmError>
-    {
+    async fn ensure_copilot_token(
+        &self,
+    ) -> Result<CachedCopilotToken, crate::llm_driver::LlmError> {
         // Check cache.
         {
             let lock = self.copilot_token.lock().unwrap_or_else(|e| e.into_inner());
@@ -595,13 +594,16 @@ impl CopilotDriver {
         &self,
         copilot_token: &CachedCopilotToken,
     ) -> Result<Vec<String>, crate::llm_driver::LlmError> {
-        let models =
-            fetch_models(&self.http_client, &copilot_token.base_url, &copilot_token.token)
-                .await
-                .map_err(|e| crate::llm_driver::LlmError::Api {
-                    status: 500,
-                    message: format!("Failed to fetch model list: {e}"),
-                })?;
+        let models = fetch_models(
+            &self.http_client,
+            &copilot_token.base_url,
+            &copilot_token.token,
+        )
+        .await
+        .map_err(|e| crate::llm_driver::LlmError::Api {
+            status: 500,
+            message: format!("Failed to fetch model list: {e}"),
+        })?;
 
         let mut lock = self.models.lock().unwrap_or_else(|e| e.into_inner());
         *lock = Some(CachedModels {
@@ -638,10 +640,7 @@ impl CopilotDriver {
         execute: F,
     ) -> Result<crate::llm_driver::CompletionResponse, crate::llm_driver::LlmError>
     where
-        F: Fn(
-            super::openai::OpenAIDriver,
-            crate::llm_driver::CompletionRequest,
-        ) -> Fut,
+        F: Fn(super::openai::OpenAIDriver, crate::llm_driver::CompletionRequest) -> Fut,
         Fut: std::future::Future<
             Output = Result<crate::llm_driver::CompletionResponse, crate::llm_driver::LlmError>,
         >,
@@ -652,9 +651,10 @@ impl CopilotDriver {
 
         match execute(driver, request.clone()).await {
             Ok(resp) => Ok(resp),
-            Err(crate::llm_driver::LlmError::Api { status, ref message })
-                if status == 400 && message.contains("model_not_supported") =>
-            {
+            Err(crate::llm_driver::LlmError::Api {
+                status,
+                ref message,
+            }) if status == 400 && message.contains("model_not_supported") => {
                 // Refresh model list so subsequent calls have updated info.
                 warn!(
                     model = %request.model,
@@ -683,9 +683,10 @@ impl crate::llm_driver::LlmDriver for CopilotDriver {
         &self,
         request: crate::llm_driver::CompletionRequest,
     ) -> Result<crate::llm_driver::CompletionResponse, crate::llm_driver::LlmError> {
-        self.execute_with_model_retry(request, |driver, req| async move {
-            driver.complete(req).await
-        })
+        self.execute_with_model_retry(
+            request,
+            |driver, req| async move { driver.complete(req).await },
+        )
         .await
     }
 
@@ -700,9 +701,10 @@ impl crate::llm_driver::LlmDriver for CopilotDriver {
 
         match driver.stream(request.clone(), tx.clone()).await {
             Ok(resp) => Ok(resp),
-            Err(crate::llm_driver::LlmError::Api { status, ref message })
-                if status == 400 && message.contains("model_not_supported") =>
-            {
+            Err(crate::llm_driver::LlmError::Api {
+                status,
+                ref message,
+            }) if status == 400 && message.contains("model_not_supported") => {
                 warn!(
                     model = %request.model,
                     "Model not supported — refreshing model catalog"
@@ -732,9 +734,7 @@ impl crate::llm_driver::LlmDriver for CopilotDriver {
 ///
 /// Called from `openfang config set-key github-copilot`, `openfang init`,
 /// `openfang onboard`, and `openfang configure`.
-pub async fn run_interactive_setup(
-    openfang_dir: &PathBuf,
-) -> Result<PersistedTokens, String> {
+pub async fn run_interactive_setup(openfang_dir: &Path) -> Result<PersistedTokens, String> {
     run_device_flow(openfang_dir).await
 }
 
@@ -742,9 +742,7 @@ pub async fn run_interactive_setup(
 ///
 /// Prints the user code and verification URL, attempts to open the browser,
 /// then polls until the user authorizes.
-pub async fn run_device_flow(
-    openfang_dir: &PathBuf,
-) -> Result<PersistedTokens, String> {
+pub async fn run_device_flow(openfang_dir: &Path) -> Result<PersistedTokens, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -767,12 +765,7 @@ pub async fn run_device_flow(
     println!("  Waiting for authorization...");
 
     // Step 3: Poll for authorization.
-    let tokens = poll_for_token(
-        &client,
-        &device.device_code,
-        device.interval,
-    )
-    .await?;
+    let tokens = poll_for_token(&client, &device.device_code, device.interval).await?;
 
     // Step 4: Persist.
     tokens.save(openfang_dir)?;
@@ -782,6 +775,7 @@ pub async fn run_device_flow(
 }
 
 /// Read a line from stdin with a prompt. Used during interactive setup.
+#[allow(dead_code)]
 fn prompt_line(prompt: &str) -> Result<String, String> {
     use std::io::{self, BufRead, Write};
     print!("{prompt}");
@@ -825,7 +819,7 @@ pub fn open_verification_url(url: &str) -> bool {
 }
 
 /// Check if Copilot OAuth tokens exist on disk.
-pub fn copilot_auth_available(openfang_dir: &PathBuf) -> bool {
+pub fn copilot_auth_available(openfang_dir: &Path) -> bool {
     openfang_dir.join(TOKEN_FILE_NAME).exists()
 }
 

