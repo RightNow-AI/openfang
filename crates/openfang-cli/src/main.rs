@@ -4940,6 +4940,38 @@ fn cmd_config_edit() {
     }
 }
 
+/// Outcome of looking up a dotted key path in a parsed TOML config.
+#[derive(Debug, PartialEq)]
+enum ConfigGetOutcome {
+    /// Scalar value formatted for display (may be the empty string).
+    Value(String),
+    /// Key exists but resolves to a non-scalar (table or array).
+    NonScalar,
+    /// Key path does not exist.
+    NotFound,
+}
+
+/// Look up a dotted key path inside a parsed TOML document and format the
+/// resulting scalar for display. Pure function so the behaviour can be tested
+/// without touching the filesystem.
+fn lookup_config_value(table: &toml::Value, key: &str) -> ConfigGetOutcome {
+    let mut current = table;
+    for part in key.split('.') {
+        match current.get(part) {
+            Some(v) => current = v,
+            None => return ConfigGetOutcome::NotFound,
+        }
+    }
+    match current {
+        toml::Value::String(s) => ConfigGetOutcome::Value(s.clone()),
+        toml::Value::Integer(i) => ConfigGetOutcome::Value(i.to_string()),
+        toml::Value::Float(f) => ConfigGetOutcome::Value(f.to_string()),
+        toml::Value::Boolean(b) => ConfigGetOutcome::Value(b.to_string()),
+        toml::Value::Datetime(d) => ConfigGetOutcome::Value(d.to_string()),
+        toml::Value::Array(_) | toml::Value::Table(_) => ConfigGetOutcome::NonScalar,
+    }
+}
+
 fn cmd_config_get(key: &str) {
     let home = openfang_home();
     let config_path = home.join("config.toml");
@@ -4962,25 +4994,19 @@ fn cmd_config_get(key: &str) {
         std::process::exit(1);
     });
 
-    // Navigate dotted path
-    let mut current = &table;
-    for part in key.split('.') {
-        match current.get(part) {
-            Some(v) => current = v,
-            None => {
-                ui::error(&format!("Key not found: {key}"));
-                std::process::exit(1);
-            }
+    match lookup_config_value(&table, key) {
+        ConfigGetOutcome::Value(s) => println!("{s}"),
+        ConfigGetOutcome::NonScalar => {
+            ui::error_with_fix(
+                &format!("'{key}' is a section, not a scalar value"),
+                "Use a deeper dotted key (e.g. `section.field`)",
+            );
+            std::process::exit(1);
         }
-    }
-
-    // Print value
-    match current {
-        toml::Value::String(s) => println!("{s}"),
-        toml::Value::Integer(i) => println!("{i}"),
-        toml::Value::Float(f) => println!("{f}"),
-        toml::Value::Boolean(b) => println!("{b}"),
-        other => println!("{other}"),
+        ConfigGetOutcome::NotFound => {
+            ui::error(&format!("Key not found: {key}"));
+            std::process::exit(1);
+        }
     }
 }
 
@@ -7212,6 +7238,132 @@ args = ["-y", "@modelcontextprotocol/server-github"]
             HookEvent::AgentLoopEnd,
         ];
         assert_eq!(events.len(), 4);
+    }
+
+    // --- Config get command unit tests ---
+
+    fn sample_config_with_base_url() -> &'static str {
+        r#"api_listen = "127.0.0.1:4200"
+
+[default_model]
+provider = "openai"
+model = "qwen3-coder-30b/qwen3-coder-30b"
+api_key_env = "OPENAI_API_KEY"
+base_url = "http://localhost:8991/v1"
+api_key = "sk-bf-test"
+
+[memory]
+decay_rate = 0.05
+"#
+    }
+
+    fn lookup(toml_str: &str, key: &str) -> super::ConfigGetOutcome {
+        let table: toml::Value = toml::from_str(toml_str).expect("valid toml");
+        super::lookup_config_value(&table, key)
+    }
+
+    // Regression test for issue #905: `config get default_model.base_url`
+    // must return the configured base_url string, not an empty string.
+    #[test]
+    fn config_get_returns_default_model_base_url() {
+        let out = lookup(sample_config_with_base_url(), "default_model.base_url");
+        assert_eq!(
+            out,
+            super::ConfigGetOutcome::Value("http://localhost:8991/v1".to_string())
+        );
+    }
+
+    #[test]
+    fn config_get_returns_each_default_model_scalar() {
+        let cfg = sample_config_with_base_url();
+        assert_eq!(
+            lookup(cfg, "default_model.provider"),
+            super::ConfigGetOutcome::Value("openai".to_string())
+        );
+        assert_eq!(
+            lookup(cfg, "default_model.model"),
+            super::ConfigGetOutcome::Value("qwen3-coder-30b/qwen3-coder-30b".to_string())
+        );
+        assert_eq!(
+            lookup(cfg, "default_model.api_key_env"),
+            super::ConfigGetOutcome::Value("OPENAI_API_KEY".to_string())
+        );
+        assert_eq!(
+            lookup(cfg, "default_model.api_key"),
+            super::ConfigGetOutcome::Value("sk-bf-test".to_string())
+        );
+    }
+
+    #[test]
+    fn config_get_top_level_scalar() {
+        assert_eq!(
+            lookup(sample_config_with_base_url(), "api_listen"),
+            super::ConfigGetOutcome::Value("127.0.0.1:4200".to_string())
+        );
+    }
+
+    #[test]
+    fn config_get_unset_base_url_is_not_found() {
+        let cfg = r#"
+[default_model]
+provider = "openai"
+model = "gpt-4o"
+api_key_env = "OPENAI_API_KEY"
+"#;
+        assert_eq!(
+            lookup(cfg, "default_model.base_url"),
+            super::ConfigGetOutcome::NotFound
+        );
+    }
+
+    #[test]
+    fn config_get_explicit_empty_string_round_trips_as_empty() {
+        let cfg = r#"
+[default_model]
+provider = "openai"
+base_url = ""
+"#;
+        assert_eq!(
+            lookup(cfg, "default_model.base_url"),
+            super::ConfigGetOutcome::Value(String::new())
+        );
+    }
+
+    #[test]
+    fn config_get_missing_key_returns_not_found() {
+        assert_eq!(
+            lookup(sample_config_with_base_url(), "default_model.nope"),
+            super::ConfigGetOutcome::NotFound
+        );
+    }
+
+    #[test]
+    fn config_get_section_reports_non_scalar() {
+        assert_eq!(
+            lookup(sample_config_with_base_url(), "default_model"),
+            super::ConfigGetOutcome::NonScalar
+        );
+    }
+
+    #[test]
+    fn config_get_numeric_and_boolean_scalars() {
+        let cfg = r#"
+retries = 3
+ratio = 0.25
+enabled = true
+"#;
+        assert_eq!(
+            lookup(cfg, "retries"),
+            super::ConfigGetOutcome::Value("3".to_string())
+        );
+        assert_eq!(
+            lookup(cfg, "ratio"),
+            super::ConfigGetOutcome::Value("0.25".to_string())
+        );
+        assert_eq!(
+            lookup(cfg, "enabled"),
+            super::ConfigGetOutcome::Value("true".to_string())
+        );
     }
 
     // --- Uninstall command unit tests ---
