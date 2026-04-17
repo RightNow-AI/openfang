@@ -8321,40 +8321,66 @@ pub async fn reload_integrations(State(state): State<Arc<AppState>>) -> impl Int
 // ---------------------------------------------------------------------------
 // Scheduled Jobs (cron) endpoints
 // ---------------------------------------------------------------------------
+//
+// Historical note: an earlier implementation of `/api/schedules*` wrote to a
+// shared-memory key (`__openfang_schedules`) that no executor ever read — so
+// scheduled jobs registered via this API never actually fired (#1069). These
+// routes now delegate to the kernel's real cron scheduler, which already
+// backs `/api/cron/jobs*`. The request/response shape has been preserved as
+// close as possible to the legacy route for dashboard compatibility.
 
-/// The well-known shared-memory agent ID used for cross-agent KV storage.
-/// Must match the value in `openfang-kernel/src/kernel.rs::shared_memory_agent_id()`.
-fn schedule_shared_agent_id() -> AgentId {
-    AgentId(uuid::Uuid::from_bytes([
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x01,
-    ]))
+/// Convert an internal `CronJob` into the legacy `/api/schedules` response
+/// shape so existing dashboard code keeps working.
+fn cron_job_to_schedule_view(
+    kernel: &OpenFangKernel,
+    job: &openfang_types::scheduler::CronJob,
+) -> serde_json::Value {
+    use openfang_types::scheduler::{CronAction, CronSchedule};
+
+    let cron = match &job.schedule {
+        CronSchedule::Cron { expr, .. } => expr.clone(),
+        CronSchedule::Every { every_secs } => format!("every {every_secs}s"),
+        CronSchedule::At { at } => at.to_rfc3339(),
+    };
+    let message = match &job.action {
+        CronAction::AgentTurn { message, .. } => message.clone(),
+        CronAction::SystemEvent { text } => text.clone(),
+        CronAction::WorkflowRun { workflow_id, .. } => format!("workflow:{workflow_id}"),
+    };
+    let meta = kernel.cron_scheduler.get_meta(job.id);
+    let last_status = meta.as_ref().and_then(|m| m.last_status.clone());
+
+    serde_json::json!({
+        "id": job.id.to_string(),
+        "name": job.name,
+        "cron": cron,
+        "agent_id": job.agent_id.to_string(),
+        "message": message,
+        "enabled": job.enabled,
+        "created_at": job.created_at.to_rfc3339(),
+        "last_run": job.last_run.map(|t| t.to_rfc3339()),
+        "next_run": job.next_run.map(|t| t.to_rfc3339()),
+        "last_status": last_status,
+    })
 }
 
-const SCHEDULES_KEY: &str = "__openfang_schedules";
-
-/// GET /api/schedules — List all cron-based scheduled jobs.
+/// GET /api/schedules — List all scheduled jobs from the cron scheduler.
 pub async fn list_schedules(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let agent_id = schedule_shared_agent_id();
-    match state.kernel.memory.structured_get(agent_id, SCHEDULES_KEY) {
-        Ok(Some(serde_json::Value::Array(arr))) => {
-            let total = arr.len();
-            Json(serde_json::json!({"schedules": arr, "total": total}))
-        }
-        Ok(_) => Json(serde_json::json!({"schedules": [], "total": 0})),
-        Err(e) => {
-            tracing::warn!("Failed to load schedules: {e}");
-            Json(serde_json::json!({"schedules": [], "total": 0, "error": format!("{e}")}))
-        }
-    }
+    let jobs = state.kernel.cron_scheduler.list_all_jobs();
+    let total = jobs.len();
+    let schedules: Vec<serde_json::Value> = jobs
+        .iter()
+        .map(|j| cron_job_to_schedule_view(&state.kernel, j))
+        .collect();
+    Json(serde_json::json!({"schedules": schedules, "total": total}))
 }
 
-/// POST /api/schedules — Create a new cron-based scheduled job.
+/// POST /api/schedules — Create a new scheduled job in the cron scheduler.
 pub async fn create_schedule(
     State(state): State<Arc<AppState>>,
     Json(req): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let name = match req["name"].as_str() {
+    let name_raw = match req["name"].as_str() {
         Some(n) if !n.is_empty() => n.to_string(),
         _ => {
             return (
@@ -8374,7 +8400,6 @@ pub async fn create_schedule(
         }
     };
 
-    // Validate cron expression: must be 5 space-separated fields
     let cron_parts: Vec<&str> = cron.split_whitespace().collect();
     if cron_parts.len() != 5 {
         return (
@@ -8392,166 +8417,183 @@ pub async fn create_schedule(
             Json(serde_json::json!({"error": "Missing required field: agent_id"})),
         );
     }
-    // Validate agent exists (UUID or name lookup)
-    let agent_exists = if let Ok(aid) = agent_id_str.parse::<AgentId>() {
-        state.kernel.registry.get(aid).is_some()
+    let target_agent = if let Ok(aid) = agent_id_str.parse::<AgentId>() {
+        if state.kernel.registry.get(aid).is_some() {
+            Some(aid)
+        } else {
+            None
+        }
     } else {
         state
             .kernel
             .registry
             .list()
-            .iter()
-            .any(|a| a.name == agent_id_str)
+            .into_iter()
+            .find(|a| a.name == agent_id_str)
+            .map(|a| a.id)
     };
-    if !agent_exists {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("Agent not found: {agent_id_str}")})),
-        );
-    }
+    let target_agent = match target_agent {
+        Some(a) => a,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("Agent not found: {agent_id_str}")})),
+            );
+        }
+    };
+
     let message = req["message"].as_str().unwrap_or("").to_string();
     let enabled = req.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+    let job_message = if message.is_empty() {
+        format!("[Scheduled task '{name_raw}']")
+    } else {
+        message.clone()
+    };
 
-    let schedule_id = uuid::Uuid::new_v4().to_string();
-    let entry = serde_json::json!({
-        "id": schedule_id,
-        "name": name,
-        "cron": cron,
-        "agent_id": agent_id_str,
-        "message": message,
-        "enabled": enabled,
-        "created_at": chrono::Utc::now().to_rfc3339(),
-        "last_run": null,
-        "run_count": 0,
+    let job_json = serde_json::json!({
+        "name": sanitize_schedule_job_name(&name_raw),
+        "schedule": { "kind": "cron", "expr": cron, "tz": null },
+        "action": {
+            "kind": "agent_turn",
+            "message": job_message,
+            "model_override": null,
+            "timeout_secs": null,
+        },
+        "delivery": { "kind": "none" },
+        "one_shot": false,
     });
 
-    let shared_id = schedule_shared_agent_id();
-    let mut schedules: Vec<serde_json::Value> =
-        match state.kernel.memory.structured_get(shared_id, SCHEDULES_KEY) {
-            Ok(Some(serde_json::Value::Array(arr))) => arr,
-            _ => Vec::new(),
-        };
-
-    schedules.push(entry.clone());
-    if let Err(e) = state.kernel.memory.structured_set(
-        shared_id,
-        SCHEDULES_KEY,
-        serde_json::Value::Array(schedules),
-    ) {
-        tracing::warn!("Failed to save schedule: {e}");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to save schedule: {e}")})),
-        );
+    match state
+        .kernel
+        .cron_create(&target_agent.to_string(), job_json)
+        .await
+    {
+        Ok(resp) => {
+            let job_id = serde_json::from_str::<serde_json::Value>(&resp)
+                .ok()
+                .and_then(|v| v["job_id"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            if !enabled {
+                if let Ok(uuid) = uuid::Uuid::parse_str(&job_id) {
+                    let cj_id = openfang_types::scheduler::CronJobId(uuid);
+                    let _ = state.kernel.cron_scheduler.set_enabled(cj_id, false);
+                    let _ = state.kernel.cron_scheduler.persist();
+                }
+            }
+            // Build response in the legacy shape.
+            let body = if let Ok(uuid) = uuid::Uuid::parse_str(&job_id) {
+                let cj_id = openfang_types::scheduler::CronJobId(uuid);
+                match state.kernel.cron_scheduler.get_job(cj_id) {
+                    Some(job) => cron_job_to_schedule_view(&state.kernel, &job),
+                    None => serde_json::json!({
+                        "id": job_id,
+                        "name": name_raw,
+                        "cron": cron,
+                        "agent_id": target_agent.to_string(),
+                        "message": message,
+                        "enabled": enabled,
+                    }),
+                }
+            } else {
+                serde_json::json!({
+                    "id": job_id,
+                    "name": name_raw,
+                    "cron": cron,
+                    "agent_id": target_agent.to_string(),
+                    "message": message,
+                    "enabled": enabled,
+                })
+            };
+            (StatusCode::CREATED, Json(body))
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("Failed to create schedule: {e}")})),
+        ),
     }
-
-    (StatusCode::CREATED, Json(entry))
 }
 
-/// PUT /api/schedules/:id — Update a scheduled job (toggle enabled, edit fields).
+/// PUT /api/schedules/:id — Update a scheduled job.
+///
+/// Supports toggling `enabled`. Other fields are not mutable without a
+/// delete+recreate (the underlying cron scheduler does not expose in-place
+/// edits); those are accepted but ignored with a note in the response.
 pub async fn update_schedule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let shared_id = schedule_shared_agent_id();
-    let mut schedules: Vec<serde_json::Value> =
-        match state.kernel.memory.structured_get(shared_id, SCHEDULES_KEY) {
-            Ok(Some(serde_json::Value::Array(arr))) => arr,
-            _ => Vec::new(),
-        };
-
-    let mut found = false;
-    for s in schedules.iter_mut() {
-        if s["id"].as_str() == Some(&id) {
-            found = true;
-            if let Some(enabled) = req.get("enabled").and_then(|v| v.as_bool()) {
-                s["enabled"] = serde_json::Value::Bool(enabled);
-            }
-            if let Some(name) = req.get("name").and_then(|v| v.as_str()) {
-                s["name"] = serde_json::Value::String(name.to_string());
-            }
-            if let Some(cron) = req.get("cron").and_then(|v| v.as_str()) {
-                let cron_parts: Vec<&str> = cron.split_whitespace().collect();
-                if cron_parts.len() != 5 {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error": "Invalid cron expression"})),
-                    );
-                }
-                s["cron"] = serde_json::Value::String(cron.to_string());
-            }
-            if let Some(agent_id) = req.get("agent_id").and_then(|v| v.as_str()) {
-                s["agent_id"] = serde_json::Value::String(agent_id.to_string());
-            }
-            if let Some(message) = req.get("message").and_then(|v| v.as_str()) {
-                s["message"] = serde_json::Value::String(message.to_string());
-            }
-            break;
+    let uuid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid schedule id"})),
+            );
         }
-    }
+    };
+    let cj_id = openfang_types::scheduler::CronJobId(uuid);
 
-    if !found {
+    if state.kernel.cron_scheduler.get_job(cj_id).is_none() {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Schedule not found"})),
         );
     }
 
-    if let Err(e) = state.kernel.memory.structured_set(
-        shared_id,
-        SCHEDULES_KEY,
-        serde_json::Value::Array(schedules),
-    ) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to update schedule: {e}")})),
-        );
+    let mut note: Option<&'static str> = None;
+    if let Some(enabled) = req.get("enabled").and_then(|v| v.as_bool()) {
+        if let Err(e) = state.kernel.cron_scheduler.set_enabled(cj_id, enabled) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("{e}")})),
+            );
+        }
+        let _ = state.kernel.cron_scheduler.persist();
+    }
+    if req.get("name").is_some()
+        || req.get("cron").is_some()
+        || req.get("agent_id").is_some()
+        || req.get("message").is_some()
+    {
+        note = Some("Only 'enabled' is mutable; delete and recreate to change other fields.");
     }
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"status": "updated", "schedule_id": id})),
-    )
+    let mut body = serde_json::json!({"status": "updated", "schedule_id": id});
+    if let Some(n) = note {
+        body["note"] = serde_json::Value::String(n.to_string());
+    }
+    (StatusCode::OK, Json(body))
 }
 
-/// DELETE /api/schedules/:id — Remove a scheduled job.
+/// DELETE /api/schedules/:id — Remove a scheduled job from the cron scheduler.
 pub async fn delete_schedule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let shared_id = schedule_shared_agent_id();
-    let mut schedules: Vec<serde_json::Value> =
-        match state.kernel.memory.structured_get(shared_id, SCHEDULES_KEY) {
-            Ok(Some(serde_json::Value::Array(arr))) => arr,
-            _ => Vec::new(),
-        };
-
-    let before = schedules.len();
-    schedules.retain(|s| s["id"].as_str() != Some(&id));
-
-    if schedules.len() == before {
-        return (
+    let uuid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid schedule id"})),
+            );
+        }
+    };
+    let cj_id = openfang_types::scheduler::CronJobId(uuid);
+    match state.kernel.cron_scheduler.remove_job(cj_id) {
+        Ok(_) => {
+            let _ = state.kernel.cron_scheduler.persist();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "removed", "schedule_id": id})),
+            )
+        }
+        Err(_) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Schedule not found"})),
-        );
+        ),
     }
-
-    if let Err(e) = state.kernel.memory.structured_set(
-        shared_id,
-        SCHEDULES_KEY,
-        serde_json::Value::Array(schedules),
-    ) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to delete schedule: {e}")})),
-        );
-    }
-
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"status": "removed", "schedule_id": id})),
-    )
 }
 
 /// POST /api/schedules/:id/run — Manually run a scheduled job now.
@@ -8559,101 +8601,41 @@ pub async fn run_schedule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let shared_id = schedule_shared_agent_id();
-    let schedules: Vec<serde_json::Value> =
-        match state.kernel.memory.structured_get(shared_id, SCHEDULES_KEY) {
-            Ok(Some(serde_json::Value::Array(arr))) => arr,
-            _ => Vec::new(),
-        };
-
-    let schedule = match schedules.iter().find(|s| s["id"].as_str() == Some(&id)) {
-        Some(s) => s.clone(),
-        None => {
+    let uuid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid schedule id"})),
+            );
+        }
+    };
+    let cj_id = openfang_types::scheduler::CronJobId(uuid);
+    let job = match state.kernel.cron_scheduler.try_claim_for_run(cj_id) {
+        Ok(j) => j,
+        Err(openfang_kernel::cron::ClaimError::NotFound) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Schedule not found"})),
             );
         }
-    };
-
-    let agent_id_str = schedule["agent_id"].as_str().unwrap_or("");
-    let message = schedule["message"]
-        .as_str()
-        .unwrap_or("Scheduled task triggered manually.");
-    let name = schedule["name"].as_str().unwrap_or("(unnamed)");
-
-    // Find the target agent — require explicit agent_id, no silent fallback
-    let target_agent = if !agent_id_str.is_empty() {
-        if let Ok(aid) = agent_id_str.parse::<AgentId>() {
-            if state.kernel.registry.get(aid).is_some() {
-                Some(aid)
-            } else {
-                None
-            }
-        } else {
-            state
-                .kernel
-                .registry
-                .list()
-                .iter()
-                .find(|a| a.name == agent_id_str)
-                .map(|a| a.id)
-        }
-    } else {
-        None
-    };
-
-    let target_agent = match target_agent {
-        Some(a) => a,
-        None => {
+        Err(openfang_kernel::cron::ClaimError::Disabled) => {
             return (
-                StatusCode::NOT_FOUND,
-                Json(
-                    serde_json::json!({"error": "No target agent found. Specify an agent_id or start an agent first."}),
-                ),
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Schedule is disabled"})),
             );
         }
     };
 
-    let run_message = if message.is_empty() {
-        format!("[Scheduled task '{}' triggered manually]", name)
-    } else {
-        message.to_string()
-    };
-
-    // Update last_run and run_count
-    let mut schedules_updated: Vec<serde_json::Value> =
-        match state.kernel.memory.structured_get(shared_id, SCHEDULES_KEY) {
-            Ok(Some(serde_json::Value::Array(arr))) => arr,
-            _ => Vec::new(),
-        };
-    for s in schedules_updated.iter_mut() {
-        if s["id"].as_str() == Some(&id) {
-            s["last_run"] = serde_json::Value::String(chrono::Utc::now().to_rfc3339());
-            let count = s["run_count"].as_u64().unwrap_or(0);
-            s["run_count"] = serde_json::json!(count + 1);
-            break;
-        }
-    }
-    let _ = state.kernel.memory.structured_set(
-        shared_id,
-        SCHEDULES_KEY,
-        serde_json::Value::Array(schedules_updated),
-    );
-
-    let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
-    match state
-        .kernel
-        .send_message_with_handle(target_agent, &run_message, Some(kernel_handle), None, None)
-        .await
-    {
-        Ok(result) => (
+    let agent_id_str = job.agent_id.to_string();
+    match state.kernel.cron_run_job(&job).await {
+        Ok(response) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "completed",
                 "schedule_id": id,
-                "agent_id": target_agent.to_string(),
-                "response": result.response,
+                "agent_id": agent_id_str,
+                "response": response,
             })),
         ),
         Err(e) => (
@@ -8665,6 +8647,26 @@ pub async fn run_schedule(
             })),
         ),
     }
+}
+
+/// Sanitize a user-supplied schedule name into a valid `CronJob.name`.
+/// Matches the kernel's own sanitizer used by the migration path.
+fn sanitize_schedule_job_name(raw: &str) -> String {
+    let filtered: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = filtered.trim();
+    if trimmed.is_empty() {
+        return "schedule".to_string();
+    }
+    trimmed.chars().take(128).collect()
 }
 
 // ---------------------------------------------------------------------------
