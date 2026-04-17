@@ -2654,7 +2654,7 @@ async fn tool_a2a_send_async(
 
     // Resolve agent URL
     let url = if let Some(url) = input["agent_url"].as_str() {
-        if crate::web_fetch::check_ssrf(url).is_err() {
+        if crate::web_fetch::check_ssrf(url, &[]).is_err() {
             return Err("SSRF blocked: URL resolves to a private or metadata address".to_string());
         }
         url.to_string()
