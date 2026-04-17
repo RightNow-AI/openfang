@@ -22,6 +22,10 @@ const DISCORD_API_BASE: &str = "https://discord.com/api/v10";
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const DISCORD_MSG_LIMIT: usize = 2000;
+/// Maximum number of seen message IDs kept in the dedup set.
+/// MESSAGE_UPDATE (embed resolution) events arrive within seconds of the
+/// original CREATE; entries older than this cap are safe to discard.
+const MAX_DEDUP_MSG_IDS: usize = 2_000;
 
 /// Discord Gateway opcodes.
 mod opcode {
@@ -578,7 +582,13 @@ impl ChannelAdapter for DiscordAdapter {
                                     // next message in the parent channel is treated fresh.
                                     if let Some(tid) = d["id"].as_str() {
                                         created_thread_ids.write().await.remove(tid);
-                                        threaded_message_ids.write().await.retain(|_| true); // keep others
+                                        // Prune the dedup set to prevent unbounded growth.
+                                        // Entries older than MAX_DEDUP_MSG_IDS are safe to
+                                        // discard — embed UPDATE events arrive within seconds.
+                                        let mut ids = threaded_message_ids.write().await;
+                                        if ids.len() > MAX_DEDUP_MSG_IDS {
+                                            ids.clear();
+                                        }
                                         debug!("Discord thread/channel deleted: {tid}");
                                     }
                                 }
@@ -895,11 +905,11 @@ fn thread_name_from_message(message: &ChannelMessage) -> String {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 
     /// Convenience helper: empty thread-tracking map for tests that don't exercise threading.
-    #[allow(dead_code)]
     fn empty_threads() -> Arc<RwLock<HashMap<String, String>>> {
         Arc::new(RwLock::new(HashMap::new()))
     }
