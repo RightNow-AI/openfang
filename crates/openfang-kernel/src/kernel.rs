@@ -2015,6 +2015,12 @@ impl OpenFangKernel {
                 ),
                 sender_id,
                 sender_name,
+                // Re-read context.md per turn by default so external writers
+                // (cron jobs, integrations) reach the LLM on the next message.
+                // Opt out via `cache_context = true` on the manifest. (#843)
+                context_md: manifest.workspace.as_ref().and_then(|w| {
+                    openfang_runtime::agent_context::load_context_md(w, manifest.cache_context)
+                }),
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -2576,6 +2582,10 @@ impl OpenFangKernel {
                 ),
                 sender_id,
                 sender_name,
+                // Re-read context.md per turn by default (#843).
+                context_md: manifest.workspace.as_ref().and_then(|w| {
+                    openfang_runtime::agent_context::load_context_md(w, manifest.cache_context)
+                }),
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -6874,6 +6884,7 @@ mod tests {
             exec_policy: None,
             tool_allowlist: vec![],
             tool_blocklist: vec![],
+            cache_context: false,
         };
         manifest.capabilities.tools = vec!["file_read".to_string(), "web_fetch".to_string()];
         manifest.capabilities.agent_spawn = true;
@@ -6911,6 +6922,7 @@ mod tests {
             exec_policy: None,
             tool_allowlist: vec![],
             tool_blocklist: vec![],
+            cache_context: false,
         }
     }
 

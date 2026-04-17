@@ -491,6 +491,12 @@ pub struct AgentManifest {
     /// Tool blocklist — these tools are excluded (applied after allowlist).
     #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
     pub tool_blocklist: Vec<String>,
+    /// If true, the agent's `context.md` is read once at session start and
+    /// reused. Default is `false`: the runtime re-reads `context.md` before
+    /// every turn so external writers (cron jobs, integrations) reach the LLM
+    /// on the next message. See issue #843.
+    #[serde(default)]
+    pub cache_context: bool,
 }
 
 fn default_true() -> bool {
@@ -525,6 +531,7 @@ impl Default for AgentManifest {
             exec_policy: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            cache_context: false,
         }
     }
 }
@@ -782,6 +789,7 @@ mod tests {
             exec_policy: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            cache_context: false,
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let deserialized: AgentManifest = serde_json::from_str(&json).unwrap();
