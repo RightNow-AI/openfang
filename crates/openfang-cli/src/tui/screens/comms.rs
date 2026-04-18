@@ -189,18 +189,17 @@ impl CommsState {
                     self.send_field - 1
                 };
             }
-            KeyCode::Enter => {
+            KeyCode::Enter
                 if !self.send_from.is_empty()
                     && !self.send_to.is_empty()
-                    && !self.send_msg.is_empty()
-                {
-                    self.show_send_modal = false;
-                    return CommsAction::SendMessage {
-                        from: self.send_from.clone(),
-                        to: self.send_to.clone(),
-                        msg: self.send_msg.clone(),
-                    };
-                }
+                    && !self.send_msg.is_empty() =>
+            {
+                self.show_send_modal = false;
+                return CommsAction::SendMessage {
+                    from: self.send_from.clone(),
+                    to: self.send_to.clone(),
+                    msg: self.send_msg.clone(),
+                };
             }
             KeyCode::Char(c) => match self.send_field {
                 0 => self.send_from.push(c),
