@@ -1438,3 +1438,47 @@ mod tests {
         assert_eq!(messages.len(), 4);
     }
 }
+
+/// Remove assistant+user message pairs where every tool result is an error.
+///
+/// When all tool calls in a turn fail, Jeeves should not retain that pair in
+/// long-term session memory — next session the tool might work fine. A pair is
+/// only pruned when ALL tool results in the user message are `is_error: true`.
+/// Mixed results (some success, some failure) are kept intact.
+pub fn prune_failed_tool_turns(messages: &mut Vec<Message>) {
+    let mut i = 0;
+    while i + 1 < messages.len() {
+        let is_assistant_tool_use = messages[i].role == Role::Assistant
+            && match &messages[i].content {
+                MessageContent::Blocks(blocks) => {
+                    blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+                }
+                _ => false,
+            };
+        if !is_assistant_tool_use {
+            i += 1;
+            continue;
+        }
+        let all_errors = messages[i + 1].role == Role::User
+            && match &messages[i + 1].content {
+                MessageContent::Blocks(blocks) => {
+                    let results: Vec<_> = blocks
+                        .iter()
+                        .filter(|b| matches!(b, ContentBlock::ToolResult { .. }))
+                        .collect();
+                    !results.is_empty()
+                        && results.iter().all(|b| {
+                            matches!(b, ContentBlock::ToolResult { is_error: true, .. })
+                        })
+                }
+                _ => false,
+            };
+        if all_errors {
+            debug!("Pruning failed tool turn at index {i}");
+            messages.remove(i + 1);
+            messages.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+}

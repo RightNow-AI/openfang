@@ -1678,9 +1678,11 @@ async fn tool_agent_send(
     kernel: Option<&Arc<dyn KernelHandle>>,
 ) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
-    let agent_id = input["agent_id"]
+    let agent_id_raw = input["agent_id"]
         .as_str()
         .ok_or("Missing 'agent_id' parameter")?;
+    // Strip hallucinated @<suffix> (e.g. @default) — agent IDs never have @ qualifiers
+    let agent_id = agent_id_raw.split('@').next().unwrap_or(agent_id_raw);
     let message = input["message"]
         .as_str()
         .ok_or("Missing 'message' parameter")?;

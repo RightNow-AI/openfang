@@ -95,7 +95,7 @@ fn is_silent_token(text: &str) -> bool {
 
 /// Extra guidance injected after failed tool calls to prevent fabricated follow-up actions.
 const TOOL_ERROR_GUIDANCE: &str =
-    "[System: One or more tool calls failed. Failed tools did not produce usable data. Do NOT invent missing results, cite nonexistent search results, or pretend failed tools succeeded. If your next steps depend on a failed tool, either retry with a materially different approach or explain the failure to the user and stop. Do not write files, store memory, or take downstream actions based on failed tool outputs.]";
+    "[System: One or more tool calls failed. Failed tools did not produce usable data. Do NOT invent missing results, cite nonexistent search results, or pretend failed tools succeeded. If your next steps depend on a failed tool, explain the failure to the user and stop — do not retry. Do not write files, store memory, or take downstream actions based on failed tool outputs.]";
 
 fn append_tool_error_guidance(tool_result_blocks: &mut Vec<ContentBlock>) {
     let has_tool_error = tool_result_blocks
@@ -609,6 +609,8 @@ pub async fn run_agent_loop(
 
                 // Prune NO_REPLY heartbeat turns to save context budget
                 crate::session_repair::prune_heartbeat_turns(&mut session.messages, 10);
+                // Prune failed tool turns so Jeeves doesn't learn tools are broken
+                crate::session_repair::prune_failed_tool_turns(&mut session.messages);
 
                 // Save session
                 memory
@@ -665,6 +667,8 @@ pub async fn run_agent_loop(
                     cb(LoopPhase::Done);
                 }
 
+                let preview: String = final_response.chars().take(500).collect();
+                info!(agent = %manifest.name, response = %preview, "LLM response");
                 info!(
                     agent = %manifest.name,
                     iterations = iteration + 1,
@@ -770,7 +774,8 @@ pub async fn run_agent_loop(
                         _ => {} // Allow or Warn — proceed with execution
                     }
 
-                    debug!(tool = %tool_call.name, id = %tool_call.id, "Executing tool");
+                    let input_preview: String = tool_call.input.to_string().chars().take(300).collect();
+                    info!(tool = %tool_call.name, id = %tool_call.id, input = %input_preview, "Tool call");
 
                     // Notify phase: ToolUse
                     if let Some(cb) = on_phase {
@@ -883,6 +888,13 @@ pub async fn run_agent_loop(
                         content
                     };
 
+                    let result_preview: String = final_content.chars().take(300).collect();
+                    info!(
+                        tool = %tool_call.name,
+                        is_error = result.is_error,
+                        result = %result_preview,
+                        "Tool result"
+                    );
                     tool_result_blocks.push(ContentBlock::ToolResult {
                         tool_use_id: result.tool_use_id,
                         tool_name: tool_call.name.clone(),
@@ -1794,6 +1806,8 @@ pub async fn run_agent_loop_streaming(
 
                 // Prune NO_REPLY heartbeat turns to save context budget
                 crate::session_repair::prune_heartbeat_turns(&mut session.messages, 10);
+                // Prune failed tool turns so Jeeves doesn't learn tools are broken
+                crate::session_repair::prune_failed_tool_turns(&mut session.messages);
 
                 memory
                     .save_session_async(session)
