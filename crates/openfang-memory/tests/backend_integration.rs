@@ -21,6 +21,44 @@ fn agent_filter(agent_id: AgentId) -> openfang_types::memory::MemoryFilter {
     }
 }
 
+/// Best-effort Qdrant collection cleanup guard.
+///
+/// Each Qdrant integration test creates a uniquely-named collection so runs
+/// don't collide. Without this guard those collections accumulate on a local
+/// Qdrant instance forever. The guard deletes the collection on Drop; any
+/// failure is silently ignored (the point is to avoid local-dev cruft, not to
+/// make teardown a test dependency).
+#[cfg(feature = "qdrant")]
+#[allow(dead_code)]
+struct QdrantCollectionGuard {
+    url: String,
+    collection: String,
+}
+
+#[cfg(feature = "qdrant")]
+impl Drop for QdrantCollectionGuard {
+    fn drop(&mut self) {
+        let url = self.url.clone();
+        let collection = self.collection.clone();
+        // Drop runs in sync context; spawn a thread with its own runtime to
+        // perform the async delete so we don't poke at whatever runtime the
+        // test was using (which may already be shutting down).
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(_) => return,
+            };
+            rt.block_on(async move {
+                if let Ok(client) = qdrant_client::Qdrant::from_url(&url).build() {
+                    let _ = client.delete_collection(&collection).await;
+                }
+            });
+        })
+        .join()
+        .ok();
+    }
+}
+
 // ─── SQLite backend tests ──────────────────────────────────────────────
 
 mod sqlite {
@@ -41,7 +79,7 @@ mod sqlite {
                 *const (),
                 unsafe extern "C" fn(
                     *mut rusqlite::ffi::sqlite3,
-                    *mut *const u8,
+                    *mut *const std::os::raw::c_char,
                     *const rusqlite::ffi::sqlite3_api_routines,
                 ) -> i32,
             >(sqlite_vec::sqlite3_vec_init as *const ())));
@@ -346,23 +384,40 @@ mod postgres {
             Some(p) => p,
             None => { eprintln!("SKIP: PostgreSQL not available"); return; }
         };
-        let store = PgSemanticStore::new(pool);
+        let store = PostgresSemanticStore::new(pool);
         let agent = AgentId::new();
+
+        // Toy 4-dim embeddings so the vector-required recall path can be
+        // exercised without a real embedding model.
+        let emb_fox: Vec<f32> = vec![1.0, 0.1, 0.0, 0.0];
+        let emb_query: Vec<f32> = vec![0.9, 0.1, 0.0, 0.0];
+        let emb_unrelated: Vec<f32> = vec![0.0, 0.0, 1.0, 0.0];
 
         let id = SemanticBackend::remember(
             &store, agent, "The quick brown fox jumps over the lazy dog",
-            MemorySource::Conversation, "episodic", HashMap::new(), None,
+            MemorySource::Conversation, "episodic", HashMap::new(), Some(&emb_fox),
         ).unwrap();
 
-        let results = SemanticBackend::recall(&store, "quick brown fox", 10, Some(agent_filter(agent)), None).unwrap();
+        // recall without an embedding must error (pgvector requires one).
+        let err = SemanticBackend::recall(&store, "quick brown fox", 10, Some(agent_filter(agent)), None);
+        assert!(err.is_err(), "postgres recall without embedding must fail");
+
+        let results = SemanticBackend::recall(
+            &store, "quick brown fox", 10, Some(agent_filter(agent)), Some(&emb_query),
+        ).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, id);
 
-        let results = SemanticBackend::recall(&store, "fox", 10, Some(agent_filter(AgentId::new())), None).unwrap();
+        // Wrong agent filter → no matches even with a good embedding.
+        let results = SemanticBackend::recall(
+            &store, "fox", 10, Some(agent_filter(AgentId::new())), Some(&emb_query),
+        ).unwrap();
         assert_eq!(results.len(), 0);
 
         SemanticBackend::forget(&store, id).unwrap();
-        let results = SemanticBackend::recall(&store, "fox", 10, Some(agent_filter(agent)), None).unwrap();
+        let results = SemanticBackend::recall(
+            &store, "fox", 10, Some(agent_filter(agent)), Some(&emb_unrelated),
+        ).unwrap();
         assert_eq!(results.len(), 0);
     }
 
@@ -576,16 +631,21 @@ mod qdrant_tests {
     use super::*;
     use openfang_memory::qdrant::QdrantSemanticStore;
 
-    fn setup() -> Option<QdrantSemanticStore> {
+    async fn setup() -> Option<(QdrantSemanticStore, QdrantCollectionGuard)> {
         let url = std::env::var("TEST_QDRANT_URL")
             .unwrap_or_else(|_| "http://localhost:6334".to_string());
         let collection = format!("openfang_test_{}", uuid::Uuid::new_v4().simple());
-        QdrantSemanticStore::new(&url, None, &collection).ok()
+        let store = QdrantSemanticStore::new(&url, None, &collection).await.ok()?;
+        let guard = QdrantCollectionGuard {
+            url,
+            collection,
+        };
+        Some((store, guard))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn qdrant_remember_requires_embedding() {
-        let store = match setup() {
+        let (store, _guard) = match setup().await {
             Some(s) => s,
             None => { eprintln!("SKIP: Qdrant not available"); return; }
         };
@@ -599,7 +659,7 @@ mod qdrant_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn qdrant_remember_recall_forget() {
-        let store = match setup() {
+        let (store, _guard) = match setup().await {
             Some(s) => s,
             None => { eprintln!("SKIP: Qdrant not available"); return; }
         };
@@ -619,9 +679,14 @@ mod qdrant_tests {
         assert_eq!(results[0].id, id);
         assert!(results[0].content.contains("Qdrant vector test"));
 
-        // Without embedding returns empty
-        let results = SemanticBackend::recall(&store, "anything", 10, None, None).unwrap();
-        assert!(results.is_empty());
+        // Without embedding Qdrant fails fast (C2).
+        let err = SemanticBackend::recall(&store, "anything", 10, None, None)
+            .expect_err("Qdrant recall without embedding must error, not return empty");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("query_embedding") || msg.contains("embedding"),
+            "Error should name the missing embedding: {msg}"
+        );
 
         // With matching agent filter
         let results = SemanticBackend::recall(&store, "", 10, Some(agent_filter(agent)), Some(&query_emb)).unwrap();
@@ -640,7 +705,7 @@ mod qdrant_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn qdrant_update_embedding() {
-        let store = match setup() {
+        let (store, _guard) = match setup().await {
             Some(s) => s,
             None => { eprintln!("SKIP: Qdrant not available"); return; }
         };
@@ -663,7 +728,7 @@ mod qdrant_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn qdrant_multiple_memories_ranked() {
-        let store = match setup() {
+        let (store, _guard) = match setup().await {
             Some(s) => s,
             None => { eprintln!("SKIP: Qdrant not available"); return; }
         };
@@ -723,5 +788,209 @@ mod substrate {
         substrate.delete_session(session.id).unwrap();
 
         assert_eq!(substrate.consolidate().await.unwrap().memories_merged, 0);
+    }
+}
+
+// ─── Hybrid matrix tests (end-to-end substrate with mixed backends) ────
+//
+// Exercise `MemorySubstrate::open_async` with mismatched structured +
+// semantic backends, the way a real operator would set it up in config.toml.
+// Each test skips gracefully when its required services aren't reachable,
+// matching the existing per-backend modules above.
+#[cfg(any(feature = "postgres", feature = "qdrant"))]
+mod hybrid {
+    use super::*;
+    use openfang_memory::MemorySubstrate;
+    use openfang_types::config::{
+        MemoryBackendKind, MemoryConfig, SemanticBackendKind,
+    };
+    #[cfg(feature = "postgres")]
+    use openfang_types::config::PostgresConnConfig;
+    #[cfg(feature = "qdrant")]
+    use openfang_types::config::QdrantConnConfig;
+    use openfang_types::memory::Memory;
+
+    fn tmpdb() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hybrid.db");
+        (dir, path)
+    }
+
+    #[cfg(feature = "postgres")]
+    fn pg_url() -> Option<String> {
+        std::env::var("TEST_POSTGRES_URL").ok()
+    }
+
+    #[cfg(feature = "qdrant")]
+    fn qdrant_url() -> Option<String> {
+        std::env::var("TEST_QDRANT_URL").ok()
+    }
+
+    /// Round-trip `remember` → `recall` via the substrate's async trait,
+    /// asserting the recalled row carries the same `MemoryId` the store
+    /// returned. This is the concrete end-to-end contract B1/B2 exist to
+    /// protect.
+    async fn remember_recall_roundtrip(substrate: &MemorySubstrate, with_embedding: bool) {
+        let agent = AgentId::new();
+        let mut meta = HashMap::new();
+        if with_embedding {
+            // Fixed-length embedding so Qdrant/pgvector collections are stable
+            // under repeated test runs against pre-existing dimensions.
+            meta.insert(
+                "embedding".into(),
+                serde_json::json!(vec![0.1_f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]),
+            );
+        }
+        let id = substrate
+            .remember(
+                agent,
+                "hybrid matrix integration content",
+                MemorySource::Conversation,
+                "episodic",
+                meta,
+            )
+            .await
+            .expect("remember succeeds");
+
+        let results = substrate
+            .recall("hybrid matrix", 10, None)
+            .await
+            .expect("recall succeeds");
+        assert!(!results.is_empty(), "recall returned zero hits");
+        // ID stability is the whole point of B1/B2 — the id we got back
+        // from remember must match the id the recall yields.
+        assert!(
+            results.iter().any(|r| r.id == id),
+            "recalled ids {:?} did not include the stored id {id}",
+            results.iter().map(|r| r.id).collect::<Vec<_>>(),
+        );
+    }
+
+    /// `backend = Sqlite`, `semantic_backend = Qdrant` — the most commonly
+    /// requested hybrid in the review.
+    #[cfg(feature = "qdrant")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sqlite_structured_with_qdrant_semantic() {
+        let Some(qurl) = qdrant_url() else {
+            eprintln!("SKIP: Qdrant not available");
+            return;
+        };
+        let (_dir, path) = tmpdb();
+        let collection = format!("openfang_hybrid_{}", uuid::Uuid::new_v4().simple());
+        let _guard = super::QdrantCollectionGuard {
+            url: qurl.clone(),
+            collection: collection.clone(),
+        };
+        let cfg = MemoryConfig {
+            backend: MemoryBackendKind::Sqlite,
+            semantic_backend: Some(SemanticBackendKind::Qdrant),
+            qdrant: QdrantConnConfig {
+                qdrant_url: Some(qurl),
+                qdrant_collection: collection,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let substrate = match MemorySubstrate::open_async(&path, 0.1, &cfg).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("SKIP: hybrid sqlite+qdrant open failed: {e}");
+                return;
+            }
+        };
+        remember_recall_roundtrip(&substrate, true).await;
+    }
+
+    /// `backend = Sqlite`, `semantic_backend = Postgres` — SQLite owns
+    /// structured rows while pgvector handles semantic recall.
+    #[cfg(feature = "postgres")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sqlite_structured_with_postgres_semantic() {
+        let Some(pgurl) = pg_url() else {
+            eprintln!("SKIP: Postgres not available");
+            return;
+        };
+        let (_dir, path) = tmpdb();
+        let cfg = MemoryConfig {
+            backend: MemoryBackendKind::Sqlite,
+            semantic_backend: Some(SemanticBackendKind::Postgres),
+            postgres: PostgresConnConfig {
+                postgres_url: Some(pgurl),
+            },
+            ..Default::default()
+        };
+        let substrate = match MemorySubstrate::open_async(&path, 0.1, &cfg).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("SKIP: hybrid sqlite+postgres open failed: {e}");
+                return;
+            }
+        };
+        remember_recall_roundtrip(&substrate, true).await;
+    }
+
+    /// `backend = Postgres`, `semantic_backend = Qdrant` — everything
+    /// remote; no local SQLite writes for structured data.
+    #[cfg(all(feature = "postgres", feature = "qdrant"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn postgres_structured_with_qdrant_semantic() {
+        let (Some(pgurl), Some(qurl)) = (pg_url(), qdrant_url()) else {
+            eprintln!("SKIP: Postgres or Qdrant not available");
+            return;
+        };
+        let (_dir, path) = tmpdb();
+        let collection = format!("openfang_hybrid_{}", uuid::Uuid::new_v4().simple());
+        let _guard = super::QdrantCollectionGuard {
+            url: qurl.clone(),
+            collection: collection.clone(),
+        };
+        let cfg = MemoryConfig {
+            backend: MemoryBackendKind::Postgres,
+            semantic_backend: Some(SemanticBackendKind::Qdrant),
+            postgres: PostgresConnConfig {
+                postgres_url: Some(pgurl),
+            },
+            qdrant: QdrantConnConfig {
+                qdrant_url: Some(qurl),
+                qdrant_collection: collection,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let substrate = match MemorySubstrate::open_async(&path, 0.1, &cfg).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("SKIP: hybrid postgres+qdrant open failed: {e}");
+                return;
+            }
+        };
+        remember_recall_roundtrip(&substrate, true).await;
+    }
+
+    /// Fail-fast: configuring Qdrant at an unreachable URL must surface the
+    /// error (naming Qdrant and the URL) rather than silently falling back
+    /// to SQLite. Protects the B4/C2 behavior change.
+    #[cfg(feature = "qdrant")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn qdrant_unreachable_fails_fast() {
+        let (_dir, path) = tmpdb();
+        let cfg = MemoryConfig {
+            backend: MemoryBackendKind::Sqlite,
+            semantic_backend: Some(SemanticBackendKind::Qdrant),
+            qdrant: QdrantConnConfig {
+                qdrant_url: Some("http://127.0.0.1:1".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = match MemorySubstrate::open_async(&path, 0.1, &cfg).await {
+            Ok(_) => panic!("unreachable Qdrant must NOT degrade to SQLite"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.to_lowercase().contains("qdrant"),
+            "error should name the failing backend: {msg}"
+        );
     }
 }

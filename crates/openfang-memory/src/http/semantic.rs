@@ -60,6 +60,21 @@ pub struct StoreResponse {
     pub deduplicated: bool,
 }
 
+/// Parse a `serde_json::Value` returned by the memory-api into a `MemoryId`.
+/// The server is expected to emit IDs as UUID strings; any other shape is a
+/// protocol mismatch and is surfaced as an error rather than fabricating an ID.
+fn parse_memory_id(v: &serde_json::Value) -> OpenFangResult<MemoryId> {
+    let s = v.as_str().ok_or_else(|| {
+        OpenFangError::Memory(format!(
+            "memory-api returned non-string id; expected UUID string, got: {v}"
+        ))
+    })?;
+    let uuid = uuid::Uuid::parse_str(s).map_err(|e| {
+        OpenFangError::Memory(format!("memory-api returned invalid UUID id {s:?}: {e}"))
+    })?;
+    Ok(MemoryId(uuid))
+}
+
 #[derive(Serialize)]
 struct SearchRequest<'a> {
     query: &'a str,
@@ -294,10 +309,17 @@ impl SemanticBackend for HttpSemanticStore {
             Some(importance),
             tags,
         ) {
-            Ok(resp) => {
-                debug!(id = %resp.id, "Stored memory via HTTP backend");
-                Ok(MemoryId::new())
-            }
+            Ok(resp) => match parse_memory_id(&resp.id) {
+                Ok(id) => {
+                    debug!(id = %id, "Stored memory via HTTP backend");
+                    Ok(id)
+                }
+                Err(e) => {
+                    warn!(error = %e, "memory-api returned malformed id, falling back to local");
+                    self.fallback
+                        .remember(agent_id, content, source, scope, metadata, embedding)
+                }
+            },
             Err(e) => {
                 warn!(error = %e, "HTTP memory store failed, falling back to local");
                 self.fallback
@@ -321,35 +343,40 @@ impl SemanticBackend for HttpSemanticStore {
             .map_err(|e| OpenFangError::Memory(format!("HTTP search failed: {e}")))
         {
             Ok(results) => {
-                let fragments: Vec<MemoryFragment> = results
-                    .into_iter()
-                    .map(|r| {
-                        let created_at = r
-                            .created_at
-                            .map(|ms| {
-                                chrono::DateTime::from_timestamp_millis(ms as i64)
-                                    .unwrap_or_else(Utc::now)
-                            })
-                            .unwrap_or_else(Utc::now);
-
-                        MemoryFragment {
-                            id: MemoryId::new(),
-                            agent_id: filter
-                                .as_ref()
-                                .and_then(|f| f.agent_id)
-                                .unwrap_or_default(),
-                            content: r.content,
-                            embedding: None,
-                            metadata: HashMap::new(),
-                            source: MemorySource::System,
-                            confidence: r.score as f32,
-                            created_at,
-                            accessed_at: Utc::now(),
-                            access_count: 0,
-                            scope: r.category.unwrap_or_else(|| "general".to_string()),
+                let mut fragments: Vec<MemoryFragment> = Vec::with_capacity(results.len());
+                for r in results {
+                    let id = match parse_memory_id(&r.id) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            warn!(error = %e, "dropping memory-api result with malformed id");
+                            continue;
                         }
-                    })
-                    .collect();
+                    };
+                    let created_at = r
+                        .created_at
+                        .map(|ms| {
+                            chrono::DateTime::from_timestamp_millis(ms as i64)
+                                .unwrap_or_else(Utc::now)
+                        })
+                        .unwrap_or_else(Utc::now);
+
+                    fragments.push(MemoryFragment {
+                        id,
+                        agent_id: filter
+                            .as_ref()
+                            .and_then(|f| f.agent_id)
+                            .unwrap_or_default(),
+                        content: r.content,
+                        embedding: None,
+                        metadata: HashMap::new(),
+                        source: MemorySource::System,
+                        confidence: r.score as f32,
+                        created_at,
+                        accessed_at: Utc::now(),
+                        access_count: 0,
+                        scope: r.category.unwrap_or_else(|| "general".to_string()),
+                    });
+                }
 
                 debug!(
                     count = fragments.len(),
@@ -364,13 +391,61 @@ impl SemanticBackend for HttpSemanticStore {
         }
     }
 
-    fn forget(&self, id: MemoryId) -> OpenFangResult<()> {
-        // HTTP API doesn't support forget — delegate to fallback
-        self.fallback.forget(id)
+    fn forget(&self, _id: MemoryId) -> OpenFangResult<()> {
+        // The HTTP memory-api does not expose a delete endpoint, and the local
+        // fallback never saw the row (it was written remotely), so delegating
+        // there would silently no-op against the wrong store.
+        Err(OpenFangError::Memory(
+            "HTTP semantic backend does not support forget(); \
+             configure a local semantic_backend to use this operation"
+                .into(),
+        ))
     }
 
-    fn update_embedding(&self, id: MemoryId, embedding: &[f32]) -> OpenFangResult<()> {
-        // HTTP API doesn't support this — delegate to fallback
-        self.fallback.update_embedding(id, embedding)
+    fn update_embedding(&self, _id: MemoryId, _embedding: &[f32]) -> OpenFangResult<()> {
+        // memory-api owns embedding generation server-side; there is no client
+        // path to override it, and the local fallback does not hold this row.
+        Err(OpenFangError::Memory(
+            "HTTP semantic backend does not support update_embedding(); \
+             the remote service manages embeddings"
+                .into(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_memory_id_accepts_valid_uuid_string() {
+        let raw = "550e8400-e29b-41d4-a716-446655440000";
+        let id = parse_memory_id(&serde_json::json!(raw)).expect("valid uuid parses");
+        assert_eq!(id.0, uuid::Uuid::parse_str(raw).unwrap());
+    }
+
+    #[test]
+    fn parse_memory_id_rejects_non_string_value() {
+        let err = parse_memory_id(&serde_json::json!(42)).expect_err("non-string must error");
+        match err {
+            OpenFangError::Memory(msg) => {
+                assert!(msg.contains("memory-api"), "msg={msg}");
+                assert!(msg.contains("non-string"), "msg={msg}");
+            }
+            other => panic!("expected OpenFangError::Memory, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_memory_id_rejects_invalid_uuid_string() {
+        let err =
+            parse_memory_id(&serde_json::json!("not-a-uuid")).expect_err("bad uuid must error");
+        match err {
+            OpenFangError::Memory(msg) => {
+                assert!(msg.contains("memory-api"), "msg={msg}");
+                assert!(msg.contains("invalid UUID"), "msg={msg}");
+            }
+            other => panic!("expected OpenFangError::Memory, got {other:?}"),
+        }
     }
 }

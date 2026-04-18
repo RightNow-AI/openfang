@@ -63,6 +63,40 @@ jobs:
       # Tests that need a display (Tauri) are skipped in headless CI via cfg
       - run: cargo test --workspace
 
+  # ── Integration tests against live PostgreSQL + Qdrant backends ────────────
+  integration-backends:
+    name: Integration (Postgres + Qdrant)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: openfang
+          POSTGRES_PASSWORD: openfang_dev
+          POSTGRES_DB: openfang
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openfang"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
+          - 6334:6334
+    env:
+      TEST_POSTGRES_URL: postgresql://openfang:openfang_dev@localhost:5432/openfang
+      TEST_QDRANT_URL: http://localhost:6334
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: integration-backends
+      - run: cargo test -p openfang-memory --features postgres,qdrant --test backend_integration
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

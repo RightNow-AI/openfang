@@ -1,4 +1,9 @@
 //! PostgreSQL + pgvector implementation of the semantic store.
+//!
+//! Mirrors the semantics of [`crate::qdrant::QdrantSemanticStore`] using
+//! pgvector for similarity search. `remember`/`recall`/`forget`/`update_embedding`
+//! all operate against the shared `memories` table created by the
+//! [`crate::postgres::migration`] module.
 
 use crate::helpers;
 use deadpool_postgres::Pool;
@@ -10,11 +15,19 @@ use pgvector::Vector;
 use std::collections::HashMap;
 
 /// PostgreSQL-backed semantic store with pgvector for similarity search.
-pub struct PgSemanticStore {
+///
+/// This is the Postgres equivalent of `QdrantSemanticStore`: it requires an
+/// embedding for `recall()` (same as Qdrant) and uses cosine distance
+/// (`<=>`) for vector ordering.
+pub struct PostgresSemanticStore {
     pool: Pool,
 }
 
-impl PgSemanticStore {
+impl PostgresSemanticStore {
+    /// Create a new PostgreSQL-backed semantic store from an existing pool.
+    ///
+    /// The caller is expected to have already run `run_migrations` on the pool
+    /// so that the `memories` table (with its `embedding vector` column) exists.
     pub fn new(pool: Pool) -> Self {
         Self { pool }
     }
@@ -23,13 +36,11 @@ impl PgSemanticStore {
     where
         F: std::future::Future<Output = OpenFangResult<T>>,
     {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(f)
-        })
+        tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(f))
     }
 }
 
-impl SemanticBackend for PgSemanticStore {
+impl SemanticBackend for PostgresSemanticStore {
     fn remember(
         &self,
         agent_id: AgentId,
@@ -47,7 +58,10 @@ impl SemanticBackend for PgSemanticStore {
         let scope = scope.to_string();
 
         self.block_on_pg(async {
-            let client = self.pool.get().await
+            let client = self
+                .pool
+                .get()
+                .await
                 .map_err(|e| OpenFangError::Memory(e.to_string()))?;
             client
                 .execute(
@@ -71,20 +85,33 @@ impl SemanticBackend for PgSemanticStore {
 
     fn recall(
         &self,
-        query: &str,
+        _query: &str,
         limit: usize,
         filter: Option<MemoryFilter>,
         query_embedding: Option<&[f32]>,
     ) -> OpenFangResult<Vec<MemoryFragment>> {
-        let query = query.to_string();
-        let vec_embedding = query_embedding.map(|e| Vector::from(e.to_vec()));
+        // pgvector similarity search requires an embedding — mirror Qdrant's
+        // contract (embedding-required). Callers that want text fallback
+        // should use the SQLite semantic backend instead.
+        let vec_embedding = match query_embedding {
+            Some(e) => Vector::from(e.to_vec()),
+            None => {
+                return Err(OpenFangError::Memory(
+                    "postgres semantic backend requires a query embedding for recall()".to_string(),
+                ));
+            }
+        };
 
         self.block_on_pg(async {
-            let client = self.pool.get().await
+            let client = self
+                .pool
+                .get()
+                .await
                 .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
+            // Build WHERE clause dynamically from filter, collecting owned params.
             let mut conditions = vec!["deleted = FALSE".to_string()];
-            let mut param_idx = 1u32;
+            let mut param_idx: u32 = 1;
             let mut params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> = Vec::new();
 
             if let Some(ref f) = filter {
@@ -107,51 +134,27 @@ impl SemanticBackend for PgSemanticStore {
 
             let where_clause = conditions.join(" AND ");
 
-            let (sql, final_params): (String, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) =
-                if let Some(ref emb) = vec_embedding {
-                    // Vector similarity search using pgvector <-> operator (L2 distance)
-                    let sql = format!(
-                        "SELECT id, agent_id, content, source, scope, confidence, metadata, created_at, accessed_at, access_count
-                         FROM memories WHERE {where_clause}
-                         ORDER BY embedding <-> ${param_idx}
-                         LIMIT {limit}"
-                    );
-                    let mut p: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                        params.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
-                    p.push(emb);
-                    (sql, p)
-                } else if !query.is_empty() {
-                    // Text LIKE fallback
-                    conditions.push(format!("content ILIKE ${param_idx}"));
-                    params.push(Box::new(format!("%{query}%")));
-                    let where_clause = conditions.join(" AND ");
-                    let sql = format!(
-                        "SELECT id, agent_id, content, source, scope, confidence, metadata, created_at, accessed_at, access_count
-                         FROM memories WHERE {where_clause}
-                         ORDER BY accessed_at DESC
-                         LIMIT {limit}"
-                    );
-                    let p: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                        params.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
-                    (sql, p)
-                } else {
-                    let sql = format!(
-                        "SELECT id, agent_id, content, source, scope, confidence, metadata, created_at, accessed_at, access_count
-                         FROM memories WHERE {where_clause}
-                         ORDER BY accessed_at DESC
-                         LIMIT {limit}"
-                    );
-                    let p: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                        params.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
-                    (sql, p)
-                };
+            // Cosine distance ordering: `<=>` in pgvector.
+            let sql = format!(
+                "SELECT id, agent_id, content, source, scope, confidence, metadata, created_at, accessed_at, access_count
+                 FROM memories
+                 WHERE {where_clause} AND embedding IS NOT NULL
+                 ORDER BY embedding <=> ${param_idx}
+                 LIMIT {limit}"
+            );
+
+            let mut final_params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params
+                .iter()
+                .map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync))
+                .collect();
+            final_params.push(&vec_embedding);
 
             let rows = client
                 .query(&sql, &final_params)
                 .await
                 .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
-            let mut fragments = Vec::new();
+            let mut fragments = Vec::with_capacity(rows.len());
             for row in &rows {
                 let id_str: String = row.get(0);
                 let agent_str: String = row.get(1);
@@ -167,15 +170,24 @@ impl SemanticBackend for PgSemanticStore {
                 let id = helpers::parse_memory_id(&id_str)?;
                 let agent_id = helpers::parse_agent_id(&agent_str)?;
                 let source: MemorySource = helpers::deserialize_source(&source_str);
-                let metadata: HashMap<String, serde_json::Value> = helpers::deserialize_metadata(&meta_str);
+                let metadata: HashMap<String, serde_json::Value> =
+                    helpers::deserialize_metadata(&meta_str);
 
                 fragments.push(MemoryFragment {
-                    id, agent_id, content, embedding: None, metadata, source,
-                    confidence, created_at, accessed_at,
-                    access_count: access_count as u64, scope,
+                    id,
+                    agent_id,
+                    content,
+                    embedding: None,
+                    metadata,
+                    source,
+                    confidence,
+                    created_at,
+                    accessed_at,
+                    access_count: access_count as u64,
+                    scope,
                 });
 
-                // Update access count
+                // Best-effort access bump; ignore errors.
                 let _ = client
                     .execute(
                         "UPDATE memories SET access_count = access_count + 1, accessed_at = NOW() WHERE id = $1",
@@ -190,7 +202,10 @@ impl SemanticBackend for PgSemanticStore {
 
     fn forget(&self, id: MemoryId) -> OpenFangResult<()> {
         self.block_on_pg(async {
-            let client = self.pool.get().await
+            let client = self
+                .pool
+                .get()
+                .await
                 .map_err(|e| OpenFangError::Memory(e.to_string()))?;
             client
                 .execute(
@@ -206,7 +221,10 @@ impl SemanticBackend for PgSemanticStore {
     fn update_embedding(&self, id: MemoryId, embedding: &[f32]) -> OpenFangResult<()> {
         let vec = Vector::from(embedding.to_vec());
         self.block_on_pg(async {
-            let client = self.pool.get().await
+            let client = self
+                .pool
+                .get()
+                .await
                 .map_err(|e| OpenFangError::Memory(e.to_string()))?;
             client
                 .execute(

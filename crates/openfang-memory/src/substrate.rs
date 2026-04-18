@@ -3,12 +3,19 @@
 //! Composes the structured store, semantic store, knowledge store,
 //! session store, and consolidation engine behind a single async API.
 //!
-//! Backends are selected via `MemoryConfig::backend`:
-//! - `"sqlite"` (default): all stores backed by a shared SQLite connection
-//! - `"http"`: semantic store routes to HTTP gateway, everything else SQLite
-//! - `"postgres"`: all stores backed by PostgreSQL + pgvector
-//! - `"qdrant"`: semantic via Qdrant, everything else SQLite
-//! - `"postgres+qdrant"`: structured/sessions/usage via PostgreSQL, semantic via Qdrant
+//! Storage is selected via two independent, typed config fields:
+//! [`openfang_types::config::MemoryBackendKind`] (structured/session/usage/etc.)
+//! and [`openfang_types::config::SemanticBackendKind`] (vector search). They
+//! may be mixed freely — e.g. `backend = Sqlite` with `semantic_backend = Qdrant`
+//! is a valid combination.
+//!
+//! Any Postgres-backed choice requires [`MemorySubstrate::open_async`]; the
+//! synchronous [`MemorySubstrate::open`] handles SQLite-only paths and errors
+//! otherwise.
+//!
+//! Initialization is fail-fast: if a requested backend cannot be reached
+//! (Qdrant down, HTTP gateway health check fails, Postgres unreachable) the
+//! daemon exits with a readable error. There is no silent SQLite fallback.
 //!
 //! This file is 100% backend-agnostic — zero rusqlite imports.
 
@@ -20,7 +27,7 @@ use crate::session::Session;
 
 use async_trait::async_trait;
 use openfang_types::agent::{AgentEntry, AgentId, SessionId};
-use openfang_types::config::MemoryConfig;
+use openfang_types::config::{MemoryBackendKind, MemoryConfig, SemanticBackendKind};
 use openfang_types::embedding::EmbeddingDriver;
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::memory::{
@@ -31,7 +38,9 @@ use openfang_types::storage::{KnowledgeBackend, SemanticBackend, StructuredBacke
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{info, warn};
+#[cfg(any(feature = "postgres", feature = "qdrant", feature = "http-memory"))]
+use tracing::info;
+use tracing::warn;
 
 /// The unified memory substrate. Implements the `Memory` trait by delegating
 /// to specialized stores backed by pluggable backends.
@@ -51,34 +60,156 @@ pub struct MemorySubstrate {
     embedding_driver: Option<Arc<dyn EmbeddingDriver>>,
 }
 
+/// Small wrapper so `select_semantic` can take a single shape regardless of
+/// whether the `postgres` feature is compiled in. When the feature is off the
+/// type has no variants that actually carry a pool.
+struct SemanticPgPool {
+    #[cfg(feature = "postgres")]
+    pool: Option<deadpool_postgres::Pool>,
+}
+
+impl SemanticPgPool {
+    fn none() -> Self {
+        Self {
+            #[cfg(feature = "postgres")]
+            pool: None,
+        }
+    }
+
+    #[cfg(feature = "postgres")]
+    fn with_pool(pool: deadpool_postgres::Pool) -> Self {
+        Self { pool: Some(pool) }
+    }
+
+    #[cfg(feature = "postgres")]
+    fn as_pool(&self) -> Option<&deadpool_postgres::Pool> {
+        self.pool.as_ref()
+    }
+}
+
 impl MemorySubstrate {
-    /// Open or create a memory substrate.
+    /// Resolve the effective semantic backend — the explicit value or, when
+    /// unset, the one implied by the structured `backend` choice.
+    fn effective_semantic(config: &MemoryConfig) -> SemanticBackendKind {
+        config.semantic_backend.unwrap_or(match config.backend {
+            MemoryBackendKind::Sqlite => SemanticBackendKind::Sqlite,
+            MemoryBackendKind::Postgres => SemanticBackendKind::Postgres,
+        })
+    }
+
+    /// Open or create a memory substrate synchronously.
     ///
-    /// `backend` selects structured/session/usage/etc. storage: `"sqlite"` or `"postgres"`.
-    /// `semantic_backend` selects vector search independently: `"sqlite"`, `"postgres"`, `"qdrant"`, or `"http"`.
-    /// When `semantic_backend` is not set, it follows the main `backend`.
+    /// Supports only `backend = Sqlite` with a SQLite semantic backend. Any
+    /// other combination (Postgres for either store, or a Qdrant/HTTP semantic
+    /// backend whose probe is async) returns an error and the caller should
+    /// use [`Self::open_async`] instead.
     pub fn open(
         db_path: &Path,
         decay_rate: f32,
         memory_config: &MemoryConfig,
     ) -> OpenFangResult<Self> {
-        #[cfg(feature = "postgres")]
-        if memory_config.backend == "postgres" {
-            return Self::open_postgres(memory_config, decay_rate);
+        if let MemoryBackendKind::Postgres = memory_config.backend {
+            return Err(OpenFangError::Memory(format!(
+                "memory backend={} requires MemorySubstrate::open_async (async init)",
+                MemoryBackendKind::Postgres
+            )));
         }
 
-        Self::open_sqlite(db_path, decay_rate, memory_config)
+        match Self::effective_semantic(memory_config) {
+            SemanticBackendKind::Sqlite => {
+                Self::open_sqlite_sync_sqlite_semantic(db_path, decay_rate)
+            }
+            kind @ (SemanticBackendKind::Postgres
+            | SemanticBackendKind::Qdrant
+            | SemanticBackendKind::Http) => Err(OpenFangError::Memory(format!(
+                "semantic_backend={kind} requires MemorySubstrate::open_async (async init)"
+            ))),
+        }
     }
 
-    /// Open a SQLite-backed memory substrate.
-    fn open_sqlite(
+    /// Open or create a memory substrate. Async-aware: this is the correct
+    /// constructor to use from within a running tokio runtime, and is required
+    /// when the backend selection involves PostgreSQL, Qdrant, or the HTTP
+    /// memory gateway (all of which fail-fast on init with a live probe).
+    pub async fn open_async(
         db_path: &Path,
         decay_rate: f32,
         memory_config: &MemoryConfig,
     ) -> OpenFangResult<Self> {
+        match memory_config.backend {
+            MemoryBackendKind::Sqlite => {
+                // Structured = SQLite. Decide if we still need a PG pool for
+                // the semantic arm.
+                let pg_pool = match Self::effective_semantic(memory_config) {
+                    SemanticBackendKind::Postgres => {
+                        #[cfg(feature = "postgres")]
+                        {
+                            let pool = Self::init_postgres_pool(memory_config).await?;
+                            SemanticPgPool::with_pool(pool)
+                        }
+                        #[cfg(not(feature = "postgres"))]
+                        {
+                            return Err(OpenFangError::Config(format!(
+                                "semantic_backend = {} requires the 'postgres' cargo feature",
+                                SemanticBackendKind::Postgres
+                            )));
+                        }
+                    }
+                    _ => SemanticPgPool::none(),
+                };
+                Self::open_sqlite_inner(db_path, decay_rate, memory_config, pg_pool).await
+            }
+            MemoryBackendKind::Postgres => {
+                #[cfg(feature = "postgres")]
+                {
+                    Self::open_postgres_async(memory_config, decay_rate).await
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    Err(OpenFangError::Config(format!(
+                        "backend = {} requires the 'postgres' cargo feature",
+                        MemoryBackendKind::Postgres
+                    )))
+                }
+            }
+        }
+    }
+
+    /// Sync-only path: SQLite structured + SQLite semantic. No network probes,
+    /// so no runtime needed.
+    fn open_sqlite_sync_sqlite_semantic(
+        db_path: &Path,
+        decay_rate: f32,
+    ) -> OpenFangResult<Self> {
+        let backend = crate::sqlite::SqliteBackend::open(db_path)?;
+        Ok(Self {
+            structured: Arc::new(backend.structured()),
+            semantic: Arc::new(backend.semantic()),
+            knowledge: Arc::new(backend.knowledge()),
+            sessions: Arc::new(backend.session()),
+            usage: Arc::new(backend.usage()),
+            paired_devices: Arc::new(backend.paired_devices()),
+            task_queue: Arc::new(backend.task_queue()),
+            consolidation: Some(Arc::new(backend.consolidation(decay_rate))),
+            audit: Some(Arc::new(backend.audit())),
+            embedding_driver: None,
+        })
+    }
+
+    /// Open a SQLite-backed memory substrate (async — semantic selection may
+    /// perform a Qdrant or HTTP probe).
+    ///
+    /// `pg_pool` is an optional Postgres pool used only when
+    /// `semantic_backend = Postgres` is paired with the SQLite backend.
+    async fn open_sqlite_inner(
+        db_path: &Path,
+        decay_rate: f32,
+        memory_config: &MemoryConfig,
+        pg_pool: SemanticPgPool,
+    ) -> OpenFangResult<Self> {
         let backend = crate::sqlite::SqliteBackend::open(db_path)?;
         let default_semantic: Arc<dyn SemanticBackend> = Arc::new(backend.semantic());
-        let semantic = Self::select_semantic(memory_config, default_semantic)?;
+        let semantic = Self::select_semantic(memory_config, default_semantic, &pg_pool).await?;
 
         Ok(Self {
             structured: Arc::new(backend.structured()),
@@ -94,22 +225,76 @@ impl MemorySubstrate {
         })
     }
 
-    /// Open a PostgreSQL-backed memory substrate.
+    /// Create a Postgres pool, validate pool-size bounds, probe it with a
+    /// `SELECT 1`, and run migrations. Shared between `backend = Postgres`
+    /// and `semantic_backend = Postgres` on top of SQLite.
     #[cfg(feature = "postgres")]
-    fn open_postgres(memory_config: &MemoryConfig, decay_rate: f32) -> OpenFangResult<Self> {
-        let pg_url = memory_config.postgres_url.as_deref().ok_or_else(|| {
-            OpenFangError::Memory("postgres backend requires postgres_url in config".to_string())
+    async fn init_postgres_pool(
+        memory_config: &MemoryConfig,
+    ) -> OpenFangResult<deadpool_postgres::Pool> {
+        let pg_url = memory_config.postgres.postgres_url.as_deref().ok_or_else(|| {
+            OpenFangError::Memory(
+                "postgres backend requires postgres_url in config".to_string(),
+            )
         })?;
+
+        // Fail-fast pool-size validation before we try to open any sockets.
+        if memory_config.postgres_pool_size == 0 {
+            return Err(OpenFangError::Config(
+                "postgres_pool_size must be > 0".to_string(),
+            ));
+        }
+        if memory_config.postgres_pool_size > 1000 {
+            return Err(OpenFangError::Config(format!(
+                "postgres_pool_size = {} exceeds the safety cap of 1000",
+                memory_config.postgres_pool_size
+            )));
+        }
+
         let pool = crate::postgres::create_pool(pg_url, memory_config.postgres_pool_size)?;
 
-        tokio::runtime::Handle::current()
-            .block_on(crate::postgres::run_migrations(&pool))?;
+        // Probe the pool once. Fail loudly if we cannot check out a client or
+        // run a trivial query — matches the deadpool-postgres fail-fast pattern.
+        {
+            let client = pool.get().await.map_err(|e| {
+                OpenFangError::Memory(format!(
+                    "{} backend failed to initialize at {pg_url}: {e}",
+                    MemoryBackendKind::Postgres
+                ))
+            })?;
+            client.simple_query("SELECT 1").await.map_err(|e| {
+                OpenFangError::Memory(format!(
+                    "{} backend failed to initialize at {pg_url}: {e}",
+                    MemoryBackendKind::Postgres
+                ))
+            })?;
+        }
 
-        info!(url = %pg_url, pool_size = memory_config.postgres_pool_size, "PostgreSQL memory backend connected");
+        crate::postgres::run_migrations(&pool).await?;
+        info!(
+            backend = %MemoryBackendKind::Postgres,
+            url = %pg_url,
+            pool_size = memory_config.postgres_pool_size,
+            "memory backend connected"
+        );
+        Ok(pool)
+    }
 
-        let backend = crate::postgres::PgBackend::new(pool);
+    /// Async PostgreSQL backend initialization — safe from inside a tokio runtime.
+    #[cfg(feature = "postgres")]
+    async fn open_postgres_async(
+        memory_config: &MemoryConfig,
+        decay_rate: f32,
+    ) -> OpenFangResult<Self> {
+        let pool = Self::init_postgres_pool(memory_config).await?;
+        let backend = crate::postgres::PgBackend::new(pool.clone());
         let default_semantic: Arc<dyn SemanticBackend> = Arc::new(backend.semantic());
-        let semantic = Self::select_semantic(memory_config, default_semantic)?;
+        let semantic = Self::select_semantic(
+            memory_config,
+            default_semantic,
+            &SemanticPgPool::with_pool(pool),
+        )
+        .await?;
 
         Ok(Self {
             structured: Arc::new(backend.structured()),
@@ -125,64 +310,126 @@ impl MemorySubstrate {
         })
     }
 
-    /// Select the semantic backend based on `semantic_backend` config.
-    /// Falls back to the main `backend` if `semantic_backend` is not set.
-    fn select_semantic(
+    /// Select the semantic backend based on the typed
+    /// [`SemanticBackendKind`] enum. Falls back to a
+    /// `backend`-implied choice when `semantic_backend` is `None`.
+    ///
+    /// Initialization is strict: Qdrant and HTTP backends probe their remotes
+    /// and return `Err` on failure rather than silently falling back to SQLite.
+    async fn select_semantic(
         config: &MemoryConfig,
         default: Arc<dyn SemanticBackend>,
+        pg_pool: &SemanticPgPool,
     ) -> OpenFangResult<Arc<dyn SemanticBackend>> {
-        let sem = config
-            .semantic_backend
-            .as_deref()
-            .unwrap_or(config.backend.as_str());
+        // Silence unused-variable warnings when feature flags are off.
+        let _ = (&default, pg_pool);
 
-        match sem {
-            #[cfg(feature = "qdrant")]
-            "qdrant" => {
-                let url = config.qdrant_url.as_deref().unwrap_or("http://localhost:6334");
-                let api_key = config
-                    .qdrant_api_key_env
-                    .as_deref()
-                    .and_then(|env_var| std::env::var(env_var).ok());
-                match crate::qdrant::QdrantSemanticStore::new(
-                    url,
-                    api_key.as_deref(),
-                    &config.qdrant_collection,
-                ) {
-                    Ok(store) => {
-                        info!(url = %url, collection = %config.qdrant_collection, "Qdrant semantic backend");
-                        Ok(Arc::new(store))
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Qdrant unavailable, using default semantic backend");
-                        Ok(default)
-                    }
+        match Self::effective_semantic(config) {
+            SemanticBackendKind::Sqlite => Ok(default),
+
+            SemanticBackendKind::Postgres => {
+                #[cfg(feature = "postgres")]
+                {
+                    let pool = pg_pool.as_pool().ok_or_else(|| {
+                        OpenFangError::Config(format!(
+                            "semantic_backend = {pg} but no Postgres pool is available; \
+                             use MemorySubstrate::open_async or set backend = {pg}",
+                            pg = SemanticBackendKind::Postgres
+                        ))
+                    })?;
+                    info!(backend = %SemanticBackendKind::Postgres, "semantic backend connected (pgvector)");
+                    Ok(Arc::new(crate::postgres::PostgresSemanticStore::new(
+                        pool.clone(),
+                    )))
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    Err(OpenFangError::Config(format!(
+                        "semantic_backend = {} requires the 'postgres' cargo feature",
+                        SemanticBackendKind::Postgres
+                    )))
                 }
             }
-            #[cfg(feature = "http-memory")]
-            "http" => {
-                let (url, token_env) = match (&config.http_url, &config.http_token_env) {
-                    (Some(u), Some(t)) => (u, t),
-                    _ => {
-                        warn!("semantic_backend=http but http_url/http_token_env not set, using default");
-                        return Ok(default);
-                    }
-                };
-                match crate::http::MemoryApiClient::new(url, token_env) {
-                    Ok(client) => {
-                        match client.health_check() {
-                            Ok(()) => info!(url = %url, "HTTP semantic backend connected"),
-                            Err(e) => warn!(url = %url, error = %e, "HTTP semantic health check failed, will retry"),
+
+            SemanticBackendKind::Qdrant => {
+                #[cfg(feature = "qdrant")]
+                {
+                    let url = config
+                        .qdrant
+                        .qdrant_url
+                        .as_deref()
+                        .unwrap_or("http://localhost:6334");
+                    let api_key = config
+                        .qdrant
+                        .qdrant_api_key_env
+                        .as_deref()
+                        .and_then(|env_var| std::env::var(env_var).ok());
+                    let store = crate::qdrant::QdrantSemanticStore::new(
+                        url,
+                        api_key.as_deref(),
+                        &config.qdrant.qdrant_collection,
+                    )
+                    .await
+                    .map_err(|e| {
+                        OpenFangError::Memory(format!(
+                            "{} backend failed to initialize at {url}: {e}",
+                            SemanticBackendKind::Qdrant
+                        ))
+                    })?;
+                    info!(
+                        backend = %SemanticBackendKind::Qdrant,
+                        url = %url,
+                        collection = %config.qdrant.qdrant_collection,
+                        "semantic backend connected"
+                    );
+                    Ok(Arc::new(store))
+                }
+                #[cfg(not(feature = "qdrant"))]
+                {
+                    Err(OpenFangError::Config(format!(
+                        "semantic_backend = {} requires the 'qdrant' cargo feature",
+                        SemanticBackendKind::Qdrant
+                    )))
+                }
+            }
+
+            SemanticBackendKind::Http => {
+                #[cfg(feature = "http-memory")]
+                {
+                    let (url, token_env) = match (&config.http.http_url, &config.http.http_token_env) {
+                        (Some(u), Some(t)) => (u, t),
+                        _ => {
+                            return Err(OpenFangError::Config(format!(
+                                "semantic_backend = {} requires http_url and \
+                                 http_token_env in config",
+                                SemanticBackendKind::Http
+                            )));
                         }
-                        Ok(Arc::new(crate::http::HttpSemanticStore::new(client, default)))
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "HTTP client failed, using default semantic backend");
-                        Ok(default)
-                    }
+                    };
+                    let client =
+                        crate::http::MemoryApiClient::new(url, token_env).map_err(|e| {
+                            OpenFangError::Memory(format!(
+                                "{} memory-api backend failed to initialize at {url}: {e}",
+                                SemanticBackendKind::Http
+                            ))
+                        })?;
+                    client.health_check().map_err(|e| {
+                        OpenFangError::Memory(format!(
+                            "{} memory-api backend failed health check at {url}: {e}",
+                            SemanticBackendKind::Http
+                        ))
+                    })?;
+                    info!(backend = %SemanticBackendKind::Http, url = %url, "semantic backend connected");
+                    Ok(Arc::new(crate::http::HttpSemanticStore::new(client, default)))
+                }
+                #[cfg(not(feature = "http-memory"))]
+                {
+                    Err(OpenFangError::Config(format!(
+                        "semantic_backend = {} requires the 'http-memory' cargo feature",
+                        SemanticBackendKind::Http
+                    )))
                 }
             }
-            _ => Ok(default),
         }
     }
 
@@ -749,6 +996,118 @@ impl Memory for MemorySubstrate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Feature-gated backends must fail-fast with `OpenFangError::Config`
+    /// when the required cargo feature is not compiled in — never silently
+    /// degrade to SQLite.
+    #[cfg(any(
+        not(feature = "postgres"),
+        not(feature = "qdrant"),
+        not(feature = "http-memory"),
+    ))]
+    #[tokio::test]
+    async fn feature_gated_backend_errors_cleanly_when_feature_off() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let db_path = tmpdir.path().join("test.db");
+
+        async fn assert_feature_error(
+            db_path: &Path,
+            cfg: MemoryConfig,
+            expected_backend: &str,
+        ) {
+            let result = MemorySubstrate::open_async(db_path, 0.1, &cfg).await;
+            let err = match result {
+                Ok(_) => panic!(
+                    "expected init to fail without feature for backend={expected_backend}"
+                ),
+                Err(e) => e,
+            };
+            match err {
+                OpenFangError::Config(msg) => {
+                    assert!(
+                        msg.contains(expected_backend),
+                        "message should name the backend {expected_backend:?}: {msg}"
+                    );
+                    assert!(
+                        msg.contains("feature"),
+                        "message should mention cargo feature: {msg}"
+                    );
+                }
+                other => panic!("expected Config error, got: {other:?}"),
+            }
+        }
+
+        #[cfg(not(feature = "qdrant"))]
+        assert_feature_error(
+            &db_path,
+            MemoryConfig {
+                semantic_backend: Some(SemanticBackendKind::Qdrant),
+                ..Default::default()
+            },
+            "qdrant",
+        )
+        .await;
+
+        #[cfg(not(feature = "http-memory"))]
+        assert_feature_error(
+            &db_path,
+            MemoryConfig {
+                semantic_backend: Some(SemanticBackendKind::Http),
+                ..Default::default()
+            },
+            "http",
+        )
+        .await;
+
+        #[cfg(not(feature = "postgres"))]
+        assert_feature_error(
+            &db_path,
+            MemoryConfig {
+                backend: MemoryBackendKind::Postgres,
+                ..Default::default()
+            },
+            "postgres",
+        )
+        .await;
+    }
+
+    /// `select_semantic` with `semantic_backend = Postgres` but no pool must
+    /// return `OpenFangError::Config` — it's a caller misuse (missing
+    /// `open_async` or missing `backend = postgres`), not a runtime memory
+    /// failure. Locks in the classification fix at substrate.rs line 334.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn postgres_semantic_without_pool_is_config_error() {
+        let cfg = MemoryConfig {
+            backend: MemoryBackendKind::Sqlite,
+            semantic_backend: Some(SemanticBackendKind::Postgres),
+            ..Default::default()
+        };
+        // Build a throw-away default semantic so the signature is satisfied.
+        let backend = crate::sqlite::SqliteBackend::open_in_memory().unwrap();
+        let default_semantic: Arc<dyn SemanticBackend> = Arc::new(backend.semantic());
+
+        let result =
+            MemorySubstrate::select_semantic(&cfg, default_semantic, &SemanticPgPool::none())
+                .await;
+        let err = match result {
+            Ok(_) => panic!("pool-less Postgres semantic must error"),
+            Err(e) => e,
+        };
+        match err {
+            OpenFangError::Config(msg) => {
+                assert!(
+                    msg.to_lowercase().contains("postgres"),
+                    "message should name postgres: {msg}"
+                );
+                assert!(
+                    msg.contains("open_async") || msg.contains("backend"),
+                    "message should guide the caller: {msg}"
+                );
+            }
+            other => panic!("expected Config error, got: {other:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn test_substrate_kv() {

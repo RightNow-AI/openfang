@@ -146,9 +146,9 @@ async fn migrate_v1(client: &PgClient) -> OpenFangResult<()> {
             -- Task queue
             CREATE TABLE IF NOT EXISTS task_queue (
                 id TEXT PRIMARY KEY,
-                agent_id TEXT NOT NULL DEFAULT '',
-                task_type TEXT NOT NULL DEFAULT '',
-                payload BYTEA NOT NULL DEFAULT '',
+                agent_id TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                payload BYTEA NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 priority INTEGER NOT NULL DEFAULT 0,
                 scheduled_at TEXT,

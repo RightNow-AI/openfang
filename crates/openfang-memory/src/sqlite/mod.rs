@@ -35,14 +35,19 @@ impl SqliteBackend {
     /// Open (or create) a database file, register sqlite-vec, apply PRAGMAs
     /// and run migrations.
     pub fn open(db_path: &Path) -> OpenFangResult<Self> {
-        // Register sqlite-vec as auto-extension before opening the connection.
-        // This is process-wide and idempotent — safe to call multiple times.
+        // SAFETY: The transmute coerces `sqlite_vec::sqlite3_vec_init` (a Rust
+        // extern "C" fn with the crate's own pointer types) into the exact
+        // signature `sqlite3_auto_extension` requires from librusqlite's FFI.
+        // The signatures are ABI-compatible — this is the documented
+        // registration pattern for the `sqlite-vec` crate. The call itself is
+        // process-global and idempotent per SQLite's contract, so repeated
+        // invocations from different `open()` calls are safe.
         unsafe {
             rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
                 *const (),
                 unsafe extern "C" fn(
                     *mut rusqlite::ffi::sqlite3,
-                    *mut *const u8,
+                    *mut *const std::os::raw::c_char,
                     *const rusqlite::ffi::sqlite3_api_routines,
                 ) -> i32,
             >(sqlite_vec::sqlite3_vec_init as *const ())));
@@ -58,12 +63,15 @@ impl SqliteBackend {
 
     /// Open an in-memory database (for testing).
     pub fn open_in_memory() -> OpenFangResult<Self> {
+        // SAFETY: Same as `open()` above — ABI-compatible transmute of the
+        // `sqlite-vec` init function pointer into the shape required by
+        // `sqlite3_auto_extension`. Idempotent and process-global.
         unsafe {
             rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
                 *const (),
                 unsafe extern "C" fn(
                     *mut rusqlite::ffi::sqlite3,
-                    *mut *const u8,
+                    *mut *const std::os::raw::c_char,
                     *const rusqlite::ffi::sqlite3_api_routines,
                 ) -> i32,
             >(sqlite_vec::sqlite3_vec_init as *const ())));

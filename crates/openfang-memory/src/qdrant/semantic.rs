@@ -16,7 +16,7 @@ use qdrant_client::qdrant::{
 };
 use qdrant_client::Qdrant;
 use std::collections::HashMap;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Extract a string from a Qdrant payload Value.
 fn payload_str<'a>(
@@ -74,7 +74,15 @@ impl QdrantSemanticStore {
     /// `url` is the Qdrant gRPC endpoint (e.g., `http://localhost:6334`).
     /// `api_key` is optional for authenticated deployments.
     /// `collection` is the Qdrant collection name.
-    pub fn new(url: &str, api_key: Option<&str>, collection: &str) -> OpenFangResult<Self> {
+    ///
+    /// Performs a live `health_check` against the Qdrant server and returns
+    /// `Err` if the server cannot be reached — callers (substrate init) use
+    /// this to fail fast instead of silently degrading.
+    pub async fn new(
+        url: &str,
+        api_key: Option<&str>,
+        collection: &str,
+    ) -> OpenFangResult<Self> {
         let mut builder = Qdrant::from_url(url);
         if let Some(key) = api_key {
             builder = builder.api_key(key);
@@ -82,6 +90,12 @@ impl QdrantSemanticStore {
         let client = builder
             .build()
             .map_err(|e| OpenFangError::Memory(format!("Failed to create Qdrant client: {e}")))?;
+
+        // Fail-fast probe: prove we can talk to the Qdrant server before
+        // returning a handle. `health_check` is a cheap server ping.
+        client.health_check().await.map_err(|e| {
+            OpenFangError::Memory(format!("Qdrant health check failed at {url}: {e}"))
+        })?;
 
         Ok(Self {
             client,
@@ -198,7 +212,13 @@ impl SemanticBackend for QdrantSemanticStore {
     ) -> OpenFangResult<Vec<MemoryFragment>> {
         let embedding = match query_embedding {
             Some(e) => e.to_vec(),
-            None => return Ok(vec![]),
+            None => {
+                return Err(OpenFangError::Memory(
+                    "Qdrant semantic backend requires a query_embedding for recall(); \
+                     enable an embedder or use a different semantic_backend"
+                        .into(),
+                ))
+            }
         };
 
         let mut conditions = Vec::new();
@@ -231,11 +251,13 @@ impl SemanticBackend for QdrantSemanticStore {
                 .await
                 .map_err(|e| OpenFangError::Memory(format!("Qdrant search failed: {e}")))?;
 
-            let mut fragments = Vec::new();
+            let mut fragments = Vec::with_capacity(results.result.len());
             for point in &results.result {
                 let payload = &point.payload;
 
-                // Extract UUID from PointId
+                // Extract UUID from PointId. Missing or non-UUID ids are a
+                // protocol-level corruption (Qdrant lost the point identity) —
+                // do not fabricate a replacement; drop with a warning.
                 let id_str = point
                     .id
                     .as_ref()
@@ -243,14 +265,50 @@ impl SemanticBackend for QdrantSemanticStore {
                         Some(PointIdOptions::Uuid(u)) => Some(u.clone()),
                         Some(PointIdOptions::Num(n)) => Some(n.to_string()),
                         None => None,
-                    })
-                    .unwrap_or_default();
-                let id = helpers::parse_memory_id(&id_str)
-                    .unwrap_or_else(|_| MemoryId::new());
+                    });
+                let id_str = match id_str {
+                    Some(s) => s,
+                    None => {
+                        warn!(
+                            error = "missing point_id",
+                            "dropping Qdrant result with malformed payload"
+                        );
+                        continue;
+                    }
+                };
+                let id = match helpers::parse_memory_id(&id_str) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            id = %id_str,
+                            "dropping Qdrant result with malformed payload"
+                        );
+                        continue;
+                    }
+                };
 
-                let agent_str = payload_str(payload, "agent_id").unwrap_or("");
-                let agent_id = helpers::parse_agent_id(agent_str)
-                    .unwrap_or_else(|_| AgentId::new());
+                let agent_str = match payload_str(payload, "agent_id") {
+                    Some(s) => s,
+                    None => {
+                        warn!(
+                            error = "missing agent_id",
+                            "dropping Qdrant result with malformed payload"
+                        );
+                        continue;
+                    }
+                };
+                let agent_id = match helpers::parse_agent_id(agent_str) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            agent_id = %agent_str,
+                            "dropping Qdrant result with malformed payload"
+                        );
+                        continue;
+                    }
+                };
 
                 let content = payload_str(payload, "content")
                     .unwrap_or("")

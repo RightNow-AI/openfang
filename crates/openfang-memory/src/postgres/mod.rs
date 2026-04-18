@@ -21,7 +21,7 @@ pub use consolidation::PgConsolidationEngine;
 pub use knowledge::PgKnowledgeStore;
 pub use migration::run_migrations;
 pub use paired_devices::PgPairedDevicesStore;
-pub use semantic::PgSemanticStore;
+pub use semantic::PostgresSemanticStore;
 pub use session::PgSessionStore;
 pub use structured::PgStructuredStore;
 pub use task_queue::PgTaskQueueStore;
@@ -54,8 +54,14 @@ impl PgBackend {
         PgStructuredStore::new(self.pool.clone())
     }
 
-    pub fn semantic(&self) -> PgSemanticStore {
-        PgSemanticStore::new(self.pool.clone())
+    pub fn semantic(&self) -> PostgresSemanticStore {
+        PostgresSemanticStore::new(self.pool.clone())
+    }
+
+    /// Access the underlying pool. Useful when composing Postgres-backed
+    /// semantic storage on top of a SQLite structured backend.
+    pub fn pool(&self) -> &Pool {
+        &self.pool
     }
 
     pub fn knowledge(&self) -> PgKnowledgeStore {
