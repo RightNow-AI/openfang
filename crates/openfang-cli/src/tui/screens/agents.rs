@@ -576,13 +576,11 @@ impl AgentSelectState {
             KeyCode::Esc => {
                 self.sub = AgentSubScreen::CreateMethod;
             }
-            KeyCode::Enter => {
-                if !self.custom_name.is_empty() {
-                    if self.custom_desc.is_empty() {
-                        self.custom_desc = format!("A custom {} agent", self.custom_name);
-                    }
-                    self.sub = AgentSubScreen::CustomDesc;
+            KeyCode::Enter if !self.custom_name.is_empty() => {
+                if self.custom_desc.is_empty() {
+                    self.custom_desc = format!("A custom {} agent", self.custom_name);
                 }
+                self.sub = AgentSubScreen::CustomDesc;
             }
             KeyCode::Char(c) => {
                 self.custom_name.push(c);
@@ -641,15 +639,11 @@ impl AgentSelectState {
             KeyCode::Esc => {
                 self.sub = AgentSubScreen::CustomPrompt;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.tool_cursor > 0 {
-                    self.tool_cursor -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if self.tool_cursor > 0 => {
+                self.tool_cursor -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.tool_cursor < TOOL_OPTIONS.len() - 1 {
-                    self.tool_cursor += 1;
-                }
+            KeyCode::Down | KeyCode::Char('j') if self.tool_cursor < TOOL_OPTIONS.len() - 1 => {
+                self.tool_cursor += 1;
             }
             KeyCode::Char(' ') => {
                 self.tool_checks[self.tool_cursor] = !self.tool_checks[self.tool_cursor];
@@ -674,21 +668,15 @@ impl AgentSelectState {
             KeyCode::Esc => {
                 self.sub = AgentSubScreen::CustomTools;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.skill_cursor > 0 {
-                    self.skill_cursor -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if self.skill_cursor > 0 => {
+                self.skill_cursor -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if len > 0 && self.skill_cursor < len - 1 {
-                    self.skill_cursor += 1;
-                }
+            KeyCode::Down | KeyCode::Char('j') if len > 0 && self.skill_cursor < len - 1 => {
+                self.skill_cursor += 1;
             }
-            KeyCode::Char(' ') => {
-                if len > 0 {
-                    let checked = &mut self.available_skills[self.skill_cursor].1;
-                    *checked = !*checked;
-                }
+            KeyCode::Char(' ') if len > 0 => {
+                let checked = &mut self.available_skills[self.skill_cursor].1;
+                *checked = !*checked;
             }
             KeyCode::Enter => {
                 // Advance to MCP server selection
@@ -706,21 +694,15 @@ impl AgentSelectState {
             KeyCode::Esc => {
                 self.sub = AgentSubScreen::CustomSkills;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.mcp_cursor > 0 {
-                    self.mcp_cursor -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if self.mcp_cursor > 0 => {
+                self.mcp_cursor -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if len > 0 && self.mcp_cursor < len - 1 {
-                    self.mcp_cursor += 1;
-                }
+            KeyCode::Down | KeyCode::Char('j') if len > 0 && self.mcp_cursor < len - 1 => {
+                self.mcp_cursor += 1;
             }
-            KeyCode::Char(' ') => {
-                if len > 0 {
-                    let checked = &mut self.available_mcp[self.mcp_cursor].1;
-                    *checked = !*checked;
-                }
+            KeyCode::Char(' ') if len > 0 => {
+                let checked = &mut self.available_mcp[self.mcp_cursor].1;
+                *checked = !*checked;
             }
             KeyCode::Enter => {
                 let toml = self.build_custom_toml();
@@ -737,21 +719,15 @@ impl AgentSelectState {
             KeyCode::Esc => {
                 self.sub = AgentSubScreen::AgentDetail;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.skill_cursor > 0 {
-                    self.skill_cursor -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if self.skill_cursor > 0 => {
+                self.skill_cursor -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if len > 0 && self.skill_cursor < len - 1 {
-                    self.skill_cursor += 1;
-                }
+            KeyCode::Down | KeyCode::Char('j') if len > 0 && self.skill_cursor < len - 1 => {
+                self.skill_cursor += 1;
             }
-            KeyCode::Char(' ') => {
-                if len > 0 {
-                    let checked = &mut self.available_skills[self.skill_cursor].1;
-                    *checked = !*checked;
-                }
+            KeyCode::Char(' ') if len > 0 => {
+                let checked = &mut self.available_skills[self.skill_cursor].1;
+                *checked = !*checked;
             }
             KeyCode::Enter => {
                 // Save — collect checked skill names (none checked = "all")
@@ -780,21 +756,15 @@ impl AgentSelectState {
             KeyCode::Esc => {
                 self.sub = AgentSubScreen::AgentDetail;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.mcp_cursor > 0 {
-                    self.mcp_cursor -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if self.mcp_cursor > 0 => {
+                self.mcp_cursor -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if len > 0 && self.mcp_cursor < len - 1 {
-                    self.mcp_cursor += 1;
-                }
+            KeyCode::Down | KeyCode::Char('j') if len > 0 && self.mcp_cursor < len - 1 => {
+                self.mcp_cursor += 1;
             }
-            KeyCode::Char(' ') => {
-                if len > 0 {
-                    let checked = &mut self.available_mcp[self.mcp_cursor].1;
-                    *checked = !*checked;
-                }
+            KeyCode::Char(' ') if len > 0 => {
+                let checked = &mut self.available_mcp[self.mcp_cursor].1;
+                *checked = !*checked;
             }
             KeyCode::Enter => {
                 // Save — collect checked server names (none checked = "all")

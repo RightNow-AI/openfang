@@ -238,15 +238,13 @@ impl CommsState {
                     self.task_field - 1
                 };
             }
-            KeyCode::Enter => {
-                if !self.task_title.is_empty() {
-                    self.show_task_modal = false;
-                    return CommsAction::PostTask {
-                        title: self.task_title.clone(),
-                        desc: self.task_desc.clone(),
-                        assign: self.task_assign.clone(),
-                    };
-                }
+            KeyCode::Enter if !self.task_title.is_empty() => {
+                self.show_task_modal = false;
+                return CommsAction::PostTask {
+                    title: self.task_title.clone(),
+                    desc: self.task_desc.clone(),
+                    assign: self.task_assign.clone(),
+                };
             }
             KeyCode::Char(c) => match self.task_field {
                 0 => self.task_title.push(c),

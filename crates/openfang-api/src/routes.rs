@@ -11213,7 +11213,7 @@ pub async fn comms_events(
     }
 
     // Sort by timestamp descending (newest first)
-    comms_events.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
+    comms_events.sort_by_key(|e| std::cmp::Reverse(e.timestamp.clone()));
     comms_events.truncate(limit);
 
     Json(comms_events)

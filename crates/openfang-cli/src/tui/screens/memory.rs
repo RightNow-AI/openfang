@@ -166,19 +166,15 @@ impl MemoryState {
                 self.kv_pairs.clear();
                 self.selected_agent = None;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.kv_list_state.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.kv_list_state.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.kv_list_state.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.kv_list_state.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.kv_list_state.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.kv_list_state.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.kv_list_state.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.kv_list_state.select(Some(next));
             }
             KeyCode::Char('a') => {
                 self.sub = MemorySub::AddKey;
@@ -196,10 +192,8 @@ impl MemoryState {
                     }
                 }
             }
-            KeyCode::Char('d') => {
-                if self.kv_list_state.selected().is_some() {
-                    self.confirm_delete = true;
-                }
+            KeyCode::Char('d') if self.kv_list_state.selected().is_some() => {
+                self.confirm_delete = true;
             }
             KeyCode::Char('r') => {
                 if let Some(agent) = &self.selected_agent {

@@ -1016,15 +1016,11 @@ pub fn run() -> InitResult {
                                     });
                                 }
                             }
-                            KeyCode::Char(c) => {
-                                if state.key_test == KeyTestState::Idle {
-                                    state.api_key_input.push(c);
-                                }
+                            KeyCode::Char(c) if state.key_test == KeyTestState::Idle => {
+                                state.api_key_input.push(c);
                             }
-                            KeyCode::Backspace => {
-                                if state.key_test == KeyTestState::Idle {
-                                    state.api_key_input.pop();
-                                }
+                            KeyCode::Backspace if state.key_test == KeyTestState::Idle => {
+                                state.api_key_input.pop();
                             }
                             _ => {}
                         }
@@ -1192,11 +1188,10 @@ fn handle_migration_key(
             _ => {}
         },
         MigrationPhase::Running => {} // ignore keys while running
-        MigrationPhase::Done => {
-            if code == KeyCode::Enter {
-                state.advance_to_provider();
-            }
+        MigrationPhase::Done if code == KeyCode::Enter => {
+            state.advance_to_provider();
         }
+        MigrationPhase::Done => {}
     }
 }
 
