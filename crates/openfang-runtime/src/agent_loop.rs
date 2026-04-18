@@ -786,7 +786,8 @@ pub async fn run_agent_loop(
                         _ => {} // Allow or Warn — proceed with execution
                     }
 
-                    let input_preview: String = tool_call.input.to_string().chars().take(300).collect();
+                    let input_preview: String =
+                        tool_call.input.to_string().chars().take(300).collect();
                     info!(tool = %tool_call.name, id = %tool_call.id, input = %input_preview, "Tool call");
 
                     // Notify phase: ToolUse
@@ -3470,13 +3471,11 @@ mod tests {
         // message). The guidance IS delivered to the LLM during the call, but does not
         // persist in session.messages — that's intentional to avoid the agent learning
         // that specific tools are broken.
-        let has_error_tool_result = session.messages.iter().any(|msg| {
-            match &msg.content {
-                MessageContent::Blocks(blocks) => blocks.iter().any(|block| {
-                    matches!(block, ContentBlock::ToolResult { is_error: true, .. })
-                }),
-                _ => false,
-            }
+        let has_error_tool_result = session.messages.iter().any(|msg| match &msg.content {
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. })),
+            _ => false,
         });
         assert!(
             !has_error_tool_result,

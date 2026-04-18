@@ -7005,14 +7005,18 @@ impl KernelHandle for OpenFangKernel {
             "inject_async_callback: delivering async result to channel"
         );
 
-        let agent_id: AgentId = context
-            .agent_id
-            .parse()
-            .map_err(|_| format!("inject_async_callback: invalid agent_id '{}'", context.agent_id))?;
-        let entry = self
-            .registry
-            .get(agent_id)
-            .ok_or_else(|| format!("inject_async_callback: agent {} not found", context.agent_id))?;
+        let agent_id: AgentId = context.agent_id.parse().map_err(|_| {
+            format!(
+                "inject_async_callback: invalid agent_id '{}'",
+                context.agent_id
+            )
+        })?;
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
+            format!(
+                "inject_async_callback: agent {} not found",
+                context.agent_id
+            )
+        })?;
 
         // Use a synthetic ToolUse+ToolResult pair to deliver the untrusted remote content
         // to the agent. The ToolResult block acts as a structural data boundary — the LLM

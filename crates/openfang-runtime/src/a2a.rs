@@ -978,7 +978,10 @@ mod tests {
 
     #[test]
     fn test_parse_sse_empty_data_is_skip() {
-        assert!(matches!(parse_sse_data_line("").unwrap(), SseLineOutcome::Skip));
+        assert!(matches!(
+            parse_sse_data_line("").unwrap(),
+            SseLineOutcome::Skip
+        ));
         assert!(matches!(
             parse_sse_data_line("   ").unwrap(),
             SseLineOutcome::Skip

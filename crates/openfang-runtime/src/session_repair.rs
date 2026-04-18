@@ -1450,9 +1450,9 @@ pub fn prune_failed_tool_turns(messages: &mut Vec<Message>) {
     while i + 1 < messages.len() {
         let is_assistant_tool_use = messages[i].role == Role::Assistant
             && match &messages[i].content {
-                MessageContent::Blocks(blocks) => {
-                    blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }))
-                }
+                MessageContent::Blocks(blocks) => blocks
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolUse { .. })),
                 _ => false,
             };
         if !is_assistant_tool_use {
@@ -1467,9 +1467,9 @@ pub fn prune_failed_tool_turns(messages: &mut Vec<Message>) {
                         .filter(|b| matches!(b, ContentBlock::ToolResult { .. }))
                         .collect();
                     !results.is_empty()
-                        && results.iter().all(|b| {
-                            matches!(b, ContentBlock::ToolResult { is_error: true, .. })
-                        })
+                        && results
+                            .iter()
+                            .all(|b| matches!(b, ContentBlock::ToolResult { is_error: true, .. }))
                 }
                 _ => false,
             };
