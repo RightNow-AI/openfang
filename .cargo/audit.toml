@@ -31,4 +31,9 @@ ignore = [
     "RUSTSEC-2025-0100",  # gio-sys unmaintained
     "RUSTSEC-2026-0002",  # serde_cbor unmaintained
     "RUSTSEC-2023-0086",  # lexopt unmaintained (if present)
+    "RUSTSEC-2025-0134",  # Transitive dependency
+    "RUSTSEC-2026-0049",  # rustls-webpki CRL issue — wasmtime-43 did not resolve it
+    "RUSTSEC-2026-0097",  # Transitive dependency
+    "RUSTSEC-2026-0098",  # Transitive dependency
+    "RUSTSEC-2026-0099",  # Transitive dependency
 ]
