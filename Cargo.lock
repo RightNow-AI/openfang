@@ -3959,7 +3959,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-api"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "argon2",
  "async-trait",
@@ -4001,7 +4001,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-channels"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "aes",
  "async-trait",
@@ -4040,7 +4040,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-cli"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "clap",
  "clap_complete",
@@ -4068,7 +4068,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-desktop"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "axum",
  "open",
@@ -4094,7 +4094,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-extensions"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -4122,7 +4122,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-hands"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "chrono",
  "dashmap",
@@ -4140,7 +4140,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-kernel"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4179,7 +4179,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-memory"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4199,7 +4199,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-migrate"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -4218,7 +4218,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-runtime"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4254,7 +4254,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-skills"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "chrono",
  "hex",
@@ -4277,7 +4277,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-types"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4296,7 +4296,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-wire"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5773,9 +5773,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.10"
+version = "0.103.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df33b2b81ac578cabaf06b89b0631153a3f416b0a886e8a7a1707fb51abbd1ef"
+checksum = "8279bb85272c9f10811ae6a6c547ff594d6a7f3c6c6b02ee9726d1d0dcfcdd06"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -9230,7 +9230,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.5.9"
+version = "0.5.10"
 
 [[package]]
 name = "yoke"

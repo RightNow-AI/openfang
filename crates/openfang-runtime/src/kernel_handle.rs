@@ -183,6 +183,31 @@ pub trait KernelHandle: Send + Sync {
         None
     }
 
+    /// Get the channel callback context for an agent (if one is active).
+    fn get_channel_context(
+        &self,
+        agent_id: &str,
+    ) -> Option<openfang_types::ChannelCallbackContext> {
+        let _ = agent_id;
+        None
+    }
+
+    /// Store a channel callback context for an agent.
+    fn set_channel_context(&self, agent_id: &str, context: openfang_types::ChannelCallbackContext) {
+        let _ = (agent_id, context);
+    }
+
+    /// Inject an async callback result into a channel, bypassing the normal agent loop.
+    async fn inject_async_callback(
+        &self,
+        context: openfang_types::ChannelCallbackContext,
+        agent_name: &str,
+        result_text: &str,
+    ) -> Result<(), String> {
+        let _ = (context, agent_name, result_text);
+        Err("Async callback injection not available".to_string())
+    }
+
     /// Send a message to a user on a named channel adapter (e.g., "email", "telegram").
     /// When `thread_id` is provided, the message is sent as a thread reply.
     /// Returns a confirmation string on success.

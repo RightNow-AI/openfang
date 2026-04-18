@@ -155,19 +155,19 @@ impl CommsState {
                 self.task_field = 0;
             }
             KeyCode::Char('r') => return CommsAction::Refresh,
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.focus == CommsFocus::EventList && !self.events.is_empty() {
-                    let i = self.event_list_state.selected().unwrap_or(0);
-                    let next = if i == 0 { self.events.len() - 1 } else { i - 1 };
-                    self.event_list_state.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k')
+                if self.focus == CommsFocus::EventList && !self.events.is_empty() =>
+            {
+                let i = self.event_list_state.selected().unwrap_or(0);
+                let next = if i == 0 { self.events.len() - 1 } else { i - 1 };
+                self.event_list_state.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.focus == CommsFocus::EventList && !self.events.is_empty() {
-                    let i = self.event_list_state.selected().unwrap_or(0);
-                    let next = (i + 1) % self.events.len();
-                    self.event_list_state.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j')
+                if self.focus == CommsFocus::EventList && !self.events.is_empty() =>
+            {
+                let i = self.event_list_state.selected().unwrap_or(0);
+                let next = (i + 1) % self.events.len();
+                self.event_list_state.select(Some(next));
             }
             _ => {}
         }
@@ -189,18 +189,17 @@ impl CommsState {
                     self.send_field - 1
                 };
             }
-            KeyCode::Enter => {
+            KeyCode::Enter
                 if !self.send_from.is_empty()
                     && !self.send_to.is_empty()
-                    && !self.send_msg.is_empty()
-                {
-                    self.show_send_modal = false;
-                    return CommsAction::SendMessage {
-                        from: self.send_from.clone(),
-                        to: self.send_to.clone(),
-                        msg: self.send_msg.clone(),
-                    };
-                }
+                    && !self.send_msg.is_empty() =>
+            {
+                self.show_send_modal = false;
+                return CommsAction::SendMessage {
+                    from: self.send_from.clone(),
+                    to: self.send_to.clone(),
+                    msg: self.send_msg.clone(),
+                };
             }
             KeyCode::Char(c) => match self.send_field {
                 0 => self.send_from.push(c),
@@ -238,15 +237,13 @@ impl CommsState {
                     self.task_field - 1
                 };
             }
-            KeyCode::Enter => {
-                if !self.task_title.is_empty() {
-                    self.show_task_modal = false;
-                    return CommsAction::PostTask {
-                        title: self.task_title.clone(),
-                        desc: self.task_desc.clone(),
-                        assign: self.task_assign.clone(),
-                    };
-                }
+            KeyCode::Enter if !self.task_title.is_empty() => {
+                self.show_task_modal = false;
+                return CommsAction::PostTask {
+                    title: self.task_title.clone(),
+                    desc: self.task_desc.clone(),
+                    assign: self.task_assign.clone(),
+                };
             }
             KeyCode::Char(c) => match self.task_field {
                 0 => self.task_title.push(c),

@@ -54,10 +54,6 @@ const OAUTH_SCOPES: &str = "copilot";
 /// File name for persisted OAuth tokens (inside ~/.openfang/).
 const TOKEN_FILE_NAME: &str = ".copilot-tokens.json";
 
-/// Device flow polling interval (seconds) — GitHub default is 5.
-#[allow(dead_code)]
-const DEVICE_FLOW_POLL_INTERVAL: Duration = Duration::from_secs(5);
-
 /// Maximum time to wait for user to authorize the device flow.
 const DEVICE_FLOW_TIMEOUT: Duration = Duration::from_secs(900); // 15 minutes
 
@@ -139,8 +135,6 @@ impl CachedCopilotToken {
 #[derive(Clone)]
 struct CachedModels {
     models: Vec<String>,
-    #[allow(dead_code)]
-    fetched_at: Instant,
 }
 
 // ---------------------------------------------------------------------------
@@ -170,9 +164,6 @@ struct OAuthTokenResponse {
     refresh_token: Option<String>,
     #[serde(default)]
     expires_in: Option<i64>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    refresh_token_expires_in: Option<i64>,
     #[serde(default)]
     error: Option<String>,
     #[serde(default)]
@@ -608,7 +599,6 @@ impl CopilotDriver {
         let mut lock = self.models.lock().unwrap_or_else(|e| e.into_inner());
         *lock = Some(CachedModels {
             models: models.clone(),
-            fetched_at: Instant::now(),
         });
         Ok(models)
     }
@@ -772,20 +762,6 @@ pub async fn run_device_flow(openfang_dir: &Path) -> Result<PersistedTokens, Str
     println!("  Copilot authentication successful.");
 
     Ok(tokens)
-}
-
-/// Read a line from stdin with a prompt. Used during interactive setup.
-#[allow(dead_code)]
-fn prompt_line(prompt: &str) -> Result<String, String> {
-    use std::io::{self, BufRead, Write};
-    print!("{prompt}");
-    io::stdout().flush().map_err(|e| format!("IO error: {e}"))?;
-    let mut line = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut line)
-        .map_err(|e| format!("Failed to read input: {e}"))?;
-    Ok(line.trim().to_string())
 }
 
 /// Try to open the verification URL in the default browser.

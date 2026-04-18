@@ -326,19 +326,17 @@ impl ChannelAdapter for IrcAdapter {
                                 }
 
                                 // RPL_WELCOME (001) — registration complete, join channels
-                                "001" => {
-                                    if !joined {
-                                        info!("IRC registered as {nick_clone}");
-                                        for ch in &channels_clone {
-                                            let join_cmd = format!("JOIN {ch}\r\n");
-                                            if let Err(e) = writer.write_all(join_cmd.as_bytes()).await {
-                                                warn!("IRC JOIN send failed: {e}");
-                                                break 'inner true;
-                                            }
-                                            info!("IRC joining {ch}");
+                                "001" if !joined => {
+                                    info!("IRC registered as {nick_clone}");
+                                    for ch in &channels_clone {
+                                        let join_cmd = format!("JOIN {ch}\r\n");
+                                        if let Err(e) = writer.write_all(join_cmd.as_bytes()).await {
+                                            warn!("IRC JOIN send failed: {e}");
+                                            break 'inner true;
                                         }
-                                        joined = true;
+                                        info!("IRC joining {ch}");
                                     }
+                                    joined = true;
                                 }
 
                                 // PRIVMSG — incoming message

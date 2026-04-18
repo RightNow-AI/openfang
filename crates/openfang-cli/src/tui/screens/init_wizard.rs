@@ -966,16 +966,15 @@ pub fn run() -> InitResult {
                                 state.step = Step::Provider;
                             }
                         }
-                        KeyCode::Enter => {
+                        KeyCode::Enter
                             if matches!(
                                 state.copilot_auth_status,
                                 CopilotAuthStatus::WaitingForUser
-                            ) && !state.copilot_verification_uri.is_empty()
-                            {
-                                let _ = openfang_runtime::drivers::copilot::open_verification_url(
-                                    &state.copilot_verification_uri,
-                                );
-                            }
+                            ) && !state.copilot_verification_uri.is_empty() =>
+                        {
+                            let _ = openfang_runtime::drivers::copilot::open_verification_url(
+                                &state.copilot_verification_uri,
+                            );
                         }
                         _ => {}
                     },
@@ -990,41 +989,36 @@ pub fn run() -> InitResult {
                                 state.key_test = KeyTestState::Idle;
                                 state.step = Step::Provider;
                             }
-                            KeyCode::Enter => {
+                            KeyCode::Enter
                                 if !state.api_key_input.is_empty()
-                                    && state.key_test == KeyTestState::Idle
-                                {
-                                    if let Some(p) = state.provider() {
-                                        let _ = crate::dotenv::save_env_key(
-                                            p.env_var,
-                                            &state.api_key_input,
-                                        );
-                                    }
-                                    state.key_test = KeyTestState::Testing;
-                                    let provider_name = state
-                                        .provider()
-                                        .map(|p| p.name.to_string())
-                                        .unwrap_or_default();
-                                    let env_var = state
-                                        .provider()
-                                        .map(|p| p.env_var.to_string())
-                                        .unwrap_or_default();
-                                    let tx = test_tx.clone();
-                                    std::thread::spawn(move || {
-                                        let ok = crate::test_api_key(&provider_name, &env_var);
-                                        let _ = tx.send(ok);
-                                    });
+                                    && state.key_test == KeyTestState::Idle =>
+                            {
+                                if let Some(p) = state.provider() {
+                                    let _ = crate::dotenv::save_env_key(
+                                        p.env_var,
+                                        &state.api_key_input,
+                                    );
                                 }
+                                state.key_test = KeyTestState::Testing;
+                                let provider_name = state
+                                    .provider()
+                                    .map(|p| p.name.to_string())
+                                    .unwrap_or_default();
+                                let env_var = state
+                                    .provider()
+                                    .map(|p| p.env_var.to_string())
+                                    .unwrap_or_default();
+                                let tx = test_tx.clone();
+                                std::thread::spawn(move || {
+                                    let ok = crate::test_api_key(&provider_name, &env_var);
+                                    let _ = tx.send(ok);
+                                });
                             }
-                            KeyCode::Char(c) => {
-                                if state.key_test == KeyTestState::Idle {
-                                    state.api_key_input.push(c);
-                                }
+                            KeyCode::Char(c) if state.key_test == KeyTestState::Idle => {
+                                state.api_key_input.push(c);
                             }
-                            KeyCode::Backspace => {
-                                if state.key_test == KeyTestState::Idle {
-                                    state.api_key_input.pop();
-                                }
+                            KeyCode::Backspace if state.key_test == KeyTestState::Idle => {
+                                state.api_key_input.pop();
                             }
                             _ => {}
                         }
@@ -1192,11 +1186,10 @@ fn handle_migration_key(
             _ => {}
         },
         MigrationPhase::Running => {} // ignore keys while running
-        MigrationPhase::Done => {
-            if code == KeyCode::Enter {
-                state.advance_to_provider();
-            }
+        MigrationPhase::Done if code == KeyCode::Enter => {
+            state.advance_to_provider();
         }
+        MigrationPhase::Done => {}
     }
 }
 

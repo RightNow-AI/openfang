@@ -161,6 +161,9 @@ pub struct OpenFangKernel {
     agent_msg_locks: dashmap::DashMap<AgentId, Arc<tokio::sync::Mutex<()>>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
+    /// Channel callback contexts — tracks the originating channel for each agent
+    /// so async tool results can be delivered back to the correct channel/user.
+    channel_contexts: dashmap::DashMap<AgentId, openfang_types::ChannelCallbackContext>,
 }
 
 /// Bounded in-memory delivery receipt tracker.
@@ -1158,6 +1161,7 @@ impl OpenFangKernel {
             default_model_override: std::sync::RwLock::new(None),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
+            channel_contexts: dashmap::DashMap::new(),
         };
 
         // Restore persisted agents from SQLite
@@ -1688,6 +1692,7 @@ impl OpenFangKernel {
                 content_blocks,
                 sender_id,
                 sender_name,
+                None, // prepend_turns
             )
             .await
         };
@@ -2121,6 +2126,7 @@ impl OpenFangKernel {
                 ctx_window,
                 Some(&kernel_clone.process_manager),
                 content_blocks,
+                None, // prepend_turns
             )
             .await;
 
@@ -2377,6 +2383,7 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        prepend_turns: Option<Vec<openfang_types::message::Message>>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -2696,6 +2703,7 @@ impl OpenFangKernel {
             ctx_window,
             Some(&self.process_manager),
             content_blocks,
+            prepend_turns,
         )
         .await
         .map_err(KernelError::OpenFang)?;
@@ -3552,10 +3560,10 @@ impl OpenFangKernel {
         for req in &def.requires {
             match req.requirement_type {
                 openfang_hands::RequirementType::ApiKey
-                | openfang_hands::RequirementType::EnvVar => {
-                    if !req.check_value.is_empty() && !allowed_env.contains(&req.check_value) {
-                        allowed_env.push(req.check_value.clone());
-                    }
+                | openfang_hands::RequirementType::EnvVar
+                    if !req.check_value.is_empty() && !allowed_env.contains(&req.check_value) =>
+                {
+                    allowed_env.push(req.check_value.clone());
                 }
                 _ => {}
             }
@@ -3762,7 +3770,7 @@ impl OpenFangKernel {
         let mut bindings = self.bindings.lock().unwrap_or_else(|e| e.into_inner());
         bindings.push(binding);
         // Sort by specificity descending
-        bindings.sort_by(|a, b| b.match_rule.specificity().cmp(&a.match_rule.specificity()));
+        bindings.sort_by_key(|b| std::cmp::Reverse(b.match_rule.specificity()));
     }
 
     /// Remove a binding by index, returns the removed binding if valid.
@@ -6965,6 +6973,107 @@ impl KernelHandle for OpenFangKernel {
             "File '{}' sent to {} via {}",
             filename, recipient, channel
         ))
+    }
+
+    fn get_channel_context(
+        &self,
+        agent_id: &str,
+    ) -> Option<openfang_types::ChannelCallbackContext> {
+        let id: AgentId = agent_id.parse().ok()?;
+        self.channel_contexts.get(&id).map(|r| r.clone())
+    }
+
+    fn set_channel_context(&self, agent_id: &str, context: openfang_types::ChannelCallbackContext) {
+        if let Ok(id) = agent_id.parse::<AgentId>() {
+            self.channel_contexts.insert(id, context);
+        }
+    }
+
+    async fn inject_async_callback(
+        &self,
+        context: openfang_types::ChannelCallbackContext,
+        agent_name: &str,
+        result_text: &str,
+    ) -> Result<(), String> {
+        use openfang_types::message::{ContentBlock, Message, MessageContent, Role};
+
+        tracing::info!(
+            agent_id = %context.agent_id,
+            agent_name = %agent_name,
+            channel = %context.channel_type,
+            recipient = %context.reply_to_platform_id,
+            "inject_async_callback: delivering async result to channel"
+        );
+
+        let agent_id: AgentId = context.agent_id.parse().map_err(|_| {
+            format!(
+                "inject_async_callback: invalid agent_id '{}'",
+                context.agent_id
+            )
+        })?;
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
+            format!(
+                "inject_async_callback: agent {} not found",
+                context.agent_id
+            )
+        })?;
+
+        // Use a synthetic ToolUse+ToolResult pair to deliver the untrusted remote content
+        // to the agent. The ToolResult block acts as a structural data boundary — the LLM
+        // API separates tool results from instructions, preventing the remote agent's output
+        // from being interpreted as system instructions (prompt injection).
+        let tool_use_id = format!("a2a_async_{}", uuid::Uuid::new_v4().simple());
+
+        let prepend_turns = vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: tool_use_id.clone(),
+                name: "_a2a_async_result".to_string(),
+                input: serde_json::json!({ "source": agent_name }),
+                provider_metadata: None,
+            }]),
+        }];
+
+        let content_blocks = vec![ContentBlock::ToolResult {
+            tool_use_id: tool_use_id.clone(),
+            tool_name: "_a2a_async_result".to_string(),
+            content: result_text.to_string(),
+            is_error: false,
+        }];
+
+        let kernel_handle: Option<Arc<dyn KernelHandle>> = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+
+        // Run the agent loop to get a formatted response, then discard the synthetic turns
+        // from persistent session history by using the messages_before watermark.
+        let loop_result = self
+            .execute_llm_agent(
+                &entry,
+                agent_id,
+                "", // no user text — the result is fully in content_blocks
+                kernel_handle,
+                Some(content_blocks),
+                None, // sender_id
+                Some(agent_name.to_string()),
+                Some(prepend_turns),
+            )
+            .await
+            .map_err(|e| format!("inject_async_callback: agent loop failed: {e}"))?;
+
+        // Deliver the agent's formatted response to the originating channel.
+        self.send_channel_message(
+            &context.channel_type,
+            &context.reply_to_platform_id,
+            &loop_result.response,
+            context.thread_id.as_deref(),
+        )
+        .await
+        .map_err(|e| format!("inject_async_callback: channel send failed: {e}"))?;
+
+        Ok(())
     }
 
     async fn spawn_agent_checked(

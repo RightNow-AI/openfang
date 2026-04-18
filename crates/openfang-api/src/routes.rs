@@ -6245,7 +6245,7 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
     // Index probe results by provider list position for O(1) lookup
     let mut probe_map: HashMap<usize, openfang_runtime::provider_health::ProbeResult> =
         HashMap::with_capacity(local_providers.len());
-    for ((idx, _, _), result) in local_providers.iter().zip(probe_results.into_iter()) {
+    for ((idx, _, _), result) in local_providers.iter().zip(probe_results) {
         probe_map.insert(*idx, result);
     }
 
@@ -11213,7 +11213,7 @@ pub async fn comms_events(
     }
 
     // Sort by timestamp descending (newest first)
-    comms_events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    comms_events.sort_by_key(|e| std::cmp::Reverse(e.timestamp.clone()));
     comms_events.truncate(limit);
 
     Json(comms_events)

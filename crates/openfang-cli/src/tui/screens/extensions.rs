@@ -152,12 +152,10 @@ impl ExtensionsState {
                 self.sub = ExtSub::Health;
                 return ExtensionsAction::RefreshHealth;
             }
-            KeyCode::Char('/') => {
-                if self.sub == ExtSub::Browse {
-                    self.searching = true;
-                    self.search_query.clear();
-                    return ExtensionsAction::Continue;
-                }
+            KeyCode::Char('/') if self.sub == ExtSub::Browse => {
+                self.searching = true;
+                self.search_query.clear();
+                return ExtensionsAction::Continue;
             }
             _ => {}
         }
@@ -172,19 +170,15 @@ impl ExtensionsState {
     fn handle_browse(&mut self, key: KeyEvent) -> ExtensionsAction {
         let total = self.filtered().len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.browse_list.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.browse_list.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.browse_list.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.browse_list.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.browse_list.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.browse_list.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.browse_list.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.browse_list.select(Some(next));
             }
             KeyCode::Enter => {
                 let filtered = self.filtered();
@@ -222,24 +216,18 @@ impl ExtensionsState {
 
         let total = self.installed_list_data().len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.installed_list.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.installed_list.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.installed_list.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.installed_list.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.installed_list.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.installed_list.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.installed_list.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.installed_list.select(Some(next));
             }
-            KeyCode::Char('d') | KeyCode::Delete => {
-                if self.installed_list.selected().is_some() {
-                    self.confirm_remove = true;
-                }
+            KeyCode::Char('d') | KeyCode::Delete if self.installed_list.selected().is_some() => {
+                self.confirm_remove = true;
             }
             KeyCode::Char('r') => return ExtensionsAction::RefreshAll,
             _ => {}
@@ -250,19 +238,15 @@ impl ExtensionsState {
     fn handle_health(&mut self, key: KeyEvent) -> ExtensionsAction {
         let total = self.health_entries.len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.health_list.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.health_list.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.health_list.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.health_list.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.health_list.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.health_list.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.health_list.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.health_list.select(Some(next));
             }
             KeyCode::Char('r') | KeyCode::Enter => {
                 if let Some(sel) = self.health_list.selected() {

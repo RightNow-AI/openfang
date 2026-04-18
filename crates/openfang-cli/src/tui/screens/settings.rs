@@ -174,21 +174,17 @@ impl SettingsState {
     fn handle_providers(&mut self, key: KeyEvent) -> SettingsAction {
         let total = self.providers.len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.provider_list.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.provider_list.select(Some(next));
-                    self.test_result = None;
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.provider_list.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.provider_list.select(Some(next));
+                self.test_result = None;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.provider_list.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.provider_list.select(Some(next));
-                    self.test_result = None;
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.provider_list.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.provider_list.select(Some(next));
+                self.test_result = None;
             }
             KeyCode::Char('e') => {
                 if let Some(sel) = self.provider_list.selected() {
@@ -223,19 +219,15 @@ impl SettingsState {
     fn handle_models(&mut self, key: KeyEvent) -> SettingsAction {
         let total = self.models.len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.model_list.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.model_list.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.model_list.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.model_list.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.model_list.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.model_list.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.model_list.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.model_list.select(Some(next));
             }
             KeyCode::Char('r') => return SettingsAction::RefreshModels,
             _ => {}
@@ -246,19 +238,15 @@ impl SettingsState {
     fn handle_tools(&mut self, key: KeyEvent) -> SettingsAction {
         let total = self.tools.len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.tool_list.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.tool_list.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.tool_list.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.tool_list.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.tool_list.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.tool_list.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.tool_list.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.tool_list.select(Some(next));
             }
             KeyCode::Char('r') => return SettingsAction::RefreshTools,
             _ => {}
