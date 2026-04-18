@@ -6287,7 +6287,7 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
     // Index probe results by provider list position for O(1) lookup
     let mut probe_map: HashMap<usize, openfang_runtime::provider_health::ProbeResult> =
         HashMap::with_capacity(local_providers.len());
-    for ((idx, _, _), result) in local_providers.iter().zip(probe_results.into_iter()) {
+    for ((idx, _, _), result) in local_providers.iter().zip(probe_results) {
         probe_map.insert(*idx, result);
     }
 
