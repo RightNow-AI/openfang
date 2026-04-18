@@ -17,15 +17,62 @@ use tracing::{debug, warn};
 
 /// Maximum inter-agent call depth to prevent infinite recursion (A->B->C->...).
 const MAX_AGENT_CALL_DEPTH: u32 = 5;
+/// Maximum concurrent async A2A tasks (prevents unbounded memory growth).
+const MAX_CONCURRENT_ASYNC_TASKS: usize = 256;
+/// TTL for async tasks: handles are aborted and maps cleaned after this duration.
+const ASYNC_TASK_TTL: std::time::Duration = std::time::Duration::from_secs(7200);
+
+/// Entry in `ASYNC_TASKS` — join handle plus insertion timestamp for TTL eviction.
+struct AsyncTaskEntry {
+    handle: tokio::task::JoinHandle<()>,
+    inserted_at: std::time::Instant,
+}
+
+/// RAII guard that removes a task from both global maps when dropped (including on panic).
+struct TaskCleanupGuard(String);
+
+impl Drop for TaskCleanupGuard {
+    fn drop(&mut self) {
+        ASYNC_TASKS.remove(&self.0);
+        A2A_TASK_PROGRESS.remove(&self.0);
+    }
+}
 
 /// In-flight async agent tasks, keyed by a caller-chosen task ID.
-static ASYNC_TASKS: std::sync::LazyLock<dashmap::DashMap<String, tokio::task::JoinHandle<()>>> =
+static ASYNC_TASKS: std::sync::LazyLock<dashmap::DashMap<String, AsyncTaskEntry>> =
     std::sync::LazyLock::new(dashmap::DashMap::new);
 
 /// Live accumulated progress from async A2A tasks, keyed by task ID.
 static A2A_TASK_PROGRESS: std::sync::LazyLock<
-    dashmap::DashMap<String, std::sync::Arc<std::sync::Mutex<String>>>,
+    dashmap::DashMap<String, std::sync::Arc<std::sync::RwLock<String>>>,
 > = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// Ensures the background TTL cleanup task is spawned exactly once.
+static CLEANUP_TASK_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// Spawn the background TTL sweep if not already running.
+///
+/// Must be called from an async context while a Tokio runtime is active.
+fn ensure_cleanup_task() {
+    CLEANUP_TASK_INIT.get_or_init(|| {
+        tokio::spawn(async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                let now = std::time::Instant::now();
+                ASYNC_TASKS.retain(|_, entry| {
+                    if now.duration_since(entry.inserted_at) >= ASYNC_TASK_TTL {
+                        entry.handle.abort();
+                        false
+                    } else {
+                        true
+                    }
+                });
+                // Prune orphaned progress entries whose task no longer exists.
+                A2A_TASK_PROGRESS.retain(|id, _| ASYNC_TASKS.contains_key(id));
+            }
+        });
+    });
+}
 
 /// Check if a tool name refers to a shell execution tool.
 ///
@@ -2632,7 +2679,12 @@ async fn tool_a2a_send(
     let session_id = input["session_id"].as_str();
     let client = crate::a2a::A2aClient::new();
     let task = client
-        .send_task_streaming(&url, message, session_id)
+        .send_task_streaming(
+            &url,
+            message,
+            session_id,
+            Some(std::time::Duration::from_secs(300)),
+        )
         .await?;
 
     serde_json::to_string_pretty(&task).map_err(|e| format!("Serialization error: {e}"))
@@ -2686,20 +2738,32 @@ async fn tool_a2a_send_async(
         );
     }
 
+    // Reject new tasks if the global cap is reached to prevent unbounded growth.
+    if ASYNC_TASKS.len() >= MAX_CONCURRENT_ASYNC_TASKS {
+        return Err(format!(
+            "Too many concurrent async tasks ({MAX_CONCURRENT_ASYNC_TASKS} active). \
+             Cancel an existing task with a2a_cancel_task or wait for one to complete."
+        ));
+    }
+
+    ensure_cleanup_task();
+
     // Shared progress buffer updated as SSE chunks arrive.
-    let progress: std::sync::Arc<std::sync::Mutex<String>> =
-        std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let progress: std::sync::Arc<std::sync::RwLock<String>> =
+        std::sync::Arc::new(std::sync::RwLock::new(String::new()));
     A2A_TASK_PROGRESS.insert(task_id.clone(), progress.clone());
 
     let tid = task_id.clone();
     let agent_label_cb = agent_label.clone();
     let handle = tokio::spawn(async move {
+        let _guard = TaskCleanupGuard(tid.clone());
         let client = crate::a2a::A2aClient::new();
         let result = client
             .send_task_streaming_with_progress(
                 &url,
                 &message,
                 session_id.as_deref(),
+                None, // no per-request timeout for async tasks; TTL sweep handles abandonment
                 progress.clone(),
             )
             .await;
@@ -2711,8 +2775,8 @@ async fn tool_a2a_send_async(
             Err(e) => format!("Error: {e}"),
         };
 
-        // Update the progress buffer with the final result.
-        if let Ok(mut buf) = progress.lock() {
+        // Overwrite the progress buffer with the final result so a2a_check_task shows it.
+        if let Ok(mut buf) = progress.write() {
             *buf = result_text.clone();
         }
 
@@ -2722,12 +2786,16 @@ async fn tool_a2a_send_async(
                 .inject_async_callback(ctx, &agent_label_cb, &result_text)
                 .await;
         }
-
-        ASYNC_TASKS.remove(&tid);
-        A2A_TASK_PROGRESS.remove(&tid);
+        // _guard drops here, removing tid from ASYNC_TASKS and A2A_TASK_PROGRESS.
     });
 
-    ASYNC_TASKS.insert(task_id.clone(), handle);
+    ASYNC_TASKS.insert(
+        task_id.clone(),
+        AsyncTaskEntry {
+            handle,
+            inserted_at: std::time::Instant::now(),
+        },
+    );
 
     Ok(format!(
         "Task submitted to {agent_label} (task_id: {task_id}). \
@@ -2745,7 +2813,7 @@ fn tool_a2a_check_task(input: &serde_json::Value) -> Result<String, String> {
     if let Some(entry) = A2A_TASK_PROGRESS.get(task_id) {
         let text = entry
             .value()
-            .lock()
+            .read()
             .map(|buf| buf.clone())
             .unwrap_or_default();
         if text.is_empty() {
@@ -2764,8 +2832,8 @@ fn tool_a2a_cancel_task(input: &serde_json::Value) -> Result<String, String> {
         .as_str()
         .ok_or("Missing 'task_id' parameter")?;
 
-    let had_task = if let Some((_, handle)) = ASYNC_TASKS.remove(task_id) {
-        handle.abort();
+    let had_task = if let Some((_, entry)) = ASYNC_TASKS.remove(task_id) {
+        entry.handle.abort();
         true
     } else {
         false

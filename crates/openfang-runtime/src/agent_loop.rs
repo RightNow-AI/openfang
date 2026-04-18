@@ -216,6 +216,9 @@ pub async fn run_agent_loop(
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
+    // Extra turns (e.g. synthetic assistant ToolUse for async A2A callbacks) inserted
+    // after validate_and_repair and before the current user turn.
+    prepend_turns: Option<Vec<Message>>,
 ) -> OpenFangResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting agent loop");
 
@@ -300,17 +303,11 @@ pub async fn run_agent_loop(
         system_prompt.push_str(&crate::prompt_builder::build_memory_section(&mem_pairs));
     }
 
-    // Add the user message to session history.
-    // When content blocks are provided (e.g. text + image from a channel),
-    // combine them with the user text so the LLM sees the full multimodal turn.
-    session
-        .messages
-        .push(build_user_turn_message(user_message, user_content_blocks));
-
-    // Build the messages for the LLM, filtering system messages
-    // System prompt goes into the separate `system` field.
-    // NOTE: We build llm_messages BEFORE stripping images so the LLM
-    // sees the full image data for the current turn.
+    // Build the messages for the LLM from existing session history (without the current
+    // user turn). The user turn is appended AFTER validate_and_repair so that any
+    // ToolResult blocks in user_content_blocks (e.g. async A2A callback results) are
+    // never seen by the repair pass as orphans — their matching ToolUse arrives via
+    // prepend_turns which is also inserted after repair.
     let llm_messages: Vec<Message> = session
         .messages
         .iter()
@@ -318,8 +315,7 @@ pub async fn run_agent_loop(
         .cloned()
         .collect();
 
-    // Strip Image blocks from session to prevent base64 bloat.
-    // The LLM already received them via llm_messages above.
+    // Strip Image blocks from old turns to prevent base64 bloat accumulating in session.
     for msg in session.messages.iter_mut() {
         if let MessageContent::Blocks(blocks) = &mut msg.content {
             let had_images = blocks
@@ -339,6 +335,22 @@ pub async fn run_agent_loop(
 
     // Validate and repair session history (drop orphans, merge consecutive)
     let mut messages = crate::session_repair::validate_and_repair(&llm_messages);
+
+    // Insert prepend_turns (e.g. synthetic assistant ToolUse for async callbacks) AFTER
+    // repair so the repair pass never sees an orphaned ToolUse or ToolResult.
+    if let Some(turns) = prepend_turns {
+        for turn in turns {
+            messages.push(turn.clone());
+            session.messages.push(turn);
+        }
+    }
+
+    // Add the user message to session history and LLM messages.
+    // When content blocks are provided (e.g. ToolResult from async callback, or images
+    // from a channel), combine them with the user text into a single turn.
+    let user_turn = build_user_turn_message(user_message, user_content_blocks);
+    messages.push(user_turn.clone());
+    session.messages.push(user_turn);
 
     // Inject canonical context as the first user message (not in system prompt)
     // to keep the system prompt stable across turns for provider prompt caching.
@@ -1427,6 +1439,8 @@ pub async fn run_agent_loop_streaming(
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
+    // Extra turns inserted after validate_and_repair and before the current user turn.
+    prepend_turns: Option<Vec<Message>>,
 ) -> OpenFangResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting streaming agent loop");
 
@@ -1511,13 +1525,8 @@ pub async fn run_agent_loop_streaming(
         system_prompt.push_str(&crate::prompt_builder::build_memory_section(&mem_pairs));
     }
 
-    // Add the user message to session history.
-    // When content blocks are provided (e.g. text + image from a channel),
-    // combine them with the user text so the LLM sees the full multimodal turn.
-    session
-        .messages
-        .push(build_user_turn_message(user_message, user_content_blocks));
-
+    // Build LLM messages from existing session history (without the current user turn).
+    // See run_agent_loop for the rationale.
     let llm_messages: Vec<Message> = session
         .messages
         .iter()
@@ -1525,8 +1534,7 @@ pub async fn run_agent_loop_streaming(
         .cloned()
         .collect();
 
-    // Strip Image blocks from session to prevent base64 bloat.
-    // The LLM already received them via llm_messages above.
+    // Strip Image blocks from old turns to prevent base64 bloat.
     for msg in session.messages.iter_mut() {
         if let MessageContent::Blocks(blocks) = &mut msg.content {
             let had_images = blocks
@@ -1546,6 +1554,19 @@ pub async fn run_agent_loop_streaming(
 
     // Validate and repair session history (drop orphans, merge consecutive)
     let mut messages = crate::session_repair::validate_and_repair(&llm_messages);
+
+    // Insert prepend_turns after repair, before the current user turn.
+    if let Some(turns) = prepend_turns {
+        for turn in turns {
+            messages.push(turn.clone());
+            session.messages.push(turn);
+        }
+    }
+
+    // Add the user message to session history and LLM messages.
+    let user_turn = build_user_turn_message(user_message, user_content_blocks);
+    messages.push(user_turn.clone());
+    session.messages.push(user_turn);
 
     // Inject canonical context as the first user message (not in system prompt)
     // to keep the system prompt stable across turns for provider prompt caching.
@@ -3385,6 +3406,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // prepend_turns
         )
         .await
         .expect("Loop should complete without error");
@@ -3438,22 +3460,27 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // prepend_turns
         )
         .await
         .expect("Loop should complete without error");
 
-        let guidance_seen = session.messages.iter().any(|msg| {
+        // prune_failed_tool_turns removes the failed ToolUse+ToolResult pair from session
+        // history (including the TOOL_ERROR_GUIDANCE text block that was in the ToolResult
+        // message). The guidance IS delivered to the LLM during the call, but does not
+        // persist in session.messages — that's intentional to avoid the agent learning
+        // that specific tools are broken.
+        let has_error_tool_result = session.messages.iter().any(|msg| {
             match &msg.content {
-            MessageContent::Blocks(blocks) => blocks.iter().any(|block| {
-                matches!(block, ContentBlock::Text { text, .. } if text == TOOL_ERROR_GUIDANCE)
-            }),
-            _ => false,
-        }
+                MessageContent::Blocks(blocks) => blocks.iter().any(|block| {
+                    matches!(block, ContentBlock::ToolResult { is_error: true, .. })
+                }),
+                _ => false,
+            }
         });
-
         assert!(
-            guidance_seen,
-            "Expected tool error guidance in session messages after failed tool call"
+            !has_error_tool_result,
+            "Failed tool turns should be pruned from session.messages by prune_failed_tool_turns"
         );
     }
 
@@ -3493,6 +3520,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // prepend_turns
         )
         .await
         .expect("Loop should complete without error");
@@ -3546,6 +3574,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // prepend_turns
         )
         .await
         .expect("Loop should complete without error");
@@ -3592,6 +3621,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // prepend_turns
         )
         .await
         .expect("Streaming loop should complete without error");
@@ -3716,6 +3746,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // prepend_turns
         )
         .await
         .expect("Loop should recover via retry");
@@ -3763,6 +3794,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // prepend_turns
         )
         .await
         .expect("Loop should complete with fallback");
@@ -3818,6 +3850,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // prepend_turns
         )
         .await
         .expect("Streaming loop should complete without error");
@@ -4794,6 +4827,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // prepend_turns
         )
         .await
         .expect("Agent loop should complete");
@@ -4864,6 +4898,7 @@ mod tests {
             None,
             None,
             None,
+            None, // prepend_turns
         )
         .await
         .expect("Agent loop should recover nested XML tool calls");
@@ -4936,6 +4971,7 @@ mod tests {
             None,
             None,
             None, // user_content_blocks
+            None, // prepend_turns
         )
         .await
         .expect("Normal loop should complete");
@@ -4999,6 +5035,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // prepend_turns
         )
         .await
         .expect("Streaming loop should complete");

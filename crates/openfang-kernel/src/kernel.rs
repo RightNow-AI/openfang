@@ -1692,6 +1692,7 @@ impl OpenFangKernel {
                 content_blocks,
                 sender_id,
                 sender_name,
+                None, // prepend_turns
             )
             .await
         };
@@ -2125,6 +2126,7 @@ impl OpenFangKernel {
                 ctx_window,
                 Some(&kernel_clone.process_manager),
                 content_blocks,
+                None, // prepend_turns
             )
             .await;
 
@@ -2381,6 +2383,7 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        prepend_turns: Option<Vec<openfang_types::message::Message>>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -2700,6 +2703,7 @@ impl OpenFangKernel {
             ctx_window,
             Some(&self.process_manager),
             content_blocks,
+            prepend_turns,
         )
         .await
         .map_err(KernelError::OpenFang)?;
@@ -6991,6 +6995,8 @@ impl KernelHandle for OpenFangKernel {
         agent_name: &str,
         result_text: &str,
     ) -> Result<(), String> {
+        use openfang_types::message::{ContentBlock, Message, MessageContent, Role};
+
         tracing::info!(
             agent_id = %context.agent_id,
             agent_name = %agent_name,
@@ -6999,23 +7005,65 @@ impl KernelHandle for OpenFangKernel {
             "inject_async_callback: delivering async result to channel"
         );
 
-        // Build the callback message — present the result to the agent so it can
-        // format a response for the end user.
-        let callback_msg = format!(
-            "{agent_name} completed: {result_text}\n\n(Present these findings to the user.)"
-        );
+        let agent_id: AgentId = context
+            .agent_id
+            .parse()
+            .map_err(|_| format!("inject_async_callback: invalid agent_id '{}'", context.agent_id))?;
+        let entry = self
+            .registry
+            .get(agent_id)
+            .ok_or_else(|| format!("inject_async_callback: agent {} not found", context.agent_id))?;
 
-        // Send to the agent and get its formatted response
-        let agent_response = self
-            .send_to_agent(&context.agent_id, &callback_msg)
+        // Use a synthetic ToolUse+ToolResult pair to deliver the untrusted remote content
+        // to the agent. The ToolResult block acts as a structural data boundary — the LLM
+        // API separates tool results from instructions, preventing the remote agent's output
+        // from being interpreted as system instructions (prompt injection).
+        let tool_use_id = format!("a2a_async_{}", uuid::Uuid::new_v4().simple());
+
+        let prepend_turns = vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: tool_use_id.clone(),
+                name: "_a2a_async_result".to_string(),
+                input: serde_json::json!({ "source": agent_name }),
+                provider_metadata: None,
+            }]),
+        }];
+
+        let content_blocks = vec![ContentBlock::ToolResult {
+            tool_use_id: tool_use_id.clone(),
+            tool_name: "_a2a_async_result".to_string(),
+            content: result_text.to_string(),
+            is_error: false,
+        }];
+
+        let kernel_handle: Option<Arc<dyn KernelHandle>> = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+
+        // Run the agent loop to get a formatted response, then discard the synthetic turns
+        // from persistent session history by using the messages_before watermark.
+        let loop_result = self
+            .execute_llm_agent(
+                &entry,
+                agent_id,
+                "", // no user text — the result is fully in content_blocks
+                kernel_handle,
+                Some(content_blocks),
+                None, // sender_id
+                Some(agent_name.to_string()),
+                Some(prepend_turns),
+            )
             .await
-            .map_err(|e| format!("inject_async_callback: send_to_agent failed: {e}"))?;
+            .map_err(|e| format!("inject_async_callback: agent loop failed: {e}"))?;
 
-        // Deliver the agent's response to the originating channel
+        // Deliver the agent's formatted response to the originating channel.
         self.send_channel_message(
             &context.channel_type,
             &context.reply_to_platform_id,
-            &agent_response,
+            &loop_result.response,
             context.thread_id.as_deref(),
         )
         .await

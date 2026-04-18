@@ -13,7 +13,8 @@ use futures::StreamExt;
 use openfang_types::agent::AgentManifest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
+use std::time::Duration;
 use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
@@ -394,6 +395,71 @@ pub fn build_agent_card(manifest: &AgentManifest, base_url: &str) -> AgentCard {
 // A2A Client — discover and interact with external A2A agents
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// SSE parsing
+// ---------------------------------------------------------------------------
+
+/// Outcome of processing a single SSE `data:` payload.
+#[derive(Debug)]
+pub(crate) enum SseLineOutcome {
+    /// Line carries no task information — skip and continue.
+    Skip,
+    /// Intermediate task update; more events expected.
+    Update(A2aTask),
+    /// Final event; stream is complete.
+    Final(A2aTask),
+}
+
+/// Parse one SSE `data:` payload into a typed outcome.
+///
+/// Returns `Err` for malformed JSON or remote error events.
+/// All other cases (empty data, unrecognised structure) return `Ok(Skip)`.
+/// This function is intentionally pure so it can be unit-tested without HTTP.
+pub(crate) fn parse_sse_data_line(data: &str) -> Result<SseLineOutcome, String> {
+    let data = data.trim();
+    if data.is_empty() {
+        return Ok(SseLineOutcome::Skip);
+    }
+    let parsed: serde_json::Value = serde_json::from_str(data)
+        .map_err(|e| format!("Failed to parse SSE JSON: {e} — data: {data}"))?;
+
+    if let Some(error) = parsed.get("error") {
+        return Err(format!("A2A SSE error: {error}"));
+    }
+    if let Some(result) = parsed.get("result") {
+        if let Ok(task) = serde_json::from_value::<A2aTask>(result.clone()) {
+            let is_final = result
+                .get("final")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            return Ok(if is_final {
+                SseLineOutcome::Final(task)
+            } else {
+                SseLineOutcome::Update(task)
+            });
+        }
+    }
+    Ok(SseLineOutcome::Skip)
+}
+
+// ---------------------------------------------------------------------------
+
+/// Append every agent text part from `task` into the shared `progress` buffer.
+fn append_agent_text_to_progress(task: &A2aTask, progress: &RwLock<String>) {
+    if let Ok(mut p) = progress.write() {
+        for msg in &task.messages {
+            if msg.role == "agent" {
+                for part in &msg.parts {
+                    if let A2aPart::Text { text } = part {
+                        p.push_str(text);
+                        p.push('\n');
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Client for discovering and interacting with external A2A agents.
 pub struct A2aClient {
     client: reqwest::Client,
@@ -482,17 +548,23 @@ impl A2aClient {
 
     /// Send a task to an external A2A agent using SSE streaming (`tasks/sendSubscribe`).
     ///
-    /// Accumulates text chunks from the SSE stream and returns the final task once
-    /// the server sends a `"final": true` event. Uses no connection timeout since
-    /// the response streams progressively.
+    /// Accumulates events from the SSE stream and returns the final task once the
+    /// server sends a `"final": true` event, the stream closes, or `timeout` elapses.
+    ///
+    /// Pass `None` for `timeout` only when the caller manages its own deadline (e.g.
+    /// the async dispatch path). Synchronous callers should always set a timeout.
     pub async fn send_task_streaming(
         &self,
         url: &str,
         message: &str,
         session_id: Option<&str>,
+        timeout: Option<Duration>,
     ) -> Result<A2aTask, String> {
-        // Build a client with no timeout for the streaming connection.
-        let streaming_client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder();
+        if let Some(t) = timeout {
+            builder = builder.timeout(t);
+        }
+        let streaming_client = builder
             .build()
             .map_err(|e| format!("Failed to build streaming client: {e}"))?;
 
@@ -534,40 +606,25 @@ impl A2aClient {
                 std::str::from_utf8(&chunk).map_err(|e| format!("SSE non-UTF8 data: {e}"))?;
             buf.push_str(text);
 
-            // Process all complete lines in the buffer.
             while let Some(newline_pos) = buf.find('\n') {
                 let line = buf[..newline_pos].trim_end_matches('\r').to_string();
                 buf = buf[newline_pos + 1..].to_string();
 
                 if let Some(data) = line.strip_prefix("data: ") {
-                    let data = data.trim();
-                    if data.is_empty() {
-                        continue;
-                    }
-                    let parsed: serde_json::Value = serde_json::from_str(data)
-                        .map_err(|e| format!("Failed to parse SSE JSON: {e} — data: {data}"))?;
-
-                    if let Some(result) = parsed.get("result") {
-                        // Deserialize into A2aTask (best-effort; ignore unknown fields).
-                        if let Ok(task) = serde_json::from_value::<A2aTask>(result.clone()) {
-                            let is_final = result
-                                .get("final")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
+                    match parse_sse_data_line(data)? {
+                        SseLineOutcome::Skip => {}
+                        SseLineOutcome::Update(task) => {
                             last_task = Some(task);
-                            if is_final {
-                                return last_task
-                                    .ok_or_else(|| "No task in final SSE event".to_string());
-                            }
                         }
-                    } else if let Some(error) = parsed.get("error") {
-                        return Err(format!("A2A SSE error: {error}"));
+                        SseLineOutcome::Final(task) => {
+                            return Ok(task);
+                        }
                     }
                 }
             }
         }
 
-        // Stream ended without a final event — return whatever we have.
+        // Stream ended without a final event — return whatever we accumulated.
         last_task.ok_or_else(|| "SSE stream ended without a final event".to_string())
     }
 
@@ -580,9 +637,14 @@ impl A2aClient {
         url: &str,
         message: &str,
         session_id: Option<&str>,
-        progress: std::sync::Arc<std::sync::Mutex<String>>,
+        timeout: Option<Duration>,
+        progress: std::sync::Arc<RwLock<String>>,
     ) -> Result<A2aTask, String> {
-        let streaming_client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder();
+        if let Some(t) = timeout {
+            builder = builder.timeout(t);
+        }
+        let streaming_client = builder
             .build()
             .map_err(|e| format!("Failed to build streaming client: {e}"))?;
 
@@ -629,41 +691,16 @@ impl A2aClient {
                 buf = buf[newline_pos + 1..].to_string();
 
                 if let Some(data) = line.strip_prefix("data: ") {
-                    let data = data.trim();
-                    if data.is_empty() {
-                        continue;
-                    }
-                    let parsed: serde_json::Value = serde_json::from_str(data)
-                        .map_err(|e| format!("Failed to parse SSE JSON: {e} — data: {data}"))?;
-
-                    if let Some(result) = parsed.get("result") {
-                        if let Ok(task) = serde_json::from_value::<A2aTask>(result.clone()) {
-                            // Extract any text from the latest agent message and append to progress.
-                            for msg in &task.messages {
-                                if msg.role == "agent" {
-                                    for part in &msg.parts {
-                                        if let A2aPart::Text { text } = part {
-                                            if let Ok(mut p) = progress.lock() {
-                                                p.push_str(text);
-                                                p.push('\n');
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            let is_final = result
-                                .get("final")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
+                    match parse_sse_data_line(data)? {
+                        SseLineOutcome::Skip => {}
+                        SseLineOutcome::Update(task) => {
+                            append_agent_text_to_progress(&task, &progress);
                             last_task = Some(task);
-                            if is_final {
-                                return last_task
-                                    .ok_or_else(|| "No task in final SSE event".to_string());
-                            }
                         }
-                    } else if let Some(error) = parsed.get("error") {
-                        return Err(format!("A2A SSE error: {error}"));
+                        SseLineOutcome::Final(task) => {
+                            append_agent_text_to_progress(&task, &progress);
+                            return Ok(task);
+                        }
                     }
                 }
             }
@@ -922,6 +959,98 @@ mod tests {
         store.insert(task);
         // One was evicted, plus the new one
         assert!(store.len() <= 2);
+    }
+
+    // ---------------------------------------------------------------------------
+    // parse_sse_data_line unit tests
+    // ---------------------------------------------------------------------------
+
+    fn make_task_json(id: &str, status: &str, is_final: Option<bool>) -> String {
+        let final_field = match is_final {
+            Some(true) => r#","final":true"#,
+            Some(false) => r#","final":false"#,
+            None => "",
+        };
+        format!(
+            r#"{{"result":{{"id":"{id}","status":"{status}","messages":[],"artifacts":[]{final_field}}}}}"#
+        )
+    }
+
+    #[test]
+    fn test_parse_sse_empty_data_is_skip() {
+        assert!(matches!(parse_sse_data_line("").unwrap(), SseLineOutcome::Skip));
+        assert!(matches!(
+            parse_sse_data_line("   ").unwrap(),
+            SseLineOutcome::Skip
+        ));
+    }
+
+    #[test]
+    fn test_parse_sse_normal_completion_is_final() {
+        let json = make_task_json("t-1", "completed", Some(true));
+        assert!(matches!(
+            parse_sse_data_line(&json).unwrap(),
+            SseLineOutcome::Final(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_sse_final_task_has_correct_id() {
+        let json = make_task_json("task-abc", "completed", Some(true));
+        match parse_sse_data_line(&json).unwrap() {
+            SseLineOutcome::Final(task) => assert_eq!(task.id, "task-abc"),
+            other => panic!("Expected Final, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_sse_intermediate_update_is_update() {
+        let json = make_task_json("t-2", "working", None);
+        assert!(matches!(
+            parse_sse_data_line(&json).unwrap(),
+            SseLineOutcome::Update(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_sse_explicit_not_final_is_update() {
+        let json = make_task_json("t-3", "working", Some(false));
+        assert!(matches!(
+            parse_sse_data_line(&json).unwrap(),
+            SseLineOutcome::Update(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_sse_malformed_json_is_err() {
+        assert!(parse_sse_data_line("{not valid json}").is_err());
+    }
+
+    #[test]
+    fn test_parse_sse_error_event_is_err() {
+        let json = r#"{"error":{"code":-32603,"message":"Internal error"}}"#;
+        let err = parse_sse_data_line(json).unwrap_err();
+        assert!(err.contains("A2A SSE error"), "got: {err}");
+    }
+
+    #[test]
+    fn test_parse_sse_unknown_structure_is_skip() {
+        // Valid JSON but no "result" or "error" key
+        let json = r#"{"id":"x","type":"ping"}"#;
+        assert!(matches!(
+            parse_sse_data_line(json).unwrap(),
+            SseLineOutcome::Skip
+        ));
+    }
+
+    #[test]
+    fn test_parse_sse_result_not_a_task_is_skip() {
+        // "result" exists but isn't deserializable as A2aTask
+        let json = r#"{"result":"ok"}"#;
+        assert!(matches!(
+            parse_sse_data_line(json).unwrap(),
+            SseLineOutcome::Skip
+        ));
     }
 
     #[test]
