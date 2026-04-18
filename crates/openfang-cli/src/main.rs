@@ -3,6 +3,8 @@
 //! When a daemon is running (`openfang start`), the CLI talks to it over HTTP.
 //! Otherwise, commands boot an in-process kernel (single-shot mode).
 
+#![allow(clippy::collapsible_match)]
+
 mod bundled_agents;
 mod dotenv;
 mod launcher;
