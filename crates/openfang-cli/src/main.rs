@@ -1476,7 +1476,28 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
             "openrouter/google/gemini-2.5-flash",
             "OpenRouter",
         ),
+        ("minimax", "MINIMAX_API_KEY", "MiniMax-M2.7", "MiniMax"),
     ]
+}
+
+#[cfg(test)]
+mod provider_list_tests {
+    use super::provider_list;
+
+    #[test]
+    fn provider_list_includes_minimax() {
+        let minimax = provider_list()
+            .into_iter()
+            .find(|(provider, _, _, _)| *provider == "minimax");
+        assert!(
+            minimax.is_some(),
+            "MiniMax should be exposed by provider_list()"
+        );
+        let (_, env_var, model, display) = minimax.unwrap();
+        assert_eq!(env_var, "MINIMAX_API_KEY");
+        assert_eq!(model, "MiniMax-M2.7");
+        assert_eq!(display, "MiniMax");
+    }
 }
 
 /// Quick probe to check if Ollama is running on localhost.

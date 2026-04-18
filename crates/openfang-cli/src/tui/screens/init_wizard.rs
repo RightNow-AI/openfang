@@ -149,6 +149,14 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
+        name: "minimax",
+        display: "MiniMax",
+        env_var: "MINIMAX_API_KEY",
+        default_model: "MiniMax-M2.7",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
         name: "huggingface",
         display: "Hugging Face",
         env_var: "HUGGINGFACE_API_KEY",
@@ -256,6 +264,23 @@ pub enum InitResult {
         launch: LaunchChoice,
     },
     Cancelled,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PROVIDERS;
+
+    #[test]
+    fn init_wizard_lists_minimax_provider() {
+        let minimax = PROVIDERS.iter().find(|provider| provider.name == "minimax");
+        assert!(
+            minimax.is_some(),
+            "MiniMax should be selectable in openfang init"
+        );
+        let minimax = minimax.unwrap();
+        assert_eq!(minimax.env_var, "MINIMAX_API_KEY");
+        assert_eq!(minimax.default_model, "MiniMax-M2.7");
+    }
 }
 
 // ── Internal state ─────────────────────────────────────────────────────────
