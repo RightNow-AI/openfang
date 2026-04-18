@@ -1557,9 +1557,107 @@ impl Default for DefaultModelConfig {
     }
 }
 
+/// Storage backend for structured memory (sessions, usage, audit, etc.).
+///
+/// Selects which database drives non-vector memory tables. Vector search is
+/// independent and is configured via [`SemanticBackendKind`].
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryBackendKind {
+    /// Embedded SQLite database. Default. No external dependencies.
+    #[default]
+    Sqlite,
+    /// PostgreSQL via `deadpool-postgres`. Requires `backend="postgres"` plus
+    /// a reachable `postgres_url` and the `postgres` cargo feature.
+    Postgres,
+}
+
+impl std::fmt::Display for MemoryBackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Sqlite => "sqlite",
+            Self::Postgres => "postgres",
+        })
+    }
+}
+
+/// Vector / semantic search backend.
+///
+/// Independent of [`MemoryBackendKind`] — you can run structured data on SQLite
+/// and semantic search on Qdrant, for example. When `semantic_backend` is not
+/// set in config, substrate uses whichever of SQLite/Postgres matches
+/// `backend`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticBackendKind {
+    /// Embedded SQLite + `sqlite-vec` extension.
+    Sqlite,
+    /// PostgreSQL + `pgvector`. Requires the `postgres` cargo feature.
+    Postgres,
+    /// Qdrant vector database over gRPC. Requires the `qdrant` cargo feature.
+    Qdrant,
+    /// Remote memory-api gateway over HTTP. Requires the `http-memory` cargo feature.
+    Http,
+}
+
+impl std::fmt::Display for SemanticBackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Sqlite => "sqlite",
+            Self::Postgres => "postgres",
+            Self::Qdrant => "qdrant",
+            Self::Http => "http",
+        })
+    }
+}
+
+/// Postgres connection config (used when `backend = Postgres` or `semantic_backend = Postgres`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PostgresConnConfig {
+    /// PostgreSQL connection URL.
+    pub postgres_url: Option<String>,
+}
+
+/// Qdrant connection config (used when `semantic_backend = Qdrant`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct QdrantConnConfig {
+    /// Qdrant server URL.
+    pub qdrant_url: Option<String>,
+    /// Env var name holding the Qdrant API key.
+    pub qdrant_api_key_env: Option<String>,
+    /// Qdrant collection name for memory vectors.
+    pub qdrant_collection: String,
+}
+
+impl Default for QdrantConnConfig {
+    fn default() -> Self {
+        Self {
+            qdrant_url: None,
+            qdrant_api_key_env: None,
+            qdrant_collection: "openfang_memories".to_string(),
+        }
+    }
+}
+
+/// HTTP memory-api gateway config (used when `semantic_backend = Http`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HttpMemoryConnConfig {
+    /// HTTP memory API URL.
+    pub http_url: Option<String>,
+    /// Env var name holding the HTTP memory API bearer token.
+    pub http_token_env: Option<String>,
+}
+
 /// Memory substrate configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MemoryConfig {
     /// Path to SQLite database file.
     pub sqlite_path: Option<PathBuf>,
@@ -1578,24 +1676,34 @@ pub struct MemoryConfig {
     /// How often to run memory consolidation (hours). 0 = disabled.
     #[serde(default = "default_consolidation_interval")]
     pub consolidation_interval_hours: u64,
-    /// Memory backend: "sqlite" (default) or "http".
-    #[serde(default = "default_memory_backend")]
-    pub backend: String,
-    /// HTTP memory API URL (when backend = "http").
-    /// e.g., "http://127.0.0.1:5500"
+    /// Storage backend for structured data, sessions, usage, etc.
+    /// See [`MemoryBackendKind`] for valid values. Default: [`MemoryBackendKind::Sqlite`].
     #[serde(default)]
-    pub http_url: Option<String>,
-    /// Env var name holding the HTTP memory API bearer token.
+    pub backend: MemoryBackendKind,
+    /// Semantic (vector) backend. See [`SemanticBackendKind`] for valid values.
+    /// When `None`, semantic search follows `backend` (Sqlite→Sqlite, Postgres→Postgres).
     #[serde(default)]
-    pub http_token_env: Option<String>,
+    pub semantic_backend: Option<SemanticBackendKind>,
+    /// PostgreSQL connection pool size. Must be `> 0`; capped at `1000`.
+    #[serde(default = "default_postgres_pool_size")]
+    pub postgres_pool_size: u32,
+    /// Postgres connection config. Flattened in TOML — fields live at the `[memory]` root.
+    #[serde(flatten)]
+    pub postgres: PostgresConnConfig,
+    /// Qdrant connection config. Flattened in TOML — fields live at the `[memory]` root.
+    #[serde(flatten)]
+    pub qdrant: QdrantConnConfig,
+    /// HTTP memory-api gateway config. Flattened in TOML — fields live at the `[memory]` root.
+    #[serde(flatten)]
+    pub http: HttpMemoryConnConfig,
 }
 
 fn default_consolidation_interval() -> u64 {
     24
 }
 
-fn default_memory_backend() -> String {
-    "sqlite".to_string()
+fn default_postgres_pool_size() -> u32 {
+    10
 }
 
 impl Default for MemoryConfig {
@@ -1608,9 +1716,12 @@ impl Default for MemoryConfig {
             embedding_provider: None,
             embedding_api_key_env: None,
             consolidation_interval_hours: default_consolidation_interval(),
-            backend: default_memory_backend(),
-            http_url: None,
-            http_token_env: None,
+            backend: MemoryBackendKind::default(),
+            semantic_backend: None,
+            postgres_pool_size: default_postgres_pool_size(),
+            postgres: PostgresConnConfig::default(),
+            qdrant: QdrantConnConfig::default(),
+            http: HttpMemoryConnConfig::default(),
         }
     }
 }

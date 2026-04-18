@@ -1,4 +1,4 @@
-//! Semantic memory store with vector embedding support.
+//! SQLite backend for semantic memory with vector embedding support.
 //!
 //! Phase 1: SQLite LIKE matching (fallback when no embeddings).
 //! Phase 2: Vector cosine similarity search using stored embeddings.
@@ -7,50 +7,27 @@
 //! When a query embedding is provided, recall uses cosine similarity ranking.
 //! When no embeddings are available, falls back to LIKE matching.
 
+use crate::helpers;
 use chrono::Utc;
 use openfang_types::agent::AgentId;
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::memory::{MemoryFilter, MemoryFragment, MemoryId, MemorySource};
+use openfang_types::storage::SemanticBackend;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, warn};
+use tracing::debug;
 
-#[cfg(feature = "http-memory")]
-use crate::http_client::MemoryApiClient;
-
-/// Semantic store backed by SQLite with optional vector search.
-///
-/// Supports two backends:
-/// - **SQLite** (default): Local LIKE matching / cosine similarity.
-/// - **HTTP**: Routes `remember`/`recall` to the memory-api gateway
-///   (PostgreSQL + pgvector + Jina AI embeddings).
+/// Semantic store backed by SQLite with vector search via sqlite-vec.
 #[derive(Clone)]
 pub struct SemanticStore {
     conn: Arc<Mutex<Connection>>,
-    #[cfg(feature = "http-memory")]
-    http_client: Option<MemoryApiClient>,
 }
 
 impl SemanticStore {
-    /// Create a new semantic store wrapping the given connection (SQLite backend).
+    /// Create a new semantic store wrapping the given connection.
     pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
-        Self {
-            conn,
-            #[cfg(feature = "http-memory")]
-            http_client: None,
-        }
-    }
-
-    /// Create a semantic store with an HTTP backend for the memory-api gateway.
-    ///
-    /// The SQLite connection is still required for local fallback and other stores.
-    #[cfg(feature = "http-memory")]
-    pub fn new_with_http(conn: Arc<Mutex<Connection>>, client: MemoryApiClient) -> Self {
-        Self {
-            conn,
-            http_client: Some(client),
-        }
+        Self { conn }
     }
 
     /// Store a new memory fragment (without embedding).
@@ -66,9 +43,6 @@ impl SemanticStore {
     }
 
     /// Store a new memory fragment with an optional embedding vector.
-    ///
-    /// When HTTP backend is configured, stores via memory-api (which handles
-    /// embedding generation and deduplication). Falls back to local SQLite.
     pub fn remember_with_embedding(
         &self,
         agent_id: AgentId,
@@ -78,13 +52,6 @@ impl SemanticStore {
         metadata: HashMap<String, serde_json::Value>,
         embedding: Option<&[f32]>,
     ) -> OpenFangResult<MemoryId> {
-        // HTTP backend: route to memory-api
-        #[cfg(feature = "http-memory")]
-        if let Some(ref client) = self.http_client {
-            return self.remember_via_http(client, agent_id, content, source, scope, &metadata);
-        }
-
-        // SQLite backend (default)
         self.remember_sqlite(agent_id, content, source, scope, metadata, embedding)
     }
 
@@ -104,10 +71,8 @@ impl SemanticStore {
             .map_err(|e| OpenFangError::Internal(e.to_string()))?;
         let id = MemoryId::new();
         let now = Utc::now().to_rfc3339();
-        let source_str = serde_json::to_string(&source)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
-        let meta_str = serde_json::to_string(&metadata)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+        let source_str = helpers::serialize_source(&source)?;
+        let meta_str = helpers::serialize_metadata(&metadata)?;
         let embedding_bytes: Option<Vec<u8>> = embedding.map(embedding_to_bytes);
 
         conn.execute(
@@ -125,47 +90,45 @@ impl SemanticStore {
             ],
         )
         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        // Dual-write to sqlite-vec virtual table for indexed vector search
+        if let Some(ref emb_bytes) = embedding_bytes {
+            if let Some(emb) = embedding {
+                let _ = Self::ensure_vec_table(&conn, emb.len());
+                let _ = conn.execute(
+                    "INSERT INTO memories_vec (memory_id, embedding) VALUES (?1, ?2)",
+                    rusqlite::params![id.0.to_string(), emb_bytes],
+                );
+            }
+        }
+
         Ok(id)
     }
 
-    /// HTTP implementation of remember — routes to memory-api POST /memory/store.
-    #[cfg(feature = "http-memory")]
-    fn remember_via_http(
-        &self,
-        client: &MemoryApiClient,
-        agent_id: AgentId,
-        content: &str,
-        source: MemorySource,
-        scope: &str,
-        metadata: &HashMap<String, serde_json::Value>,
-    ) -> OpenFangResult<MemoryId> {
-        let source_str = format!("{:?}", source).to_lowercase();
-        let importance = metadata
-            .get("importance")
-            .and_then(|v| v.as_u64())
-            .map(|v| v.min(10) as u8)
-            .unwrap_or(5);
-        let tags: Option<Vec<String>> = metadata
-            .get("tags")
-            .and_then(|v| serde_json::from_value(v.clone()).ok());
+    /// Ensure the sqlite-vec virtual table exists with the given dimensions.
+    /// Called lazily on the first write with an embedding.
+    fn ensure_vec_table(
+        conn: &Connection,
+        dims: usize,
+    ) -> Result<(), OpenFangError> {
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='memories_vec'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
-        match client.store(
-            content,
-            Some(scope),
-            Some(&agent_id.0.to_string()),
-            Some(&source_str),
-            Some(importance),
-            tags,
-        ) {
-            Ok(resp) => {
-                debug!(id = %resp.id, "Stored memory via HTTP backend");
-                Ok(MemoryId::new())
-            }
-            Err(e) => {
-                warn!(error = %e, "HTTP memory store failed, falling back to SQLite");
-                self.remember_sqlite(agent_id, content, source, scope, metadata.clone(), None)
-            }
+        if !exists {
+            conn.execute_batch(&format!(
+                "CREATE VIRTUAL TABLE memories_vec USING vec0(
+                    memory_id TEXT PRIMARY KEY,
+                    embedding float[{dims}]
+                );"
+            ))
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
         }
+        Ok(())
     }
 
     /// Search for memories using text matching (fallback, no embeddings).
@@ -180,9 +143,6 @@ impl SemanticStore {
 
     /// Search for memories using vector similarity when a query embedding is provided,
     /// falling back to LIKE matching otherwise.
-    ///
-    /// When HTTP backend is configured, searches via memory-api (hybrid vector+BM25).
-    /// Falls back to local SQLite on HTTP errors.
     pub fn recall_with_embedding(
         &self,
         query: &str,
@@ -190,25 +150,41 @@ impl SemanticStore {
         filter: Option<MemoryFilter>,
         query_embedding: Option<&[f32]>,
     ) -> OpenFangResult<Vec<MemoryFragment>> {
-        // HTTP backend: route to memory-api
-        #[cfg(feature = "http-memory")]
-        if let Some(ref client) = self.http_client {
-            match self.recall_via_http(client, query, limit, &filter) {
-                Ok(results) => return Ok(results),
-                Err(e) => {
-                    warn!(error = %e, "HTTP memory search failed, falling back to SQLite");
-                }
-            }
-        }
-
         let conn = self
             .conn
             .lock()
             .map_err(|e| OpenFangError::Internal(e.to_string()))?;
 
-        // Build SQL: fetch candidates (broader than limit for vector re-ranking)
+        // Fast path: use sqlite-vec indexed search when query embedding is available
+        // and the vec table exists.
+        if let Some(qe) = query_embedding {
+            let vec_exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='memories_vec'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+
+            if vec_exists {
+                let result = self.recall_via_vec(&conn, qe, limit, &filter);
+                if let Ok(fragments) = result {
+                    // Update access counts
+                    for frag in &fragments {
+                        let _ = conn.execute(
+                            "UPDATE memories SET access_count = access_count + 1, accessed_at = ?1 WHERE id = ?2",
+                            rusqlite::params![Utc::now().to_rfc3339(), frag.id.0.to_string()],
+                        );
+                    }
+                    return Ok(fragments);
+                }
+                // Fall through to brute-force on error
+                debug!("sqlite-vec recall failed, falling back to brute-force");
+            }
+        }
+
+        // Fallback: brute-force LIKE matching + optional cosine re-ranking
         let fetch_limit = if query_embedding.is_some() {
-            // Fetch more candidates for vector search re-ranking
             (limit * 10).max(100)
         } else {
             limit
@@ -221,14 +197,12 @@ impl SemanticStore {
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut param_idx = 1;
 
-        // Text search filter (only when no embeddings — vector search handles relevance)
         if query_embedding.is_none() && !query.is_empty() {
             sql.push_str(&format!(" AND content LIKE ?{param_idx}"));
             params.push(Box::new(format!("%{query}%")));
             param_idx += 1;
         }
 
-        // Apply filters
         if let Some(ref f) = filter {
             if let Some(agent_id) = f.agent_id {
                 sql.push_str(&format!(" AND agent_id = ?{param_idx}"));
@@ -246,11 +220,11 @@ impl SemanticStore {
                 param_idx += 1;
             }
             if let Some(ref source) = f.source {
-                let source_str = serde_json::to_string(source)
-                    .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+                let source_str = helpers::serialize_source(source)?;
                 sql.push_str(&format!(" AND source = ?{param_idx}"));
                 params.push(Box::new(source_str));
-                let _ = param_idx;
+                // No further increments — this is the last filter. Additional
+                // filters below must bump `param_idx` before using it.
             }
         }
 
@@ -265,109 +239,53 @@ impl SemanticStore {
             params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
             .query_map(param_refs.as_slice(), |row| {
-                let id_str: String = row.get(0)?;
-                let agent_str: String = row.get(1)?;
-                let content: String = row.get(2)?;
-                let source_str: String = row.get(3)?;
-                let scope: String = row.get(4)?;
-                let confidence: f64 = row.get(5)?;
-                let meta_str: String = row.get(6)?;
-                let created_str: String = row.get(7)?;
-                let accessed_str: String = row.get(8)?;
-                let access_count: i64 = row.get(9)?;
-                let embedding_bytes: Option<Vec<u8>> = row.get(10)?;
                 Ok((
-                    id_str,
-                    agent_str,
-                    content,
-                    source_str,
-                    scope,
-                    confidence,
-                    meta_str,
-                    created_str,
-                    accessed_str,
-                    access_count,
-                    embedding_bytes,
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, Option<Vec<u8>>>(10)?,
                 ))
             })
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
         let mut fragments = Vec::new();
         for row_result in rows {
-            let (
-                id_str,
-                agent_str,
-                content,
-                source_str,
-                scope,
-                confidence,
-                meta_str,
-                created_str,
-                accessed_str,
-                access_count,
-                embedding_bytes,
-            ) = row_result.map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            let (id_str, agent_str, content, source_str, scope, confidence, meta_str, created_str, accessed_str, access_count, embedding_bytes) =
+                row_result.map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
-            let id = uuid::Uuid::parse_str(&id_str)
-                .map(MemoryId)
-                .map_err(|e| OpenFangError::Memory(e.to_string()))?;
-            let agent_id = uuid::Uuid::parse_str(&agent_str)
-                .map(openfang_types::agent::AgentId)
-                .map_err(|e| OpenFangError::Memory(e.to_string()))?;
-            let source: MemorySource =
-                serde_json::from_str(&source_str).unwrap_or(MemorySource::System);
-            let metadata: HashMap<String, serde_json::Value> =
-                serde_json::from_str(&meta_str).unwrap_or_default();
-            let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-            let accessed_at = chrono::DateTime::parse_from_rfc3339(&accessed_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-
+            let id = helpers::parse_memory_id(&id_str)?;
+            let agent_id = helpers::parse_agent_id(&agent_str)?;
+            let source: MemorySource = helpers::deserialize_source(&source_str);
+            let metadata: HashMap<String, serde_json::Value> = helpers::deserialize_metadata(&meta_str);
+            let created_at = helpers::parse_rfc3339_or_now(&created_str);
+            let accessed_at = helpers::parse_rfc3339_or_now(&accessed_str);
             let embedding = embedding_bytes.as_deref().map(embedding_from_bytes);
 
             fragments.push(MemoryFragment {
-                id,
-                agent_id,
-                content,
-                embedding,
-                metadata,
-                source,
-                confidence: confidence as f32,
-                created_at,
-                accessed_at,
-                access_count: access_count as u64,
-                scope,
+                id, agent_id, content, embedding, metadata, source,
+                confidence: confidence as f32, created_at, accessed_at,
+                access_count: access_count as u64, scope,
             });
         }
 
-        // If we have a query embedding, re-rank by cosine similarity
+        // Brute-force cosine re-ranking when no vec table was available
         if let Some(qe) = query_embedding {
             fragments.sort_by(|a, b| {
-                let sim_a = a
-                    .embedding
-                    .as_deref()
-                    .map(|e| cosine_similarity(qe, e))
-                    .unwrap_or(-1.0);
-                let sim_b = b
-                    .embedding
-                    .as_deref()
-                    .map(|e| cosine_similarity(qe, e))
-                    .unwrap_or(-1.0);
-                sim_b
-                    .partial_cmp(&sim_a)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                let sim_a = a.embedding.as_deref().map(|e| cosine_similarity(qe, e)).unwrap_or(-1.0);
+                let sim_b = b.embedding.as_deref().map(|e| cosine_similarity(qe, e)).unwrap_or(-1.0);
+                sim_b.partial_cmp(&sim_a).unwrap_or(std::cmp::Ordering::Equal)
             });
             fragments.truncate(limit);
-            debug!(
-                "Vector recall: {} results from {} candidates",
-                fragments.len(),
-                fetch_limit
-            );
         }
 
-        // Update access counts for returned memories
+        // Update access counts
         for frag in &fragments {
             let _ = conn.execute(
                 "UPDATE memories SET access_count = access_count + 1, accessed_at = ?1 WHERE id = ?2",
@@ -378,16 +296,108 @@ impl SemanticStore {
         Ok(fragments)
     }
 
-    /// Soft-delete a memory fragment.
-    ///
-    /// In HTTP mode, logs a warning (memory-api doesn't support delete yet)
-    /// and performs the soft-delete locally only.
-    pub fn forget(&self, id: MemoryId) -> OpenFangResult<()> {
-        #[cfg(feature = "http-memory")]
-        if self.http_client.is_some() {
-            warn!(id = %id.0, "forget() not supported via HTTP backend, local-only soft-delete");
+    /// sqlite-vec indexed vector search: uses MATCH on the vec0 virtual table,
+    /// then JOINs back to `memories` for full fragment data.
+    fn recall_via_vec(
+        &self,
+        conn: &Connection,
+        query_embedding: &[f32],
+        limit: usize,
+        filter: &Option<MemoryFilter>,
+    ) -> OpenFangResult<Vec<MemoryFragment>> {
+        let query_bytes = embedding_to_bytes(query_embedding);
+        // Fetch more than needed to allow post-filtering
+        let fetch_limit = limit * 5;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.id, m.agent_id, m.content, m.source, m.scope, m.confidence,
+                        m.metadata, m.created_at, m.accessed_at, m.access_count, m.embedding,
+                        v.distance
+                 FROM memories_vec v
+                 JOIN memories m ON m.id = v.memory_id
+                 WHERE v.embedding MATCH ?1
+                   AND m.deleted = 0
+                 ORDER BY v.distance
+                 LIMIT ?2",
+            )
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![query_bytes, fetch_limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, Option<Vec<u8>>>(10)?,
+                    row.get::<_, f64>(11)?,
+                ))
+            })
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        let mut fragments = Vec::new();
+        for row_result in rows {
+            let (id_str, agent_str, content, source_str, scope, confidence, meta_str,
+                 created_str, accessed_str, access_count, embedding_bytes, _distance) =
+                row_result.map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+            // Post-filter by agent, scope, confidence, source
+            if let Some(ref f) = filter {
+                if let Some(filter_agent) = f.agent_id {
+                    if agent_str != filter_agent.0.to_string() {
+                        continue;
+                    }
+                }
+                if let Some(ref filter_scope) = f.scope {
+                    if &scope != filter_scope {
+                        continue;
+                    }
+                }
+                if let Some(min_conf) = f.min_confidence {
+                    if (confidence as f32) < min_conf {
+                        continue;
+                    }
+                }
+                if let Some(ref filter_source) = f.source {
+                    let source_str_expected = helpers::serialize_source(filter_source).unwrap_or_default();
+                    if source_str != source_str_expected {
+                        continue;
+                    }
+                }
+            }
+
+            let id = helpers::parse_memory_id(&id_str)?;
+            let agent_id = helpers::parse_agent_id(&agent_str)?;
+            let source: MemorySource = helpers::deserialize_source(&source_str);
+            let metadata: HashMap<String, serde_json::Value> = helpers::deserialize_metadata(&meta_str);
+            let created_at = helpers::parse_rfc3339_or_now(&created_str);
+            let accessed_at = helpers::parse_rfc3339_or_now(&accessed_str);
+            let embedding = embedding_bytes.as_deref().map(embedding_from_bytes);
+
+            fragments.push(MemoryFragment {
+                id, agent_id, content, embedding, metadata, source,
+                confidence: confidence as f32, created_at, accessed_at,
+                access_count: access_count as u64, scope,
+            });
+
+            if fragments.len() >= limit {
+                break;
+            }
         }
 
+        debug!("sqlite-vec recall: {} results", fragments.len());
+        Ok(fragments)
+    }
+
+    /// Soft-delete a memory fragment.
+    pub fn forget(&self, id: MemoryId) -> OpenFangResult<()> {
         let conn = self
             .conn
             .lock()
@@ -397,6 +407,13 @@ impl SemanticStore {
             rusqlite::params![id.0.to_string()],
         )
         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        // Also remove from vec table
+        let _ = conn.execute(
+            "DELETE FROM memories_vec WHERE memory_id = ?1",
+            rusqlite::params![id.0.to_string()],
+        );
+
         Ok(())
     }
 
@@ -412,58 +429,48 @@ impl SemanticStore {
             rusqlite::params![bytes, id.0.to_string()],
         )
         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        // Also upsert into vec table
+        let _ = Self::ensure_vec_table(&conn, embedding.len());
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO memories_vec (memory_id, embedding) VALUES (?1, ?2)",
+            rusqlite::params![id.0.to_string(), bytes],
+        );
+
         Ok(())
     }
 
-    /// HTTP implementation of recall — routes to memory-api POST /memory/search.
-    ///
-    /// Maps memory-api search results to `MemoryFragment` structs. Fields not
-    /// available from the HTTP API (agent_id, embedding, access_count) use defaults.
-    #[cfg(feature = "http-memory")]
-    fn recall_via_http(
+}
+
+impl SemanticBackend for SemanticStore {
+    fn remember(
         &self,
-        client: &MemoryApiClient,
+        agent_id: AgentId,
+        content: &str,
+        source: MemorySource,
+        scope: &str,
+        metadata: HashMap<String, serde_json::Value>,
+        embedding: Option<&[f32]>,
+    ) -> OpenFangResult<MemoryId> {
+        SemanticStore::remember_with_embedding(self, agent_id, content, source, scope, metadata, embedding)
+    }
+
+    fn recall(
+        &self,
         query: &str,
         limit: usize,
-        filter: &Option<MemoryFilter>,
+        filter: Option<MemoryFilter>,
+        query_embedding: Option<&[f32]>,
     ) -> OpenFangResult<Vec<MemoryFragment>> {
-        let category = filter.as_ref().and_then(|f| f.scope.as_deref());
+        SemanticStore::recall_with_embedding(self, query, limit, filter, query_embedding)
+    }
 
-        let results = client
-            .search(query, limit, category)
-            .map_err(|e| OpenFangError::Memory(format!("HTTP search failed: {e}")))?;
+    fn forget(&self, id: MemoryId) -> OpenFangResult<()> {
+        SemanticStore::forget(self, id)
+    }
 
-        let fragments: Vec<MemoryFragment> = results
-            .into_iter()
-            .map(|r| {
-                let created_at = r
-                    .created_at
-                    .map(|ms| {
-                        chrono::DateTime::from_timestamp_millis(ms as i64).unwrap_or_else(Utc::now)
-                    })
-                    .unwrap_or_else(Utc::now);
-
-                MemoryFragment {
-                    id: MemoryId::new(),
-                    agent_id: filter.as_ref().and_then(|f| f.agent_id).unwrap_or_default(),
-                    content: r.content,
-                    embedding: None,
-                    metadata: HashMap::new(),
-                    source: MemorySource::System,
-                    confidence: r.score as f32,
-                    created_at,
-                    accessed_at: Utc::now(),
-                    access_count: 0,
-                    scope: r.category.unwrap_or_else(|| "general".to_string()),
-                }
-            })
-            .collect();
-
-        debug!(
-            count = fragments.len(),
-            "Recalled memories via HTTP backend"
-        );
-        Ok(fragments)
+    fn update_embedding(&self, id: MemoryId, embedding: &[f32]) -> OpenFangResult<()> {
+        SemanticStore::update_embedding(self, id, embedding)
     }
 }
 
@@ -508,7 +515,7 @@ fn embedding_from_bytes(bytes: &[u8]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::migration::run_migrations;
+    use crate::sqlite::migration::run_migrations;
 
     fn setup() -> SemanticStore {
         let conn = Connection::open_in_memory().unwrap();

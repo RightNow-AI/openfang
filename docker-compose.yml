@@ -8,7 +8,7 @@ services:
     build: .
     # image: ghcr.io/rightnow-ai/openfang:latest  # Uncomment when GHCR is public
     ports:
-      - "4200:4200"
+      - "${OPENFANG_PORT:-4200}:4200"
     volumes:
       - openfang-data:/data
     environment:
@@ -20,6 +20,47 @@ services:
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
       - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
     restart: unless-stopped
+
+  # Run tests: docker compose --profile test run test
+  test:
+    build:
+      context: .
+      target: tester
+    profiles: ["test"]
+
+  # ── Database backends for integration testing ─────────────────────────
+  # Run: docker compose --profile db up -d
+  #
+  # Dev/CI profile only. DO NOT reuse these credentials in production —
+  # every setting below is overridable via the environment (see .env.example
+  # or export the vars before running docker compose).
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-openfang}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openfang_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-openfang_test}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    profiles: ["db", "postgres"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-openfang}"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # Dev/CI profile only. Override QDRANT_* env vars for non-default setups.
+  qdrant:
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:latest}
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    profiles: ["db", "qdrant"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
 
 volumes:
   openfang-data:

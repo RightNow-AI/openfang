@@ -601,9 +601,38 @@ impl OpenFangKernel {
             .sqlite_path
             .clone()
             .unwrap_or_else(|| config.data_dir.join("openfang.db"));
+        // Open the memory substrate asynchronously. `boot_with_config` is a
+        // sync fn, but when invoked from the daemon/desktop it runs inside an
+        // active tokio runtime. We detect that case and drive the async open
+        // on a scoped thread via the existing Handle (to avoid a nested
+        // `block_on` panic); otherwise we spin up a short-lived runtime so
+        // bare sync callers (tests, simple CLI paths) still work.
+        let memory_db_path = db_path.clone();
+        let memory_config = config.memory.clone();
+        let open_fut = async move {
+            MemorySubstrate::open_async(&memory_db_path, memory_config.decay_rate, &memory_config)
+                .await
+        };
         let memory = Arc::new(
-            MemorySubstrate::open(&db_path, config.memory.decay_rate, &config.memory)
-                .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                std::thread::scope(|s| {
+                    s.spawn(|| handle.block_on(open_fut))
+                        .join()
+                        .unwrap_or_else(|_| {
+                            Err(openfang_types::error::OpenFangError::Memory(
+                                "Memory substrate open thread panicked".into(),
+                            ))
+                        })
+                })
+            } else {
+                let rt = tokio::runtime::Runtime::new().map_err(|e| {
+                    openfang_types::error::OpenFangError::Memory(format!(
+                        "Failed to create tokio runtime for memory open: {e}"
+                    ))
+                })?;
+                rt.block_on(open_fut)
+            }
+            .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
         );
 
         // Initialize credential resolver (vault → dotenv → env var)
@@ -756,9 +785,7 @@ impl OpenFangKernel {
         };
 
         // Initialize metering engine (shares the same SQLite connection as the memory substrate)
-        let metering = Arc::new(MeteringEngine::new(Arc::new(
-            openfang_memory::usage::UsageStore::new(memory.usage_conn()),
-        )));
+        let metering = Arc::new(MeteringEngine::new(memory.usage_arc()));
 
         let supervisor = Supervisor::new();
         let background = BackgroundExecutor::new(supervisor.subscribe());
@@ -1108,6 +1135,16 @@ impl OpenFangKernel {
         let initial_broadcast = config.broadcast.clone();
         let auto_reply_engine = crate::auto_reply::AutoReplyEngine::new(config.auto_reply.clone());
 
+        // Build the audit log. `with_backend` fails-closed on load/integrity
+        // errors so we propagate them as a boot failure rather than silently
+        // starting with an empty or corrupt chain.
+        let audit_log = Arc::new(match memory.audit() {
+            Some(backend) => AuditLog::with_backend(backend).map_err(|e| {
+                KernelError::BootFailed(format!("Audit log init failed: {e}"))
+            })?,
+            None => AuditLog::new(),
+        });
+
         let kernel = Self {
             config,
             registry: AgentRegistry::new(),
@@ -1119,7 +1156,7 @@ impl OpenFangKernel {
             workflows: WorkflowEngine::new(),
             triggers: TriggerEngine::new(),
             background,
-            audit_log: Arc::new(AuditLog::with_db(memory.usage_conn())),
+            audit_log,
             metering,
             default_driver: driver,
             wasm_sandbox,

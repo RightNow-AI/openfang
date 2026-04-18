@@ -358,3 +358,206 @@ Then restart the daemon:
 ```bash
 openfang start
 ```
+
+---
+
+## Breaking Changes: Pluggable Memory Backends
+
+The pluggable-backends refactor in `openfang-memory` introduces a handful of
+source-level breaking changes for anyone embedding the crate directly. The
+OpenFang daemon, CLI, and config are unaffected.
+
+### PR review resolution — blockers
+
+Every blocker raised in the review is resolved in-tree. Each row below links
+to the exact fix site.
+
+| # | Blocker (as reported) | Resolution |
+|---|-----------------------|------------|
+| B1 | `HttpSemanticStore::remember` returned a random `MemoryId::new()` instead of the server's ID; `forget`/`update_embedding` then delegated to a fallback with wrong IDs. | New `parse_memory_id()` helper at [crates/openfang-memory/src/http/semantic.rs:63](crates/openfang-memory/src/http/semantic.rs#L63) converts the server's `serde_json::Value` to a real `MemoryId`. `remember` at [L311](crates/openfang-memory/src/http/semantic.rs#L311) returns the parsed server UUID. `forget` / `update_embedding` now return an explicit `Err` rather than silently hitting a disconnected store. |
+| B2 | `HttpSemanticStore::recall` fabricated a fresh `MemoryId::new()` per row; IDs were unstable across calls. | [crates/openfang-memory/src/http/semantic.rs:345](crates/openfang-memory/src/http/semantic.rs#L345) parses each server row's `r.id` via `parse_memory_id`; malformed rows are dropped with a `warn!` instead of being admitted with random UUIDs. IDs are now stable. |
+| B3 | `MemorySubstrate::open_postgres` called `Handle::current().block_on(...)` — panics on nested current-thread runtime. | New `async fn open_async` in [crates/openfang-memory/src/substrate.rs](crates/openfang-memory/src/substrate.rs) does all Postgres init (pool build + probe + migrations) via natural `.await`. No `Handle::current().block_on` remains anywhere. Sync `open()` errors cleanly for Postgres backends. Kernel boot at [crates/openfang-kernel/src/kernel.rs:613](crates/openfang-kernel/src/kernel.rs#L613) routes through `open_async(...).await`. |
+| B4 | Docs listed `qdrant` / `postgres+qdrant` as valid `semantic_backend` values, but `select_semantic` had no matching arm — unknown values silently fell through to SQLite. | Config fields are now the typed enums `MemoryBackendKind` / `SemanticBackendKind` in [crates/openfang-types/src/config.rs](crates/openfang-types/src/config.rs) with `#[serde(rename_all="snake_case")]` and `deny_unknown_fields` on `MemoryConfig` — typos are rejected at parse time. `PostgresSemanticStore` implemented in [crates/openfang-memory/src/postgres/semantic.rs](crates/openfang-memory/src/postgres/semantic.rs). `select_semantic` is an exhaustive enum match; feature-off paths return `OpenFangError::Config` rather than silently degrading. |
+| B5 | Cargo.lock showed workspace `0.5.9 → 0.5.5` and dropped rustls from `openfang-kernel` — wrong-base artifact. | Branch rebased onto `origin/main` (tip `d3d9fa8` = v0.5.10). `cargo generate-lockfile` regenerated; all crates at `0.5.10`; rustls remains in `openfang-kernel`. |
+| B6 | Breaking API changes without a migration note (`usage_conn()` removed, modules moved under `sqlite::`). | This file — sections below document every break: `usage_conn()` → `usage()`/`usage_arc()`, module path moves, new feature flags, `HttpSemanticStore::forget`/`update_embedding` error change, async `open_async`, typed config enums, `postgres_pool_size` validation, fail-fast semantics. |
+| B7 | `AuditLog::with_backend` used `if let Ok(rows) = ...` and silently started with an empty log on `Err` — unacceptable for a security audit trail. | [crates/openfang-runtime/src/audit.rs:134](crates/openfang-runtime/src/audit.rs#L134) signature is now `-> OpenFangResult<Self>`. Load errors and integrity-check failures both `tracing::error!(...)` and propagate via `?` (fail-closed). Kernel caller surfaces the error as `KernelError::BootFailed`. |
+
+### PR review resolution — concerns
+
+| # | Concern (as reported) | Resolution |
+|---|----------------------|------------|
+| C1 | `unsafe` FFI registration for `sqlite-vec` in the production `SqliteBackend::open` path — the PR claim "no new unsafe" was inaccurate. | Both `unsafe` blocks in [crates/openfang-memory/src/sqlite/mod.rs](crates/openfang-memory/src/sqlite/mod.rs) (`open` and `open_in_memory`) now carry explicit `// SAFETY:` comments covering ABI compatibility, idempotency, and process-global semantics. The dedicated subsection below explicitly corrects the "no new unsafe" claim and names the two blocks. |
+| C2 | `QdrantSemanticStore::recall` returned `Ok(vec![])` when `query_embedding` was `None`. | [crates/openfang-memory/src/qdrant/semantic.rs:213](crates/openfang-memory/src/qdrant/semantic.rs#L213) now returns `OpenFangError::Memory("Qdrant semantic backend requires a query_embedding for recall(); enable an embedder or use a different semantic_backend")`. The Postgres semantic backend mirrors the same contract. |
+| C3 | JSONL mirror writes `sessions_dir.join(format!("{}.jsonl", session.id.0))` — needs documentation that `SessionId` is UUID-only. | [crates/openfang-memory/src/jsonl.rs:26](crates/openfang-memory/src/jsonl.rs#L26) has a comment citing `openfang_types::agent::SessionId` as a `uuid::Uuid` newtype, so the filename component is path-traversal safe. |
+| C4 | `docker-compose.yml` hardcoded `POSTGRES_PASSWORD: openfang` — needs a dev-only marker. | Every config value in [docker-compose.yml](docker-compose.yml) is env-overridable: `POSTGRES_{IMAGE,USER,PASSWORD,DB,PORT}`, `QDRANT_{IMAGE,HTTP_PORT,GRPC_PORT}`, `OPENFANG_PORT`. Defaults are clearly dev/CI; a comment above the service warns "DO NOT reuse these credentials in production — every setting below is overridable via the environment." |
+| C5 | Whether `openfang-kernel` / the binary crates enable `postgres` / `qdrant` features on `openfang-memory` wasn't visible — please confirm end-to-end wiring. | Feature-forwarding is declared in every crate: `openfang-memory` exposes `postgres` / `qdrant` / `http-memory`. [crates/openfang-kernel/Cargo.toml](crates/openfang-kernel/Cargo.toml) has `postgres = ["openfang-memory/postgres"]`, `qdrant = ["openfang-memory/qdrant"]`. [crates/openfang-cli/Cargo.toml](crates/openfang-cli/Cargo.toml) has matching `postgres = ["openfang-kernel/postgres"]`, `qdrant = ["openfang-kernel/qdrant"]`. Verified by building all four combinations (`--no-default-features`, `--features postgres`, `--features qdrant`, `--features postgres,qdrant`); a unit test (`feature_gated_backend_errors_cleanly_when_feature_off`) locks in the fail-fast behavior when a feature-gated backend is configured without its cargo feature. |
+
+
+### `MemorySubstrate::usage_conn()` removed
+
+Use the trait-object accessors instead of reaching for a raw SQLite handle.
+
+**Before:**
+```rust
+let conn = memory.usage_conn();
+```
+
+**After:**
+```rust
+// Borrowed trait object:
+let usage: &dyn UsageBackend = memory.usage();
+
+// Or an owned Arc for background tasks:
+let usage: Arc<dyn UsageBackend> = memory.usage_arc();
+```
+
+### SQLite store modules moved under `openfang_memory::sqlite::`
+
+`consolidation`, `knowledge`, `semantic`, `session`, `structured`, `usage`,
+`audit`, `paired_devices`, and `task_queue` now live under the `sqlite::`
+submodule. The top-level re-exports are gone.
+
+**Before:**
+```rust
+use openfang_memory::knowledge::KnowledgeStore;
+use openfang_memory::consolidation::ConsolidationEngine;
+```
+
+**After:**
+```rust
+use openfang_memory::sqlite::knowledge::KnowledgeStore;
+use openfang_memory::sqlite::consolidation::ConsolidationEngine;
+```
+
+### New optional feature flags: `postgres`, `qdrant`
+
+`openfang-memory` now gates its PostgreSQL and Qdrant backends behind Cargo
+features. `openfang-kernel` and `openfang-cli` forward matching feature names.
+The SQLite backend remains the default and requires no feature flag.
+
+```toml
+[dependencies]
+openfang-memory = { version = "*", features = ["postgres", "qdrant"] }
+```
+
+### `HttpSemanticStore::forget` and `update_embedding` now return `Err`
+
+Previously both methods silently fell through to the local SQLite fallback
+and fabricated IDs on miss. They now return an explicit error on unknown IDs
+instead of masking the failure. Callers that relied on the silent fallback
+must handle the error path.
+
+---
+
+## Typed memory backend config (replaces string backend names)
+
+`MemoryConfig::backend` and `MemoryConfig::semantic_backend` are now typed
+enums instead of `String` / `Option<String>`. This is a source-level breaking
+change for Rust code that constructs `MemoryConfig` directly. Configuration
+files are unchanged.
+
+### TOML is unchanged
+
+- Both enums use `#[serde(rename_all = "snake_case")]`, so existing values
+  (`"sqlite"`, `"postgres"`, `"qdrant"`, `"http"`) deserialize as before.
+- No edits to `~/.openfang/config.toml` are required.
+
+### Rust construction
+
+**Before:**
+```rust
+MemoryConfig {
+    backend: "postgres".to_string(),
+    semantic_backend: Some("qdrant".to_string()),
+    ..Default::default()
+}
+```
+
+**After:**
+```rust
+use openfang_memory::{MemoryBackendKind, SemanticBackendKind};
+// also re-exported at openfang_types::config::{MemoryBackendKind, SemanticBackendKind}
+
+MemoryConfig {
+    backend: MemoryBackendKind::Postgres,
+    semantic_backend: Some(SemanticBackendKind::Qdrant),
+    ..Default::default()
+}
+```
+
+The `Kind` suffix disambiguates these config enums from the `SemanticBackend`
+and `StructuredBackend` *traits* defined in `openfang_types::storage`.
+
+### Fail-fast backend initialization
+
+- Qdrant unreachable, HTTP gateway health check failure, or Postgres
+  connection failure now exit the daemon at boot with a readable error.
+- Previous builds silently degraded to SQLite on these failures.
+- If silent SQLite was the desired behavior, set `backend = "sqlite"` (and
+  omit or set `semantic_backend = "sqlite"`) explicitly.
+
+### New validation: `postgres_pool_size`
+
+- Must be in `1..=1000`. Zero or out-of-range values are rejected at config
+  load time.
+
+### Memory backend connection configs are nested (TOML unchanged)
+
+Per-backend connection fields previously lived as flat fields on
+`MemoryConfig`. They are now grouped into typed structs behind
+`#[serde(flatten)]`, so existing `~/.openfang/config.toml` files keep working
+unchanged.
+
+- `postgres_url` now lives on `PostgresConnConfig` under `postgres:`.
+- `qdrant_url`, `qdrant_api_key_env`, `qdrant_collection` now live on
+  `QdrantConnConfig` under `qdrant:`.
+- `http_url`, `http_token_env` now live on `HttpMemoryConnConfig` under
+  `http:`.
+- `postgres_pool_size` stays at the top level of `MemoryConfig` (its validation
+  bounds live there).
+
+**Before:**
+```rust
+MemoryConfig {
+    postgres_url: Some("postgres://...".into()),
+    ..Default::default()
+}
+```
+
+**After:**
+```rust
+use openfang_types::config::{PostgresConnConfig, QdrantConnConfig, HttpMemoryConnConfig};
+
+MemoryConfig {
+    postgres: PostgresConnConfig { postgres_url: Some("postgres://...".into()) },
+    ..Default::default()
+}
+```
+
+The new structs are re-exported from
+`openfang_types::config::{PostgresConnConfig, QdrantConnConfig, HttpMemoryConnConfig}`.
+
+### New direct dependencies — supply-chain notes
+
+The pluggable-memory work adds these direct dependencies. All match the
+canonical publisher / crate name; none are typosquats:
+
+| Crate | Purpose | Notes |
+|-------|---------|-------|
+| `sqlite-vec` (pre-v1) | SQLite vector extension for fast semantic recall | Actively maintained (v0.1.9, released 2026-03-31). Sponsored by Mozilla, Fly.io, Turso, SQLite Cloud, Shinkai. Supports Linux, macOS, Windows, WASM per upstream README. Our CI matrix (`.github/workflows/ci.yml`) builds + tests on `ubuntu-latest`, `macos-latest`, `windows-latest` — Windows compile regressions would be caught there. Release matrix (`.github/workflows/release.yml`) produces artifacts for the same three platforms. The upstream `pre-v1` warning means we should be careful when bumping the minor version; patch bumps within `0.1.x` are accepted by the default semver caret. |
+| `hex`, `sha2` | Audit-chain hashing | Standard, widely audited. |
+| `tokio-postgres`, `deadpool-postgres`, `pgvector` | Postgres backend (feature-gated) | Canonical Rust Postgres stack; `pgvector` is the crate maintained by pgvector's author. |
+| `qdrant-client` | Qdrant backend (feature-gated) | Official Qdrant Rust client. |
+
+The transitive set (`tonic`, `prost-types`, `hyper-timeout`, `deadpool`,
+`stringprep`, etc.) is what you'd expect for gRPC + Postgres and contains
+no surprises.
+
+### `unsafe` FFI addition: `sqlite-vec` extension registration
+
+- `SqliteBackend::open` and `SqliteBackend::open_in_memory` each contain one
+  `unsafe` block that calls `rusqlite::ffi::sqlite3_auto_extension` with a
+  transmuted pointer to `sqlite_vec::sqlite3_vec_init`. This is the
+  documented registration pattern for the `sqlite-vec` crate — both blocks
+  carry `// SAFETY:` comments explaining the ABI-compatible transmute,
+  idempotency, and process-global semantics.
