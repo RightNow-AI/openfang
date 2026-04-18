@@ -250,19 +250,15 @@ impl ExtensionsState {
     fn handle_health(&mut self, key: KeyEvent) -> ExtensionsAction {
         let total = self.health_entries.len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.health_list.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.health_list.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.health_list.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.health_list.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.health_list.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.health_list.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.health_list.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.health_list.select(Some(next));
             }
             KeyCode::Char('r') | KeyCode::Enter => {
                 if let Some(sel) = self.health_list.selected() {

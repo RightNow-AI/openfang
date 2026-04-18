@@ -109,19 +109,15 @@ impl HandsState {
     fn handle_marketplace(&mut self, key: KeyEvent) -> HandsAction {
         let total = self.definitions.len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.marketplace_list.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.marketplace_list.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.marketplace_list.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.marketplace_list.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.marketplace_list.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.marketplace_list.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.marketplace_list.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.marketplace_list.select(Some(next));
             }
             KeyCode::Enter | KeyCode::Char('a') => {
                 if let Some(sel) = self.marketplace_list.selected() {
@@ -157,24 +153,18 @@ impl HandsState {
 
         let total = self.instances.len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.active_list.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.active_list.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.active_list.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.active_list.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.active_list.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.active_list.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.active_list.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.active_list.select(Some(next));
             }
-            KeyCode::Char('d') | KeyCode::Delete => {
-                if self.active_list.selected().is_some() {
-                    self.confirm_deactivate = true;
-                }
+            KeyCode::Char('d') | KeyCode::Delete if self.active_list.selected().is_some() => {
+                self.confirm_deactivate = true;
             }
             KeyCode::Char('p') => {
                 if let Some(sel) = self.active_list.selected() {
