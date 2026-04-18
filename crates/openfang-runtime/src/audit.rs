@@ -9,6 +9,7 @@
 
 use chrono::Utc;
 use openfang_memory::backends::AuditBackend;
+use openfang_types::error::{OpenFangError, OpenFangResult};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
@@ -126,34 +127,44 @@ impl AuditLog {
     /// On construction, loads all existing entries from the backend and
     /// verifies the Merkle chain integrity. New entries are written to both
     /// the in-memory chain and the backend.
-    pub fn with_backend(backend: Arc<dyn AuditBackend>) -> Self {
+    ///
+    /// Fails-closed: if the backend cannot return its entries or the chain
+    /// integrity check fails, an error is returned and the kernel must refuse
+    /// to boot. A silent restart with a broken audit trail is not acceptable.
+    pub fn with_backend(backend: Arc<dyn AuditBackend>) -> OpenFangResult<Self> {
         let mut entries = Vec::new();
         let mut tip = "0".repeat(64);
 
-        // Load existing entries from backend
-        if let Ok(rows) = backend.load_entries(None, usize::MAX) {
-            for row in rows {
-                let seq = row["seq"].as_u64().unwrap_or(0);
-                let timestamp = row["timestamp"].as_str().unwrap_or("").to_string();
-                let agent_id = row["agent_id"].as_str().unwrap_or("").to_string();
-                let action_str = row["action"].as_str().unwrap_or("ToolInvoke");
-                let detail = row["detail"].as_str().unwrap_or("").to_string();
-                let outcome = row["outcome"].as_str().unwrap_or("").to_string();
-                let prev_hash = row["prev_hash"].as_str().unwrap_or("").to_string();
-                let hash = row["hash"].as_str().unwrap_or("").to_string();
+        // Load existing entries from backend. Propagate any error -- a
+        // security-critical audit trail must not silently start empty.
+        let rows = backend.load_entries(None, usize::MAX).map_err(|e| {
+            tracing::error!("Audit backend load_entries failed on boot: {e}");
+            OpenFangError::Memory(format!(
+                "audit backend load_entries failed on boot: {e}"
+            ))
+        })?;
 
-                tip = hash.clone();
-                entries.push(AuditEntry {
-                    seq,
-                    timestamp,
-                    agent_id,
-                    action: parse_action(action_str),
-                    detail,
-                    outcome,
-                    prev_hash,
-                    hash,
-                });
-            }
+        for row in rows {
+            let seq = row["seq"].as_u64().unwrap_or(0);
+            let timestamp = row["timestamp"].as_str().unwrap_or("").to_string();
+            let agent_id = row["agent_id"].as_str().unwrap_or("").to_string();
+            let action_str = row["action"].as_str().unwrap_or("ToolInvoke");
+            let detail = row["detail"].as_str().unwrap_or("").to_string();
+            let outcome = row["outcome"].as_str().unwrap_or("").to_string();
+            let prev_hash = row["prev_hash"].as_str().unwrap_or("").to_string();
+            let hash = row["hash"].as_str().unwrap_or("").to_string();
+
+            tip = hash.clone();
+            entries.push(AuditEntry {
+                seq,
+                timestamp,
+                agent_id,
+                action: parse_action(action_str),
+                detail,
+                outcome,
+                prev_hash,
+                hash,
+            });
         }
 
         let count = entries.len();
@@ -163,16 +174,20 @@ impl AuditLog {
             db: Some(backend),
         };
 
-        // Verify chain integrity on load
+        // Verify chain integrity on load. A failed integrity check on a
+        // persistent audit trail means the chain has been tampered with or
+        // truncated -- refuse to boot rather than pretend everything is fine.
         if count > 0 {
             if let Err(e) = log.verify_integrity() {
                 tracing::error!("Audit trail integrity check FAILED on boot: {e}");
-            } else {
-                tracing::info!("Audit trail loaded: {count} entries, chain integrity OK");
+                return Err(OpenFangError::Memory(format!(
+                    "audit trail integrity check failed on boot: {e}"
+                )));
             }
+            tracing::info!("Audit trail loaded: {count} entries, chain integrity OK");
         }
 
-        log
+        Ok(log)
     }
 
     /// Records a new auditable event and returns the SHA-256 hash of the entry.

@@ -21,4 +21,5 @@ pub mod sqlite;
 pub mod usage;
 
 mod substrate;
+pub use openfang_types::config::{MemoryBackendKind, SemanticBackendKind};
 pub use substrate::MemorySubstrate;

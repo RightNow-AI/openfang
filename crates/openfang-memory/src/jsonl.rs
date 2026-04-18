@@ -23,6 +23,7 @@ struct JsonlLine {
 /// affect the primary SQLite store.
 pub fn write_session_mirror(session: &Session, sessions_dir: &Path) -> Result<(), std::io::Error> {
     std::fs::create_dir_all(sessions_dir)?;
+    // SessionId wraps a uuid::Uuid (see openfang_types::agent::SessionId), so the filename is path-traversal safe.
     let path = sessions_dir.join(format!("{}.jsonl", session.id.0));
     let mut file = std::fs::File::create(&path)?;
     let now = Utc::now().to_rfc3339();
@@ -73,7 +74,7 @@ pub fn write_session_mirror(session: &Session, sessions_dir: &Path) -> Result<()
                         ContentBlock::Image { media_type, .. } => {
                             text_parts.push(format!("[image: {media_type}]"));
                         }
-                        ContentBlock::Thinking { thinking } => {
+                        ContentBlock::Thinking { thinking, .. } => {
                             text_parts.push(format!(
                                 "[thinking: {}]",
                                 openfang_types::truncate_str(thinking, 200)

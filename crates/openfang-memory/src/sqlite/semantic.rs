@@ -223,8 +223,8 @@ impl SemanticStore {
                 let source_str = helpers::serialize_source(source)?;
                 sql.push_str(&format!(" AND source = ?{param_idx}"));
                 params.push(Box::new(source_str));
-                #[allow(unused_assignments)]
-                { param_idx += 1; }
+                // No further increments — this is the last filter. Additional
+                // filters below must bump `param_idx` before using it.
             }
         }
 

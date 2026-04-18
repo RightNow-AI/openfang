@@ -79,7 +79,7 @@ impl KnowledgeStore {
         let mut sql = String::from(
             "SELECT
                 s.id, s.entity_type, s.name, s.properties, s.created_at, s.updated_at,
-                r.id, r.source_entity, r.relation_type, r.target_entity, r.properties, r.confidence, r.created_at,
+                r.source_entity, r.relation_type, r.target_entity, r.properties, r.confidence, r.created_at,
                 t.id, t.entity_type, t.name, t.properties, t.created_at, t.updated_at
              FROM relations r
              JOIN entities s ON r.source_entity = s.id
@@ -126,19 +126,18 @@ impl KnowledgeStore {
                     s_props: row.get(3)?,
                     s_created: row.get(4)?,
                     s_updated: row.get(5)?,
-                    r_id: row.get(6)?,
-                    r_source: row.get(7)?,
-                    r_type: row.get(8)?,
-                    r_target: row.get(9)?,
-                    r_props: row.get(10)?,
-                    r_confidence: row.get(11)?,
-                    r_created: row.get(12)?,
-                    t_id: row.get(13)?,
-                    t_type: row.get(14)?,
-                    t_name: row.get(15)?,
-                    t_props: row.get(16)?,
-                    t_created: row.get(17)?,
-                    t_updated: row.get(18)?,
+                    r_source: row.get(6)?,
+                    r_type: row.get(7)?,
+                    r_target: row.get(8)?,
+                    r_props: row.get(9)?,
+                    r_confidence: row.get(10)?,
+                    r_created: row.get(11)?,
+                    t_id: row.get(12)?,
+                    t_type: row.get(13)?,
+                    t_name: row.get(14)?,
+                    t_props: row.get(15)?,
+                    t_created: row.get(16)?,
+                    t_updated: row.get(17)?,
                 })
             })
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
@@ -197,7 +196,6 @@ struct RawGraphRow {
     s_props: String,
     s_created: String,
     s_updated: String,
-    r_id: String,
     r_source: String,
     r_type: String,
     r_target: String,
@@ -210,14 +208,6 @@ struct RawGraphRow {
     t_props: String,
     t_created: String,
     t_updated: String,
-}
-
-// Suppress the unused field warning — r_id is part of the schema
-impl RawGraphRow {
-    #[allow(dead_code)]
-    fn relation_id(&self) -> &str {
-        &self.r_id
-    }
 }
 
 #[cfg(test)]
