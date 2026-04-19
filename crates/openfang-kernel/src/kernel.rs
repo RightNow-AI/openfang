@@ -815,6 +815,9 @@ impl OpenFangKernel {
         // Initialize skill registry
         let skills_dir = config.home_dir.join("skills");
         let mut skill_registry = openfang_skills::registry::SkillRegistry::new(skills_dir);
+        // Install user-supplied per-skill config from `[skills.<name>]` sections
+        // before loading so the loader can resolve declared config frontmatter.
+        skill_registry.set_skill_configs(config.skills.clone());
 
         // Load bundled skills first (compile-time embedded)
         let bundled_count = skill_registry.load_bundled();
@@ -4829,6 +4832,7 @@ impl OpenFangKernel {
                 timeout_secs: None,
             },
             delivery: CronDelivery::None,
+            delivery_targets: Vec::new(),
             created_at: chrono::Utc::now(),
             last_run: None,
             next_run: None,
@@ -5683,6 +5687,7 @@ impl OpenFangKernel {
         }
         let skills_dir = self.config.home_dir.join("skills");
         let mut fresh = openfang_skills::registry::SkillRegistry::new(skills_dir);
+        fresh.set_skill_configs(self.config.skills.clone());
         let bundled = fresh.load_bundled();
         let user = fresh.load_all().unwrap_or(0);
         info!(bundled, user, "Skill registry hot-reloaded");
@@ -5910,6 +5915,7 @@ impl OpenFangKernel {
                 let timeout_s = timeout_secs.unwrap_or(120);
                 let timeout = std::time::Duration::from_secs(timeout_s);
                 let delivery = job.delivery.clone();
+                let delivery_targets = job.delivery_targets.clone();
                 let kh: Arc<dyn KernelHandle> = self.clone();
                 match tokio::time::timeout(
                     timeout,
@@ -5918,6 +5924,9 @@ impl OpenFangKernel {
                 .await
                 {
                     Ok(Ok(result)) => {
+                        // Multi-destination fan-out (never aborts the job on delivery error).
+                        cron_fan_out_targets(self, job_name, &result.response, &delivery_targets)
+                            .await;
                         match cron_deliver_response(self, agent_id, &result.response, &delivery)
                             .await
                         {
@@ -5952,6 +5961,7 @@ impl OpenFangKernel {
                 let timeout_s = timeout_secs.unwrap_or(120);
                 let timeout = std::time::Duration::from_secs(timeout_s);
                 let delivery = job.delivery.clone();
+                let delivery_targets = job.delivery_targets.clone();
 
                 let wf_id = match uuid::Uuid::parse_str(workflow_id) {
                     Ok(uuid) => crate::workflow::WorkflowId(uuid),
@@ -5969,6 +5979,8 @@ impl OpenFangKernel {
 
                 match tokio::time::timeout(timeout, self.run_workflow(wf_id, wf_input)).await {
                     Ok(Ok((_run_id, output))) => {
+                        // Multi-destination fan-out (never aborts the job on delivery error).
+                        cron_fan_out_targets(self, job_name, &output, &delivery_targets).await;
                         match cron_deliver_response(self, agent_id, &output, &delivery).await {
                             Ok(()) => {
                                 self.cron_scheduler.record_success(job_id);
@@ -6318,6 +6330,101 @@ async fn cron_deliver_response(
     }
 }
 
+/// Thin `ChannelBridgeHandle` adapter that only implements
+/// `send_channel_message`, delegating straight to the kernel's own adapter
+/// registry. Used by the multi-destination cron delivery engine when no
+/// outer bridge (e.g. from the API layer) is wired up yet.
+///
+/// All other trait methods fall back to the defaults defined on the trait
+/// (they intentionally return "not implemented" / empty values since the
+/// fan-out engine never calls them).
+struct KernelCronBridge {
+    kernel: Arc<OpenFangKernel>,
+}
+
+#[async_trait]
+impl openfang_channels::bridge::ChannelBridgeHandle for KernelCronBridge {
+    async fn send_message(
+        &self,
+        _agent_id: AgentId,
+        _message: &str,
+    ) -> Result<String, String> {
+        Err("KernelCronBridge only supports send_channel_message".to_string())
+    }
+
+    async fn find_agent_by_name(&self, _name: &str) -> Result<Option<AgentId>, String> {
+        Ok(None)
+    }
+
+    async fn list_agents(&self) -> Result<Vec<(AgentId, String)>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn spawn_agent_by_name(&self, _name: &str) -> Result<AgentId, String> {
+        Err("not supported".to_string())
+    }
+
+    async fn send_channel_message(
+        &self,
+        channel_type: &str,
+        recipient: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        self.kernel
+            .send_channel_message(channel_type, recipient, message, None)
+            .await
+            .map(|_| ())
+    }
+}
+
+/// Fan out `output` to every target in `delivery_targets` concurrently.
+///
+/// Never returns an error — delivery is best-effort because the job itself
+/// has already succeeded. Per-target failures are logged and counted, and
+/// the aggregate pass/fail counts are returned for the scheduler log.
+async fn cron_fan_out_targets(
+    kernel: &Arc<OpenFangKernel>,
+    job_name: &str,
+    output: &str,
+    targets: &[openfang_types::scheduler::CronDeliveryTarget],
+) {
+    if targets.is_empty() || output.is_empty() {
+        return;
+    }
+    let bridge: Arc<dyn openfang_channels::bridge::ChannelBridgeHandle> =
+        Arc::new(KernelCronBridge {
+            kernel: kernel.clone(),
+        });
+    let engine = crate::cron_delivery::CronDeliveryEngine::new(bridge);
+    let results = engine.deliver(targets, job_name, output).await;
+    let total = results.len();
+    let failures = results.iter().filter(|r| !r.success).count();
+    let successes = total - failures;
+    if failures == 0 {
+        tracing::info!(
+            job = %job_name,
+            targets = total,
+            "Cron fan-out: all {successes} target(s) delivered"
+        );
+    } else {
+        tracing::warn!(
+            job = %job_name,
+            total = total,
+            ok = successes,
+            failed = failures,
+            "Cron fan-out: partial delivery"
+        );
+        for r in results.iter().filter(|r| !r.success) {
+            tracing::warn!(
+                job = %job_name,
+                target = %r.target,
+                error = %r.error.as_deref().unwrap_or("unknown"),
+                "Cron fan-out target failed"
+            );
+        }
+    }
+}
+
 #[async_trait]
 impl KernelHandle for OpenFangKernel {
     async fn spawn_agent(
@@ -6521,7 +6628,7 @@ impl KernelHandle for OpenFangKernel {
         job_json: serde_json::Value,
     ) -> Result<String, String> {
         use openfang_types::scheduler::{
-            CronAction, CronDelivery, CronJob, CronJobId, CronSchedule,
+            CronAction, CronDelivery, CronDeliveryTarget, CronJob, CronJobId, CronSchedule,
         };
 
         let name = job_json["name"]
@@ -6538,6 +6645,12 @@ impl KernelHandle for OpenFangKernel {
         } else {
             CronDelivery::None
         };
+        let delivery_targets: Vec<CronDeliveryTarget> = if job_json["delivery_targets"].is_array() {
+            serde_json::from_value(job_json["delivery_targets"].clone())
+                .map_err(|e| format!("Invalid delivery_targets: {e}"))?
+        } else {
+            Vec::new()
+        };
         let one_shot = job_json["one_shot"].as_bool().unwrap_or(false);
 
         let aid = openfang_types::agent::AgentId(
@@ -6551,6 +6664,7 @@ impl KernelHandle for OpenFangKernel {
             schedule,
             action,
             delivery,
+            delivery_targets,
             enabled: true,
             created_at: chrono::Utc::now(),
             next_run: None,
