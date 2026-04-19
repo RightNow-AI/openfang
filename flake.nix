@@ -22,11 +22,13 @@
         ...
       }: {
         rust-project.src = lib.sources.cleanSource ./.;
+        rust-project.defaults.perCrate.crane.args.nativeBuildInputs = with pkgs; [
+          perl
+          pkg-config
+        ];
         rust-project.defaults.perCrate.crane.args.buildInputs = with pkgs; [
           clang
           openssl
-          perl
-          pkg-config
         ];
         rust-project.crates.openfang-desktop.crane.args.buildInputs = with pkgs; [
           atk
