@@ -123,6 +123,22 @@ async fn start_test_server_with_provider(
         )
         .route("/api/shutdown", axum::routing::post(routes::shutdown))
         .route("/api/commands", axum::routing::get(routes::list_commands))
+        .route(
+            "/api/schedules",
+            axum::routing::get(routes::list_schedules).post(routes::create_schedule),
+        )
+        .route(
+            "/api/schedules/{id}",
+            axum::routing::delete(routes::delete_schedule).put(routes::update_schedule),
+        )
+        .route(
+            "/api/schedules/{id}/delivery-log",
+            axum::routing::get(routes::schedule_delivery_log),
+        )
+        .route(
+            "/api/cron/jobs",
+            axum::routing::get(routes::list_cron_jobs).post(routes::create_cron_job),
+        )
         .layer(axum::middleware::from_fn(middleware::request_logging))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
@@ -1141,4 +1157,356 @@ async fn test_commands_invalid_surface_400() {
     let body: serde_json::Value = resp.json().await.unwrap();
     let err = body["error"].as_str().unwrap_or_default();
     assert!(err.contains("bogus"), "error should mention the bad value: {err}");
+}
+
+// ---------------------------------------------------------------------------
+// Schedule delivery_targets round-trip tests
+// ---------------------------------------------------------------------------
+//
+// These exercise the `/api/schedules` and `/api/cron/jobs` endpoints to
+// confirm `CronDeliveryTarget` variants round-trip cleanly through create /
+// list / update / delivery-log, and that bad input is rejected at the API
+// layer rather than silently dropped.
+
+async fn spawn_test_agent(server: &TestServer) -> String {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    body["agent_id"].as_str().unwrap().to_string()
+}
+
+/// POST /api/schedules with all four `CronDeliveryTarget` variants should
+/// store them and return them on GET /api/schedules.
+#[tokio::test]
+async fn test_schedules_delivery_targets_roundtrip() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+    let agent_id = spawn_test_agent(&server).await;
+
+    let delivery_targets = serde_json::json!([
+        { "type": "channel", "channel_type": "telegram", "recipient": "chat_12345" },
+        { "type": "webhook", "url": "https://example.com/hook", "auth_header": "Bearer abc" },
+        { "type": "local_file", "path": "/tmp/openfang-test.log", "append": true },
+        { "type": "email", "to": "alice@example.com", "subject_template": "Cron: {job}" },
+    ]);
+
+    let resp = client
+        .post(format!("{}/api/schedules", server.base_url))
+        .json(&serde_json::json!({
+            "name": "multi-destination-test",
+            "cron": "0 9 * * 1-5",
+            "agent_id": agent_id,
+            "message": "Generate the daily brief.",
+            "enabled": true,
+            "delivery_targets": delivery_targets,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let sched_id = body["id"].as_str().expect("created schedule id").to_string();
+    let got = body["delivery_targets"]
+        .as_array()
+        .expect("response must include delivery_targets");
+    assert_eq!(got.len(), 4, "all four targets should round-trip");
+    assert_eq!(got[0]["type"], "channel");
+    assert_eq!(got[0]["channel_type"], "telegram");
+    assert_eq!(got[0]["recipient"], "chat_12345");
+    assert_eq!(got[1]["type"], "webhook");
+    assert_eq!(got[1]["url"], "https://example.com/hook");
+    assert_eq!(got[1]["auth_header"], "Bearer abc");
+    assert_eq!(got[2]["type"], "local_file");
+    assert_eq!(got[2]["append"], true);
+    assert_eq!(got[3]["type"], "email");
+    assert_eq!(got[3]["subject_template"], "Cron: {job}");
+
+    let resp = client
+        .get(format!("{}/api/schedules", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let schedules = body["schedules"].as_array().unwrap();
+    let created = schedules
+        .iter()
+        .find(|s| s["id"] == sched_id)
+        .expect("created schedule must appear in list");
+    let listed = created["delivery_targets"].as_array().unwrap();
+    assert_eq!(listed.len(), 4);
+    assert_eq!(listed[0]["channel_type"], "telegram");
+
+    let _ = client
+        .delete(format!("{}/api/schedules/{}", server.base_url, sched_id))
+        .send()
+        .await;
+}
+
+/// PUT /api/schedules/{id} with `delivery_targets` should fully replace the
+/// target list.
+#[tokio::test]
+async fn test_schedules_delivery_targets_update() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+    let agent_id = spawn_test_agent(&server).await;
+
+    let resp = client
+        .post(format!("{}/api/schedules", server.base_url))
+        .json(&serde_json::json!({
+            "name": "update-target-test",
+            "cron": "*/15 * * * *",
+            "agent_id": agent_id,
+            "message": "hi",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let sched_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        body["delivery_targets"].as_array().map(|a| a.len()),
+        Some(0)
+    );
+
+    let resp = client
+        .put(format!("{}/api/schedules/{}", server.base_url, sched_id))
+        .json(&serde_json::json!({
+            "delivery_targets": [
+                { "type": "webhook", "url": "https://new.example.com/hook" },
+                { "type": "local_file", "path": "/tmp/new.log" },
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "updated");
+    let echoed = &body["schedule"]["delivery_targets"];
+    let arr = echoed.as_array().expect("schedule.delivery_targets must be array");
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["type"], "webhook");
+    assert_eq!(arr[1]["type"], "local_file");
+
+    let resp = client
+        .get(format!("{}/api/schedules", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let created = body["schedules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == sched_id)
+        .unwrap();
+    let listed = created["delivery_targets"].as_array().unwrap();
+    assert_eq!(listed.len(), 2);
+
+    let resp = client
+        .put(format!("{}/api/schedules/{}", server.base_url, sched_id))
+        .json(&serde_json::json!({"delivery_targets": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let resp = client
+        .get(format!("{}/api/schedules", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let created = body["schedules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == sched_id)
+        .unwrap();
+    let listed = created["delivery_targets"].as_array().unwrap();
+    assert_eq!(listed.len(), 0);
+
+    let _ = client
+        .delete(format!("{}/api/schedules/{}", server.base_url, sched_id))
+        .send()
+        .await;
+}
+
+/// Malformed `delivery_targets` should return 400, not silently succeed.
+#[tokio::test]
+async fn test_schedules_rejects_bad_delivery_target() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+    let agent_id = spawn_test_agent(&server).await;
+
+    let resp = client
+        .post(format!("{}/api/schedules", server.base_url))
+        .json(&serde_json::json!({
+            "name": "bad-target-test",
+            "cron": "*/10 * * * *",
+            "agent_id": agent_id,
+            "message": "hi",
+            "delivery_targets": [
+                { "type": "channel" /* missing channel_type + recipient */ }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let err = body["error"].as_str().unwrap_or_default();
+    assert!(
+        err.contains("delivery_targets"),
+        "error should mention delivery_targets, got: {err}"
+    );
+
+    let resp = client
+        .post(format!("{}/api/schedules", server.base_url))
+        .json(&serde_json::json!({
+            "name": "bad-array-test",
+            "cron": "*/10 * * * *",
+            "agent_id": agent_id,
+            "message": "hi",
+            "delivery_targets": "not-an-array",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+/// GET /api/schedules/{id}/delivery-log returns the configured targets and an
+/// empty entries array for a known schedule, and 404 for a random UUID.
+#[tokio::test]
+async fn test_schedules_delivery_log_endpoint() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+    let agent_id = spawn_test_agent(&server).await;
+
+    let resp = client
+        .post(format!("{}/api/schedules", server.base_url))
+        .json(&serde_json::json!({
+            "name": "log-test",
+            "cron": "0 * * * *",
+            "agent_id": agent_id,
+            "message": "x",
+            "delivery_targets": [
+                { "type": "webhook", "url": "https://example.com/h" }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let sched_id = resp
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client
+        .get(format!(
+            "{}/api/schedules/{}/delivery-log",
+            server.base_url, sched_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["schedule_id"], sched_id);
+    let targets = body["targets"].as_array().expect("targets array");
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0]["type"], "webhook");
+    let entries = body["entries"].as_array().expect("entries array");
+    assert!(
+        entries.is_empty(),
+        "delivery history is not persisted yet — entries must be empty"
+    );
+
+    let random = "550e8400-e29b-41d4-a716-446655440000";
+    let resp = client
+        .get(format!(
+            "{}/api/schedules/{}/delivery-log",
+            server.base_url, random
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    let resp = client
+        .get(format!(
+            "{}/api/schedules/not-a-uuid/delivery-log",
+            server.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    let _ = client
+        .delete(format!("{}/api/schedules/{}", server.base_url, sched_id))
+        .send()
+        .await;
+}
+
+/// POST /api/cron/jobs with `delivery_targets` should persist them and they
+/// should appear on the subsequent GET.
+#[tokio::test]
+async fn test_cron_jobs_delivery_targets_roundtrip() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+    let agent_id = spawn_test_agent(&server).await;
+
+    let resp = client
+        .post(format!("{}/api/cron/jobs", server.base_url))
+        .json(&serde_json::json!({
+            "agent_id": agent_id,
+            "name": "cron-fanout",
+            "schedule": { "kind": "cron", "expr": "*/20 * * * *" },
+            "action": { "kind": "agent_turn", "message": "pulse" },
+            "delivery": { "kind": "none" },
+            "delivery_targets": [
+                { "type": "local_file", "path": "/tmp/pulse.log", "append": true },
+                { "type": "webhook", "url": "http://example.com/pulse" }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    let resp = client
+        .get(format!(
+            "{}/api/cron/jobs?agent_id={}",
+            server.base_url, agent_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let jobs = body["jobs"].as_array().unwrap();
+    let job = jobs
+        .iter()
+        .find(|j| j["name"] == "cron-fanout")
+        .expect("created job must be listed");
+    let targets = job["delivery_targets"].as_array().expect("targets array");
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0]["type"], "local_file");
+    assert_eq!(targets[0]["path"], "/tmp/pulse.log");
+    assert_eq!(targets[0]["append"], true);
+    assert_eq!(targets[1]["type"], "webhook");
+    assert_eq!(targets[1]["url"], "http://example.com/pulse");
 }

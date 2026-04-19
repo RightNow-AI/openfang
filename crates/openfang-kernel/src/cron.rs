@@ -198,6 +198,25 @@ impl CronScheduler {
         }
     }
 
+    /// Replace the multi-destination delivery targets on an existing job.
+    ///
+    /// The schedule, action, and primary `delivery` field are left untouched;
+    /// only the `delivery_targets` fan-out list is swapped in. Call
+    /// [`persist`] afterwards to write the change to disk.
+    pub fn set_delivery_targets(
+        &self,
+        id: CronJobId,
+        targets: Vec<openfang_types::scheduler::CronDeliveryTarget>,
+    ) -> OpenFangResult<()> {
+        match self.jobs.get_mut(&id) {
+            Some(mut meta) => {
+                meta.job.delivery_targets = targets;
+                Ok(())
+            }
+            None => Err(OpenFangError::Internal(format!("Cron job {id} not found"))),
+        }
+    }
+
     // -- Queries ------------------------------------------------------------
 
     /// Get a single job by ID.

@@ -612,7 +612,7 @@ mod tests {
     fn autocomplete_prefix_matches_canonical_name() {
         let matches = autocomplete("ne", Surfaces::CHANNEL);
         assert!(
-            matches.iter().any(|m| *m == "new"),
+            matches.contains(&"new"),
             "autocomplete(`ne`) must include `new`, got {matches:?}"
         );
     }
@@ -621,7 +621,7 @@ mod tests {
     fn autocomplete_prefix_matches_alias() {
         let matches = autocomplete("res", Surfaces::CHANNEL);
         assert!(
-            matches.iter().any(|m| *m == "reset"),
+            matches.contains(&"reset"),
             "autocomplete(`res`) must include `reset` (alias of new), got {matches:?}"
         );
     }
@@ -640,9 +640,9 @@ mod tests {
     fn autocomplete_respects_surface_filter() {
         // `kill` is CLI-only; it must not appear in CHANNEL autocomplete.
         let channel_matches = autocomplete("ki", Surfaces::CHANNEL);
-        assert!(!channel_matches.iter().any(|m| *m == "kill"));
+        assert!(!channel_matches.contains(&"kill"));
         let cli_matches = autocomplete("ki", Surfaces::CLI);
-        assert!(cli_matches.iter().any(|m| *m == "kill"));
+        assert!(cli_matches.contains(&"kill"));
     }
 
     #[test]

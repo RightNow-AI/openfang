@@ -3511,6 +3511,21 @@ pub async fn list_skills(State(state): State<Arc<AppState>>) -> impl IntoRespons
     let mut registry = openfang_skills::registry::SkillRegistry::new(skills_dir);
     let _ = registry.load_all();
 
+    // Snapshot of user-provided overrides for the `config_resolved_count`.
+    // Matches `reload_skills()` fallback order so the count reflects what
+    // agents will actually see.
+    let user_configs = {
+        let override_guard = state
+            .kernel
+            .skill_config_overrides
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        override_guard
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| state.kernel.config.skills.clone())
+    };
+
     let skills: Vec<serde_json::Value> = registry
         .list()
         .iter()
@@ -3529,6 +3544,32 @@ pub async fn list_skills(State(state): State<Arc<AppState>>) -> impl IntoRespons
                     serde_json::json!({"type": "local"})
                 }
             };
+
+            // Count how many declared config vars resolve to any source
+            // (user override → env → default). Does NOT fetch secret values;
+            // it only checks presence. Zero-length map → 0/0.
+            let declared = &s.manifest.config;
+            let skill_user_cfg = user_configs.get(&s.manifest.skill.name);
+            let mut resolved = 0usize;
+            for (name, var) in declared.iter() {
+                if skill_user_cfg.and_then(|m| m.get(name)).is_some() {
+                    resolved += 1;
+                    continue;
+                }
+                if let Some(env_name) = var.env.as_ref() {
+                    if std::env::var(env_name)
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false)
+                    {
+                        resolved += 1;
+                        continue;
+                    }
+                }
+                if var.default.as_ref().is_some_and(|d| !d.is_empty()) {
+                    resolved += 1;
+                }
+            }
+
             serde_json::json!({
                 "name": s.manifest.skill.name,
                 "description": s.manifest.skill.description,
@@ -3540,6 +3581,8 @@ pub async fn list_skills(State(state): State<Arc<AppState>>) -> impl IntoRespons
                 "enabled": s.enabled,
                 "source": source,
                 "has_prompt_context": s.manifest.prompt_context.is_some(),
+                "config_declared_count": declared.len(),
+                "config_resolved_count": resolved,
             })
         })
         .collect();
@@ -7894,6 +7937,512 @@ pub async fn create_skill(
     )
 }
 
+// ---------------------------------------------------------------------------
+// Skill config endpoints
+// ---------------------------------------------------------------------------
+//
+// These endpoints expose per-skill runtime variables declared in the skill's
+// SKILL.md frontmatter `config:` section. Resolution order is:
+//
+//   1. user config         (the `[skills.<name>]` section in config.toml)
+//   2. env var              (`var.env`)
+//   3. default              (`var.default`)
+//
+// The GET endpoint always returns secret-looking values redacted. The PUT
+// endpoint atomically rewrites the `[skills.<name>]` section of config.toml
+// and reloads the skill registry so the change takes effect on the next
+// prompt build.
+
+/// Load a skill's declared `config:` map, even if `required` vars are
+/// currently unresolved.
+///
+/// Looking up the live registry doesn't work here because the registry's
+/// load path refuses to insert a skill whose required config var has no
+/// resolvable value — which is exactly the state the user needs to reach
+/// this UI to fix. Instead we read the manifest straight from disk (for
+/// user-installed / workspace skills) or straight from the compile-time
+/// bundled catalog.
+fn load_skill_declared_config(
+    skills_dir: &std::path::Path,
+    skill_name: &str,
+) -> Option<std::collections::HashMap<String, openfang_skills::config_injection::SkillConfigVar>> {
+    // 1. User-installed skill: skills_dir/<name>/skill.toml, falling back to
+    //    SKILL.md frontmatter if no TOML has been generated yet.
+    let skill_dir = skills_dir.join(skill_name);
+    if skill_dir.is_dir() {
+        let toml_path = skill_dir.join("skill.toml");
+        if toml_path.exists() {
+            if let Ok(text) = std::fs::read_to_string(&toml_path) {
+                if let Ok(manifest) = toml::from_str::<openfang_skills::SkillManifest>(&text) {
+                    if manifest.skill.name == skill_name {
+                        return Some(manifest.config);
+                    }
+                }
+            }
+        }
+        let skillmd_path = skill_dir.join("SKILL.md");
+        if skillmd_path.exists() {
+            if let Ok(text) = std::fs::read_to_string(&skillmd_path) {
+                if let Ok(converted) =
+                    openfang_skills::openclaw_compat::convert_skillmd_str(skill_name, &text)
+                {
+                    return Some(converted.config_vars);
+                }
+            }
+        }
+    }
+
+    // 2. Bundled skill: look up by name in the compile-time catalog.
+    for (bundled_name, content) in openfang_skills::bundled::bundled_skills() {
+        if bundled_name == skill_name {
+            if let Ok(converted) =
+                openfang_skills::openclaw_compat::convert_skillmd_str(bundled_name, content)
+            {
+                return Some(converted.config_vars);
+            }
+        }
+    }
+
+    None
+}
+
+/// Build the per-skill config state for the GET endpoint.
+///
+/// Returns `None` if the skill is not installed. Resolved values are
+/// redacted when the variable name looks secret (see
+/// [`openfang_skills::config_injection::is_secret_name`]).
+fn build_skill_config_snapshot(
+    state: &Arc<AppState>,
+    skill_name: &str,
+) -> Option<serde_json::Value> {
+    use openfang_skills::config_injection::is_secret_name;
+
+    let skills_dir = state.kernel.config.home_dir.join("skills");
+    let declared = load_skill_declared_config(&skills_dir, skill_name)?;
+
+    // Snapshot the currently active user config (override map takes priority
+    // over the boot-time `self.config.skills`, matching what `reload_skills`
+    // will actually use).
+    let user_cfg: std::collections::HashMap<String, String> = {
+        let override_guard = state
+            .kernel
+            .skill_config_overrides
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let source: &std::collections::HashMap<String, std::collections::HashMap<String, String>> =
+            override_guard.as_ref().unwrap_or(&state.kernel.config.skills);
+        source.get(skill_name).cloned().unwrap_or_default()
+    };
+
+    let mut declared_json = serde_json::Map::new();
+    let mut resolved_json = serde_json::Map::new();
+
+    for (name, var) in declared.iter() {
+        declared_json.insert(
+            name.clone(),
+            serde_json::json!({
+                "description": var.description,
+                "env": var.env,
+                "default": var.default,
+                "required": var.required,
+            }),
+        );
+
+        let is_secret = is_secret_name(name);
+        let (value_opt, source) = if let Some(v) = user_cfg.get(name) {
+            (Some(v.clone()), "user")
+        } else if let Some(env_name) = var.env.as_ref() {
+            match std::env::var(env_name) {
+                Ok(v) if !v.is_empty() => (Some(v), "env"),
+                _ => {
+                    if let Some(d) = var.default.as_ref() {
+                        (Some(d.clone()), "default")
+                    } else {
+                        (None, "unresolved")
+                    }
+                }
+            }
+        } else if let Some(d) = var.default.as_ref() {
+            (Some(d.clone()), "default")
+        } else {
+            (None, "unresolved")
+        };
+
+        // Redact secrets for the wire response.
+        let shown_value: serde_json::Value = match value_opt {
+            Some(v) if is_secret => {
+                let prefix: String = v.chars().take(4).collect();
+                if prefix.is_empty() {
+                    serde_json::Value::String("***redacted***".to_string())
+                } else {
+                    serde_json::Value::String(format!("{prefix}***redacted***"))
+                }
+            }
+            Some(v) => serde_json::Value::String(v),
+            None => serde_json::Value::Null,
+        };
+
+        resolved_json.insert(
+            name.clone(),
+            serde_json::json!({
+                "value": shown_value,
+                "source": source,
+                "is_secret": is_secret,
+            }),
+        );
+    }
+
+    Some(serde_json::json!({
+        "skill": skill_name,
+        "declared": serde_json::Value::Object(declared_json),
+        "resolved": serde_json::Value::Object(resolved_json),
+    }))
+}
+
+/// GET /api/skills/{id}/config — Return declared + resolved per-skill config.
+///
+/// Response shape:
+/// ```json
+/// {
+///   "skill": "github-helper",
+///   "declared": {
+///     "github_token": { "description": "...", "env": "GH_TOKEN", "default": null, "required": true }
+///   },
+///   "resolved": {
+///     "github_token": { "value": "ghp_***redacted***", "source": "user", "is_secret": true }
+///   }
+/// }
+/// ```
+///
+/// Secret-looking values (`*_token`, `*_key`, `*_secret`, `password`) are
+/// always redacted in the `value` field. The `source` field names the layer
+/// that won: `"user"`, `"env"`, `"default"`, or `"unresolved"`.
+pub async fn get_skill_config(
+    State(state): State<Arc<AppState>>,
+    Path(skill_name): Path<String>,
+) -> impl IntoResponse {
+    match build_skill_config_snapshot(&state, &skill_name) {
+        Some(snapshot) => (StatusCode::OK, Json(snapshot)),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("Skill '{skill_name}' not found")})),
+        ),
+    }
+}
+
+/// Request body for `PUT /api/skills/{id}/config`.
+#[derive(Debug, serde::Deserialize)]
+pub struct SkillConfigPutRequest {
+    /// New per-variable values. Keys must match declared variable names.
+    pub values: std::collections::HashMap<String, String>,
+}
+
+/// PUT /api/skills/{id}/config — Write user overrides for a skill's config.
+///
+/// The body is `{"values": {"<var_name>": "<value>"}}`. Only declared
+/// variables are accepted; unknown keys return 400. After the config.toml is
+/// atomically rewritten, the kernel's skill registry is reloaded so the
+/// change takes effect immediately.
+pub async fn put_skill_config(
+    State(state): State<Arc<AppState>>,
+    Path(skill_name): Path<String>,
+    Json(body): Json<SkillConfigPutRequest>,
+) -> impl IntoResponse {
+    // Refuse to operate on unknown skill (matching GET behavior). We read
+    // the declared config directly instead of going through the registry so
+    // a skill with required-but-unresolved vars is still editable.
+    let skills_dir = state.kernel.config.home_dir.join("skills");
+    let declared = match load_skill_declared_config(&skills_dir, &skill_name) {
+        Some(d) => d,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("Skill '{skill_name}' not found")})),
+            );
+        }
+    };
+
+    // Reject unknown keys.
+    for k in body.values.keys() {
+        if !declared.contains_key(k) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("Variable '{k}' is not declared by skill '{skill_name}'")
+                })),
+            );
+        }
+    }
+
+    // Build the final in-memory skill-configs map: start from the current
+    // override (or boot-time config), replace the skill's section with the
+    // incoming values.
+    let mut all_configs: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, String>,
+    > = {
+        let guard = state
+            .kernel
+            .skill_config_overrides
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| state.kernel.config.skills.clone())
+    };
+    all_configs.insert(skill_name.clone(), body.values.clone());
+
+    // Persist atomically to config.toml.
+    let config_path = state.kernel.config.home_dir.join("config.toml");
+    if let Err(e) = upsert_skill_config(&config_path, &skill_name, &body.values) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to persist skill config: {e}")
+            })),
+        );
+    }
+
+    // Reload so agents see the new config on their next prompt build.
+    state.kernel.reload_skills_with_configs(all_configs);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "saved",
+            "skill": skill_name,
+            "reloaded": true,
+        })),
+    )
+}
+
+/// DELETE /api/skills/{id}/config/{var_name} — Remove a single user override.
+///
+/// After removal, the variable falls back to env or default on the next
+/// prompt build. If removing the override would leave a `required` variable
+/// with no resolvable value, the request fails with 409 Conflict so the
+/// caller is never tricked into a broken state.
+pub async fn delete_skill_config_var(
+    State(state): State<Arc<AppState>>,
+    Path((skill_name, var_name)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let skills_dir = state.kernel.config.home_dir.join("skills");
+    let declared = match load_skill_declared_config(&skills_dir, &skill_name) {
+        Some(d) => d,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("Skill '{skill_name}' not found")})),
+            );
+        }
+    };
+
+    let var_def = match declared.get(&var_name) {
+        Some(v) => v.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("Variable '{var_name}' is not declared by skill '{skill_name}'")
+                })),
+            );
+        }
+    };
+
+    // If the var is required, make sure env or default still resolves;
+    // otherwise we would leave the skill unable to register after reload.
+    if var_def.required {
+        let env_resolves = var_def
+            .env
+            .as_ref()
+            .and_then(|e| std::env::var(e).ok())
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        let default_resolves = var_def
+            .default
+            .as_ref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        if !env_resolves && !default_resolves {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": format!(
+                        "Cannot remove override: '{var_name}' is required and has no env/default fallback"
+                    )
+                })),
+            );
+        }
+    }
+
+    let mut all_configs: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, String>,
+    > = {
+        let guard = state
+            .kernel
+            .skill_config_overrides
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| state.kernel.config.skills.clone())
+    };
+    if let Some(skill_map) = all_configs.get_mut(&skill_name) {
+        skill_map.remove(&var_name);
+        if skill_map.is_empty() {
+            all_configs.remove(&skill_name);
+        }
+    }
+
+    let config_path = state.kernel.config.home_dir.join("config.toml");
+    if let Err(e) = remove_skill_config_var(&config_path, &skill_name, &var_name) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to update config.toml: {e}")
+            })),
+        );
+    }
+
+    state.kernel.reload_skills_with_configs(all_configs);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "removed",
+            "skill": skill_name,
+            "var": var_name,
+            "reloaded": true,
+        })),
+    )
+}
+
+/// Atomically upsert `[skills.<skill_name>]` in config.toml.
+///
+/// Writes to `<path>.tmp` then renames — so a crash during the write never
+/// leaves a half-truncated config on disk. Existing root-level fields are
+/// preserved; only the named skill's section is replaced.
+fn upsert_skill_config(
+    config_path: &std::path::Path,
+    skill_name: &str,
+    values: &std::collections::HashMap<String, String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let content = if config_path.exists() {
+        std::fs::read_to_string(config_path)?
+    } else {
+        String::new()
+    };
+
+    let mut doc: toml::Value = if content.trim().is_empty() {
+        toml::Value::Table(toml::map::Map::new())
+    } else {
+        toml::from_str(&content)?
+    };
+
+    let root = doc.as_table_mut().ok_or("Config is not a TOML table")?;
+
+    if !root.contains_key("skills") {
+        root.insert(
+            "skills".to_string(),
+            toml::Value::Table(toml::map::Map::new()),
+        );
+    }
+    let skills_table = root
+        .get_mut("skills")
+        .and_then(|v| v.as_table_mut())
+        .ok_or("skills is not a table")?;
+
+    let mut skill_section = toml::map::Map::new();
+    for (k, v) in values {
+        skill_section.insert(k.clone(), toml::Value::String(v.clone()));
+    }
+    skills_table.insert(skill_name.to_string(), toml::Value::Table(skill_section));
+
+    atomic_write_toml(config_path, &doc)?;
+    Ok(())
+}
+
+/// Atomically remove a single variable from `[skills.<skill_name>]`.
+///
+/// If the skill table becomes empty the table itself is removed so we don't
+/// leave empty sections lying around.
+fn remove_skill_config_var(
+    config_path: &std::path::Path,
+    skill_name: &str,
+    var_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(config_path)?;
+    if content.trim().is_empty() {
+        return Ok(());
+    }
+
+    let mut doc: toml::Value = toml::from_str(&content)?;
+
+    let root = match doc.as_table_mut() {
+        Some(r) => r,
+        None => return Ok(()),
+    };
+
+    let mut remove_skill = false;
+    if let Some(skills_table) = root.get_mut("skills").and_then(|v| v.as_table_mut()) {
+        if let Some(skill_section) = skills_table.get_mut(skill_name).and_then(|v| v.as_table_mut())
+        {
+            skill_section.remove(var_name);
+            if skill_section.is_empty() {
+                remove_skill = true;
+            }
+        }
+        if remove_skill {
+            skills_table.remove(skill_name);
+        }
+    }
+
+    atomic_write_toml(config_path, &doc)?;
+    Ok(())
+}
+
+/// Write a TOML value to disk atomically via a sibling temp file + rename.
+///
+/// On Windows, `rename` is atomic on the same volume when the destination
+/// does not exist; if it does we fall back to the non-atomic write path and
+/// still cover the "crash mid-write truncates config.toml" class of bug.
+fn atomic_write_toml(
+    config_path: &std::path::Path,
+    doc: &toml::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let rendered = toml::to_string_pretty(doc)?;
+    let tmp_path = match config_path.file_name() {
+        Some(name) => {
+            let mut tmp_name = std::ffi::OsString::from(".");
+            tmp_name.push(name);
+            tmp_name.push(".tmp");
+            config_path.with_file_name(tmp_name)
+        }
+        None => config_path.with_extension("tmp"),
+    };
+    std::fs::write(&tmp_path, rendered)?;
+    match std::fs::rename(&tmp_path, config_path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            // Fallback: direct write, then best-effort cleanup of temp.
+            let rendered = toml::to_string_pretty(doc)?;
+            std::fs::write(config_path, rendered)?;
+            let _ = std::fs::remove_file(&tmp_path);
+            Ok(())
+        }
+    }
+}
+
 // ── Helper functions for secrets.env management ────────────────────────
 
 /// Write or update a key in the secrets.env file.
@@ -8348,6 +8897,9 @@ fn cron_job_to_schedule_view(
     };
     let meta = kernel.cron_scheduler.get_meta(job.id);
     let last_status = meta.as_ref().and_then(|m| m.last_status.clone());
+    // Serialize delivery_targets so dashboard chips/editor round-trip cleanly.
+    let delivery_targets = serde_json::to_value(&job.delivery_targets)
+        .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
 
     serde_json::json!({
         "id": job.id.to_string(),
@@ -8360,6 +8912,7 @@ fn cron_job_to_schedule_view(
         "last_run": job.last_run.map(|t| t.to_rfc3339()),
         "next_run": job.next_run.map(|t| t.to_rfc3339()),
         "last_status": last_status,
+        "delivery_targets": delivery_targets,
     })
 }
 
@@ -8449,7 +9002,38 @@ pub async fn create_schedule(
         message.clone()
     };
 
-    let job_json = serde_json::json!({
+    // Accept multi-destination delivery targets. Validate each entry matches
+    // the `CronDeliveryTarget` shape up front so we return a 400 rather than
+    // silently dropping targets or failing later in the kernel.
+    let delivery_targets_raw = req
+        .get("delivery_targets")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    if !delivery_targets_raw.is_null() && !delivery_targets_raw.is_array() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "delivery_targets must be an array"
+            })),
+        );
+    }
+    if let Some(arr) = delivery_targets_raw.as_array() {
+        for (idx, t) in arr.iter().enumerate() {
+            if let Err(e) = serde_json::from_value::<
+                openfang_types::scheduler::CronDeliveryTarget,
+            >(t.clone())
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!("delivery_targets[{idx}] invalid: {e}")
+                    })),
+                );
+            }
+        }
+    }
+
+    let mut job_json = serde_json::json!({
         "name": sanitize_schedule_job_name(&name_raw),
         "schedule": { "kind": "cron", "expr": cron, "tz": null },
         "action": {
@@ -8461,6 +9045,9 @@ pub async fn create_schedule(
         "delivery": { "kind": "none" },
         "one_shot": false,
     });
+    if let Some(arr) = delivery_targets_raw.as_array() {
+        job_json["delivery_targets"] = serde_json::Value::Array(arr.clone());
+    }
 
     match state
         .kernel
@@ -8550,17 +9137,63 @@ pub async fn update_schedule(
         }
         let _ = state.kernel.cron_scheduler.persist();
     }
+
+    // Apply a full replacement of delivery_targets when supplied. Validation
+    // is done up front via serde so a bad entry produces a 400 rather than
+    // silently replacing the list with the valid subset.
+    if let Some(raw_targets) = req.get("delivery_targets") {
+        if !raw_targets.is_array() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "delivery_targets must be an array"})),
+            );
+        }
+        let arr = raw_targets.as_array().unwrap();
+        let mut parsed: Vec<openfang_types::scheduler::CronDeliveryTarget> =
+            Vec::with_capacity(arr.len());
+        for (idx, t) in arr.iter().enumerate() {
+            match serde_json::from_value::<openfang_types::scheduler::CronDeliveryTarget>(
+                t.clone(),
+            ) {
+                Ok(dt) => parsed.push(dt),
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "error": format!("delivery_targets[{idx}] invalid: {e}")
+                        })),
+                    );
+                }
+            }
+        }
+        if let Err(e) = state
+            .kernel
+            .cron_scheduler
+            .set_delivery_targets(cj_id, parsed)
+        {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("{e}")})),
+            );
+        }
+        let _ = state.kernel.cron_scheduler.persist();
+    }
+
     if req.get("name").is_some()
         || req.get("cron").is_some()
         || req.get("agent_id").is_some()
         || req.get("message").is_some()
     {
-        note = Some("Only 'enabled' is mutable; delete and recreate to change other fields.");
+        note = Some("Only 'enabled' and 'delivery_targets' are mutable; delete and recreate to change other fields.");
     }
 
     let mut body = serde_json::json!({"status": "updated", "schedule_id": id});
     if let Some(n) = note {
         body["note"] = serde_json::Value::String(n.to_string());
+    }
+    // Echo the new view so callers can confirm without a second GET.
+    if let Some(job) = state.kernel.cron_scheduler.get_job(cj_id) {
+        body["schedule"] = cron_job_to_schedule_view(&state.kernel, &job);
     }
     (StatusCode::OK, Json(body))
 }
@@ -8646,6 +9279,53 @@ pub async fn run_schedule(
             })),
         ),
     }
+}
+
+/// GET /api/schedules/{id}/delivery-log — Return the last N per-target
+/// delivery results for a schedule.
+///
+/// Delivery results are not yet persisted across runs, so this endpoint
+/// returns an empty list for jobs that exist. A future change can back this
+/// with a ring buffer populated by `cron_fan_out_targets`. The endpoint is
+/// wired up now so the dashboard can call it without a placeholder.
+pub async fn schedule_delivery_log(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let uuid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid schedule id"})),
+            );
+        }
+    };
+    let cj_id = openfang_types::scheduler::CronJobId(uuid);
+    let job = match state.kernel.cron_scheduler.get_job(cj_id) {
+        Some(j) => j,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Schedule not found"})),
+            );
+        }
+    };
+    // Delivery history is not yet persisted; surface the target list with
+    // empty result arrays so the UI has stable shape to render.
+    let targets: Vec<serde_json::Value> = job
+        .delivery_targets
+        .iter()
+        .map(|t| serde_json::to_value(t).unwrap_or_else(|_| serde_json::Value::Null))
+        .collect();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "schedule_id": id,
+            "targets": targets,
+            "entries": [],
+        })),
+    )
 }
 
 /// Sanitize a user-supplied schedule name into a valid `CronJob.name`.
@@ -11634,5 +12314,133 @@ mod channel_config_tests {
                 .unwrap()
                 .required
         );
+    }
+}
+
+#[cfg(test)]
+mod skill_config_tests {
+    //! Unit tests for the `/api/skills/{id}/config` endpoints.
+    //!
+    //! These exercise the on-disk TOML writer and the in-memory snapshot
+    //! builder directly. Live end-to-end coverage (real HTTP, real kernel)
+    //! lives in `tests/skill_config_api_test.rs`.
+
+    use super::*;
+
+    fn sample_values() -> std::collections::HashMap<String, String> {
+        let mut m = std::collections::HashMap::new();
+        m.insert("github_token".to_string(), "ghp_test1234".to_string());
+        m.insert("default_branch".to_string(), "develop".to_string());
+        m
+    }
+
+    #[test]
+    fn upsert_creates_skills_section_from_blank_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        upsert_skill_config(&path, "demo-skill", &sample_values()).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[skills.demo-skill]"), "text was: {text}");
+        assert!(text.contains("github_token = \"ghp_test1234\""));
+        assert!(text.contains("default_branch = \"develop\""));
+    }
+
+    #[test]
+    fn upsert_preserves_other_root_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "log_level = \"debug\"\napi_listen = \"127.0.0.1:4200\"\n",
+        )
+        .unwrap();
+
+        upsert_skill_config(&path, "demo-skill", &sample_values()).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("log_level"), "log_level lost: {text}");
+        assert!(text.contains("api_listen"), "api_listen lost: {text}");
+        assert!(text.contains("[skills.demo-skill]"));
+    }
+
+    #[test]
+    fn upsert_replaces_existing_section_wholesale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[skills.demo-skill]\nold_key = \"old_value\"\nshared = \"before\"\n",
+        )
+        .unwrap();
+
+        let mut new_values = std::collections::HashMap::new();
+        new_values.insert("shared".to_string(), "after".to_string());
+        upsert_skill_config(&path, "demo-skill", &new_values).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("old_key"), "old_key not dropped: {text}");
+        assert!(text.contains("shared = \"after\""));
+    }
+
+    #[test]
+    fn remove_drops_single_var_but_keeps_table_when_nonempty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        upsert_skill_config(&path, "demo-skill", &sample_values()).unwrap();
+
+        remove_skill_config_var(&path, "demo-skill", "github_token").unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("github_token"));
+        assert!(text.contains("default_branch"));
+        assert!(text.contains("[skills.demo-skill]"));
+    }
+
+    #[test]
+    fn remove_last_var_removes_whole_skill_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut single = std::collections::HashMap::new();
+        single.insert("only".to_string(), "x".to_string());
+        upsert_skill_config(&path, "demo-skill", &single).unwrap();
+
+        remove_skill_config_var(&path, "demo-skill", "only").unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("demo-skill"),
+            "empty section not cleaned up: {text}"
+        );
+    }
+
+    #[test]
+    fn remove_missing_file_is_silent_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // File does not exist — must not error.
+        remove_skill_config_var(&path, "demo-skill", "github_token").unwrap();
+    }
+
+    #[test]
+    fn atomic_write_produces_valid_toml_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut doc = toml::map::Map::new();
+        let mut skills = toml::map::Map::new();
+        let mut inner = toml::map::Map::new();
+        inner.insert(
+            "github_token".to_string(),
+            toml::Value::String("ghp_xyz".to_string()),
+        );
+        skills.insert("demo".to_string(), toml::Value::Table(inner));
+        doc.insert("skills".to_string(), toml::Value::Table(skills));
+        let doc = toml::Value::Table(doc);
+
+        atomic_write_toml(&path, &doc).unwrap();
+
+        let back: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back, doc);
     }
 }
