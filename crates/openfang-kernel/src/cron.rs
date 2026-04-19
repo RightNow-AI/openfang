@@ -504,6 +504,7 @@ mod tests {
                 text: "ping".into(),
             },
             delivery: CronDelivery::None,
+            delivery_targets: Vec::new(),
             created_at: Utc::now(),
             last_run: None,
             next_run: None,

@@ -160,6 +160,53 @@ pub enum CronDelivery {
 }
 
 // ---------------------------------------------------------------------------
+// CronDeliveryTarget (multi-destination fan-out)
+// ---------------------------------------------------------------------------
+
+/// A single destination for multi-destination cron output fan-out.
+///
+/// A cron job may declare zero or more `CronDeliveryTarget`s on its
+/// `delivery_targets` field. When the job fires and produces output, the
+/// delivery engine sends the same output to every target concurrently.
+/// Failures in one target do not abort delivery to the others.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CronDeliveryTarget {
+    /// Deliver via an existing channel adapter (Telegram/Slack/Discord/etc.).
+    Channel {
+        /// Which adapter to use (e.g. `"telegram"`, `"slack"`).
+        channel_type: String,
+        /// Platform-specific recipient (chat ID, user ID, etc.).
+        recipient: String,
+    },
+    /// Deliver via HTTP POST to a webhook URL with a JSON payload.
+    Webhook {
+        /// Destination URL (`http://` or `https://`).
+        url: String,
+        /// Optional `Authorization` header value sent verbatim.
+        #[serde(default)]
+        auth_header: Option<String>,
+    },
+    /// Append or overwrite a local file on disk.
+    LocalFile {
+        /// Absolute or relative path to the output file.
+        path: String,
+        /// If `true`, append to the file; if `false`, overwrite.
+        #[serde(default)]
+        append: bool,
+    },
+    /// Deliver via the existing email channel adapter.
+    Email {
+        /// Recipient email address.
+        to: String,
+        /// Optional subject template (e.g. `"Cron: {job}"`). Literal `{job}`
+        /// placeholders are replaced with the job name at send time.
+        #[serde(default)]
+        subject_template: Option<String>,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // CronJob
 // ---------------------------------------------------------------------------
 
@@ -178,8 +225,12 @@ pub struct CronJob {
     pub schedule: CronSchedule,
     /// What to do when fired.
     pub action: CronAction,
-    /// Where to deliver the result.
+    /// Where to deliver the result (single legacy destination).
     pub delivery: CronDelivery,
+    /// Additional fan-out destinations. May be empty; each target is
+    /// delivered concurrently after the job produces its output.
+    #[serde(default)]
+    pub delivery_targets: Vec<CronDeliveryTarget>,
     /// When the job was created.
     pub created_at: DateTime<Utc>,
     /// When the job last fired (if ever).
@@ -424,6 +475,7 @@ mod tests {
                 text: "ping".into(),
             },
             delivery: CronDelivery::None,
+            delivery_targets: Vec::new(),
             created_at: Utc::now(),
             last_run: None,
             next_run: None,
