@@ -1458,9 +1458,10 @@ pub async fn start_channel_bridge_with_config(
                     encrypt_key,
                     fs_config.bot_names.clone(),
                 )),
-                FeishuMode::Websocket => Arc::new(FeishuAdapter::new_websocket(
+                FeishuMode::Websocket => Arc::new(FeishuAdapter::new_websocket_with_region(
                     fs_config.app_id.clone(),
                     secret,
+                    region,
                 )),
             };
             adapters.push((adapter, fs_config.default_agent.clone()));
