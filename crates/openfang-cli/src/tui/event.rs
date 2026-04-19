@@ -121,6 +121,11 @@ pub enum AppEvent {
     SkillUninstalled(String),
     /// MCP servers loaded.
     McpServersLoaded(Vec<McpServerInfo>),
+    /// Skill config details loaded (installed skill `c` key).
+    SkillConfigLoaded {
+        skill: String,
+        rows: Vec<crate::tui::screens::skills::SkillConfigVarDetail>,
+    },
     /// Templates providers loaded (auth status).
     TemplateProvidersLoaded(Vec<ProviderAuth>),
     /// Security features loaded.
@@ -1439,6 +1444,14 @@ pub fn spawn_fetch_skills(backend: BackendRef, tx: mpsc::Sender<AppEvent>) {
                                         .as_str()
                                         .unwrap_or("")
                                         .to_string(),
+                                    config_declared: s["config_declared_count"]
+                                        .as_u64()
+                                        .unwrap_or(0)
+                                        as usize,
+                                    config_resolved: s["config_resolved_count"]
+                                        .as_u64()
+                                        .unwrap_or(0)
+                                        as usize,
                                 })
                                 .collect()
                         })
@@ -1600,6 +1613,89 @@ pub fn spawn_fetch_mcp_servers(backend: BackendRef, tx: mpsc::Sender<AppEvent>) 
         }
         BackendRef::InProcess(_) => {
             let _ = tx.send(AppEvent::McpServersLoaded(Vec::new()));
+        }
+    });
+}
+
+/// Fetch declared + resolved config for a specific installed skill.
+///
+/// Pulls `GET /api/skills/{id}/config` and flattens the response into the
+/// `SkillConfigVarDetail` rows that the TUI details pane renders. Secret
+/// values are already redacted by the daemon so nothing sensitive crosses
+/// the wire here.
+pub fn spawn_fetch_skill_config(
+    backend: BackendRef,
+    skill_name: String,
+    tx: mpsc::Sender<AppEvent>,
+) {
+    use crate::tui::screens::skills::SkillConfigVarDetail;
+    std::thread::spawn(move || match backend {
+        BackendRef::Daemon(base_url) => {
+            let client = daemon_client();
+            let encoded: String = skill_name
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~' {
+                        c.to_string()
+                    } else {
+                        format!("%{:02X}", c as u32)
+                    }
+                })
+                .collect();
+            let url = format!("{base_url}/api/skills/{encoded}/config");
+            if let Ok(resp) = client.get(&url).send() {
+                if let Ok(body) = resp.json::<serde_json::Value>() {
+                    let declared = body.get("declared").cloned().unwrap_or_default();
+                    let resolved = body.get("resolved").cloned().unwrap_or_default();
+                    let mut rows: Vec<SkillConfigVarDetail> = Vec::new();
+                    if let Some(obj) = declared.as_object() {
+                        // Sort keys for deterministic output.
+                        let mut keys: Vec<&String> = obj.keys().collect();
+                        keys.sort();
+                        for k in keys {
+                            let d = &obj[k];
+                            let r = resolved.get(k).cloned().unwrap_or_default();
+                            let value_hint = r
+                                .get("value")
+                                .and_then(|v| v.as_str())
+                                .map(String::from)
+                                .unwrap_or_default();
+                            rows.push(SkillConfigVarDetail {
+                                name: k.clone(),
+                                description: d
+                                    .get("description")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                required: d
+                                    .get("required")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false),
+                                source: r
+                                    .get("source")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unresolved")
+                                    .to_string(),
+                                value_hint,
+                                is_secret: r
+                                    .get("is_secret")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false),
+                            });
+                        }
+                    }
+                    let _ = tx.send(AppEvent::SkillConfigLoaded {
+                        skill: skill_name,
+                        rows,
+                    });
+                }
+            }
+        }
+        BackendRef::InProcess(_) => {
+            let _ = tx.send(AppEvent::SkillConfigLoaded {
+                skill: skill_name,
+                rows: Vec::new(),
+            });
         }
     });
 }

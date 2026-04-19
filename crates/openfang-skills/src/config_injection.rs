@@ -257,7 +257,7 @@ mod tests {
 
         let user = HashMap::new();
         let resolved = resolve_skill_config(&vars, &user).unwrap();
-        assert!(resolved.get("optional").is_none());
+        assert!(!resolved.contains_key("optional"));
     }
 
     #[test]

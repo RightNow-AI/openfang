@@ -9316,7 +9316,7 @@ pub async fn schedule_delivery_log(
     let targets: Vec<serde_json::Value> = job
         .delivery_targets
         .iter()
-        .map(|t| serde_json::to_value(t).unwrap_or_else(|_| serde_json::Value::Null))
+        .map(|t| serde_json::to_value(t).unwrap_or(serde_json::Value::Null))
         .collect();
     (
         StatusCode::OK,

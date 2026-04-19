@@ -92,6 +92,15 @@ pub struct OpenFangKernel {
     pub model_catalog: std::sync::RwLock<openfang_runtime::model_catalog::ModelCatalog>,
     /// Skill registry for plugin skills (RwLock for hot-reload on install/uninstall).
     pub skill_registry: std::sync::RwLock<openfang_skills::registry::SkillRegistry>,
+    /// Per-skill config overrides applied on top of `self.config.skills`.
+    ///
+    /// Written by the API (`PUT /api/skills/{id}/config`) so the user's edits
+    /// take effect on the next `reload_skills()` without having to mutate the
+    /// immutable boot-time `KernelConfig`. `None` means "fall back to
+    /// `self.config.skills`"; `Some(map)` means "this is the live override".
+    pub skill_config_overrides: std::sync::RwLock<
+        Option<std::collections::HashMap<String, std::collections::HashMap<String, String>>>,
+    >,
     /// Tracks running agent tasks for cancellation support.
     pub running_tasks: dashmap::DashMap<AgentId, tokio::task::AbortHandle>,
     /// MCP server connections (lazily initialized at start_background_agents).
@@ -1129,6 +1138,7 @@ impl OpenFangKernel {
             auth,
             model_catalog: std::sync::RwLock::new(model_catalog),
             skill_registry: std::sync::RwLock::new(skill_registry),
+            skill_config_overrides: std::sync::RwLock::new(None),
             running_tasks: dashmap::DashMap::new(),
             mcp_connections: tokio::sync::Mutex::new(Vec::new()),
             mcp_tools: std::sync::Mutex::new(Vec::new()),
@@ -5687,11 +5697,40 @@ impl OpenFangKernel {
         }
         let skills_dir = self.config.home_dir.join("skills");
         let mut fresh = openfang_skills::registry::SkillRegistry::new(skills_dir);
-        fresh.set_skill_configs(self.config.skills.clone());
+        // Prefer the live override (from `PUT /api/skills/{id}/config`) so
+        // dashboard edits survive hot-reloads without restarting the kernel.
+        // Fall back to the boot-time config.
+        let configs = self
+            .skill_config_overrides
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_else(|| self.config.skills.clone());
+        fresh.set_skill_configs(configs);
         let bundled = fresh.load_bundled();
         let user = fresh.load_all().unwrap_or(0);
         info!(bundled, user, "Skill registry hot-reloaded");
         *registry = fresh;
+    }
+
+    /// Update the live per-skill config override map and reload skills.
+    ///
+    /// Used by `PUT /api/skills/{id}/config` / `DELETE
+    /// /api/skills/{id}/config/{var}`. The caller is also expected to have
+    /// persisted the same change to `config.toml` so the override survives a
+    /// full restart; this method only refreshes the in-memory skill registry.
+    pub fn reload_skills_with_configs(
+        &self,
+        configs: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    ) {
+        {
+            let mut guard = self
+                .skill_config_overrides
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            *guard = Some(configs);
+        }
+        self.reload_skills();
     }
 
     /// Build a compact skill summary for the system prompt so the agent knows

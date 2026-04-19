@@ -435,6 +435,10 @@ impl App {
                 }
                 self.skills.loading = false;
             }
+            AppEvent::SkillConfigLoaded { skill, rows } => {
+                self.skills.selected_config_details = Some((skill.clone(), rows));
+                self.skills.status_msg = format!("Loaded config for '{skill}'");
+            }
             AppEvent::TemplateProvidersLoaded(providers) => {
                 self.templates.providers = providers;
             }
@@ -1561,6 +1565,11 @@ impl App {
                 if let Some(backend) = self.backend.to_ref() {
                     self.skills.loading = true;
                     event::spawn_fetch_mcp_servers(backend, self.event_tx.clone());
+                }
+            }
+            skills::SkillsAction::LoadSkillConfig(name) => {
+                if let Some(backend) = self.backend.to_ref() {
+                    event::spawn_fetch_skill_config(backend, name, self.event_tx.clone());
                 }
             }
         }
