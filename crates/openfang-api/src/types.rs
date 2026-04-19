@@ -107,3 +107,11 @@ pub struct ClawHubInstallRequest {
     /// ClawHub skill slug (e.g., "github-helper").
     pub slug: String,
 }
+
+/// Query parameters for `GET /api/commands`.
+#[derive(Debug, Deserialize)]
+pub struct CommandsQuery {
+    /// Surface filter: `web` (default), `cli`, `channel`, or `all`.
+    #[serde(default)]
+    pub surface: Option<String>,
+}

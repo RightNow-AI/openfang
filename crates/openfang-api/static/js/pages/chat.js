@@ -304,22 +304,38 @@ function chatPage() {
       this._slashCommandsLoaded = true;
     },
 
-    // Fetch dynamic slash commands from server
+    // Fetch slash commands from the unified registry (/api/commands?surface=web).
+    // Replaces the hardcoded initSlashCommands() list once loaded — ensures
+    // the help panel and autocomplete stay in sync with the backend registry.
     fetchCommands: function() {
       var self = this;
-      OpenFangAPI.get('/api/commands').then(function(data) {
-        if (data.commands && data.commands.length) {
-          // Build a set of known cmds to avoid duplicates
-          var existing = {};
-          self.slashCommands.forEach(function(c) { existing[c.cmd] = true; });
-          data.commands.forEach(function(c) {
-            if (!existing[c.cmd]) {
-              self.slashCommands.push({ cmd: c.cmd, desc: c.desc || '', source: c.source || 'server' });
-              existing[c.cmd] = true;
-            }
-          });
-        }
-      }).catch(function() { /* silent — use hardcoded list */ });
+      OpenFangAPI.get('/api/commands?surface=web').then(function(data) {
+        var cmds = (data && data.commands) || [];
+        if (!cmds.length) return;
+        self.slashCommands = cmds.map(function(c) {
+          // Prefer unified-registry shape { name, aliases, description, category, requires_agent }.
+          // Fall back to legacy { cmd, desc } shape so older shims keep working.
+          if (c.name) {
+            return {
+              cmd: '/' + c.name,
+              desc: c.description || '',
+              category: c.category || 'general',
+              aliases: c.aliases || [],
+              requires_agent: !!c.requires_agent,
+              source: 'registry'
+            };
+          }
+          return {
+            cmd: c.cmd,
+            desc: c.desc || '',
+            category: c.category || 'general',
+            aliases: c.aliases || [],
+            requires_agent: !!c.requires_agent,
+            source: c.source || 'server'
+          };
+        });
+        self._slashCommandsLoaded = true;
+      }).catch(function() { /* silent — keep hardcoded fallback list */ });
     },
 
     get filteredSlashCommands() {
@@ -328,6 +344,44 @@ function chatPage() {
       return this.slashCommands.filter(function(c) {
         return c.cmd.toLowerCase().indexOf(f) !== -1 || c.desc.toLowerCase().indexOf(f) !== -1;
       });
+    },
+
+    // Render `/help` output grouped by category, mirroring the
+    // backend's render_help(Surfaces::WEB). Falls back to a flat list if
+    // categories are not populated (pre-fetch hardcoded list).
+    renderHelpText: function() {
+      var order = ['general', 'session', 'model', 'control', 'memory', 'info', 'automation', 'monitoring'];
+      var labels = {
+        general: 'General', session: 'Session', model: 'Model', control: 'Control',
+        memory: 'Memory', info: 'Info', automation: 'Automation', monitoring: 'Monitoring'
+      };
+      var anyCategorised = this.slashCommands.some(function(c) { return c.category; });
+      if (!anyCategorised) {
+        return this.slashCommands.map(function(c) {
+          return '`' + c.cmd + '` \u2014 ' + c.desc;
+        }).join('\n');
+      }
+      var groups = {};
+      this.slashCommands.forEach(function(c) {
+        var cat = c.category || 'general';
+        if (!groups[cat]) groups[cat] = [];
+        groups[cat].push(c);
+      });
+      var lines = ['**Available commands:**'];
+      order.forEach(function(cat) {
+        var list = groups[cat];
+        if (!list || !list.length) return;
+        lines.push('');
+        lines.push('**' + (labels[cat] || cat) + '**');
+        list.forEach(function(c) {
+          var aliasText = '';
+          if (c.aliases && c.aliases.length) {
+            aliasText = ' (aliases: ' + c.aliases.map(function(a) { return '/' + a; }).join(', ') + ')';
+          }
+          lines.push('- `' + c.cmd + '`' + aliasText + ' \u2014 ' + c.desc);
+        });
+      });
+      return lines.join('\n');
     },
 
     // Clear any stuck typing indicator after 120s
@@ -355,7 +409,7 @@ function chatPage() {
       cmdArgs = cmdArgs || '';
       switch (cmd) {
         case '/help':
-          self.messages.push({ id: ++msgId, role: 'system', text: self.slashCommands.map(function(c) { return '`' + c.cmd + '` — ' + c.desc; }).join('\n'), meta: '', tools: [] });
+          self.messages.push({ id: ++msgId, role: 'system', text: self.renderHelpText(), meta: '', tools: [] });
           self.scrollToBottom();
           break;
         case '/agents':

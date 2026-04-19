@@ -6,7 +6,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use dashmap::DashMap;
-use openfang_channels::bridge::channel_command_specs;
 use openfang_kernel::triggers::{TriggerId, TriggerPattern};
 use openfang_kernel::workflow::{
     ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowStep,
@@ -10746,40 +10745,82 @@ pub async fn pairing_notify(
         .into_response()
 }
 
-/// GET /api/commands — List available chat commands (for dynamic slash menu).
-pub async fn list_commands(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let mut commands: Vec<serde_json::Value> = channel_command_specs()
-        .iter()
-        .map(|spec| {
+/// GET /api/commands?surface=web|cli|channel|all — List slash commands from the
+/// unified command registry, filtered by surface.
+///
+/// Query params:
+///   - `surface`: one of `web` (default), `cli`, `channel`, `all`.
+///
+/// Returns:
+/// ```json
+/// {
+///   "surface": "web",
+///   "commands": [
+///     {
+///       "name": "new",
+///       "aliases": ["reset"],
+///       "description": "Reset session (clear history)",
+///       "category": "session",
+///       "requires_agent": true
+///     },
+///     ...
+///   ]
+/// }
+/// ```
+///
+/// Unknown surface values return 400.
+pub async fn list_commands(Query(params): Query<CommandsQuery>) -> impl IntoResponse {
+    use openfang_types::commands::{self, CommandCategory, Surfaces};
+
+    let surface_raw = params.surface.as_deref().unwrap_or("web");
+    let surface = match surface_raw.to_ascii_lowercase().as_str() {
+        "web" => Surfaces::WEB,
+        "cli" => Surfaces::CLI,
+        "channel" => Surfaces::CHANNEL,
+        "all" => Surfaces::ALL,
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!(
+                        "Unknown surface '{other}'. Valid: web, cli, channel, all."
+                    ),
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let category_slug = |c: CommandCategory| -> &'static str {
+        match c {
+            CommandCategory::General => "general",
+            CommandCategory::Session => "session",
+            CommandCategory::Model => "model",
+            CommandCategory::Memory => "memory",
+            CommandCategory::Control => "control",
+            CommandCategory::Info => "info",
+            CommandCategory::Automation => "automation",
+            CommandCategory::Monitoring => "monitoring",
+        }
+    };
+
+    let commands: Vec<serde_json::Value> = commands::list_for_surface(surface)
+        .map(|def| {
             serde_json::json!({
-                "cmd": format!("/{}", spec.name),
-                "desc": spec.desc,
-                "source": "channel",
+                "name": def.name,
+                "aliases": def.aliases,
+                "description": def.description,
+                "category": category_slug(def.category),
+                "requires_agent": def.requires_agent,
             })
         })
         .collect();
 
-    commands.extend([
-        serde_json::json!({"cmd": "/context", "desc": "Show context window usage & pressure"}),
-        serde_json::json!({"cmd": "/verbose", "desc": "Cycle tool detail level (/verbose [off|on|full])"}),
-        serde_json::json!({"cmd": "/queue", "desc": "Check if agent is processing"}),
-        serde_json::json!({"cmd": "/clear", "desc": "Clear chat display"}),
-        serde_json::json!({"cmd": "/exit", "desc": "Disconnect from agent"}),
-    ]);
-
-    // Add skill-registered tool names as potential commands
-    if let Ok(registry) = state.kernel.skill_registry.read() {
-        for skill in registry.list() {
-            let desc: String = skill.manifest.skill.description.chars().take(80).collect();
-            commands.push(serde_json::json!({
-                "cmd": format!("/{}", skill.manifest.skill.name),
-                "desc": if desc.is_empty() { format!("Skill: {}", skill.manifest.skill.name) } else { desc },
-                "source": "skill",
-            }));
-        }
-    }
-
-    Json(serde_json::json!({"commands": commands}))
+    Json(serde_json::json!({
+        "surface": surface_raw.to_ascii_lowercase(),
+        "commands": commands,
+    }))
+    .into_response()
 }
 
 /// SECURITY: Validate webhook bearer token using constant-time comparison.

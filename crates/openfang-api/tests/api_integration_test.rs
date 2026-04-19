@@ -122,6 +122,7 @@ async fn start_test_server_with_provider(
             axum::routing::get(routes::list_workflow_runs),
         )
         .route("/api/shutdown", axum::routing::post(routes::shutdown))
+        .route("/api/commands", axum::routing::get(routes::list_commands))
         .layer(axum::middleware::from_fn(middleware::request_logging))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
@@ -982,4 +983,162 @@ async fn test_auth_disabled_when_no_key() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+// ---------------------------------------------------------------------------
+// /api/commands — unified command registry endpoint
+// ---------------------------------------------------------------------------
+
+/// Default (no surface query) returns web-surface commands.
+#[tokio::test]
+async fn test_commands_default_returns_web() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/commands", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["surface"], "web");
+
+    let commands = body["commands"].as_array().expect("commands is array");
+    assert!(!commands.is_empty(), "web surface should have commands");
+
+    // Every entry has the documented shape.
+    for c in commands {
+        assert!(c["name"].is_string());
+        assert!(c["aliases"].is_array());
+        assert!(c["description"].is_string());
+        assert!(c["category"].is_string());
+        assert!(c["requires_agent"].is_boolean());
+    }
+
+    // Sanity: web surface must include `/help` and `/verbose` and must NOT
+    // include CLI-only `/kill`.
+    let names: Vec<&str> = commands
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"help"));
+    assert!(names.contains(&"verbose"));
+    assert!(!names.contains(&"kill"));
+}
+
+/// `?surface=cli` returns CLI-only commands and includes the alias array.
+#[tokio::test]
+async fn test_commands_cli_surface() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/commands?surface=cli", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["surface"], "cli");
+
+    let commands = body["commands"].as_array().unwrap();
+    let names: Vec<&str> = commands
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"kill"));
+    assert!(names.contains(&"clear"));
+    assert!(names.contains(&"exit"));
+    // `start` is channel-only — must not appear on CLI.
+    assert!(!names.contains(&"start"));
+
+    // `/exit` carries the `quit` alias.
+    let exit = commands
+        .iter()
+        .find(|c| c["name"] == "exit")
+        .expect("exit command must be present on CLI");
+    let aliases = exit["aliases"].as_array().unwrap();
+    assert!(
+        aliases.iter().any(|a| a == "quit"),
+        "quit alias should be attached to /exit"
+    );
+}
+
+/// `?surface=all` includes commands from every surface.
+#[tokio::test]
+async fn test_commands_all_surface() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/commands?surface=all", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["surface"], "all");
+
+    let names: Vec<&str> = body["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+
+    // Surface-specific probes: all three unique-per-surface commands appear.
+    assert!(names.contains(&"kill"), "CLI-only /kill missing from /all");
+    assert!(
+        names.contains(&"start"),
+        "channel-only /start missing from /all"
+    );
+    assert!(
+        names.contains(&"verbose"),
+        "web-only /verbose missing from /all"
+    );
+}
+
+/// `?surface=channel` returns channel commands only.
+#[tokio::test]
+async fn test_commands_channel_surface() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/commands?surface=channel", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["surface"], "channel");
+
+    let names: Vec<&str> = body["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"start"));
+    // CLI-only must not appear here.
+    assert!(!names.contains(&"kill"));
+}
+
+/// Unknown surface returns 400 with a JSON error body.
+#[tokio::test]
+async fn test_commands_invalid_surface_400() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/commands?surface=bogus", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let err = body["error"].as_str().unwrap_or_default();
+    assert!(err.contains("bogus"), "error should mention the bad value: {err}");
 }
