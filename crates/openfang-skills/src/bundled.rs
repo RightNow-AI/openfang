@@ -180,6 +180,8 @@ pub fn bundled_skills() -> Vec<(&'static str, &'static str)> {
             "wasm-expert",
             include_str!("../bundled/wasm-expert/SKILL.md"),
         ),
+        // MiniMax AI platform
+        ("mmx-cli", include_str!("../bundled/mmx-cli/SKILL.md")),
     ]
 }
 
@@ -196,7 +198,7 @@ mod tests {
     #[test]
     fn test_bundled_skills_count() {
         let skills = bundled_skills();
-        assert_eq!(skills.len(), 61, "Expected 61 bundled skills");
+        assert_eq!(skills.len(), 62, "Expected 62 bundled skills");
     }
 
     #[test]
