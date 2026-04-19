@@ -11,6 +11,7 @@ use event::{AppEvent, BackendRef};
 use openfang_kernel::OpenFangKernel;
 use openfang_runtime::llm_driver::StreamEvent;
 use openfang_types::agent::AgentId;
+use openfang_types::commands::{self, Surfaces};
 use screens::{
     agents, audit, channels, chat, comms, dashboard, extensions, hands, logs, memory, peers,
     security, sessions, settings, skills, templates, triggers, usage, welcome, wizard, workflows,
@@ -2003,22 +2004,19 @@ impl App {
 
     fn handle_slash_command(&mut self, cmd: &str) {
         let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
-        match parts[0] {
-            "/exit" | "/quit" => self.handle_chat_action(chat::ChatAction::Back),
+        // Canonicalise through the unified command registry: `/quit` -> `exit`,
+        // `/NEW` -> `new`, etc. Unregistered commands fall through unchanged so
+        // this refactor does not break any existing surface-specific behaviour.
+        let canonical_head: String = commands::resolve(parts[0])
+            .filter(|def| def.surfaces.contains(Surfaces::CLI))
+            .map(|def| format!("/{}", def.name))
+            .unwrap_or_else(|| parts[0].to_string());
+        match canonical_head.as_str() {
+            "/exit" => self.handle_chat_action(chat::ChatAction::Back),
             "/help" => {
                 self.chat.push_message(
                     chat::Role::System,
-                    [
-                        "/help         \u{2014} show this help",
-                        "/model        \u{2014} open model picker (Ctrl+M)",
-                        "/model <name> \u{2014} switch to model directly",
-                        "/status       \u{2014} connection & agent info",
-                        "/agents       \u{2014} list running agents",
-                        "/clear        \u{2014} clear chat history",
-                        "/kill         \u{2014} kill the current agent",
-                        "/exit         \u{2014} end chat session",
-                    ]
-                    .join("\n"),
+                    commands::render_help(Surfaces::CLI),
                 );
             }
             "/status" => {
@@ -2185,9 +2183,10 @@ impl App {
                 }
             },
             _ => {
+                let help = commands::render_help(Surfaces::CLI);
                 self.chat.push_message(
                     chat::Role::System,
-                    format!("Unknown command: {}. Type /help", parts[0]),
+                    format!("Unknown command: {}\n\n{}", parts[0], help),
                 );
             }
         }

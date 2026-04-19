@@ -14,6 +14,7 @@ use dashmap::DashMap;
 use futures::StreamExt;
 use openfang_types::agent::AgentId;
 use openfang_types::approval::ApprovalRequest;
+use openfang_types::commands::{self as slash_commands, Surfaces};
 use openfang_types::config::{ChannelOverrides, DmPolicy, GroupPolicy, OutputFormat, PrefixStyle};
 use openfang_types::message::ContentBlock;
 use std::sync::Arc;
@@ -241,6 +242,22 @@ pub trait ChannelBridgeHandle: Send + Sync {
         _thread_id: Option<&str>,
     ) {
         // Default: no tracking
+    }
+
+    /// Send a plain text message to a specific recipient via a registered
+    /// channel adapter.
+    ///
+    /// Used by the cron multi-destination delivery engine to fan out job
+    /// output across channels. `channel_type` is the adapter key (e.g.
+    /// `"telegram"`, `"slack"`). Default implementation returns an error so
+    /// test doubles don't accidentally claim success.
+    async fn send_channel_message(
+        &self,
+        _channel_type: &str,
+        _recipient: &str,
+        _message: &str,
+    ) -> Result<(), String> {
+        Err("send_channel_message not implemented on this bridge".to_string())
     }
 
     /// Check if auto-reply is enabled and the message should trigger one.
@@ -1599,7 +1616,15 @@ async fn handle_command(
     router: &Arc<AgentRouter>,
     sender: &ChannelUser,
 ) -> String {
-    match name {
+    // Canonicalise through the unified command registry: aliases resolve to
+    // their canonical name and matching is case-insensitive. If the command
+    // is not registered on CHANNEL the original string is passed through so
+    // any legacy / channel-specific names continue to work unchanged.
+    let canonical: &str = slash_commands::resolve(name)
+        .filter(|def| def.surfaces.contains(Surfaces::CHANNEL))
+        .map(|def| def.name)
+        .unwrap_or(name);
+    match canonical {
         "start" => {
             let agents = handle.list_agents().await.unwrap_or_default();
             let mut msg = "Welcome to OpenFang! I connect you to AI agents.\n\nAvailable agents:\n"
@@ -1829,7 +1854,10 @@ async fn handle_command(
         "peers" => handle.peers_text().await,
         "a2a" => handle.a2a_agents_text().await,
 
-        _ => format!("Unknown command: /{name}"),
+        _ => format!(
+            "Unknown command: /{name}\n\n{}",
+            slash_commands::render_help(Surfaces::CHANNEL)
+        ),
     }
 }
 
