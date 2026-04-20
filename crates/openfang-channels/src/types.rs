@@ -271,6 +271,24 @@ pub trait ChannelAdapter: Send + Sync {
         self.send(user, content).await
     }
 
+    /// Determine whether to auto-create a thread for an incoming message.
+    /// Returns Some(thread_name) to create a thread, or None to reply directly.
+    /// Default implementation returns None (no auto-threading).
+    async fn should_auto_thread(&self, _message: &ChannelMessage) -> Option<String> {
+        None
+    }
+
+    /// Create a new thread (typically triggered after should_auto_thread returns Some).
+    /// Returns the new thread ID on success.
+    async fn create_thread(
+        &self,
+        _user: &ChannelUser,
+        _message_id: &str,
+        _thread_name: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        Err("Thread creation not supported for this adapter".into())
+    }
+
     /// Whether this adapter should suppress sending internal agent errors back to the user.
     ///
     /// Returns `true` for public broadcast channels (e.g. Mastodon) where posting
