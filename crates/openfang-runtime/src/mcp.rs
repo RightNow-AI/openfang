@@ -247,6 +247,13 @@ impl McpConnection {
             if let Ok(path) = std::env::var("PATH") {
                 cmd.env("PATH", path);
             }
+            // Some stdio MCP servers launched via node/npx require a usable home
+            // directory even when they do not declare any explicit secret env vars.
+            for var in &["HOME", "TMP", "TEMP"] {
+                if let Ok(val) = std::env::var(var) {
+                    cmd.env(var, val);
+                }
+            }
             // On Windows, npm/node need extra vars
             if cfg!(windows) {
                 for var in &[
@@ -254,9 +261,6 @@ impl McpConnection {
                     "LOCALAPPDATA",
                     "USERPROFILE",
                     "SystemRoot",
-                    "TEMP",
-                    "TMP",
-                    "HOME",
                     "HOMEDRIVE",
                     "HOMEPATH",
                 ] {
