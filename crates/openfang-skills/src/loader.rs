@@ -449,6 +449,7 @@ mod tests {
             requirements: SkillRequirements::default(),
             prompt_context: Some("You are a helpful assistant.".to_string()),
             source: None,
+            config: std::collections::HashMap::new(),
         };
 
         let result = execute_skill_tool(&manifest, dir.path(), "test_tool", &serde_json::json!({}))

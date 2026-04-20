@@ -6,12 +6,14 @@
 //!
 //! This module detects both formats and converts them to OpenFang `SkillManifest`.
 
+use crate::config_injection::SkillConfigVar;
 use crate::{
     SkillError, SkillManifest, SkillMeta, SkillRequirements, SkillRuntime, SkillRuntimeConfig,
     SkillSource, SkillToolDef, SkillTools,
 };
 use openfang_types::tool_compat;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::Path;
 use tracing::info;
 
@@ -29,6 +31,11 @@ pub struct SkillMdFrontmatter {
     pub description: String,
     /// Nested metadata block.
     pub metadata: SkillMdMetadata,
+    /// Optional declared config variables. Each entry names a runtime variable
+    /// the skill expects to have resolved (from user config, env, or default)
+    /// before its prompt is injected. See
+    /// [`crate::config_injection`] for the resolution contract.
+    pub config: HashMap<String, SkillConfigVar>,
 }
 
 /// Metadata section in SKILL.md frontmatter.
@@ -96,6 +103,9 @@ pub struct ConvertedSkillMd {
     pub required_bins: Vec<String>,
     /// Required environment variables.
     pub required_env: Vec<String>,
+    /// Declared config variables (if any). Resolved by the loader against the
+    /// user's `[skills.<skill-name>]` section before the prompt is served.
+    pub config_vars: HashMap<String, SkillConfigVar>,
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +240,8 @@ pub fn convert_skillmd(dir: &Path) -> Result<ConvertedSkillMd, SkillError> {
         SkillRuntime::PromptOnly
     };
 
+    let config_vars = frontmatter.config.clone();
+
     let manifest = SkillManifest {
         skill: SkillMeta {
             name: skill_name,
@@ -247,6 +259,7 @@ pub fn convert_skillmd(dir: &Path) -> Result<ConvertedSkillMd, SkillError> {
         requirements: SkillRequirements::default(),
         prompt_context: Some(body.clone()),
         source: Some(SkillSource::OpenClaw),
+        config: config_vars.clone(),
     };
 
     info!(
@@ -262,6 +275,7 @@ pub fn convert_skillmd(dir: &Path) -> Result<ConvertedSkillMd, SkillError> {
         tool_translations,
         required_bins,
         required_env,
+        config_vars,
     })
 }
 
@@ -322,6 +336,8 @@ pub fn convert_skillmd_str(name_hint: &str, content: &str) -> Result<ConvertedSk
 
     let runtime_type = SkillRuntime::PromptOnly;
 
+    let config_vars = frontmatter.config.clone();
+
     let manifest = SkillManifest {
         skill: SkillMeta {
             name: skill_name,
@@ -339,6 +355,7 @@ pub fn convert_skillmd_str(name_hint: &str, content: &str) -> Result<ConvertedSk
         requirements: SkillRequirements::default(),
         prompt_context: Some(body.clone()),
         source: Some(SkillSource::Bundled),
+        config: config_vars.clone(),
     };
 
     Ok(ConvertedSkillMd {
@@ -347,6 +364,7 @@ pub fn convert_skillmd_str(name_hint: &str, content: &str) -> Result<ConvertedSk
         tool_translations,
         required_bins,
         required_env,
+        config_vars,
     })
 }
 
@@ -431,6 +449,7 @@ pub fn convert_openclaw_skill(dir: &Path) -> Result<SkillManifest, SkillError> {
         requirements: SkillRequirements::default(),
         prompt_context: None,
         source: Some(SkillSource::OpenClaw),
+        config: HashMap::new(),
     })
 }
 
@@ -703,5 +722,61 @@ metadata:
         let content = "---\ndescription: No name field\n---\n# Body";
         let converted = convert_skillmd_str("my-hint", content).unwrap();
         assert_eq!(converted.manifest.skill.name, "my-hint");
+    }
+
+    #[test]
+    fn test_parse_skillmd_with_config_frontmatter_round_trips() {
+        let content = r#"---
+name: github-repo-helper
+description: Works with GitHub repos
+config:
+  github_token:
+    description: GitHub personal access token
+    env: GITHUB_TOKEN
+    required: true
+  default_branch:
+    description: Default branch name
+    default: main
+    required: false
+---
+# GitHub Repo Helper
+
+Body content here.
+"#;
+
+        let (fm, body) = parse_skillmd_str(content).unwrap();
+        assert_eq!(fm.name, "github-repo-helper");
+        assert_eq!(fm.config.len(), 2);
+
+        let tok = fm
+            .config
+            .get("github_token")
+            .expect("github_token config var present");
+        assert_eq!(tok.env.as_deref(), Some("GITHUB_TOKEN"));
+        assert!(tok.required);
+        assert!(tok.default.is_none());
+
+        let branch = fm
+            .config
+            .get("default_branch")
+            .expect("default_branch config var present");
+        assert_eq!(branch.default.as_deref(), Some("main"));
+        assert!(!branch.required);
+
+        // Body survives
+        assert!(body.contains("Body content here"));
+
+        // Full convert also carries config vars through
+        let converted = convert_skillmd_str("github-repo-helper", content).unwrap();
+        assert_eq!(converted.config_vars.len(), 2);
+        assert!(converted.config_vars.contains_key("github_token"));
+    }
+
+    #[test]
+    fn test_parse_skillmd_without_config_still_loads() {
+        // Backward-compat: skills without a `config:` key must load as before.
+        let content = "---\nname: plain\ndescription: No config\n---\n# Plain body";
+        let (fm, _body) = parse_skillmd_str(content).unwrap();
+        assert!(fm.config.is_empty());
     }
 }

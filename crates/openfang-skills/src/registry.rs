@@ -1,6 +1,7 @@
 //! Skill registry — tracks installed skills and their tools.
 
 use crate::bundled;
+use crate::config_injection::{render_config_block, resolve_skill_config, SkillConfigVar};
 use crate::openclaw_compat;
 use crate::verify::SkillVerifier;
 use crate::{InstalledSkill, SkillError, SkillManifest, SkillToolDef};
@@ -19,6 +20,10 @@ pub struct SkillRegistry {
     frozen: bool,
     /// Number of workspace skills blocked for critical prompt injection.
     blocked_skills_count: usize,
+    /// User-supplied config values per skill name (from `[skills.<name>]` in
+    /// `~/.openfang/config.toml`). Used by the loader to resolve declared
+    /// `config:` vars before injecting prompt context.
+    skill_configs: HashMap<String, HashMap<String, String>>,
 }
 
 impl SkillRegistry {
@@ -29,7 +34,18 @@ impl SkillRegistry {
             skills_dir,
             frozen: false,
             blocked_skills_count: 0,
+            skill_configs: HashMap::new(),
         }
+    }
+
+    /// Install the user-supplied per-skill config map.
+    ///
+    /// Keys are skill names; values are `key → value` pairs that the loader
+    /// will pass to [`resolve_skill_config`] when a skill declares a `config:`
+    /// section in its SKILL.md frontmatter. Must be set before `load_all()` /
+    /// `load_bundled()` / `load_workspace_skills()` for it to take effect.
+    pub fn set_skill_configs(&mut self, configs: HashMap<String, HashMap<String, String>>) {
+        self.skill_configs = configs;
     }
 
     /// Create a cheap owned snapshot of this registry.
@@ -42,6 +58,7 @@ impl SkillRegistry {
             skills_dir: self.skills_dir.clone(),
             frozen: self.frozen,
             blocked_skills_count: self.blocked_skills_count,
+            skill_configs: self.skill_configs.clone(),
         }
     }
 
@@ -62,6 +79,44 @@ impl SkillRegistry {
         self.blocked_skills_count
     }
 
+    /// Apply a skill's declared config frontmatter to its prompt body.
+    ///
+    /// If `config_vars` is empty this is a no-op. Otherwise the vars are
+    /// resolved via the user-supplied config, env, and defaults, and the
+    /// rendered (secret-redacted) block is appended to the manifest's
+    /// `prompt_context`. Returns a hard error when a `required` var resolves
+    /// to nothing, so the loader can refuse the skill instead of silently
+    /// registering a broken prompt.
+    fn apply_skill_config(
+        &self,
+        manifest: &mut SkillManifest,
+        config_vars: &HashMap<String, SkillConfigVar>,
+    ) -> Result<(), SkillError> {
+        if config_vars.is_empty() {
+            return Ok(());
+        }
+        let empty = HashMap::new();
+        let user_cfg = self
+            .skill_configs
+            .get(&manifest.skill.name)
+            .unwrap_or(&empty);
+        let resolved = resolve_skill_config(config_vars, user_cfg)?;
+        let block = render_config_block(&resolved);
+        if block.is_empty() {
+            return Ok(());
+        }
+        match manifest.prompt_context.as_mut() {
+            Some(existing) => {
+                existing.push_str("\n\n");
+                existing.push_str(&block);
+            }
+            None => {
+                manifest.prompt_context = Some(block);
+            }
+        }
+        Ok(())
+    }
+
     /// Load all bundled skills (compile-time embedded SKILL.md files).
     ///
     /// Called before `load_all()` so that user-installed skills with the same name
@@ -72,8 +127,20 @@ impl SkillRegistry {
         let mut count = 0;
 
         for (name, content) in &bundled {
-            match bundled::parse_bundled(name, content) {
-                Ok(manifest) => {
+            match bundled::parse_bundled_full(name, content) {
+                Ok(converted) => {
+                    let mut manifest = converted.manifest;
+
+                    // Inject resolved config block into the prompt if the
+                    // frontmatter declared a `config:` section.
+                    if let Err(e) = self.apply_skill_config(&mut manifest, &converted.config_vars) {
+                        warn!(
+                            skill = %manifest.skill.name,
+                            "Skipping bundled skill: config resolution failed: {e}"
+                        );
+                        continue;
+                    }
+
                     // Defense in depth: scan even bundled skill prompt content
                     if let Some(ref ctx) = manifest.prompt_context {
                         let warnings = SkillVerifier::scan_prompt_content(ctx);
@@ -213,7 +280,13 @@ impl SkillRegistry {
         }
         let manifest_path = skill_dir.join("skill.toml");
         let toml_str = std::fs::read_to_string(&manifest_path)?;
-        let manifest: SkillManifest = toml::from_str(&toml_str)?;
+        let mut manifest: SkillManifest = toml::from_str(&toml_str)?;
+
+        // Resolve + inject config block if the manifest declared `config:` vars.
+        // A hard error here propagates up — a broken/unresolvable required var
+        // must not produce a half-configured skill.
+        let vars = manifest.config.clone();
+        self.apply_skill_config(&mut manifest, &vars)?;
 
         let name = manifest.skill.name.clone();
 

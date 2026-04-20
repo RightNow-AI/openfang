@@ -1161,6 +1161,22 @@ pub struct KernelConfig {
     /// Heartbeat monitor settings.
     #[serde(default)]
     pub heartbeat: HeartbeatSettings,
+    /// Per-skill runtime config (from `[skills.<skill-name>]` sections).
+    ///
+    /// When a skill declares a `config:` section in its SKILL.md frontmatter,
+    /// the loader resolves each variable via:
+    /// 1. this map (outer key = skill name, inner key = var name),
+    /// 2. env var named by the var's `env` field,
+    /// 3. the var's `default`.
+    ///
+    /// Example `~/.openfang/config.toml`:
+    /// ```toml
+    /// [skills.github-repo-helper]
+    /// github_token = "ghp_..."
+    /// default_branch = "develop"
+    /// ```
+    #[serde(default)]
+    pub skills: HashMap<String, HashMap<String, String>>,
 }
 
 /// Heartbeat monitor settings exposed in `[heartbeat]` config section.
@@ -1398,6 +1414,7 @@ impl Default for KernelConfig {
             auth: AuthConfig::default(),
             workflows_dir: None,
             heartbeat: HeartbeatSettings::default(),
+            skills: HashMap::new(),
         }
     }
 }
@@ -1516,6 +1533,7 @@ impl std::fmt::Debug for KernelConfig {
                 &format!("{} mapping(s)", self.provider_api_keys.len()),
             )
             .field("auth", &format!("enabled={}", self.auth.enabled))
+            .field("skills", &format!("{} skill config(s)", self.skills.len()))
             .finish()
     }
 }

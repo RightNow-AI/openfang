@@ -126,6 +126,7 @@ pub async fn auth(
         || (path == "/api/hands/active" && is_get)
         || (path.starts_with("/api/hands/") && is_get)
         || (path == "/api/skills" && is_get)
+        || (path.starts_with("/api/skills/") && path.ends_with("/config") && is_get)
         || (path == "/api/sessions" && is_get)
         || (path == "/api/integrations" && is_get)
         || (path == "/api/integrations/available" && is_get)
