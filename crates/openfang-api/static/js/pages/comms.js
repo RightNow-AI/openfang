@@ -39,7 +39,7 @@ function commsPage() {
     startSSE() {
       if (this.sseSource) this.sseSource.close();
       var self = this;
-      var url = OpenFangAPI.baseUrl + '/api/comms/events/stream';
+      var url = '/api/comms/events/stream';
       if (OpenFangAPI.apiKey) url += '?token=' + encodeURIComponent(OpenFangAPI.apiKey);
       this.sseSource = new EventSource(url);
       this.sseSource.onmessage = function(ev) {

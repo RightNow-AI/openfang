@@ -42,34 +42,31 @@ function chatPage() {
     modelSwitching: false,
     _modelCache: null,
     _modelCacheTime: 0,
-    slashCommands: [
-      { cmd: '/help', desc: 'Show available commands' },
-      { cmd: '/agents', desc: 'Switch to Agents page' },
-      { cmd: '/new', desc: 'Reset session (clear history)' },
-      { cmd: '/compact', desc: 'Trigger LLM session compaction' },
-      { cmd: '/model', desc: 'Show or switch model (/model [name])' },
-      { cmd: '/stop', desc: 'Cancel current agent run' },
-      { cmd: '/usage', desc: 'Show session token usage & cost' },
-      { cmd: '/think', desc: 'Toggle extended thinking (/think [on|off|stream])' },
-      { cmd: '/context', desc: 'Show context window usage & pressure' },
-      { cmd: '/verbose', desc: 'Cycle tool detail level (/verbose [off|on|full])' },
-      { cmd: '/queue', desc: 'Check if agent is processing' },
-      { cmd: '/status', desc: 'Show system status' },
-      { cmd: '/clear', desc: 'Clear chat display' },
-      { cmd: '/exit', desc: 'Disconnect from agent' },
-      { cmd: '/budget', desc: 'Show spending limits and current costs' },
-      { cmd: '/peers', desc: 'Show OFP peer network status' },
-      { cmd: '/a2a', desc: 'List discovered external A2A agents' }
-    ],
+    slashCommands: [], // Loaded dynamically with i18n in init()
+    _slashCommandsLoaded: false,
     tokenCount: 0,
 
     // ── Tip Bar ──
     tipIndex: 0,
-    tips: ['Type / for commands', '/think on for reasoning', 'Ctrl+Shift+F for focus mode', 'Drag files to attach', '/model to switch models', '/context to check usage', '/verbose off to hide tool details'],
+    tips: [],
+    _tipsInitialized: false,
     tipTimer: null,
     get currentTip() {
       if (localStorage.getItem('of-tips-off') === 'true') return '';
-      return this.tips[this.tipIndex % this.tips.length];
+      if (!this._tipsInitialized) {
+        var t = typeof window.t === 'function' ? window.t : function(s) { return s; };
+        this.tips = [
+          t('tips.commands'),
+          t('tips.think'),
+          t('tips.focus'),
+          'Drag files to attach',
+          '/model to switch models',
+          '/context to check usage',
+          '/verbose off to hide tool details'
+        ];
+        this._tipsInitialized = true;
+      }
+      return this.tips[this.tipIndex % this.tips.length] || '';
     },
     dismissTips: function() { localStorage.setItem('of-tips-off', 'true'); },
     startTipCycle: function() {
@@ -136,6 +133,9 @@ function chatPage() {
 
     init() {
       var self = this;
+
+      // Initialize slash commands with i18n
+      this.initSlashCommands();
 
       // Start tip cycle
       this.startTipCycle();
@@ -264,35 +264,78 @@ function chatPage() {
       if (model.id === this.currentAgent.model_name) { this.showModelSwitcher = false; return; }
       var self = this;
       this.modelSwitching = true;
+      var t = typeof window.t === 'function' ? window.t : function(s) { return s; };
       OpenFangAPI.put('/api/agents/' + this.currentAgent.id + '/model', { model: model.id }).then(function(resp) {
         // Use server-resolved model/provider to stay in sync (fixes #387/#466)
         self.currentAgent.model_name = (resp && resp.model) || model.id;
         self.currentAgent.model_provider = (resp && resp.provider) || model.provider;
-        OpenFangToast.success('Switched to ' + (model.display_name || model.id));
+        OpenFangToast.success(t('chat.model_switched') + ' ' + (model.display_name || model.id));
         self.showModelSwitcher = false;
         self.modelSwitching = false;
       }).catch(function(e) {
-        OpenFangToast.error('Switch failed: ' + e.message);
+        OpenFangToast.error(t('chat.model_switch_failed') + ': ' + e.message);
         self.modelSwitching = false;
       });
     },
 
-    // Fetch dynamic slash commands from server
+    // Initialize slash commands with i18n translations
+    initSlashCommands: function() {
+      if (this._slashCommandsLoaded) return;
+      var t = typeof window.t === 'function' ? window.t : function(s) { return s; };
+      this.slashCommands = [
+        { cmd: '/help', desc: t('chat.slash.help') },
+        { cmd: '/agents', desc: t('chat.slash.agents') },
+        { cmd: '/new', desc: t('chat.slash.new') },
+        { cmd: '/compact', desc: t('chat.slash.compact') },
+        { cmd: '/model', desc: t('chat.slash.model') },
+        { cmd: '/stop', desc: t('chat.slash.stop') },
+        { cmd: '/usage', desc: t('chat.slash.usage') },
+        { cmd: '/think', desc: t('chat.slash.think') },
+        { cmd: '/context', desc: t('chat.slash.context') },
+        { cmd: '/verbose', desc: t('chat.slash.verbose') },
+        { cmd: '/queue', desc: t('chat.slash.queue') },
+        { cmd: '/status', desc: t('chat.slash.status') },
+        { cmd: '/clear', desc: t('chat.slash.clear') },
+        { cmd: '/exit', desc: t('chat.slash.exit') },
+        { cmd: '/budget', desc: t('chat.slash.budget') },
+        { cmd: '/peers', desc: t('chat.slash.peers') },
+        { cmd: '/a2a', desc: t('chat.slash.a2a') }
+      ];
+      this._slashCommandsLoaded = true;
+    },
+
+    // Fetch slash commands from the unified registry (/api/commands?surface=web).
+    // Replaces the hardcoded initSlashCommands() list once loaded — ensures
+    // the help panel and autocomplete stay in sync with the backend registry.
     fetchCommands: function() {
       var self = this;
-      OpenFangAPI.get('/api/commands').then(function(data) {
-        if (data.commands && data.commands.length) {
-          // Build a set of known cmds to avoid duplicates
-          var existing = {};
-          self.slashCommands.forEach(function(c) { existing[c.cmd] = true; });
-          data.commands.forEach(function(c) {
-            if (!existing[c.cmd]) {
-              self.slashCommands.push({ cmd: c.cmd, desc: c.desc || '', source: c.source || 'server' });
-              existing[c.cmd] = true;
-            }
-          });
-        }
-      }).catch(function() { /* silent — use hardcoded list */ });
+      OpenFangAPI.get('/api/commands?surface=web').then(function(data) {
+        var cmds = (data && data.commands) || [];
+        if (!cmds.length) return;
+        self.slashCommands = cmds.map(function(c) {
+          // Prefer unified-registry shape { name, aliases, description, category, requires_agent }.
+          // Fall back to legacy { cmd, desc } shape so older shims keep working.
+          if (c.name) {
+            return {
+              cmd: '/' + c.name,
+              desc: c.description || '',
+              category: c.category || 'general',
+              aliases: c.aliases || [],
+              requires_agent: !!c.requires_agent,
+              source: 'registry'
+            };
+          }
+          return {
+            cmd: c.cmd,
+            desc: c.desc || '',
+            category: c.category || 'general',
+            aliases: c.aliases || [],
+            requires_agent: !!c.requires_agent,
+            source: c.source || 'server'
+          };
+        });
+        self._slashCommandsLoaded = true;
+      }).catch(function() { /* silent — keep hardcoded fallback list */ });
     },
 
     get filteredSlashCommands() {
@@ -301,6 +344,44 @@ function chatPage() {
       return this.slashCommands.filter(function(c) {
         return c.cmd.toLowerCase().indexOf(f) !== -1 || c.desc.toLowerCase().indexOf(f) !== -1;
       });
+    },
+
+    // Render `/help` output grouped by category, mirroring the
+    // backend's render_help(Surfaces::WEB). Falls back to a flat list if
+    // categories are not populated (pre-fetch hardcoded list).
+    renderHelpText: function() {
+      var order = ['general', 'session', 'model', 'control', 'memory', 'info', 'automation', 'monitoring'];
+      var labels = {
+        general: 'General', session: 'Session', model: 'Model', control: 'Control',
+        memory: 'Memory', info: 'Info', automation: 'Automation', monitoring: 'Monitoring'
+      };
+      var anyCategorised = this.slashCommands.some(function(c) { return c.category; });
+      if (!anyCategorised) {
+        return this.slashCommands.map(function(c) {
+          return '`' + c.cmd + '` \u2014 ' + c.desc;
+        }).join('\n');
+      }
+      var groups = {};
+      this.slashCommands.forEach(function(c) {
+        var cat = c.category || 'general';
+        if (!groups[cat]) groups[cat] = [];
+        groups[cat].push(c);
+      });
+      var lines = ['**Available commands:**'];
+      order.forEach(function(cat) {
+        var list = groups[cat];
+        if (!list || !list.length) return;
+        lines.push('');
+        lines.push('**' + (labels[cat] || cat) + '**');
+        list.forEach(function(c) {
+          var aliasText = '';
+          if (c.aliases && c.aliases.length) {
+            aliasText = ' (aliases: ' + c.aliases.map(function(a) { return '/' + a; }).join(', ') + ')';
+          }
+          lines.push('- `' + c.cmd + '`' + aliasText + ' \u2014 ' + c.desc);
+        });
+      });
+      return lines.join('\n');
     },
 
     // Clear any stuck typing indicator after 120s
@@ -328,7 +409,7 @@ function chatPage() {
       cmdArgs = cmdArgs || '';
       switch (cmd) {
         case '/help':
-          self.messages.push({ id: ++msgId, role: 'system', text: self.slashCommands.map(function(c) { return '`' + c.cmd + '` — ' + c.desc; }).join('\n'), meta: '', tools: [] });
+          self.messages.push({ id: ++msgId, role: 'system', text: self.renderHelpText(), meta: '', tools: [] });
           self.scrollToBottom();
           break;
         case '/agents':
@@ -486,21 +567,13 @@ function chatPage() {
       this.currentAgent = agent;
       this.messages = [];
       this.connectWs(agent.id);
+      var t = typeof window.t === 'function' ? window.t : function(s) { return s; };
       // Show welcome tips on first use
       if (!localStorage.getItem('of-chat-tips-seen')) {
-        var localMsgId = 0;
         this.messages.push({
-          id: ++localMsgId,
+          id: ++msgId,
           role: 'system',
-          text: '**Welcome to OpenFang Chat!**\n\n' +
-            '- Type `/` to see available commands\n' +
-            '- `/help` shows all commands\n' +
-            '- `/think on` enables extended reasoning\n' +
-            '- `/context` shows context window usage\n' +
-            '- `/verbose off` hides tool details\n' +
-            '- `Ctrl+Shift+F` toggles focus mode\n' +
-            '- Drag & drop files to attach them\n' +
-            '- `Ctrl+/` opens the command palette',
+          text: t('chat.welcome_message'),
           meta: '',
           tools: []
         });
@@ -519,7 +592,14 @@ function chatPage() {
       try {
         var data = await OpenFangAPI.get('/api/agents/' + agentId + '/session');
         if (data.messages && data.messages.length) {
-          self.messages = data.messages.map(function(m) {
+          // Defense-in-depth (#935): never render system-role messages in the
+          // conversation history view, even if the backend somehow returns
+          // one. The server already filters these out by default, but we
+          // guard here too so a regression cannot leak the system prompt.
+          var visible = data.messages.filter(function(m) {
+            return m && m.role !== 'System' && m.role !== 'system';
+          });
+          self.messages = visible.map(function(m) {
             var role = m.role === 'User' ? 'user' : (m.role === 'System' ? 'system' : 'agent');
             var text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
             // Sanitize any raw function-call text from history
@@ -557,7 +637,8 @@ function chatPage() {
     // Multi-session: create a new session
     async createSession() {
       if (!this.currentAgent) return;
-      var label = prompt('Session name (optional):');
+      var t = typeof window.t === 'function' ? window.t : function(s) { return s; };
+      var label = prompt(t('chat.session_name_prompt'));
       if (label === null) return; // cancelled
       try {
         await OpenFangAPI.post('/api/agents/' + this.currentAgent.id + '/sessions', {
@@ -567,9 +648,9 @@ function chatPage() {
         await this.loadSession(this.currentAgent.id);
         this.messages = [];
         this.scrollToBottom();
-        if (typeof OpenFangToast !== 'undefined') OpenFangToast.success('New session created');
+        if (typeof OpenFangToast !== 'undefined') OpenFangToast.success(t('chat.session_created'));
       } catch(e) {
-        if (typeof OpenFangToast !== 'undefined') OpenFangToast.error('Failed to create session');
+        if (typeof OpenFangToast !== 'undefined') OpenFangToast.error(t('chat.session_create_failed'));
       }
     },
 
@@ -1006,8 +1087,9 @@ function chatPage() {
       }
 
       // HTTP fallback
+      var t = typeof window.t === 'function' ? window.t : function(s) { return s; };
       if (!OpenFangAPI.isWsConnected()) {
-        OpenFangToast.info('Using HTTP mode (no streaming)');
+        OpenFangToast.info(t('chat.using_http_mode'));
       }
       this.messages.push({ id: ++msgId, role: 'agent', text: '', meta: '', thinking: true, tools: [], ts: Date.now() });
       this.scrollToBottom();
@@ -1050,18 +1132,19 @@ function chatPage() {
     killAgent() {
       if (!this.currentAgent) return;
       var self = this;
+      var t = typeof window.t === 'function' ? window.t : function(s) { return s; };
       var name = this.currentAgent.name;
-      OpenFangToast.confirm('Stop Agent', 'Stop agent "' + name + '"? The agent will be shut down.', async function() {
+      OpenFangToast.confirm(t('chat.stop_agent_title'), t('chat.stop_agent_confirm') + ' "' + name + '"?', async function() {
         try {
           await OpenFangAPI.del('/api/agents/' + self.currentAgent.id);
           OpenFangAPI.wsDisconnect();
           self._wsAgent = null;
           self.currentAgent = null;
           self.messages = [];
-          OpenFangToast.success('Agent "' + name + '" stopped');
+          OpenFangToast.success(t('chat.agent_stopped') + ' "' + name + '"');
           Alpine.store('app').refreshAgents();
         } catch(e) {
-          OpenFangToast.error('Failed to stop agent: ' + e.message);
+          OpenFangToast.error(t('chat.stop_agent_failed') + ': ' + e.message);
         }
       });
     },

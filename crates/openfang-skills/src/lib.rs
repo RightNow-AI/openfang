@@ -9,6 +9,7 @@
 
 pub mod bundled;
 pub mod clawhub;
+pub mod config_injection;
 pub mod loader;
 pub mod marketplace;
 pub mod openclaw_compat;
@@ -43,6 +44,8 @@ pub enum SkillError {
     YamlParse(String),
     #[error("Security blocked: {0}")]
     SecurityBlocked(String),
+    #[error("Skill config error: {0}")]
+    Config(#[from] crate::config_injection::SkillConfigError),
 }
 
 /// The runtime type for a skill.
@@ -120,6 +123,12 @@ pub struct SkillManifest {
     /// Provenance tracking — where this skill came from.
     #[serde(default)]
     pub source: Option<SkillSource>,
+    /// Declared runtime config variables (from the SKILL.md `config:`
+    /// frontmatter). Resolved by the registry loader against the user's
+    /// `[skills.<name>]` section, env vars, and defaults; the resulting block
+    /// is appended to `prompt_context` at load time. Empty by default.
+    #[serde(default)]
+    pub config: std::collections::HashMap<String, crate::config_injection::SkillConfigVar>,
 }
 
 /// Skill metadata section.

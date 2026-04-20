@@ -30,6 +30,15 @@ pub fn operation_cost(method: &str, path: &str) -> NonZeroU32 {
         ("POST", "/api/skills/install") => NonZeroU32::new(50).unwrap(),
         ("POST", "/api/skills/uninstall") => NonZeroU32::new(10).unwrap(),
         ("POST", "/api/skills/reload") => NonZeroU32::new(5).unwrap(),
+        ("GET", p) if p.starts_with("/api/skills/") && p.ends_with("/config") => {
+            NonZeroU32::new(3).unwrap()
+        }
+        ("PUT", p) if p.starts_with("/api/skills/") && p.ends_with("/config") => {
+            NonZeroU32::new(10).unwrap()
+        }
+        ("DELETE", p) if p.starts_with("/api/skills/") && p.contains("/config/") => {
+            NonZeroU32::new(10).unwrap()
+        }
         ("POST", "/api/migrate") => NonZeroU32::new(100).unwrap(),
         ("PUT", p) if p.contains("/update") => NonZeroU32::new(10).unwrap(),
         _ => NonZeroU32::new(5).unwrap(),

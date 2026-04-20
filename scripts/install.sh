@@ -46,13 +46,23 @@ install() {
     echo "  =================="
     echo ""
 
-    # Get latest version
+    # Get latest version with binary assets
     if [ -n "${OPENFANG_VERSION:-}" ]; then
         VERSION="$OPENFANG_VERSION"
         echo "  Using specified version: $VERSION"
     else
         echo "  Fetching latest release..."
-        VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | sed 's/.*"tag_name": *"//' | sed 's/".*//')
+        # Find the most recent release that has binary assets (skip empty tag-only releases)
+        VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=10" | \
+            grep -E '"tag_name"|"assets":\[' | \
+            paste - - | \
+            grep -v '"assets":\[\]' | \
+            head -1 | \
+            sed 's/.*"tag_name": *"//' | sed 's/".*//')
+        # Fallback to /releases/latest if the above fails
+        if [ -z "$VERSION" ]; then
+            VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | sed 's/.*"tag_name": *"//' | sed 's/".*//')
+        fi
     fi
 
     if [ -z "$VERSION" ]; then

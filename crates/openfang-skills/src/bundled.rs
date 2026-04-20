@@ -13,6 +13,7 @@ pub fn bundled_skills() -> Vec<(&'static str, &'static str)> {
         ("github", include_str!("../bundled/github/SKILL.md")),
         ("docker", include_str!("../bundled/docker/SKILL.md")),
         ("web-search", include_str!("../bundled/web-search/SKILL.md")),
+        ("searxng", include_str!("../bundled/searxng/SKILL.md")),
         (
             "code-reviewer",
             include_str!("../bundled/code-reviewer/SKILL.md"),
@@ -188,6 +189,15 @@ pub fn parse_bundled(name: &str, content: &str) -> Result<SkillManifest, crate::
     Ok(converted.manifest)
 }
 
+/// Parse a bundled SKILL.md into its full converted form (manifest + declared
+/// config vars). Used by the registry loader so it can resolve/inject config.
+pub fn parse_bundled_full(
+    name: &str,
+    content: &str,
+) -> Result<crate::openclaw_compat::ConvertedSkillMd, crate::SkillError> {
+    convert_skillmd_str(name, content)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,7 +205,7 @@ mod tests {
     #[test]
     fn test_bundled_skills_count() {
         let skills = bundled_skills();
-        assert_eq!(skills.len(), 60, "Expected 60 bundled skills");
+        assert_eq!(skills.len(), 61, "Expected 61 bundled skills");
     }
 
     #[test]

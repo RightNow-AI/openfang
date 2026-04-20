@@ -435,10 +435,9 @@ async fn summarize_messages(
         let safe_start = if conversation_text.is_char_boundary(start) {
             start
         } else {
-            conversation_text[start..]
-                .char_indices()
-                .next()
-                .map(|(i, _)| start + i)
+            // Find the nearest valid character boundary moving upward
+            (start..conversation_text.len())
+                .find(|&i| conversation_text.is_char_boundary(i))
                 .unwrap_or(conversation_text.len())
         };
         conversation_text = conversation_text[safe_start..].to_string();
@@ -1478,7 +1477,10 @@ mod tests {
             Message::assistant("Done reading."),
         ];
         let adjusted = adjust_split_for_tool_pairs(&messages, 2);
-        assert_eq!(adjusted, 1, "Should pull back split to keep ToolUse + ToolResult together");
+        assert_eq!(
+            adjusted, 1,
+            "Should pull back split to keep ToolUse + ToolResult together"
+        );
     }
 
     #[test]
@@ -1489,7 +1491,10 @@ mod tests {
             Message::user("c"),
         ];
         let adjusted = adjust_split_for_tool_pairs(&messages, 1);
-        assert_eq!(adjusted, 1, "Should not change split for plain text messages");
+        assert_eq!(
+            adjusted, 1,
+            "Should not change split for plain text messages"
+        );
     }
 
     #[test]

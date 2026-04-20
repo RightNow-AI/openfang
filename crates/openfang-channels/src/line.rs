@@ -381,8 +381,7 @@ impl ChannelAdapter for LineAdapter {
                 axum::routing::post({
                     let secret = Arc::clone(&channel_secret);
                     let tx = Arc::clone(&tx);
-                    move |headers: axum::http::HeaderMap,
-                          body: axum::body::Bytes| {
+                    move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
                         let secret = Arc::clone(&secret);
                         let tx = Arc::clone(&tx);
                         async move {
@@ -404,8 +403,7 @@ impl ChannelAdapter for LineAdapter {
                                 shutdown_rx: watch::channel(false).1,
                             };
 
-                            if !signature.is_empty()
-                                && !adapter.verify_signature(&body, signature)
+                            if !signature.is_empty() && !adapter.verify_signature(&body, signature)
                             {
                                 warn!("LINE: invalid webhook signature");
                                 return axum::http::StatusCode::UNAUTHORIZED;

@@ -56,45 +56,11 @@
     </div>
 
     <div class="sidebar-nav" role="navigation" aria-label="Main navigation">
-      <!-- Chat — primary action -->
-      <div class="nav-section" x-data="{ collapsed: false }" aria-label="Chat">
-        <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">Chat</span>
-          <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
-        </div>
-        <template x-if="!collapsed">
-          <div x-transition>
-            <a class="nav-item" :class="{ active: page === 'agents' }" @click="navigate('agents')" :aria-current="page === 'agents' ? 'page' : false">
-              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
-              <span class="nav-label">Chat</span>
-            </a>
-          </div>
-        </template>
-      </div>
-
-      <!-- Monitor -->
-      <div class="nav-section" x-data="{ collapsed: false }" aria-label="Monitor">
-        <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">Monitor</span>
-          <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
-        </div>
-        <template x-if="!collapsed">
-          <div x-transition>
-            <a class="nav-item" :class="{ active: page === 'overview' }" @click="navigate('overview')" :aria-current="page === 'overview' ? 'page' : false">
+      <!-- Overview — primary action as first screen -->
+            <a class="nav-item" :class="{ active: page === 'overview' }" @click="navigate('overview')" :aria-current="page === 'overview' ? 'page' : false" style="margin-bottom: 4px;">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg></span>
               <span class="nav-label">Overview</span>
             </a>
-            <a class="nav-item" :class="{ active: page === 'analytics' }" @click="navigate('analytics')" :aria-current="page === 'analytics' ? 'page' : false">
-              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg></span>
-              <span class="nav-label">Analytics</span>
-            </a>
-            <a class="nav-item" :class="{ active: page === 'logs' }" @click="navigate('logs')" :aria-current="page === 'logs' ? 'page' : false">
-              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></span>
-              <span class="nav-label">Logs</span>
-            </a>
-          </div>
-        </template>
-      </div>
 
       <!-- Agents -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="Agents">
@@ -104,6 +70,10 @@
         </div>
         <template x-if="!collapsed">
           <div x-transition>
+            <a class="nav-item" :class="{ active: page === 'agents' }" @click="navigate('agents')" :aria-current="page === 'agents' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+              <span class="nav-label">Chat</span>
+            </a>
             <a class="nav-item" :class="{ active: page === 'sessions' }" @click="navigate('sessions')" :aria-current="page === 'sessions' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m12 2-10 5 10 5 10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg></span>
               <span class="nav-label">Sessions</span>
@@ -160,6 +130,26 @@
             <a class="nav-item" :class="{ active: page === 'hands' }" @click="navigate('hands')" :aria-current="page === 'hands' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v6"/><path d="M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-5.7-2.4L3.4 16a2 2 0 0 1 3.2-2.4L8 15"/></svg></span>
               <span class="nav-label">Hands</span>
+            </a>
+          </div>
+        </template>
+      </div>
+
+      <!-- Monitor -->
+      <div class="nav-section" x-data="{ collapsed: false }" aria-label="Monitor">
+        <div class="nav-section-title" @click="collapsed = !collapsed">
+          <span class="nav-label">Monitor</span>
+          <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
+        </div>
+        <template x-if="!collapsed">
+          <div x-transition>
+            <a class="nav-item" :class="{ active: page === 'analytics' }" @click="navigate('analytics')" :aria-current="page === 'analytics' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg></span>
+              <span class="nav-label">Analytics</span>
+            </a>
+            <a class="nav-item" :class="{ active: page === 'logs' }" @click="navigate('logs')" :aria-current="page === 'logs' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></span>
+              <span class="nav-label">Logs</span>
             </a>
           </div>
         </template>
@@ -257,8 +247,10 @@
               <template x-for="item in setupChecklist" :key="item.key">
                 <div class="setup-checklist-item">
                   <div class="setup-checklist-icon" :class="{ done: item.done }">
-                    <span x-show="item.done">&#10003;</span>
-                    <span x-show="!item.done">&#9675;</span>
+                    <span x-show="item.done">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display:block"><polyline points="20 6 9 17 4 12"/></svg>
+                    </span>
+                    <span x-show="!item.done" style="width:10px;height:10px;border-radius:50%;border:1.5px solid var(--border);display:block"></span>
                   </div>
                   <span style="flex:1" :style="item.done ? 'text-decoration:line-through;opacity:0.6' : ''" x-text="item.label"></span>
                   <a x-show="!item.done" :href="item.action" class="btn btn-ghost btn-sm" style="font-size:10px;padding:3px 8px">Go</a>
@@ -869,7 +861,7 @@
                   </div>
                   <span class="badge" :class="'badge-' + agent.state.toLowerCase()" x-text="agent.state" style="font-size:10px"></span>
                   <button class="agent-chip-config-btn" @click.stop="showDetail(agent)" title="Agent settings" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:transparent;cursor:pointer;color:var(--text-dim);transition:all 0.15s;flex-shrink:0" @mouseenter="$el.style.borderColor='var(--accent)';$el.style.color='var(--accent)';$el.style.background='var(--surface2)'" @mouseleave="$el.style.borderColor='var(--border)';$el.style.color='var(--text-dim)';$el.style.background='transparent'">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                   </button>
                 </div>
               </template>
@@ -904,7 +896,9 @@
                     <span x-show="detailAgent.identity && detailAgent.identity.emoji" x-text="detailAgent.identity && detailAgent.identity.emoji" style="margin-right:6px"></span>
                     <span x-text="detailAgent.name"></span>
                   </h3>
-                  <button class="modal-close" @click="showDetailModal = false">&times;</button>
+                  <button class="modal-close" @click="showDetailModal = false">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  </button>
                 </div>
                 <div class="tabs" style="margin-bottom:16px">
                   <div class="tab" :class="{ active: detailTab === 'info' }" @click="detailTab = 'info'">Info</div>
@@ -1413,7 +1407,7 @@
                           <option value="conditional">Conditional</option>
                           <option value="loop">Loop</option>
                         </select>
-                        <button class="btn btn-danger btn-sm" @click="newWf.steps.splice(i,1)">&times;</button>
+                        <button class="btn btn-danger btn-sm" @click="newWf.steps.splice(i,1)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
                       </div>
                       <input class="form-input mt-2" x-model="step.prompt" placeholder="Prompt template (use {{input}})">
                     </div>
@@ -1428,7 +1422,7 @@
           <template x-if="runModal">
             <div class="modal-overlay" @click.self="runModal = null" @keydown.escape.window="runModal = null">
               <div class="modal">
-                <div class="modal-header"><h3 x-text="'Run: ' + runModal.name"></h3><button class="modal-close" @click="runModal = null">&times;</button></div>
+                <div class="modal-header"><h3 x-text="'Run: ' + runModal.name"></h3><button class="modal-close" @click="runModal = null"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
                 <div class="form-group"><label>Input</label><textarea class="form-textarea" x-model="runInput" placeholder="Enter workflow input..."></textarea></div>
                 <button class="btn btn-primary btn-block" @click="executeWorkflow()" :disabled="running">
                   <span x-show="!running">Execute</span><span x-show="running">Running...</span>
@@ -1444,7 +1438,7 @@
           <template x-if="editModal">
             <div class="modal-overlay" @click.self="editModal = null" @keydown.escape.window="editModal = null">
               <div class="modal">
-                <div class="modal-header"><h3 x-text="'Edit: ' + editModal.name"></h3><button class="modal-close" @click="editModal = null">&times;</button></div>
+                <div class="modal-header"><h3 x-text="'Edit: ' + editModal.name"></h3><button class="modal-close" @click="editModal = null"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
                 <div class="form-group"><label>Name</label><input class="form-input" x-model="editWf.name" placeholder="Workflow name"></div>
                 <div class="form-group"><label>Description</label><input class="form-input" x-model="editWf.description" placeholder="What does this workflow do?"></div>
                 <div class="mb-4">
@@ -1462,7 +1456,7 @@
                           <option value="conditional">Conditional</option>
                           <option value="loop">Loop</option>
                         </select>
-                        <button class="btn btn-danger btn-sm" @click="editWf.steps.splice(i,1)">&times;</button>
+                        <button class="btn btn-danger btn-sm" @click="editWf.steps.splice(i,1)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
                       </div>
                       <input class="form-input mt-2" x-model="step.prompt" placeholder="Prompt template (use {{input}})">
                     </div>
@@ -1550,7 +1544,7 @@
             <div class="wf-editor-panel" x-show="showNodeEditor && selectedNode" x-transition>
               <div class="wf-editor-header">
                 <span class="font-bold text-sm" x-text="selectedNode ? selectedNode.label : ''"></span>
-                <button class="btn btn-ghost btn-sm" @click="showNodeEditor = false">&times;</button>
+                <button class="btn btn-ghost btn-sm" @click="showNodeEditor = false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
               </div>
               <template x-if="selectedNode">
                 <div>
@@ -1651,7 +1645,7 @@
           <template x-if="showTomlPreview">
             <div class="modal-overlay" @click.self="showTomlPreview = false" @keydown.escape.window="showTomlPreview = false">
               <div class="modal" style="max-width:600px">
-                <div class="modal-header"><h3>Generated TOML</h3><button class="modal-close" @click="showTomlPreview = false">&times;</button></div>
+                <div class="modal-header"><h3>Generated TOML</h3><button class="modal-close" @click="showTomlPreview = false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
                 <pre class="wf-toml-preview" x-text="tomlOutput"></pre>
                 <button class="btn btn-ghost btn-block mt-2" @click="navigator.clipboard.writeText(tomlOutput); OpenFangToast.success('Copied!')">Copy to Clipboard</button>
               </div>
@@ -1662,7 +1656,7 @@
           <template x-if="showSaveModal">
             <div class="modal-overlay" @click.self="showSaveModal = false" @keydown.escape.window="showSaveModal = false">
               <div class="modal">
-                <div class="modal-header"><h3>Save Workflow</h3><button class="modal-close" @click="showSaveModal = false">&times;</button></div>
+                <div class="modal-header"><h3>Save Workflow</h3><button class="modal-close" @click="showSaveModal = false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
                 <div class="form-group"><label>Name</label><input class="form-input" x-model="workflowName" placeholder="my-workflow"></div>
                 <div class="form-group"><label>Description</label><input class="form-input" x-model="workflowDescription" placeholder="What does this workflow do?"></div>
                 <div class="text-xs text-dim mb-4" x-text="nodes.filter(function(n){return n.type!=='start'&&n.type!=='end'}).length + ' steps, ' + connections.length + ' connections'"></div>
@@ -1726,6 +1720,7 @@
                       <th>Schedule</th>
                       <th>Agent</th>
                       <th>Status</th>
+                      <th>Delivery</th>
                       <th>Last Run</th>
                       <th>Next Run</th>
                       <th>Actions</th>
@@ -1737,6 +1732,34 @@
                         <td>
                           <span class="font-bold" x-text="job.name || job.description || '(unnamed)'"></span>
                           <div class="text-xs text-dim" x-show="job.message" x-text="(job.message || '').substring(0, 60) + ((job.message || '').length > 60 ? '...' : '')" :title="job.message"></div>
+                          <div x-show="expandedJobId === job.id" style="margin-top:8px;padding:8px;background:rgba(148,163,184,0.06);border-left:3px solid var(--accent);border-radius:3px">
+                            <div class="font-bold" style="font-size:12px;margin-bottom:6px">Delivery Log</div>
+                            <div x-show="deliveryLogLoading" class="text-xs text-dim">Loading delivery log...</div>
+                            <div x-show="!deliveryLogLoading && deliveryLogError" class="text-xs" style="color:var(--error)" x-text="deliveryLogError"></div>
+                            <div x-show="!deliveryLogLoading && !deliveryLogError">
+                              <div class="text-xs text-dim" style="margin-bottom:4px">Configured targets (<span x-text="(deliveryLog.targets || []).length"></span>):</div>
+                              <div x-show="!(deliveryLog.targets || []).length" class="text-xs text-dim">No fan-out targets configured.</div>
+                              <template x-for="(t, ti) in (deliveryLog.targets || [])" :key="ti">
+                                <div class="text-xs" style="padding:2px 0">
+                                  <span class="badge" :class="targetChipClass(t)" x-text="targetChipLabel(t)"></span>
+                                  <span class="text-dim" style="margin-left:6px" x-text="targetSummary(t)"></span>
+                                </div>
+                              </template>
+                              <div class="text-xs text-dim" style="margin-top:8px">Recent deliveries (<span x-text="(deliveryLog.entries || []).length"></span>):</div>
+                              <div x-show="!(deliveryLog.entries || []).length" class="text-xs text-dim">
+                                Delivery history will appear here after the next run. Per-run results are not yet
+                                persisted — the fan-out engine emits tracing events you can view under
+                                <a href="#logs" style="color:var(--accent)">Logs</a>.
+                              </div>
+                              <template x-for="(e, ei) in (deliveryLog.entries || [])" :key="ei">
+                                <div class="text-xs" style="padding:2px 0">
+                                  <span class="badge" :class="e.success ? 'badge-success' : 'badge-error'" x-text="e.success ? 'ok' : 'err'"></span>
+                                  <span style="margin-left:6px" x-text="e.target"></span>
+                                  <span class="text-dim" style="margin-left:6px" x-show="e.error" x-text="e.error"></span>
+                                </div>
+                              </template>
+                            </div>
+                          </div>
                         </td>
                         <td>
                           <code style="font-size:11px;color:var(--accent)" x-text="job.cron"></code>
@@ -1746,15 +1769,25 @@
                         <td>
                           <span class="badge" :class="job.enabled ? 'badge-success' : 'badge-dim'" x-text="job.enabled ? 'Active' : 'Paused'"></span>
                         </td>
+                        <td>
+                          <div class="flex gap-1" style="flex-wrap:wrap;max-width:240px" x-show="(job.delivery_targets || []).length">
+                            <template x-for="(t, ti) in (job.delivery_targets || [])" :key="ti">
+                              <span class="badge" :class="targetChipClass(t)" :title="targetSummary(t)" x-text="targetChipLabel(t)"></span>
+                            </template>
+                          </div>
+                          <span class="text-xs text-dim" x-show="!(job.delivery_targets || []).length">(none)</span>
+                        </td>
                         <td class="text-xs" :title="formatTime(job.last_run)" x-text="relativeTime(job.last_run)"></td>
                         <td class="text-xs" :title="formatTime(job.next_run)" x-text="relativeTime(job.next_run)"></td>
                         <td>
-                          <div class="flex gap-1">
+                          <div class="flex gap-1" style="flex-wrap:wrap">
                             <button class="btn btn-primary btn-sm" @click="runNow(job)" :disabled="runningJobId === job.id">
                               <span x-show="runningJobId !== job.id">Run</span>
                               <span x-show="runningJobId === job.id">...</span>
                             </button>
                             <button class="btn btn-ghost btn-sm" @click="toggleJob(job)" x-text="job.enabled ? 'Pause' : 'Enable'"></button>
+                            <button class="btn btn-ghost btn-sm" @click="toggleExpand(job)" x-text="expandedJobId === job.id ? 'Hide' : 'Details'"></button>
+                            <button class="btn btn-ghost btn-sm" @click="startEditTargets(job)">Targets</button>
                             <button class="btn btn-danger btn-sm" @click="deleteJob(job)">Del</button>
                           </div>
                         </td>
@@ -1778,7 +1811,7 @@
                 <div class="modal">
                   <div class="modal-header">
                     <h3>Create Scheduled Job</h3>
-                    <button class="modal-close" @click="showCreateForm = false">&times;</button>
+                    <button class="modal-close" @click="showCreateForm = false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
                   </div>
 
                   <div class="form-group">
@@ -1826,10 +1859,218 @@
                     </label>
                   </div>
 
+                  <div class="form-group">
+                    <div class="flex items-center justify-between" style="margin-bottom:6px">
+                      <label style="margin:0">Delivery Targets</label>
+                      <button class="btn btn-ghost btn-sm" type="button" @click="openTargetPicker()">+ Add target</button>
+                    </div>
+                    <div class="text-xs text-dim mt-1" x-show="!(newJob.delivery_targets || []).length">
+                      The job output is delivered to the agent's last channel by default. Add one or more
+                      fan-out destinations — channels, webhooks, local files, or email — to copy the output
+                      to extra destinations each run.
+                    </div>
+                    <div x-show="(newJob.delivery_targets || []).length" style="margin-top:6px">
+                      <template x-for="(t, ti) in (newJob.delivery_targets || [])" :key="ti">
+                        <div class="card" style="padding:8px;margin-bottom:6px">
+                          <div class="flex items-center justify-between">
+                            <span class="badge" :class="targetChipClass(t)" x-text="targetChipLabel(t)"></span>
+                            <button class="btn btn-ghost btn-sm" type="button" @click="removeTarget(ti)">Remove</button>
+                          </div>
+                          <div class="text-xs text-dim" style="margin-top:4px" x-text="targetSummary(t)"></div>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+
+                  <!-- Target picker (shared by create + edit flows) -->
+                  <div class="card" x-show="showTargetPicker && !editingTargetsJobId" style="border-left:3px solid var(--accent);margin-top:8px">
+                    <div class="font-bold" style="font-size:12px;margin-bottom:6px">New Delivery Target</div>
+                    <div class="form-group">
+                      <label>Type</label>
+                      <select class="form-select" x-model="pickerType" @change="onPickerTypeChange()">
+                        <option value="channel">Channel</option>
+                        <option value="webhook">Webhook</option>
+                        <option value="local_file">Local File</option>
+                        <option value="email">Email</option>
+                      </select>
+                    </div>
+                    <template x-if="draftTarget && draftTarget.type === 'channel'">
+                      <div>
+                        <div class="form-group">
+                          <label>Channel type</label>
+                          <select class="form-select" x-model="draftTarget.channel_type" x-show="channelTypes.length">
+                            <option value="">-- pick --</option>
+                            <template x-for="c in channelTypes" :key="c">
+                              <option :value="c" x-text="c"></option>
+                            </template>
+                          </select>
+                          <input class="form-input" x-model="draftTarget.channel_type" placeholder="telegram" x-show="!channelTypes.length">
+                        </div>
+                        <div class="form-group">
+                          <label>Recipient</label>
+                          <input class="form-input" x-model="draftTarget.recipient" placeholder="chat_12345">
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="draftTarget && draftTarget.type === 'webhook'">
+                      <div>
+                        <div class="form-group">
+                          <label>URL</label>
+                          <input class="form-input" x-model="draftTarget.url" placeholder="https://example.com/hook">
+                        </div>
+                        <div class="form-group">
+                          <label>Authorization header (optional)</label>
+                          <input class="form-input" x-model="draftTarget.auth_header" placeholder="Bearer abc123">
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="draftTarget && draftTarget.type === 'local_file'">
+                      <div>
+                        <div class="form-group">
+                          <label>Path</label>
+                          <input class="form-input" x-model="draftTarget.path" placeholder="/var/log/openfang-cron.log">
+                        </div>
+                        <div class="form-group">
+                          <label class="flex items-center gap-2">
+                            <div class="toggle" :class="{ active: draftTarget.append }" @click="draftTarget.append = !draftTarget.append"></div>
+                            <span x-text="draftTarget.append ? 'Append' : 'Overwrite'"></span>
+                          </label>
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="draftTarget && draftTarget.type === 'email'">
+                      <div>
+                        <div class="form-group">
+                          <label>To</label>
+                          <input class="form-input" x-model="draftTarget.to" placeholder="alice@example.com">
+                        </div>
+                        <div class="form-group">
+                          <label>Subject template (optional)</label>
+                          <input class="form-input" x-model="draftTarget.subject_template" placeholder="Cron: {job}">
+                          <div class="text-xs text-dim mt-1">Placeholders: <code>{job}</code></div>
+                        </div>
+                      </div>
+                    </template>
+                    <div class="flex gap-2" style="margin-top:6px">
+                      <button class="btn btn-primary btn-sm" type="button" @click="addDraftTarget()">Add</button>
+                      <button class="btn btn-ghost btn-sm" type="button" @click="cancelTargetPicker()">Cancel</button>
+                    </div>
+                  </div>
+
                   <button class="btn btn-primary btn-block mt-4" @click="createJob()" :disabled="creating">
                     <span x-show="!creating">Create Schedule</span>
                     <span x-show="creating">Creating...</span>
                   </button>
+                </div>
+              </div>
+            </template>
+
+            <!-- Edit Targets Modal -->
+            <template x-if="editingTargetsJobId">
+              <div class="modal-overlay" @click.self="cancelEditTargets()" @keydown.escape.window="cancelEditTargets()">
+                <div class="modal">
+                  <div class="modal-header">
+                    <h3>Edit Delivery Targets</h3>
+                    <button class="modal-close" @click="cancelEditTargets()">x</button>
+                  </div>
+                  <div class="form-group">
+                    <div class="flex items-center justify-between" style="margin-bottom:6px">
+                      <div class="text-xs text-dim">
+                        Targets are replaced on save. Leave empty to remove all fan-out destinations.
+                      </div>
+                      <button class="btn btn-ghost btn-sm" type="button" @click="addEditTarget()">+ Add target</button>
+                    </div>
+                    <div x-show="!editingTargets.length" class="text-xs text-dim">No targets configured.</div>
+                    <template x-for="(t, ti) in editingTargets" :key="ti">
+                      <div class="card" style="padding:8px;margin-bottom:6px">
+                        <div class="flex items-center justify-between">
+                          <span class="badge" :class="targetChipClass(t)" x-text="targetChipLabel(t)"></span>
+                          <button class="btn btn-ghost btn-sm" type="button" @click="removeEditTarget(ti)">Remove</button>
+                        </div>
+                        <div class="text-xs text-dim" style="margin-top:4px" x-text="targetSummary(t)"></div>
+                      </div>
+                    </template>
+                  </div>
+                  <div class="card" x-show="showTargetPicker" style="border-left:3px solid var(--accent)">
+                    <div class="font-bold" style="font-size:12px;margin-bottom:6px">New Delivery Target</div>
+                    <div class="form-group">
+                      <label>Type</label>
+                      <select class="form-select" x-model="pickerType" @change="onPickerTypeChange()">
+                        <option value="channel">Channel</option>
+                        <option value="webhook">Webhook</option>
+                        <option value="local_file">Local File</option>
+                        <option value="email">Email</option>
+                      </select>
+                    </div>
+                    <template x-if="draftTarget && draftTarget.type === 'channel'">
+                      <div>
+                        <div class="form-group">
+                          <label>Channel type</label>
+                          <select class="form-select" x-model="draftTarget.channel_type" x-show="channelTypes.length">
+                            <option value="">-- pick --</option>
+                            <template x-for="c in channelTypes" :key="c">
+                              <option :value="c" x-text="c"></option>
+                            </template>
+                          </select>
+                          <input class="form-input" x-model="draftTarget.channel_type" placeholder="telegram" x-show="!channelTypes.length">
+                        </div>
+                        <div class="form-group">
+                          <label>Recipient</label>
+                          <input class="form-input" x-model="draftTarget.recipient" placeholder="chat_12345">
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="draftTarget && draftTarget.type === 'webhook'">
+                      <div>
+                        <div class="form-group">
+                          <label>URL</label>
+                          <input class="form-input" x-model="draftTarget.url" placeholder="https://example.com/hook">
+                        </div>
+                        <div class="form-group">
+                          <label>Authorization header (optional)</label>
+                          <input class="form-input" x-model="draftTarget.auth_header" placeholder="Bearer abc123">
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="draftTarget && draftTarget.type === 'local_file'">
+                      <div>
+                        <div class="form-group">
+                          <label>Path</label>
+                          <input class="form-input" x-model="draftTarget.path" placeholder="/var/log/openfang-cron.log">
+                        </div>
+                        <div class="form-group">
+                          <label class="flex items-center gap-2">
+                            <div class="toggle" :class="{ active: draftTarget.append }" @click="draftTarget.append = !draftTarget.append"></div>
+                            <span x-text="draftTarget.append ? 'Append' : 'Overwrite'"></span>
+                          </label>
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="draftTarget && draftTarget.type === 'email'">
+                      <div>
+                        <div class="form-group">
+                          <label>To</label>
+                          <input class="form-input" x-model="draftTarget.to" placeholder="alice@example.com">
+                        </div>
+                        <div class="form-group">
+                          <label>Subject template (optional)</label>
+                          <input class="form-input" x-model="draftTarget.subject_template" placeholder="Cron: {job}">
+                          <div class="text-xs text-dim mt-1">Placeholders: <code>{job}</code></div>
+                        </div>
+                      </div>
+                    </template>
+                    <div class="flex gap-2" style="margin-top:6px">
+                      <button class="btn btn-primary btn-sm" type="button" @click="addDraftTargetToEdit()">Add</button>
+                      <button class="btn btn-ghost btn-sm" type="button" @click="cancelTargetPicker()">Cancel</button>
+                    </div>
+                  </div>
+                  <div class="flex gap-2 mt-4">
+                    <button class="btn btn-primary" @click="saveEditTargets()" :disabled="savingTargets">
+                      <span x-show="!savingTargets">Save</span>
+                      <span x-show="savingTargets">Saving...</span>
+                    </button>
+                    <button class="btn btn-ghost" @click="cancelEditTargets()">Cancel</button>
+                  </div>
                 </div>
               </div>
             </template>
@@ -1988,28 +2229,28 @@
                     </h3>
                     <div class="text-xs text-dim mt-1" x-text="setupModal.quick_setup || setupModal.description"></div>
                   </div>
-                  <button class="modal-close" @click="setupModal = null">&times;</button>
+                  <button class="modal-close" @click="setupModal = null"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
                 </div>
 
                 <!-- 3-step progress indicator (non-QR channels only) -->
                 <div class="channel-steps" x-show="!isQrChannel()">
                   <div class="channel-step-item">
                     <div class="channel-step-num" :class="{ active: setupStep === 1, done: setupStep > 1 }">
-                      <span x-show="setupStep <= 1">1</span><span x-show="setupStep > 1">&#10003;</span>
+                      <span x-show="setupStep <= 1">1</span><span x-show="setupStep > 1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display:block"><polyline points="20 6 9 17 4 12"/></svg></span>
                     </div>
                     <span class="channel-step-label" :class="{ active: setupStep === 1, done: setupStep > 1 }">Configure</span>
                   </div>
                   <div class="channel-step-line" :class="{ done: setupStep > 1 }"></div>
                   <div class="channel-step-item">
                     <div class="channel-step-num" :class="{ active: setupStep === 2, done: setupStep > 2 }">
-                      <span x-show="setupStep <= 2">2</span><span x-show="setupStep > 2">&#10003;</span>
+                      <span x-show="setupStep <= 2">2</span><span x-show="setupStep > 2"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display:block"><polyline points="20 6 9 17 4 12"/></svg></span>
                     </div>
                     <span class="channel-step-label" :class="{ active: setupStep === 2, done: setupStep > 2 }">Verify</span>
                   </div>
                   <div class="channel-step-line" :class="{ done: setupStep > 2 }"></div>
                   <div class="channel-step-item">
                     <div class="channel-step-num" :class="{ active: setupStep === 3, done: setupStep >= 3 }">
-                      <span x-show="setupStep < 3">3</span><span x-show="setupStep >= 3">&#10003;</span>
+                      <span x-show="setupStep < 3">3</span><span x-show="setupStep >= 3"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display:block"><polyline points="20 6 9 17 4 12"/></svg></span>
                     </div>
                     <span class="channel-step-label" :class="{ active: setupStep === 3, done: setupStep >= 3 }">Ready</span>
                   </div>
@@ -2017,7 +2258,9 @@
 
                 <!-- Ready panel (step 3) for non-QR channels -->
                 <div x-show="!isQrChannel() && setupStep === 3 && testPassed" class="ready-panel">
-                  <div class="ready-panel-icon">&#10003;</div>
+                  <div class="ready-panel-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  </div>
                   <div class="ready-panel-title" x-text="setupModal.display_name + ' is ready!'"></div>
                   <div class="ready-panel-desc">
                     Your channel is configured and verified. It will activate automatically.
@@ -2053,7 +2296,9 @@
 
                     <!-- QR: Connected! -->
                     <div x-show="!qr.loading && qr.connected" style="text-align:center;padding:2rem 0">
-                      <div style="font-size:3rem;margin-bottom:0.5rem">&#10003;</div>
+                      <div style="margin-bottom:0.5rem;display:flex;justify-content:center">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                      </div>
                       <p class="text-sm" style="font-weight:600" x-text="qr.message || 'WhatsApp linked successfully!'"></p>
                       <p class="text-xs text-dim mt-1">Channel will activate automatically.</p>
                     </div>
@@ -2236,8 +2481,12 @@
                       <span class="text-xs text-dim" x-text="skill.tools_count + ' tool(s)'"></span>
                       <span class="text-xs text-dim" x-show="skill.version" x-text="'v' + skill.version"></span>
                       <span class="text-xs text-dim" x-show="skill.has_prompt_context">(prompt context)</span>
+                      <span class="text-xs text-dim" x-show="skill.config_declared_count > 0" x-text="skill.config_declared_count + ' config var(s)'"></span>
                     </div>
-                    <button class="btn btn-danger btn-sm" @click="uninstallSkill(skill.name)">Uninstall</button>
+                    <div class="flex gap-2">
+                      <button class="btn btn-ghost btn-sm" x-show="skill.config_declared_count > 0" @click="openSkillConfig(skill)" title="Configure skill variables">&#9881; Configure</button>
+                      <button class="btn btn-danger btn-sm" @click="uninstallSkill(skill.name)">Uninstall</button>
+                    </div>
                   </div>
                 </div>
               </template>
@@ -2261,7 +2510,9 @@
             <div class="search-input mb-4" style="position:relative">
               <span style="color:var(--text-muted)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg></span>
               <input placeholder="Search ClawHub skills... (type to search)" x-model="clawhubSearch" @input="onSearchInput()" @keydown.enter="if(!$event.isComposing && $event.keyCode !== 229) searchClawHub()" @keydown.escape="clearSearch()" x-ref="clawhubSearchInput">
-              <button x-show="clawhubSearch" @click="clearSearch()" class="search-clear-btn" title="Clear search (Esc)">&times;</button>
+            <button x-show="clawhubSearch" @click="clearSearch()" class="search-clear-btn" title="Clear search (Esc)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
             </div>
 
             <!-- Sort pills (always visible when not searching) -->
@@ -2458,7 +2709,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   <div>
                     <div class="modal-header">
                       <h3 x-text="skillDetail.name || skillDetail.slug"></h3>
-                      <button class="modal-close" @click="closeDetail()">&times;</button>
+                      <button class="modal-close" @click="closeDetail()">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                      </button>
                     </div>
                     <div class="mb-3">
                       <div class="flex gap-2 items-center flex-wrap">
@@ -2503,6 +2756,80 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                     <div class="text-xs text-dim mt-2 text-center">Skills are security-scanned before installation. Prompt injection and malware patterns are blocked.</div>
                   </div>
                 </template>
+              </div>
+            </div>
+          </template>
+
+          <!-- Skill Config Modal (SKILL.md frontmatter `config:` variables) -->
+          <template x-if="configSkill">
+            <div class="modal-overlay" @click.self="closeSkillConfig()" @keydown.escape.window="closeSkillConfig()">
+              <div class="modal" style="max-width:640px">
+                <div class="modal-header">
+                  <div>
+                    <h3>Configure: <span x-text="configSkill.name"></span></h3>
+                    <div class="text-xs text-dim mt-1" x-text="configSkill.description"></div>
+                  </div>
+                  <button class="modal-close" @click="closeSkillConfig()">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  </button>
+                </div>
+
+                <div x-show="configLoading" class="loading-state" style="padding:20px 0">
+                  <div class="spinner"></div><span>Loading configuration&hellip;</span>
+                </div>
+
+                <div x-show="!configLoading && configError" class="error-state">
+                  <span class="error-icon">!</span>
+                  <p x-text="configError"></p>
+                </div>
+
+                <div x-show="!configLoading && !configError">
+                  <div x-show="configDeclaredNames.length === 0" class="empty-state" style="padding:16px 0">
+                    <p class="text-dim">This skill does not declare any runtime config variables.</p>
+                  </div>
+
+                  <template x-for="name in configDeclaredNames" :key="name">
+                    <div class="form-group" style="margin-bottom:16px">
+                      <label style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                        <code x-text="name" style="font-size:0.8rem"></code>
+                        <span x-show="configDeclared[name] && configDeclared[name].required" class="badge badge-danger" style="font-size:0.6rem">required</span>
+                        <span class="badge" :class="sourceBadgeClass(configResolved[name] && configResolved[name].source)" style="font-size:0.6rem">
+                          <template x-if="configResolved[name] && configResolved[name].source === 'user'"><span>user override</span></template>
+                          <template x-if="configResolved[name] && configResolved[name].source === 'env'">
+                            <span>env<template x-if="configDeclared[name] && configDeclared[name].env"><span>:<span x-text="configDeclared[name].env"></span></span></template></span>
+                          </template>
+                          <template x-if="configResolved[name] && configResolved[name].source === 'default'"><span>default</span></template>
+                          <template x-if="!configResolved[name] || configResolved[name].source === 'unresolved'"><span>unresolved &#9888;</span></template>
+                        </span>
+                      </label>
+                      <div class="text-xs text-dim" x-show="configDeclared[name] && configDeclared[name].description" x-text="configDeclared[name] ? configDeclared[name].description : ''" style="margin:2px 0 6px 0"></div>
+                      <div class="flex gap-2 items-center" style="position:relative">
+                        <input
+                          style="flex:1"
+                          :type="(configResolved[name] && configResolved[name].is_secret && !configRevealed[name]) ? 'password' : 'text'"
+                          :placeholder="(configResolved[name] && configResolved[name].source !== 'user' && configResolved[name].value != null) ? ('Currently: ' + configResolved[name].value) : ((configDeclared[name] && configDeclared[name].default) ? ('default: ' + configDeclared[name].default) : 'Enter value')"
+                          x-model="configDraft[name]"
+                          :class="{ 'input-error': configRowInvalid(name) }">
+                        <button type="button" class="btn btn-ghost btn-sm" x-show="configResolved[name] && configResolved[name].is_secret" @click="toggleReveal(name)" :title="configRevealed[name] ? 'Hide' : 'Reveal'">
+                          <svg x-show="!configRevealed[name]" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                          <svg x-show="configRevealed[name]" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-10-8-10-8a19.77 19.77 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 10 8 10 8a19.77 19.77 0 0 1-2.16 3.19M1 1l22 22"/></svg>
+                        </button>
+                      </div>
+                      <div class="text-xs" style="margin-top:4px;display:flex;justify-content:space-between;align-items:center">
+                        <div class="text-dim" style="font-style:italic" x-show="configResolved[name] && configResolved[name].source === 'user'">Leaving blank and saving keeps existing override. Use Reset to remove it.</div>
+                        <a href="#" class="text-dim" style="font-size:0.7rem" x-show="configResolved[name] && configResolved[name].source === 'user'" @click.prevent="resetSkillConfigVar(name)">Reset to env/default</a>
+                      </div>
+                    </div>
+                  </template>
+
+                  <div class="text-xs text-dim" style="margin-top:12px">
+                    Values are stored in <code>~/.openfang/config.toml</code> under <code>[skills.<span x-text="configSkill.name"></span>]</code>. Secrets are redacted in this view.
+                  </div>
+                  <div class="flex justify-end gap-2" style="margin-top:16px">
+                    <button class="btn btn-ghost" @click="closeSkillConfig()" :disabled="configSaving">Cancel</button>
+                    <button class="btn btn-primary" @click="saveSkillConfig()" :disabled="configSaving || hasInvalidConfig()" x-text="configSaving ? 'Saving...' : 'Save'"></button>
+                  </div>
+                </div>
               </div>
             </div>
           </template>
@@ -2651,7 +2978,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 <div class="modal" style="max-width:600px">
                   <div class="modal-header">
                     <h3><span x-text="detailHand.icon"></span> <span x-text="detailHand.name"></span></h3>
-                    <button class="modal-close" @click="detailHand = null">&times;</button>
+                    <button class="modal-close" @click="detailHand = null">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
                   </div>
                   <div class="mb-3">
                     <p x-text="detailHand.description"></p>
@@ -2705,7 +3034,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                       <div class="wizard-title" x-text="'Set up ' + setupWizard.name"></div>
                       <div class="wizard-subtitle" x-text="setupWizard.description"></div>
                     </div>
-                    <button class="wizard-close" @click="closeSetupWizard()">&times;</button>
+                    <button class="wizard-close" @click="closeSetupWizard()">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
                   </div>
 
                   <!-- Step Indicators -->
@@ -2747,7 +3078,10 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
 
                         <!-- Satisfied: green message -->
                         <template x-if="req.satisfied">
-                          <div class="dep-met-msg">&check; Detected on your system</div>
+                          <div class="dep-met-msg" style="display:flex;align-items:center;gap:4px">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                            <span>Detected on your system</span>
+                          </div>
                         </template>
 
                         <!-- Not satisfied: show install instructions -->
@@ -2784,7 +3118,10 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                                 <div style="margin-bottom:10px">
                                   <label class="text-xs text-dim" style="display:block;margin-bottom:4px" x-text="'Paste your ' + req.label + ':'"></label>
                                   <input type="password" class="form-input" x-model="apiKeyInputs[req.key]" :placeholder="req.label" style="width:100%;font-family:var(--font-mono);font-size:12px">
-                                  <div class="text-xs" style="margin-top:4px;color:var(--green)" x-show="apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== ''">&check; Token entered</div>
+                                  <div class="text-xs" style="margin-top:4px;color:var(--green);display:flex;align-items:center;gap:4px" x-show="apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== ''">
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                    <span>Token entered</span>
+                                  </div>
                                 </div>
                                 <details style="margin-bottom:8px">
                                   <summary class="text-xs text-dim" style="cursor:pointer;user-select:none">Or set as environment variable</summary>
@@ -2838,13 +3175,17 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                           </template>
                           <template x-if="installProgress.status === 'done' && !installProgress.error">
                             <div class="flex items-center gap-2">
-                              <span style="color:var(--green);font-size:16px">&check;</span>
+                              <span style="color:var(--green);display:flex">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                              </span>
                               <span class="text-sm font-bold" style="color:var(--green)">Installation complete!</span>
                             </div>
                           </template>
                           <template x-if="installProgress.error">
                             <div class="flex items-center gap-2">
-                              <span style="color:var(--red);font-size:16px">&cross;</span>
+                              <span style="color:var(--red);display:flex">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                              </span>
                               <span class="text-sm" style="color:var(--red)" x-text="installProgress.error"></span>
                             </div>
                           </template>
@@ -2892,6 +3233,14 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
 
                   <!-- ═══ Step 2: Configure ═══ -->
                   <div class="hand-wizard-body" x-show="setupStep === 2">
+                    <!-- Optional instance name (for running multiple instances of the same hand) -->
+                    <div class="mb-4">
+                      <div class="text-xs text-dim mb-1" style="letter-spacing:0.5px;text-transform:uppercase">
+                        Instance name <span style="text-transform:none;letter-spacing:0;color:#888">(optional)</span>
+                      </div>
+                      <div class="text-xs text-dim mb-2">Leave empty for a single instance of this hand. Set a name to run multiple instances in parallel.</div>
+                      <input type="text" class="form-input" x-model="setupWizard.instanceName" placeholder="e.g. clip-youtube, lead-q4-outreach" style="width:100%">
+                    </div>
                     <template x-if="!setupHasSettings">
                       <div class="text-sm text-dim" style="text-align:center;padding:20px 0">No configuration needed for this hand. Click Next to continue.</div>
                     </template>
@@ -3051,7 +3400,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   </div>
                   <div class="flex items-center gap-2">
                     <button class="btn btn-ghost btn-sm" @click="refreshDashboard()">Refresh</button>
-                    <button class="modal-close" @click="closeDashboard()">&times;</button>
+                    <button class="modal-close" @click="closeDashboard()">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
                   </div>
                 </div>
 
@@ -3602,12 +3953,12 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             <div class="card mt-4" style="border-left:3px solid var(--accent)">
               <div class="font-bold" style="font-size:13px;margin-bottom:6px">Security Dependencies</div>
               <div class="text-xs text-dim" style="line-height:1.8">
-                <code style="color:var(--accent-light)">sha2</code> SHA-256 &middot;
-                <code style="color:var(--accent-light)">hmac</code> HMAC-SHA256 &middot;
-                <code style="color:var(--accent-light)">subtle</code> constant-time &middot;
-                <code style="color:var(--accent-light)">ed25519-dalek</code> signing &middot;
-                <code style="color:var(--accent-light)">zeroize</code> secret wiping &middot;
-                <code style="color:var(--accent-light)">rand</code> randomness &middot;
+                <code style="color:var(--accent-light)">sha2</code> SHA-256&nbsp;<svg width="3" height="3" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;vertical-align:middle;opacity:0.4"><circle cx="12" cy="12" r="10"/></svg>
+                <code style="color:var(--accent-light)">hmac</code> HMAC-SHA256&nbsp;<svg width="3" height="3" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;vertical-align:middle;opacity:0.4"><circle cx="12" cy="12" r="10"/></svg>
+                <code style="color:var(--accent-light)">subtle</code> constant-time&nbsp;<svg width="3" height="3" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;vertical-align:middle;opacity:0.4"><circle cx="12" cy="12" r="10"/></svg>
+                <code style="color:var(--accent-light)">ed25519-dalek</code> signing&nbsp;<svg width="3" height="3" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;vertical-align:middle;opacity:0.4"><circle cx="12" cy="12" r="10"/></svg>
+                <code style="color:var(--accent-light)">zeroize</code> secret wiping&nbsp;<svg width="3" height="3" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;vertical-align:middle;opacity:0.4"><circle cx="12" cy="12" r="10"/></svg>
+                <code style="color:var(--accent-light)">rand</code> randomness&nbsp;<svg width="3" height="3" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;vertical-align:middle;opacity:0.4"><circle cx="12" cy="12" r="10"/></svg>
                 <code style="color:var(--accent-light)">governor</code> rate limiting
               </div>
             </div>
@@ -3634,7 +3985,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <span class="badge" :class="netStatus && netStatus.enabled ? 'badge-success' : 'badge-muted'" x-text="netStatus && netStatus.enabled ? 'Enabled' : 'Disabled'" style="font-size:12px;padding:4px 10px"></span>
             </div>
             <div x-show="netStatus && netStatus.enabled" class="text-xs text-dim mb-2" style="margin-top:-8px">
-              Node: <span x-text="netStatus?.node_id?.substring(0,8) + '...'" class="font-bold"></span> &bull;
+              Node: <span x-text="netStatus?.node_id?.substring(0,8) + '...'" class="font-bold"></span>&nbsp;<svg width="4" height="4" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;vertical-align:middle;opacity:0.5"><circle cx="12" cy="12" r="10"/></svg>
               Listening on <span x-text="netStatus?.listen_address" class="font-bold"></span>
             </div>
             <div x-show="peersLoading" class="loading-state"><div class="spinner"></div><span>Loading peers...</span></div>
@@ -3753,90 +4104,92 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <button class="btn btn-sm" @click="editMode ? saveBudget() : startEdit()" :disabled="saving" x-text="editMode ? (saving ? 'Saving...' : 'Save') : 'Edit Limits'" style="white-space:nowrap"></button>
             </div>
             <div x-show="budgetLoading" class="loading-state"><div class="spinner"></div><span>Loading budget...</span></div>
-            <div x-show="!budgetLoading && budgetData">
-              <!-- Global budget meters -->
-              <div class="stats-row" style="margin-bottom:16px">
-                <div class="stat-card" style="flex:1">
-                  <div class="stat-label">Hourly</div>
-                  <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.hourly_spend || 0).toFixed(4)"></div>
-                  <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.hourly_limit)"></div>
-                  <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.hourly_limit > 0">
-                    <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.hourly_pct*100,100)+'%', background: pctColor(budgetData.hourly_pct)}"></div>
+            <template x-if="!budgetLoading && budgetData">
+              <div>
+                <!-- Global budget meters -->
+                <div class="stats-row" style="margin-bottom:16px">
+                  <div class="stat-card" style="flex:1">
+                    <div class="stat-label">Hourly</div>
+                    <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.hourly_spend || 0).toFixed(4)"></div>
+                    <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.hourly_limit)"></div>
+                    <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.hourly_limit > 0">
+                      <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.hourly_pct*100,100)+'%', background: pctColor(budgetData.hourly_pct)}"></div>
+                    </div>
+                  </div>
+                  <div class="stat-card" style="flex:1">
+                    <div class="stat-label">Daily</div>
+                    <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.daily_spend || 0).toFixed(4)"></div>
+                    <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.daily_limit)"></div>
+                    <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.daily_limit > 0">
+                      <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.daily_pct*100,100)+'%', background: pctColor(budgetData.daily_pct)}"></div>
+                    </div>
+                  </div>
+                  <div class="stat-card" style="flex:1">
+                    <div class="stat-label">Monthly</div>
+                    <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.monthly_spend || 0).toFixed(4)"></div>
+                    <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.monthly_limit)"></div>
+                    <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.monthly_limit > 0">
+                      <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.monthly_pct*100,100)+'%', background: pctColor(budgetData.monthly_pct)}"></div>
+                    </div>
                   </div>
                 </div>
-                <div class="stat-card" style="flex:1">
-                  <div class="stat-label">Daily</div>
-                  <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.daily_spend || 0).toFixed(4)"></div>
-                  <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.daily_limit)"></div>
-                  <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.daily_limit > 0">
-                    <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.daily_pct*100,100)+'%', background: pctColor(budgetData.daily_pct)}"></div>
-                  </div>
+                <div class="text-xs text-dim mb-1" x-show="budgetData.alert_threshold > 0 && !editMode">
+                  Alert threshold: <span x-text="(budgetData.alert_threshold * 100).toFixed(0) + '%'"></span> of any limit
                 </div>
-                <div class="stat-card" style="flex:1">
-                  <div class="stat-label">Monthly</div>
-                  <div class="stat-value" style="font-size:18px" x-text="'$' + (budgetData.monthly_spend || 0).toFixed(4)"></div>
-                  <div class="text-xs text-dim" x-text="'of ' + fmtUsd(budgetData.monthly_limit)"></div>
-                  <div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden" x-show="budgetData.monthly_limit > 0">
-                    <div style="height:100%;border-radius:2px;transition:width 0.3s" :style="{width: Math.min(budgetData.monthly_pct*100,100)+'%', background: pctColor(budgetData.monthly_pct)}"></div>
-                  </div>
+                <div class="text-xs text-dim mb-3" x-show="!editMode">
+                  Hourly token limit (per agent): <span x-text="fmtTokens(budgetData.default_max_llm_tokens_per_hour || 0)"></span>
                 </div>
-              </div>
-              <div class="text-xs text-dim mb-1" x-show="budgetData.alert_threshold > 0 && !editMode">
-                Alert threshold: <span x-text="(budgetData.alert_threshold * 100).toFixed(0) + '%'"></span> of any limit
-              </div>
-              <div class="text-xs text-dim mb-3" x-show="!editMode">
-                Hourly token limit (per agent): <span x-text="fmtTokens(budgetData.default_max_llm_tokens_per_hour || 0)"></span>
-              </div>
 
-              <!-- Edit limits form -->
-              <div x-show="editMode" class="card" style="margin:12px 0;padding:12px;border:1px solid var(--accent);border-radius:6px">
-                <div class="stats-row" style="margin-bottom:8px;gap:8px">
-                  <div style="flex:1">
-                    <label class="text-xs text-dim">Hourly Limit ($)</label>
-                    <input type="number" step="0.1" min="0" x-model="editHourly" class="input" style="width:100%;margin-top:2px" placeholder="0 = unlimited">
+                <!-- Edit limits form -->
+                <div x-show="editMode" class="card" style="margin:12px 0;padding:12px;border:1px solid var(--accent);border-radius:6px">
+                  <div class="stats-row" style="margin-bottom:8px;gap:8px">
+                    <div style="flex:1">
+                      <label class="text-xs text-dim">Hourly Limit ($)</label>
+                      <input type="number" step="0.1" min="0" x-model="editHourly" class="input" style="width:100%;margin-top:2px" placeholder="0 = unlimited">
+                    </div>
+                    <div style="flex:1">
+                      <label class="text-xs text-dim">Daily Limit ($)</label>
+                      <input type="number" step="1" min="0" x-model="editDaily" class="input" style="width:100%;margin-top:2px" placeholder="0 = unlimited">
+                    </div>
+                    <div style="flex:1">
+                      <label class="text-xs text-dim">Monthly Limit ($)</label>
+                      <input type="number" step="1" min="0" x-model="editMonthly" class="input" style="width:100%;margin-top:2px" placeholder="0 = unlimited">
+                    </div>
+                    <div style="flex:0.6">
+                      <label class="text-xs text-dim">Alert (%)</label>
+                      <input type="number" step="5" min="0" max="100" x-model="editAlert" class="input" style="width:100%;margin-top:2px" placeholder="80">
+                    </div>
                   </div>
-                  <div style="flex:1">
-                    <label class="text-xs text-dim">Daily Limit ($)</label>
-                    <input type="number" step="1" min="0" x-model="editDaily" class="input" style="width:100%;margin-top:2px" placeholder="0 = unlimited">
+                  <div style="margin-bottom:8px">
+                    <label class="text-xs text-dim">Hourly Token Limit (per agent, 0 = use per-agent values)</label>
+                    <input type="number" step="100000" min="0" x-model="editTokenLimit" class="input" style="width:260px;margin-top:2px" placeholder="0 = per-agent default">
                   </div>
-                  <div style="flex:1">
-                    <label class="text-xs text-dim">Monthly Limit ($)</label>
-                    <input type="number" step="1" min="0" x-model="editMonthly" class="input" style="width:100%;margin-top:2px" placeholder="0 = unlimited">
-                  </div>
-                  <div style="flex:0.6">
-                    <label class="text-xs text-dim">Alert (%)</label>
-                    <input type="number" step="5" min="0" max="100" x-model="editAlert" class="input" style="width:100%;margin-top:2px" placeholder="80">
-                  </div>
+                  <div class="text-xs text-dim">Set to 0 for unlimited/per-agent default. Changes apply immediately (in-memory, not persisted to config.toml).</div>
+                  <button class="btn btn-sm mt-2" @click="editMode = false" style="margin-right:8px">Cancel</button>
                 </div>
-                <div style="margin-bottom:8px">
-                  <label class="text-xs text-dim">Hourly Token Limit (per agent, 0 = use per-agent values)</label>
-                  <input type="number" step="100000" min="0" x-model="editTokenLimit" class="input" style="width:260px;margin-top:2px" placeholder="0 = per-agent default">
-                </div>
-                <div class="text-xs text-dim">Set to 0 for unlimited/per-agent default. Changes apply immediately (in-memory, not persisted to config.toml).</div>
-                <button class="btn btn-sm mt-2" @click="editMode = false" style="margin-right:8px">Cancel</button>
-              </div>
 
-              <!-- Per-agent cost ranking -->
-              <h4 style="margin-top:16px;margin-bottom:8px">Top Spenders (Today)</h4>
-              <div class="table-wrap" x-show="agentRanking.length">
-                <table>
-                  <thead><tr><th>Agent</th><th>Today</th><th>Hourly Limit</th><th>Daily Limit</th><th>Monthly Limit</th><th>Token Limit/hr</th></tr></thead>
-                  <tbody>
-                    <template x-for="a in agentRanking" :key="a.agent_id">
-                      <tr>
-                        <td class="font-bold" x-text="a.name"></td>
-                        <td x-text="'$' + (a.daily_cost_usd || 0).toFixed(4)"></td>
-                        <td class="text-dim" x-text="fmtUsd(a.hourly_limit)"></td>
-                        <td class="text-dim" x-text="fmtUsd(a.daily_limit)"></td>
-                        <td class="text-dim" x-text="fmtUsd(a.monthly_limit)"></td>
-                        <td class="text-dim" x-text="fmtTokens(a.max_llm_tokens_per_hour || 0)"></td>
-                      </tr>
-                    </template>
-                  </tbody>
-                </table>
+                <!-- Per-agent cost ranking -->
+                <h4 style="margin-top:16px;margin-bottom:8px">Top Spenders (Today)</h4>
+                <div class="table-wrap" x-show="agentRanking.length">
+                  <table>
+                    <thead><tr><th>Agent</th><th>Today</th><th>Hourly Limit</th><th>Daily Limit</th><th>Monthly Limit</th><th>Token Limit/hr</th></tr></thead>
+                    <tbody>
+                      <template x-for="a in agentRanking" :key="a.agent_id">
+                        <tr>
+                          <td class="font-bold" x-text="a.name"></td>
+                          <td x-text="'$' + (a.daily_cost_usd || 0).toFixed(4)"></td>
+                          <td class="text-dim" x-text="fmtUsd(a.hourly_limit)"></td>
+                          <td class="text-dim" x-text="fmtUsd(a.daily_limit)"></td>
+                          <td class="text-dim" x-text="fmtUsd(a.monthly_limit)"></td>
+                          <td class="text-dim" x-text="fmtTokens(a.max_llm_tokens_per_hour || 0)"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="text-xs text-dim" x-show="!agentRanking.length">No spending recorded today.</div>
               </div>
-              <div class="text-xs text-dim" x-show="!agentRanking.length">No spending recorded today.</div>
-            </div>
+            </template>
           </div>
 
           <!-- Migration tab -->
@@ -3880,42 +4233,46 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               </div>
             </div>
 
-            <div x-show="migStep === 'preview' && scanResult">
-              <div class="card mb-4" style="border-left:3px solid var(--success, #22c55e)">
-                <div class="flex justify-between items-center mb-2">
-                  <div class="font-bold" style="font-size:14px">OpenClaw Workspace Found</div>
-                  <span class="badge badge-connected">Ready to Migrate</span>
+            <template x-if="migStep === 'preview' && scanResult">
+              <div>
+                <div class="card mb-4" style="border-left:3px solid var(--success, #22c55e)">
+                  <div class="flex justify-between items-center mb-2">
+                    <div class="font-bold" style="font-size:14px">OpenClaw Workspace Found</div>
+                    <span class="badge badge-connected">Ready to Migrate</span>
+                  </div>
+                  <div class="text-sm text-dim" style="font-family:monospace" x-text="scanResult.path"></div>
                 </div>
-                <div class="text-sm text-dim" style="font-family:monospace" x-text="scanResult.path"></div>
+                <div class="stats-row mb-4">
+                  <div class="stat-card"><div class="stat-value" x-text="scanResult.agents ? scanResult.agents.length : 0"></div><div class="stat-label">Agents</div></div>
+                  <div class="stat-card"><div class="stat-value" x-text="scanResult.channels ? scanResult.channels.length : 0"></div><div class="stat-label">Channels</div></div>
+                  <div class="stat-card"><div class="stat-value" x-text="scanResult.skills ? scanResult.skills.length : 0"></div><div class="stat-label">Skills</div></div>
+                </div>
+                <div class="flex gap-2 mb-4">
+                  <button class="btn btn-primary" @click="runMigration(false)" :disabled="migrating">
+                    <span x-show="!migrating">Migrate Now</span>
+                    <span x-show="migrating">Migrating...</span>
+                  </button>
+                  <button class="btn btn-ghost" @click="runMigration(true)" :disabled="migrating">Dry Run</button>
+                  <button class="btn btn-ghost" @click="migStep = 'intro'; scanResult = null">Start Over</button>
+                </div>
               </div>
-              <div class="stats-row mb-4">
-                <div class="stat-card"><div class="stat-value" x-text="scanResult.agents ? scanResult.agents.length : 0"></div><div class="stat-label">Agents</div></div>
-                <div class="stat-card"><div class="stat-value" x-text="scanResult.channels ? scanResult.channels.length : 0"></div><div class="stat-label">Channels</div></div>
-                <div class="stat-card"><div class="stat-value" x-text="scanResult.skills ? scanResult.skills.length : 0"></div><div class="stat-label">Skills</div></div>
-              </div>
-              <div class="flex gap-2 mb-4">
-                <button class="btn btn-primary" @click="runMigration(false)" :disabled="migrating">
-                  <span x-show="!migrating">Migrate Now</span>
-                  <span x-show="migrating">Migrating...</span>
-                </button>
-                <button class="btn btn-ghost" @click="runMigration(true)" :disabled="migrating">Dry Run</button>
-                <button class="btn btn-ghost" @click="migStep = 'intro'; scanResult = null">Start Over</button>
-              </div>
-            </div>
+            </template>
 
-            <div x-show="migStep === 'result' && migResult">
-              <div class="card mb-4" :style="'border-left:3px solid ' + (migResult.status === 'completed' ? 'var(--success, #22c55e)' : 'var(--error)')">
-                <div class="flex justify-between items-center mb-2">
-                  <div class="font-bold" style="font-size:14px" x-text="migResult.dry_run ? 'Dry Run Complete' : 'Migration Complete!'"></div>
-                  <span class="badge" :class="migResult.status === 'completed' ? 'badge-connected' : 'badge-crashed'" x-text="migResult.status === 'completed' ? 'SUCCESS' : 'FAILED'"></span>
+            <template x-if="migStep === 'result' && migResult">
+              <div>
+                <div class="card mb-4" :style="'border-left:3px solid ' + (migResult.status === 'completed' ? 'var(--success, #22c55e)' : 'var(--error)')">
+                  <div class="flex justify-between items-center mb-2">
+                    <div class="font-bold" style="font-size:14px" x-text="migResult.dry_run ? 'Dry Run Complete' : 'Migration Complete!'"></div>
+                    <span class="badge" :class="migResult.status === 'completed' ? 'badge-connected' : 'badge-crashed'" x-text="migResult.status === 'completed' ? 'SUCCESS' : 'FAILED'"></span>
+                  </div>
+                  <div class="text-sm text-dim" x-show="migResult.error" style="color:var(--error)" x-text="migResult.error"></div>
                 </div>
-                <div class="text-sm text-dim" x-show="migResult.error" style="color:var(--error)" x-text="migResult.error"></div>
+                <div class="flex gap-2">
+                  <button class="btn btn-primary" x-show="migResult.dry_run" @click="runMigration(false)" :disabled="migrating">Run Migration for Real</button>
+                  <button class="btn btn-ghost" @click="migStep = 'intro'; migResult = null; scanResult = null">Start New Migration</button>
+                </div>
               </div>
-              <div class="flex gap-2">
-                <button class="btn btn-primary" x-show="migResult.dry_run" @click="runMigration(false)" :disabled="migrating">Run Migration for Real</button>
-                <button class="btn btn-ghost" @click="migStep = 'intro'; migResult = null; scanResult = null">Start New Migration</button>
-              </div>
-            </div>
+            </template>
 
             <div class="card" x-show="migStep === 'not_found'" style="border-left:3px solid var(--warning, #f59e0b)">
               <div class="font-bold mb-2" style="font-size:14px">OpenClaw Not Found</div>
@@ -3980,7 +4337,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                       <td x-text="formatTokens(m.total_input_tokens)"></td>
                       <td x-text="formatTokens(m.total_output_tokens)"></td>
                       <td x-text="formatCost(m.total_cost_usd)"></td>
-                      <td><div style="background:var(--surface2);border-radius:4px;height:16px;overflow:hidden"><div style="height:100%;border-radius:4px;background:var(--accent);transition:width 0.3s" :style="'width:' + barWidth(m)"></div></div></td>
+                      <td><div style="background:var(--surface2);border-radius:4px;height:16px;overflow:hidden"><div style="height:100%;border-radius:4px;background:var(--accent);transition:width 0.3s" :style="{ width: barWidth(m) }"></div></div></td>
                     </tr>
                   </template>
                 </tbody>
@@ -4039,20 +4396,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 <div x-show="costByProvider().length > 0" class="donut-chart-wrap">
                   <div class="donut-chart">
                     <svg viewBox="0 0 160 160" width="160" height="160">
-                      <template x-for="(seg, idx) in donutSegments()" :key="seg.provider">
-                        <circle
-                          cx="80" cy="80" r="60"
-                          fill="none"
-                          :stroke="seg.color"
-                          stroke-width="24"
-                          :stroke-dasharray="seg.dasharray"
-                          :stroke-dashoffset="seg.dashoffset"
-                          transform="rotate(-90 80 80)"
-                          class="donut-segment"
-                        >
-                          <title x-text="seg.provider + ': ' + seg.percent + '% (' + formatCost(seg.cost) + ')'"></title>
-                        </circle>
-                      </template>
+                      <g x-html="donutSegmentsSvg()"></g>
                       <!-- Center text -->
                       <text x="80" y="76" text-anchor="middle" fill="var(--text)" style="font-size:14px;font-weight:700;font-family:var(--font-mono)" x-text="formatCost(summary.total_cost_usd)"></text>
                       <text x="80" y="92" text-anchor="middle" fill="var(--text-muted)" style="font-size:9px;font-family:var(--font-mono)">TOTAL</text>
@@ -4079,41 +4423,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   <svg :viewBox="'0 0 ' + (barChartData().length * 50 + 20) + ' 180'" :width="barChartData().length * 50 + 20" height="180">
                     <!-- Baseline -->
                     <line x1="10" :x2="barChartData().length * 50 + 10" y1="150" y2="150" stroke="var(--border)" stroke-width="1"/>
-                    <template x-for="(bar, idx) in barChartData()" :key="bar.date">
-                      <g>
-                        <!-- Bar rect -->
-                        <rect
-                          :x="idx * 50 + 18"
-                          :y="150 - bar.barHeight"
-                          width="24"
-                          :height="bar.barHeight"
-                          rx="3"
-                          fill="var(--accent)"
-                          class="cost-bar"
-                          style="opacity:0.85"
-                        >
-                          <title x-text="bar.date + ': ' + formatCost(bar.cost) + ' (' + bar.calls + ' calls)'"></title>
-                        </rect>
-                        <!-- Day label -->
-                        <text
-                          :x="idx * 50 + 30"
-                          y="166"
-                          text-anchor="middle"
-                          fill="var(--text-muted)"
-                          style="font-size:9px;font-family:var(--font-mono)"
-                          x-text="bar.dayName"
-                        ></text>
-                        <!-- Cost label on top -->
-                        <text
-                          :x="idx * 50 + 30"
-                          :y="150 - bar.barHeight - 4"
-                          text-anchor="middle"
-                          fill="var(--text-dim)"
-                          style="font-size:8px;font-family:var(--font-mono)"
-                          x-text="formatCost(bar.cost)"
-                        ></text>
-                      </g>
-                    </template>
+                    <g x-html="barChartSvg()"></g>
                   </svg>
                 </div>
               </div>
@@ -4152,7 +4462,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                         <td class="font-bold" x-text="formatCost(m.total_cost_usd)"></td>
                         <td>
                           <div style="background:var(--surface2);border-radius:4px;height:16px;overflow:hidden">
-                            <div style="height:100%;border-radius:4px;background:var(--accent);transition:width 0.3s" :style="'width:' + costBarWidth(m)"></div>
+                            <div style="height:100%;border-radius:4px;background:var(--accent);transition:width 0.3s" :style="{ width: costBarWidth(m) }"></div>
                           </div>
                         </td>
                       </tr>
@@ -4292,7 +4602,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <template x-if="showAdd">
                 <div class="modal-overlay" @click.self="showAdd = false" @keydown.escape.window="showAdd = false">
                   <div class="modal">
-                    <div class="modal-header"><h3>Add Key</h3><button class="modal-close" @click="showAdd = false">&times;</button></div>
+                    <div class="modal-header"><h3>Add Key</h3><button class="modal-close" @click="showAdd = false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
                     <div class="form-group"><label>Key</label><input class="form-input" x-model="newKey" placeholder="my_key"></div>
                     <div class="form-group"><label>Value (JSON)</label><textarea class="form-textarea" x-model="newValue" placeholder='"hello"'></textarea></div>
                     <button class="btn btn-primary btn-block" @click="addKey()">Save</button>
@@ -4524,7 +4834,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           </div>
 
           <!-- Send Message Modal -->
-          <div x-show="showSendModal" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px)" @click.self="showSendModal=false" x-transition>
+          <div style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px)" @click.self="showSendModal=false" :style="{ display: showSendModal ? 'flex' : 'none' }" x-transition>
             <div class="card" style="width:420px;max-width:90vw" @click.stop>
               <div class="card-header">Send Agent Message</div>
               <div style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
@@ -4562,7 +4872,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           </div>
 
           <!-- Post Task Modal -->
-          <div x-show="showTaskModal" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px)" @click.self="showTaskModal=false" x-transition>
+          <div style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px)" :style="{ display: showTaskModal ? 'flex' : 'none' }" @click.self="showTaskModal=false" x-transition>
             <div class="card" style="width:420px;max-width:90vw" @click.stop>
               <div class="card-header">Post Task</div>
               <div style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
@@ -4619,7 +4929,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <div class="wizard-progress-step" :class="{ 'wiz-active': step === n, 'wiz-done': step > n }" @click="goToStep(n)">
                 <div class="wizard-progress-circle">
                   <span x-show="step <= n" x-text="n"></span>
-                  <span x-show="step > n">&#10003;</span>
+                  <span x-show="step > n">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display:block"><polyline points="20 6 9 17 4 12"/></svg>
+                  </span>
                 </div>
                 <span class="wizard-progress-label" x-text="stepLabel(n)"></span>
               </div>
@@ -4760,7 +5072,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <template x-if="selectedProviderObj && providerIsConfigured(selectedProviderObj)">
                 <div class="card" style="border-left:3px solid var(--success);margin-top:16px">
                   <div class="flex items-center gap-2">
-                    <span style="color:var(--success);font-size:18px">&#10003;</span>
+                    <div style="color:var(--success);display:flex;align-items:center;justify-content:center;width:24px;height:24px">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    </div>
                     <div>
                       <div class="font-bold" style="font-size:13px" x-text="selectedProviderObj.display_name + ' is configured and ready'"></div>
                       <div class="text-xs text-dim">You can test the connection or continue to the next step.</div>
@@ -4929,7 +5243,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <!-- Step 6: Done -->
           <div class="wizard-step" x-show="step === 6">
             <div class="wizard-card" style="text-align:center;max-width:560px;margin:0 auto">
-              <div style="font-size:56px;margin-bottom:12px;color:var(--success)">&#10003;</div>
+              <div style="margin-bottom:12px;color:var(--success);display:flex;justify-content:center">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </div>
               <h3 style="font-size:20px;font-weight:700;margin-bottom:8px;color:var(--accent)">You're All Set!</h3>
               <p style="font-size:13px;color:var(--text-dim);line-height:1.8;margin-bottom:24px">OpenFang is configured and ready to go. Here is a summary of what was set up:</p>
 

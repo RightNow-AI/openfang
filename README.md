@@ -19,7 +19,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-0.3.30-green?style=flat-square" alt="v0.3.30" />
+  <img src="https://img.shields.io/badge/version-0.5.10-green?style=flat-square" alt="v0.5.10" />
   <img src="https://img.shields.io/badge/tests-1,767%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
   <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
@@ -27,17 +27,17 @@
 
 ---
 
-> **v0.3.30 — Security Hardening Release (March 2026)**
+> **v0.5.10 (April 2026)**
 >
-> OpenFang is feature-complete but still pre-1.0. You may encounter rough edges or breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
+> OpenFang is feature complete but still pre-1.0. Expect rough edges and breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
 
 ---
 
 ## What is OpenFang?
 
-OpenFang is an **open-source Agent Operating System** — not a chatbot framework, not a Python wrapper around an LLM, not a "multi-agent orchestrator." It is a full operating system for autonomous agents, built from scratch in Rust.
+OpenFang is an **open-source Agent Operating System**. Not a chatbot framework. Not a Python wrapper around an LLM. Not a "multi-agent orchestrator." A full operating system for autonomous agents, built from scratch in Rust.
 
-Traditional agent frameworks wait for you to type something. OpenFang runs **autonomous agents that work for you** — on schedules, 24/7, building knowledge graphs, monitoring targets, generating leads, managing your social media, and reporting results to your dashboard.
+Traditional agent frameworks wait for you to type something. OpenFang runs **autonomous agents that work for you**: on schedules, 24/7, building knowledge graphs, monitoring targets, generating leads, managing your social media, and reporting results to your dashboard.
 
 The entire system compiles to a **single ~32MB binary**. One install, one command, your agents are live.
 
@@ -65,13 +65,13 @@ openfang start
 
 <p align="center"><em>"Traditional agents wait for you to type. Hands work <strong>for</strong> you."</em></p>
 
-**Hands** are OpenFang's core innovation — pre-built autonomous capability packages that run independently, on schedules, without you having to prompt them. This is not a chatbot. This is an agent that wakes up at 6 AM, researches your competitors, builds a knowledge graph, scores the findings, and delivers a report to your Telegram before you've had coffee.
+**Hands** are OpenFang's core innovation. Pre-built autonomous capability packages that run independently, on schedules, without you having to prompt them. This is not a chatbot. This is an agent that wakes up at 6 AM, researches your competitors, builds a knowledge graph, scores the findings, and delivers a report to your Telegram before you've had coffee.
 
 Each Hand bundles:
-- **HAND.toml** — Manifest declaring tools, settings, requirements, and dashboard metrics
-- **System Prompt** — Multi-phase operational playbook (not a one-liner — these are 500+ word expert procedures)
-- **SKILL.md** — Domain expertise reference injected into context at runtime
-- **Guardrails** — Approval gates for sensitive actions (e.g. Browser Hand requires approval before any purchase)
+- **HAND.toml**: manifest declaring tools, settings, requirements, and dashboard metrics.
+- **System Prompt**: multi-phase operational playbook. Not a one-liner. These are 500+ word expert procedures.
+- **SKILL.md**: domain expertise reference injected into context at runtime.
+- **Guardrails**: approval gates for sensitive actions (e.g. Browser Hand requires approval before any purchase).
 
 All compiled into the binary. No downloading, no pip install, no Docker pull.
 
@@ -81,14 +81,14 @@ All compiled into the binary. No downloading, no pip install, no Docker pull.
 |------|----------------------|
 | **Clip** | Takes a YouTube URL, downloads it, identifies the best moments, cuts them into vertical shorts with captions and thumbnails, optionally adds AI voice-over, and publishes to Telegram and WhatsApp. 8-phase pipeline. FFmpeg + yt-dlp + 5 STT backends. |
 | **Lead** | Runs daily. Discovers prospects matching your ICP, enriches them with web research, scores 0-100, deduplicates against your existing database, and delivers qualified leads in CSV/JSON/Markdown. Builds ICP profiles over time. |
-| **Collector** | OSINT-grade intelligence. You give it a target (company, person, topic). It monitors continuously — change detection, sentiment tracking, knowledge graph construction, and critical alerts when something important shifts. |
+| **Collector** | OSINT grade intelligence. You give it a target (company, person, topic). It monitors continuously: change detection, sentiment tracking, knowledge graph construction, and critical alerts when something important shifts. |
 | **Predictor** | Superforecasting engine. Collects signals from multiple sources, builds calibrated reasoning chains, makes predictions with confidence intervals, and tracks its own accuracy using Brier scores. Has a contrarian mode that deliberately argues against consensus. |
 | **Researcher** | Deep autonomous researcher. Cross-references multiple sources, evaluates credibility using CRAAP criteria (Currency, Relevance, Authority, Accuracy, Purpose), generates cited reports with APA formatting, supports multiple languages. |
-| **Twitter** | Autonomous Twitter/X account manager. Creates content in 7 rotating formats, schedules posts for optimal engagement, responds to mentions, tracks performance metrics. Has an approval queue — nothing posts without your OK. |
-| **Browser** | Web automation agent. Navigates sites, fills forms, clicks buttons, handles multi-step workflows. Uses Playwright bridge with session persistence. **Mandatory purchase approval gate** — it will never spend your money without explicit confirmation. |
+| **Twitter** | Autonomous Twitter/X account manager. Creates content in 7 rotating formats, schedules posts for optimal engagement, responds to mentions, tracks performance metrics. Has an approval queue, so nothing posts without your OK. |
+| **Browser** | Web automation agent. Navigates sites, fills forms, clicks buttons, handles multi-step workflows. Uses Playwright bridge with session persistence. **Mandatory purchase approval gate**: it will never spend your money without explicit confirmation. |
 
 ```bash
-# Activate the Researcher Hand — it starts working immediately
+# Activate the Researcher Hand. It starts working immediately.
 openfang hand activate researcher
 
 # Check its progress anytime
@@ -116,7 +116,7 @@ openfang hand list
 
 ### Benchmarks: Measured, Not Marketed
 
-All data from official documentation and public repositories — February 2026.
+All data from official documentation and public repositories, February 2026.
 
 #### Cold Start Time (lower is better)
 
@@ -203,7 +203,7 @@ AutoGen    ███████████░░░░░░░░░░░░
 
 ---
 
-## 16 Security Systems — Defense in Depth
+## 16 Security Systems: Defense in Depth
 
 OpenFang doesn't bolt security on after the fact. Every layer is independently testable and operates without a single point of failure.
 
@@ -211,19 +211,19 @@ OpenFang doesn't bolt security on after the fact. Every layer is independently t
 |---|--------|-------------|
 | 1 | **WASM Dual-Metered Sandbox** | Tool code runs in WebAssembly with fuel metering + epoch interruption. A watchdog thread kills runaway code. |
 | 2 | **Merkle Hash-Chain Audit Trail** | Every action is cryptographically linked to the previous one. Tamper with one entry and the entire chain breaks. |
-| 3 | **Information Flow Taint Tracking** | Labels propagate through execution — secrets are tracked from source to sink. |
+| 3 | **Information Flow Taint Tracking** | Labels propagate through execution. Secrets are tracked from source to sink. |
 | 4 | **Ed25519 Signed Agent Manifests** | Every agent identity and capability set is cryptographically signed. |
 | 5 | **SSRF Protection** | Blocks private IPs, cloud metadata endpoints, and DNS rebinding attacks. |
 | 6 | **Secret Zeroization** | `Zeroizing<String>` auto-wipes API keys from memory the instant they're no longer needed. |
 | 7 | **OFP Mutual Authentication** | HMAC-SHA256 nonce-based, constant-time verification for P2P networking. |
-| 8 | **Capability Gates** | Role-based access control — agents declare required tools, the kernel enforces it. |
+| 8 | **Capability Gates** | Role based access control. Agents declare required tools, the kernel enforces it. |
 | 9 | **Security Headers** | CSP, X-Frame-Options, HSTS, X-Content-Type-Options on every response. |
 | 10 | **Health Endpoint Redaction** | Public health check returns minimal info. Full diagnostics require authentication. |
 | 11 | **Subprocess Sandbox** | `env_clear()` + selective variable passthrough. Process tree isolation with cross-platform kill. |
 | 12 | **Prompt Injection Scanner** | Detects override attempts, data exfiltration patterns, and shell reference injection in skills. |
 | 13 | **Loop Guard** | SHA256-based tool call loop detection with circuit breaker. Handles ping-pong patterns. |
 | 14 | **Session Repair** | 7-phase message history validation and automatic recovery from corruption. |
-| 15 | **Path Traversal Prevention** | Canonicalization with symlink escape prevention. `../` doesn't work here. |
+| 15 | **Path Traversal Prevention** | Canonicalization with symlink escape prevention. ``../`` doesn't work here. |
 | 16 | **GCRA Rate Limiter** | Cost-aware token bucket rate limiting with per-IP tracking and stale cleanup. |
 
 ---
@@ -268,7 +268,7 @@ Each adapter supports per-channel model overrides, DM/group policies, rate limit
 
 ## WhatsApp Web Gateway (QR Code)
 
-Connect your personal WhatsApp account to OpenFang via QR code — just like WhatsApp Web. No Meta Business account required.
+Connect your personal WhatsApp account to OpenFang via QR code, just like WhatsApp Web. No Meta Business account required.
 
 ### Prerequisites
 
@@ -357,7 +357,7 @@ For production workloads, use the [WhatsApp Cloud API](https://developers.facebo
 
 ---
 
-## 27 LLM Providers — 123+ Models
+## 27 LLM Providers, 123+ Models
 
 3 native drivers (Anthropic, Gemini, OpenAI-compatible) route to 27 providers:
 
@@ -372,7 +372,7 @@ Intelligent routing with task complexity scoring, automatic fallback, cost track
 Already running OpenClaw? One command:
 
 ```bash
-# Migrate everything — agents, memory, skills, configs
+# Migrate everything: agents, memory, skills, configs.
 openfang migrate --from openclaw
 
 # Migrate from a specific path
@@ -410,7 +410,7 @@ curl -X POST localhost:4200/v1/chat/completions \
 # 1. Install (macOS/Linux)
 curl -fsSL https://openfang.sh/install | sh
 
-# 2. Initialize — walks you through provider setup
+# 2. Initialize. Walks you through provider setup.
 openfang init
 
 # 3. Start the daemon
@@ -418,7 +418,7 @@ openfang start
 
 # 4. Dashboard is live at http://localhost:4200
 
-# 5. Activate a Hand — it starts working for you
+# 5. Activate a Hand. It starts working for you.
 openfang hand activate researcher
 
 # 6. Chat with an agent
@@ -462,14 +462,14 @@ cargo fmt --all -- --check
 
 ## Stability Notice
 
-OpenFang v0.3.30 is pre-1.0. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
+OpenFang v0.5.10 is pre-1.0. The architecture is solid, the test suite is comprehensive, and the security model is deep. That said:
 
-- **Breaking changes** may occur between minor versions until v1.0
-- **Some Hands** are more mature than others (Browser and Researcher are the most battle-tested)
-- **Edge cases** exist — if you find one, [open an issue](https://github.com/RightNow-AI/openfang/issues)
-- **Pin to a specific commit** for production deployments until v1.0
+- **Breaking changes** may occur between minor versions until v1.0.
+- **Some Hands** are more mature than others. Browser and Researcher are the most battle tested.
+- **Edge cases** exist. If you find one, [open an issue](https://github.com/RightNow-AI/openfang/issues).
+- **Pin to a specific commit** for production deployments until v1.0.
 
-We ship fast and fix fast. The goal is a rock-solid v1.0 by mid-2026.
+We ship fast and fix fast. The goal is a rock solid v1.0 by mid 2026.
 
 ---
 
@@ -481,7 +481,7 @@ To report a security vulnerability, email **jaber@rightnowai.co**. We take all r
 
 ## License
 
-MIT — use it however you want.
+MIT. Use it however you want.
 
 ---
 

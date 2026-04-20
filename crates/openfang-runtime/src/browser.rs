@@ -877,7 +877,7 @@ pub async fn tool_browser_navigate(
     agent_id: &str,
 ) -> Result<String, String> {
     let url = input["url"].as_str().ok_or("Missing 'url' parameter")?;
-    crate::web_fetch::check_ssrf(url)?;
+    crate::web_fetch::check_ssrf(url, &[])?;
 
     let resp = mgr
         .send_command(

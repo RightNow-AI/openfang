@@ -14,7 +14,8 @@ use dashmap::DashMap;
 use futures::StreamExt;
 use openfang_types::agent::AgentId;
 use openfang_types::approval::ApprovalRequest;
-use openfang_types::config::{ChannelOverrides, DmPolicy, GroupPolicy, OutputFormat};
+use openfang_types::commands::{self as slash_commands, Surfaces};
+use openfang_types::config::{ChannelOverrides, DmPolicy, GroupPolicy, OutputFormat, PrefixStyle};
 use openfang_types::message::ContentBlock;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -220,6 +221,13 @@ pub trait ChannelBridgeHandle: Send + Sync {
         None
     }
 
+    /// Get channel IDs that respond without requiring @mention (free response mode).
+    ///
+    /// Returns an empty vector if the channel type is not configured or has no free response channels.
+    async fn free_response_channels(&self, _channel_type: &str) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Record a delivery result for tracking (optional — default no-op).
     ///
     /// `thread_id` preserves Telegram forum-topic context so cron/workflow
@@ -234,6 +242,22 @@ pub trait ChannelBridgeHandle: Send + Sync {
         _thread_id: Option<&str>,
     ) {
         // Default: no tracking
+    }
+
+    /// Send a plain text message to a specific recipient via a registered
+    /// channel adapter.
+    ///
+    /// Used by the cron multi-destination delivery engine to fan out job
+    /// output across channels. `channel_type` is the adapter key (e.g.
+    /// `"telegram"`, `"slack"`). Default implementation returns an error so
+    /// test doubles don't accidentally claim success.
+    async fn send_channel_message(
+        &self,
+        _channel_type: &str,
+        _recipient: &str,
+        _message: &str,
+    ) -> Result<(), String> {
+        Err("send_channel_message not implemented on this bridge".to_string())
     }
 
     /// Check if auto-reply is enabled and the message should trigger one.
@@ -486,6 +510,69 @@ fn channel_type_str(channel: &crate::types::ChannelType) -> &str {
     }
 }
 
+/// Wrap an outbound message with the responding agent's name according to
+/// `style`.
+///
+/// Applied once at the top of the final response text (never per streaming
+/// chunk). If the text already starts with the exact bracketed agent label
+/// (e.g. the agent echoed its own name, or an inner agent already prefixed a
+/// delegated reply), the wrap is skipped to keep things idempotent.
+///
+/// Per-platform native identity features (Slack `username` override, Discord
+/// embed `author`, Telegram `From:` in rich messages) are intentionally not
+/// handled here — that is a follow-up.
+pub(crate) fn apply_agent_prefix(style: PrefixStyle, agent_name: &str, text: &str) -> String {
+    if matches!(style, PrefixStyle::Off) || agent_name.is_empty() {
+        return text.to_string();
+    }
+    let bracket = format!("[{agent_name}]");
+    let bold = format!("**[{agent_name}]**");
+    if text.starts_with(&bracket) || text.starts_with(&bold) {
+        return text.to_string();
+    }
+    match style {
+        PrefixStyle::Off => text.to_string(),
+        PrefixStyle::Bracket => format!("{bracket} {text}"),
+        PrefixStyle::BoldBracket => format!("{bold} {text}"),
+    }
+}
+
+/// Look up an agent's display name by id.
+///
+/// Returns `None` if the kernel can't list agents or the id is not currently
+/// known. Only called when `prefix_agent_name` is enabled, so the extra
+/// `list_agents()` round-trip is pay-per-use.
+async fn resolve_agent_name(handle: &Arc<dyn ChannelBridgeHandle>, id: AgentId) -> Option<String> {
+    handle
+        .list_agents()
+        .await
+        .ok()?
+        .into_iter()
+        .find_map(|(aid, name)| (aid == id).then_some(name))
+}
+
+/// Apply `prefix_agent_name` to an outbound agent response if configured.
+///
+/// Safe to call on every success path: resolves the agent name lazily and
+/// returns the original text unchanged when the style is `Off`.
+async fn maybe_prefix_response(
+    handle: &Arc<dyn ChannelBridgeHandle>,
+    overrides: Option<&ChannelOverrides>,
+    agent_id: AgentId,
+    text: String,
+) -> String {
+    let style = overrides
+        .map(|o| o.prefix_agent_name)
+        .unwrap_or(PrefixStyle::Off);
+    if matches!(style, PrefixStyle::Off) {
+        return text;
+    }
+    match resolve_agent_name(handle, agent_id).await {
+        Some(name) => apply_agent_prefix(style, &name, &text),
+        None => text,
+    }
+}
+
 /// Send a response, applying output formatting and optional threading.
 async fn send_response(
     adapter: &dyn ChannelAdapter,
@@ -517,6 +604,7 @@ fn default_output_format_for_channel(channel_type: &str) -> OutputFormat {
         "telegram" => OutputFormat::TelegramHtml,
         "slack" => OutputFormat::SlackMrkdwn,
         "wecom" => OutputFormat::PlainText,
+        "signal" => OutputFormat::PlainText,
         _ => OutputFormat::Markdown,
     }
 }
@@ -659,16 +747,23 @@ async fn dispatch_message(
                     }
                 }
                 GroupPolicy::MentionOnly => {
-                    // Only allow messages where the bot was @mentioned or commands.
-                    let was_mentioned = message
-                        .metadata
-                        .get("was_mentioned")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let is_command = matches!(&message.content, ChannelContent::Command { .. });
-                    if !was_mentioned && !is_command {
-                        debug!("Ignoring group message on {ct_str} (group_policy=mention_only, not mentioned)");
-                        return;
+                    // Check if this channel is in the free_response list - if so, allow all messages
+                    let free_channels = handle.free_response_channels(ct_str).await;
+                    let channel_id = &message.sender.platform_id;
+                    let is_free_channel = free_channels.iter().any(|id| id == channel_id);
+
+                    if !is_free_channel {
+                        // Only allow messages where the bot was @mentioned or commands.
+                        let was_mentioned = message
+                            .metadata
+                            .get("was_mentioned")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let is_command = matches!(&message.content, ChannelContent::Command { .. });
+                        if !was_mentioned && !is_command {
+                            debug!("Ignoring group message on {ct_str} (group_policy=mention_only, not mentioned)");
+                            return;
+                        }
                     }
                 }
                 GroupPolicy::All => {}
@@ -718,6 +813,10 @@ async fn dispatch_message(
             .iter()
             .any(|b| matches!(b, ContentBlock::Image { .. }))
         {
+            let prefix_style = overrides
+                .as_ref()
+                .map(|o| o.prefix_agent_name)
+                .unwrap_or(PrefixStyle::Off);
             // We have actual image data — send as structured blocks for vision
             dispatch_with_blocks(
                 blocks,
@@ -730,6 +829,7 @@ async fn dispatch_message(
                 thread_id,
                 output_format,
                 lifecycle_reactions,
+                prefix_style,
             )
             .await;
             return;
@@ -920,6 +1020,7 @@ async fn dispatch_message(
     // Auto-reply check — if enabled, the engine decides whether to process this message.
     // If auto-reply is enabled but suppressed for this message, skip agent call entirely.
     if let Some(reply) = handle.check_auto_reply(agent_id, &text).await {
+        let reply = maybe_prefix_response(handle, overrides.as_ref(), agent_id, reply).await;
         send_response(adapter, &message.sender, reply, thread_id, output_format).await;
         handle
             .record_delivery(
@@ -975,6 +1076,8 @@ async fn dispatch_message(
             if lifecycle_reactions {
                 send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;
             }
+            let response =
+                maybe_prefix_response(handle, overrides.as_ref(), agent_id, response).await;
             send_response(adapter, &message.sender, response, thread_id, output_format).await;
             handle
                 .record_delivery(
@@ -1004,6 +1107,9 @@ async fn dispatch_message(
                             )
                             .await;
                         }
+                        let response =
+                            maybe_prefix_response(handle, overrides.as_ref(), new_id, response)
+                                .await;
                         send_response(adapter, &message.sender, response, thread_id, output_format)
                             .await;
                         handle
@@ -1291,6 +1397,7 @@ async fn dispatch_with_blocks(
     thread_id: Option<&str>,
     output_format: OutputFormat,
     lifecycle_reactions: bool,
+    prefix_style: PrefixStyle,
 ) {
     // Route to agent (same logic as text path)
     let agent_id = router.resolve(
@@ -1367,11 +1474,23 @@ async fn dispatch_with_blocks(
 
     typing_task.abort();
 
+    // Resolve agent name once (only if the prefix feature is on) and reuse for
+    // both the first response and any re-resolved retry.
+    let prefix_name = if matches!(prefix_style, PrefixStyle::Off) {
+        None
+    } else {
+        resolve_agent_name(handle, agent_id).await
+    };
+
     match result {
         Ok(response) => {
             if lifecycle_reactions {
                 send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;
             }
+            let response = match &prefix_name {
+                Some(name) => apply_agent_prefix(prefix_style, name, &response),
+                None => response,
+            };
             send_response(adapter, &message.sender, response, thread_id, output_format).await;
             handle
                 .record_delivery(
@@ -1401,6 +1520,15 @@ async fn dispatch_with_blocks(
                             )
                             .await;
                         }
+                        let retry_name = if matches!(prefix_style, PrefixStyle::Off) {
+                            None
+                        } else {
+                            resolve_agent_name(handle, new_id).await
+                        };
+                        let response = match &retry_name {
+                            Some(name) => apply_agent_prefix(prefix_style, name, &response),
+                            None => response,
+                        };
                         send_response(adapter, &message.sender, response, thread_id, output_format)
                             .await;
                         handle
@@ -1488,7 +1616,15 @@ async fn handle_command(
     router: &Arc<AgentRouter>,
     sender: &ChannelUser,
 ) -> String {
-    match name {
+    // Canonicalise through the unified command registry: aliases resolve to
+    // their canonical name and matching is case-insensitive. If the command
+    // is not registered on CHANNEL the original string is passed through so
+    // any legacy / channel-specific names continue to work unchanged.
+    let canonical: &str = slash_commands::resolve(name)
+        .filter(|def| def.surfaces.contains(Surfaces::CHANNEL))
+        .map(|def| def.name)
+        .unwrap_or(name);
+    match canonical {
         "start" => {
             let agents = handle.list_agents().await.unwrap_or_default();
             let mut msg = "Welcome to OpenFang! I connect you to AI agents.\n\nAvailable agents:\n"
@@ -1718,7 +1854,10 @@ async fn handle_command(
         "peers" => handle.peers_text().await,
         "a2a" => handle.a2a_agents_text().await,
 
-        _ => format!("Unknown command: /{name}"),
+        _ => format!(
+            "Unknown command: /{name}\n\n{}",
+            slash_commands::render_help(Surfaces::CHANNEL)
+        ),
     }
 }
 
@@ -1932,6 +2071,10 @@ mod tests {
             default_output_format_for_channel("discord"),
             OutputFormat::Markdown
         );
+        assert_eq!(
+            default_output_format_for_channel("signal"),
+            OutputFormat::PlainText
+        )
     }
 
     #[tokio::test]
@@ -2020,6 +2163,136 @@ mod tests {
     #[test]
     fn test_detect_image_magic_empty() {
         assert_eq!(detect_image_magic(&[]), None);
+    }
+
+    #[test]
+    fn test_apply_agent_prefix_off_is_identity() {
+        let text = "hello world";
+        let out = apply_agent_prefix(PrefixStyle::Off, "coder", text);
+        assert_eq!(out, text);
+        // Ensure no reallocation surprise: the output must equal the input byte-for-byte.
+        assert_eq!(out.as_bytes(), text.as_bytes());
+    }
+
+    #[test]
+    fn test_apply_agent_prefix_bracket() {
+        let out = apply_agent_prefix(
+            PrefixStyle::Bracket,
+            "platform-architect",
+            "Here's my take.",
+        );
+        assert_eq!(out, "[platform-architect] Here's my take.");
+    }
+
+    #[test]
+    fn test_apply_agent_prefix_bold_bracket() {
+        let out = apply_agent_prefix(PrefixStyle::BoldBracket, "coder", "All green.");
+        assert_eq!(out, "**[coder]** All green.");
+    }
+
+    #[test]
+    fn test_apply_agent_prefix_idempotent_bracket() {
+        // If the response already carries our bracket label, don't double-wrap.
+        let already = "[coder] already prefixed";
+        let out = apply_agent_prefix(PrefixStyle::Bracket, "coder", already);
+        assert_eq!(out, already);
+    }
+
+    #[test]
+    fn test_apply_agent_prefix_idempotent_bold_bracket() {
+        let already = "**[coder]** already bold";
+        let out = apply_agent_prefix(PrefixStyle::BoldBracket, "coder", already);
+        assert_eq!(out, already);
+        // Bracket style also detects the bolded form and leaves it alone.
+        let out2 = apply_agent_prefix(PrefixStyle::Bracket, "coder", already);
+        assert_eq!(out2, already);
+    }
+
+    #[test]
+    fn test_apply_agent_prefix_empty_name_is_noop() {
+        let text = "no author";
+        let out = apply_agent_prefix(PrefixStyle::Bracket, "", text);
+        assert_eq!(out, text);
+    }
+
+    #[tokio::test]
+    async fn test_maybe_prefix_response_off_is_byte_identical() {
+        let agent_id = AgentId::new();
+        let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
+            agents: Mutex::new(vec![(agent_id, "coder".to_string())]),
+        });
+        let overrides = ChannelOverrides::default();
+        let input = "Hello from the agent.".to_string();
+        let original_bytes = input.clone();
+        let out = maybe_prefix_response(&handle, Some(&overrides), agent_id, input).await;
+        assert_eq!(out.as_bytes(), original_bytes.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn test_maybe_prefix_response_bracket_wraps() {
+        let agent_id = AgentId::new();
+        let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
+            agents: Mutex::new(vec![(agent_id, "coder".to_string())]),
+        });
+        let overrides = ChannelOverrides {
+            prefix_agent_name: PrefixStyle::Bracket,
+            ..Default::default()
+        };
+        let out =
+            maybe_prefix_response(&handle, Some(&overrides), agent_id, "Hi".to_string()).await;
+        assert_eq!(out, "[coder] Hi");
+    }
+
+    #[tokio::test]
+    async fn test_maybe_prefix_response_bold_bracket_wraps() {
+        let agent_id = AgentId::new();
+        let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
+            agents: Mutex::new(vec![(agent_id, "coder".to_string())]),
+        });
+        let overrides = ChannelOverrides {
+            prefix_agent_name: PrefixStyle::BoldBracket,
+            ..Default::default()
+        };
+        let out =
+            maybe_prefix_response(&handle, Some(&overrides), agent_id, "Hi".to_string()).await;
+        assert_eq!(out, "**[coder]** Hi");
+    }
+
+    #[tokio::test]
+    async fn test_maybe_prefix_response_unknown_agent_falls_back() {
+        // When the agent id isn't in list_agents, we leave the text alone
+        // rather than fabricating a label.
+        let known = AgentId::new();
+        let unknown = AgentId::new();
+        let handle: Arc<dyn ChannelBridgeHandle> = Arc::new(MockHandle {
+            agents: Mutex::new(vec![(known, "coder".to_string())]),
+        });
+        let overrides = ChannelOverrides {
+            prefix_agent_name: PrefixStyle::Bracket,
+            ..Default::default()
+        };
+        let out = maybe_prefix_response(&handle, Some(&overrides), unknown, "Hi".to_string()).await;
+        assert_eq!(out, "Hi");
+    }
+
+    #[test]
+    fn test_prefix_style_default_is_off_and_serde_snake_case() {
+        assert_eq!(PrefixStyle::default(), PrefixStyle::Off);
+        // Round-trip: the serialized representation is snake_case and
+        // an unspecified config field deserializes to Off so existing TOML
+        // keeps working.
+        let v: PrefixStyle = serde_json::from_str("\"bracket\"").unwrap();
+        assert_eq!(v, PrefixStyle::Bracket);
+        let v: PrefixStyle = serde_json::from_str("\"bold_bracket\"").unwrap();
+        assert_eq!(v, PrefixStyle::BoldBracket);
+        let v: PrefixStyle = serde_json::from_str("\"off\"").unwrap();
+        assert_eq!(v, PrefixStyle::Off);
+    }
+
+    #[test]
+    fn test_channel_overrides_default_prefix_off() {
+        let o = ChannelOverrides::default();
+        assert_eq!(o.prefix_agent_name, PrefixStyle::Off);
     }
 
     #[test]

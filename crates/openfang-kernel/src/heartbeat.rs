@@ -335,6 +335,7 @@ mod tests {
                 exec_policy: None,
                 tool_allowlist: vec![],
                 tool_blocklist: vec![],
+                cache_context: false,
             },
             state,
             mode: AgentMode::default(),

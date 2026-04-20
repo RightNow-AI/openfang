@@ -49,12 +49,13 @@ use openfang_channels::discourse::DiscourseAdapter;
 use openfang_channels::gitter::GitterAdapter;
 use openfang_channels::gotify::GotifyAdapter;
 use openfang_channels::linkedin::LinkedInAdapter;
-use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::mqtt::MqttAdapter;
+use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_channels::wecom::WeComAdapter;
 use openfang_kernel::OpenFangKernel;
+use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_types::agent::AgentId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -523,6 +524,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                         timeout_secs: None,
                     },
                     delivery: openfang_types::scheduler::CronDelivery::None,
+                    delivery_targets: Vec::new(),
                     created_at: chrono::Utc::now(),
                     last_run: None,
                     next_run: None,
@@ -816,6 +818,19 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         }
     }
 
+    async fn free_response_channels(&self, channel_type: &str) -> Vec<String> {
+        let channels = &self.kernel.config.channels;
+        match channel_type {
+            "discord" => channels
+                .discord
+                .as_ref()
+                .map(|c| c.free_response_channels.clone())
+                .unwrap_or_default(),
+            // Add other channel types here as needed (e.g., "telegram" => ...)
+            _ => Vec::new(),
+        }
+    }
+
     async fn authorize_channel_user(
         &self,
         channel_type: &str,
@@ -878,6 +893,23 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                 .memory
                 .structured_set(agent_id, "delivery.last_channel", kv_val);
         }
+    }
+
+    async fn send_channel_message(
+        &self,
+        channel_type: &str,
+        recipient: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        <OpenFangKernel as KernelHandle>::send_channel_message(
+            &self.kernel,
+            channel_type,
+            recipient,
+            message,
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn check_auto_reply(&self, agent_id: AgentId, message: &str) -> Option<String> {
@@ -1457,8 +1489,15 @@ pub async fn start_channel_bridge_with_config(
     // Revolt
     if let Some(ref rv_config) = config.revolt {
         if let Some(token) = read_token(&rv_config.bot_token_env, "Revolt") {
-            let adapter = Arc::new(RevoltAdapter::new(token));
-            adapters.push((adapter, rv_config.default_agent.clone()));
+            let mut adapter = RevoltAdapter::with_urls(
+                token,
+                rv_config.api_url.clone(),
+                rv_config.ws_url.clone(),
+            );
+            if !rv_config.allowed_channels.is_empty() {
+                adapter.set_allowed_channels(rv_config.allowed_channels.clone());
+            }
+            adapters.push((Arc::new(adapter), rv_config.default_agent.clone()));
         }
     }
 

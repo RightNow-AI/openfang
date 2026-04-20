@@ -16,6 +16,23 @@ pub struct SkillInfo {
     pub runtime: String,
     pub source: String,
     pub description: String,
+    /// Number of config vars the skill's SKILL.md declares. Zero = no badge.
+    pub config_declared: usize,
+    /// Number of declared vars that are currently resolved (user override,
+    /// env, or default). When `< config_declared` the badge shows a warning.
+    pub config_resolved: usize,
+}
+
+/// Declared + resolved config for a single variable, shown on the Skills
+/// detail pane when a skill with a non-empty `config:` section is selected.
+#[derive(Clone, Default)]
+pub struct SkillConfigVarDetail {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+    pub source: String, // "user" | "env" | "default" | "unresolved"
+    pub value_hint: String,
+    pub is_secret: bool,
 }
 
 #[derive(Clone, Default)]
@@ -82,6 +99,9 @@ pub struct SkillsState {
     pub tick: usize,
     pub confirm_uninstall: bool,
     pub status_msg: String,
+    /// Config variable details for the currently selected installed skill.
+    /// Keyed by skill name so refreshing the list doesn't strand stale data.
+    pub selected_config_details: Option<(String, Vec<SkillConfigVarDetail>)>,
 }
 
 pub enum SkillsAction {
@@ -92,6 +112,10 @@ pub enum SkillsAction {
     InstallSkill(String),
     UninstallSkill(String),
     RefreshMcp,
+    /// Fetch declared + resolved config for the named skill and display it
+    /// in the details pane. Consumed by the caller which drives the API
+    /// request.
+    LoadSkillConfig(String),
 }
 
 impl SkillsState {
@@ -111,6 +135,7 @@ impl SkillsState {
             tick: 0,
             confirm_uninstall: false,
             status_msg: String::new(),
+            selected_config_details: None,
         }
     }
 
@@ -184,6 +209,20 @@ impl SkillsState {
             KeyCode::Char('u') => {
                 if self.installed_list.selected().is_some() {
                     self.confirm_uninstall = true;
+                }
+            }
+            KeyCode::Char('c') => {
+                if let Some(sel) = self.installed_list.selected() {
+                    if sel < self.installed.len() {
+                        let name = self.installed[sel].name.clone();
+                        // Only skills that declare config are worth fetching.
+                        if self.installed[sel].config_declared > 0 {
+                            return SkillsAction::LoadSkillConfig(name);
+                        } else {
+                            self.status_msg =
+                                format!("'{}' declares no runtime config.", name);
+                        }
+                    }
                 }
             }
             KeyCode::Char('r') => return SkillsAction::RefreshInstalled,
@@ -336,9 +375,11 @@ fn draw_sub_tabs(f: &mut Frame, area: Rect, active: SkillsSub) {
 }
 
 fn draw_installed(f: &mut Frame, area: Rect, state: &mut SkillsState) {
-    let chunks = Layout::vertical([
+    // Two panes: list on the left, config details on the right, with a
+    // single-line hint bar underneath.
+    let outer = Layout::vertical([
         Constraint::Length(1), // header
-        Constraint::Min(3),    // list
+        Constraint::Min(3),    // list + details
         Constraint::Length(1), // hints
     ])
     .split(area);
@@ -346,14 +387,26 @@ fn draw_installed(f: &mut Frame, area: Rect, state: &mut SkillsState) {
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             format!(
-                "  {:<20} {:<8} {:<12} {}",
-                "Name", "Runtime", "Source", "Description"
+                "  {:<18} {:<7} {:<10} {:<11} {}",
+                "Name", "Runtime", "Source", "Config", "Description"
             ),
             theme::table_header(),
         )])),
-        chunks[0],
+        outer[0],
     );
 
+    // Only show the details pane when there's room and a selection with
+    // declared config exists. Below ~80 cols we collapse to list-only.
+    let has_details = state.selected_config_details.is_some();
+    let body_chunks: Vec<Rect> = if has_details && outer[1].width >= 70 {
+        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(outer[1])
+            .to_vec()
+    } else {
+        vec![outer[1]]
+    };
+
+    // Skills list (left pane or full width)
     if state.loading {
         let spinner = theme::SPINNER_FRAMES[state.tick % theme::SPINNER_FRAMES.len()];
         f.render_widget(
@@ -361,7 +414,7 @@ fn draw_installed(f: &mut Frame, area: Rect, state: &mut SkillsState) {
                 Span::styled(format!("  {spinner} "), Style::default().fg(theme::CYAN)),
                 Span::styled("Loading skills\u{2026}", theme::dim_style()),
             ])),
-            chunks[1],
+            body_chunks[0],
         );
     } else if state.installed.is_empty() {
         f.render_widget(
@@ -369,7 +422,7 @@ fn draw_installed(f: &mut Frame, area: Rect, state: &mut SkillsState) {
                 "  No skills installed. Press [2] to browse ClawHub.",
                 theme::dim_style(),
             )),
-            chunks[1],
+            body_chunks[0],
         );
     } else {
         let items: Vec<ListItem> = state
@@ -394,15 +447,29 @@ fn draw_installed(f: &mut Frame, area: Rect, state: &mut SkillsState) {
                     "builtin" | "built-in" => Style::default().fg(theme::GREEN),
                     _ => theme::dim_style(),
                 };
+                let (config_text, config_style) = if s.config_declared == 0 {
+                    (String::from("-"), theme::dim_style())
+                } else if s.config_resolved >= s.config_declared {
+                    (
+                        format!("[{}/{}]", s.config_resolved, s.config_declared),
+                        Style::default().fg(theme::GREEN),
+                    )
+                } else {
+                    (
+                        format!("[{}/{} \u{26A0}]", s.config_resolved, s.config_declared),
+                        Style::default().fg(theme::YELLOW),
+                    )
+                };
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("  {:<20}", truncate(&s.name, 19)),
+                        format!("  {:<18}", truncate(&s.name, 17)),
                         Style::default().fg(theme::CYAN),
                     ),
-                    Span::styled(format!(" {:<8}", runtime_badge), runtime_style),
-                    Span::styled(format!(" {:<12}", &s.source), source_style),
+                    Span::styled(format!(" {:<7}", runtime_badge), runtime_style),
+                    Span::styled(format!(" {:<10}", &s.source), source_style),
+                    Span::styled(format!(" {:<11}", config_text), config_style),
                     Span::styled(
-                        format!(" {}", truncate(&s.description, 30)),
+                        format!(" {}", truncate(&s.description, 24)),
                         theme::dim_style(),
                     ),
                 ]))
@@ -412,7 +479,12 @@ fn draw_installed(f: &mut Frame, area: Rect, state: &mut SkillsState) {
         let list = List::new(items)
             .highlight_style(theme::selected_style())
             .highlight_symbol("> ");
-        f.render_stateful_widget(list, chunks[1], &mut state.installed_list);
+        f.render_stateful_widget(list, body_chunks[0], &mut state.installed_list);
+    }
+
+    // Config details pane (right side)
+    if has_details && body_chunks.len() > 1 {
+        draw_skill_config_details(f, body_chunks[1], state);
     }
 
     if state.confirm_uninstall {
@@ -421,7 +493,7 @@ fn draw_installed(f: &mut Frame, area: Rect, state: &mut SkillsState) {
                 "  Uninstall this skill? [y] Yes  [any] Cancel",
                 Style::default().fg(theme::YELLOW),
             )])),
-            chunks[2],
+            outer[2],
         );
     } else if !state.status_msg.is_empty() {
         f.render_widget(
@@ -429,17 +501,89 @@ fn draw_installed(f: &mut Frame, area: Rect, state: &mut SkillsState) {
                 format!("  {}", state.status_msg),
                 Style::default().fg(theme::GREEN),
             )])),
-            chunks[2],
+            outer[2],
         );
     } else {
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
-                "  [\u{2191}\u{2193}] Navigate  [u] Uninstall  [r] Refresh",
+                "  [\u{2191}\u{2193}] Navigate  [c] View config  [u] Uninstall  [r] Refresh",
                 theme::hint_style(),
             )])),
-            chunks[2],
+            outer[2],
         );
     }
+}
+
+fn draw_skill_config_details(f: &mut Frame, area: Rect, state: &SkillsState) {
+    let Some((name, rows)) = state.selected_config_details.as_ref() else {
+        return;
+    };
+    let block = Block::default()
+        .title(Line::from(vec![Span::styled(
+            format!(" Config: {name} "),
+            Style::default().fg(theme::ACCENT),
+        )]))
+        .borders(Borders::LEFT)
+        .border_style(theme::dim_style())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if rows.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "No config declared.",
+                theme::dim_style(),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    for row in rows {
+        let src_style = match row.source.as_str() {
+            "user" => Style::default().fg(theme::GREEN),
+            "env" => Style::default().fg(theme::CYAN),
+            "default" => theme::dim_style(),
+            _ => Style::default().fg(theme::RED),
+        };
+        let required_marker = if row.required { "*" } else { " " };
+        let mut header = vec![
+            Span::styled(
+                format!("{required_marker} {}", truncate(&row.name, 22)),
+                Style::default()
+                    .fg(theme::CYAN)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(format!("[{}]", row.source), src_style),
+        ];
+        if row.is_secret {
+            header.push(Span::raw(" "));
+            header.push(Span::styled(
+                "(secret)",
+                Style::default()
+                    .fg(theme::YELLOW)
+                    .add_modifier(Modifier::ITALIC),
+            ));
+        }
+        lines.push(Line::from(header));
+        if !row.value_hint.is_empty() {
+            lines.push(Line::from(vec![Span::styled(
+                format!("   = {}", truncate(&row.value_hint, 32)),
+                theme::dim_style(),
+            )]));
+        }
+        if !row.description.is_empty() {
+            lines.push(Line::from(vec![Span::styled(
+                format!("   {}", truncate(&row.description, 36)),
+                theme::dim_style(),
+            )]));
+        }
+        lines.push(Line::from(vec![Span::raw("")]));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_clawhub(f: &mut Frame, area: Rect, state: &mut SkillsState) {
