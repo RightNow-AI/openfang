@@ -226,6 +226,26 @@ impl ModelCatalog {
             return Some(entry);
         }
 
+        // Try provider-prefixed ID form (e.g. caller passes "minimax-m2.5" but
+        // the catalog entry carries the globally-unique id "volcengine_coding/minimax-m2.5").
+        let prefixed = format!("{}/{}", provider, id_or_alias);
+        let prefixed_lower = prefixed.to_lowercase();
+        let mut prefixed_ci: Option<&ModelCatalogEntry> = None;
+        for m in &self.models {
+            if m.provider != provider {
+                continue;
+            }
+            if m.id == prefixed {
+                return Some(m);
+            }
+            if m.id.to_lowercase() == prefixed_lower && prefixed_ci.is_none() {
+                prefixed_ci = Some(m);
+            }
+        }
+        if let Some(entry) = prefixed_ci {
+            return Some(entry);
+        }
+
         // Display-name match scoped to provider
         if let Some(entry) = self
             .models
@@ -306,6 +326,16 @@ impl ModelCatalog {
     /// Get pricing for a model: (input_cost_per_million, output_cost_per_million).
     pub fn pricing(&self, model_id: &str) -> Option<(f64, f64)> {
         self.find_model(model_id)
+            .map(|m| (m.input_cost_per_m, m.output_cost_per_m))
+    }
+
+    /// Look up pricing for a model scoped to a specific provider.
+    ///
+    /// Delegates to `find_model_for_provider` so provider-prefixed IDs
+    /// (e.g. `volcengine_coding/minimax-m2.5`) are resolved correctly when
+    /// the caller only has the short API name (`minimax-m2.5`).
+    pub fn pricing_for_provider(&self, model_id: &str, provider: &str) -> Option<(f64, f64)> {
+        self.find_model_for_provider(model_id, provider)
             .map(|m| (m.input_cost_per_m, m.output_cost_per_m))
     }
 
@@ -865,7 +895,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
         // ── Volcano Engine (Doubao) ──────────────────────────────────
         ProviderInfo {
             id: "volcengine".into(),
-            display_name: "Volcano Engine (Doubao)".into(),
+            display_name: "Volcano Engine".into(),
             api_key_env: "VOLCENGINE_API_KEY".into(),
             base_url: VOLCENGINE_BASE_URL.into(),
             key_required: true,
@@ -3449,6 +3479,136 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_streaming: true,
             aliases: vec![],
         },
+        // ══════════════════════════════════════════════════════════════
+        // Volcano Engine Coding Plan (9)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "ark-code-latest".into(),
+            display_name: "ark-code-latest".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["ark-code".into()],
+        },
+        ModelCatalogEntry {
+            id: "volcengine_coding/doubao-seed-2.0-code".into(),
+            display_name: "Doubao Seed 2.0 Code".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "volcengine_coding/doubao-seed-2.0-pro".into(),
+            display_name: "Doubao Seed 2.0 Pro".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Frontier,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "volcengine_coding/doubao-seed-2.0-lite".into(),
+            display_name: "Doubao Seed 2.0 Lite".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Fast,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "volcengine_coding/doubao-seed-code".into(),
+            display_name: "Doubao Seed Code".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "volcengine_coding/minimax-m2.5".into(),
+            display_name: "MiniMax M2.5".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 200_000,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "volcengine_coding/glm-4.7".into(),
+            display_name: "GLM 4.7".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Balanced,
+            context_window: 200_000,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "volcengine_coding/deepseek-v3.2".into(),
+            display_name: "DeepSeek V3.2".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "volcengine_coding/kimi-k2.5".into(),
+            display_name: "Kimi K2.5".into(),
+            provider: "volcengine_coding".into(),
+            tier: ModelTier::Smart,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+
         // ══════════════════════════════════════════════════════════════
         // Volcano Engine / Doubao (4)
         // ══════════════════════════════════════════════════════════════

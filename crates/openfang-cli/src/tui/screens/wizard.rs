@@ -86,6 +86,18 @@ const PROVIDERS: &[ProviderInfo] = &[
         needs_key: true,
     },
     ProviderInfo {
+        name: "volcengine_coding",
+        env_var: "VOLCENGINE_API_KEY",
+        default_model: "ark-code-latest",
+        needs_key: true,
+    },
+    ProviderInfo {
+        name: "volcengine",
+        env_var: "VOLCENGINE_API_KEY",
+        default_model: "doubao-seed-1-6-251015",
+        needs_key: true,
+    },
+    ProviderInfo {
         name: "perplexity",
         env_var: "PERPLEXITY_API_KEY",
         default_model: "sonar-pro",

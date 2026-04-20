@@ -1464,6 +1464,18 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
         ("gemini", "GEMINI_API_KEY", "gemini-2.5-flash", "Gemini"),
         ("deepseek", "DEEPSEEK_API_KEY", "deepseek-chat", "DeepSeek"),
         (
+            "volcengine_coding",
+            "VOLCENGINE_API_KEY",
+            "ark-code-latest",
+            "Volcano Engine Coding Plan",
+        ),
+        (
+            "volcengine",
+            "VOLCENGINE_API_KEY",
+            "doubao-seed-1-6-251015",
+            "Volcano Engine",
+        ),
+        (
             "anthropic",
             "ANTHROPIC_API_KEY",
             "claude-sonnet-4-20250514",
@@ -4774,6 +4786,7 @@ fn provider_to_env_var(provider: &str) -> String {
         "perplexity" => "PERPLEXITY_API_KEY".to_string(),
         "cohere" => "COHERE_API_KEY".to_string(),
         "xai" => "XAI_API_KEY".to_string(),
+        "volcengine" | "doubao" | "volcengine_coding" => "VOLCENGINE_API_KEY".to_string(),
         "brave" => "BRAVE_API_KEY".to_string(),
         "tavily" => "TAVILY_API_KEY".to_string(),
         other => format!("{}_API_KEY", other.to_uppercase()),
@@ -4825,6 +4838,15 @@ pub(crate) fn test_api_key(provider: &str, env_var: &str) -> bool {
             .get("https://openrouter.ai/api/v1/models")
             .bearer_auth(&key)
             .send(),
+        "volcengine" | "doubao" => {
+            let base = openfang_types::model_catalog::VOLCENGINE_BASE_URL.trim_end_matches('/');
+            client.get(format!("{base}/models")).bearer_auth(&key).send()
+        }
+        "volcengine_coding" => {
+            let base = openfang_types::model_catalog::VOLCENGINE_CODING_BASE_URL
+                .trim_end_matches('/');
+            client.get(format!("{base}/models")).bearer_auth(&key).send()
+        }
         // Bedrock bearer tokens are only valid against bedrock-runtime, not the
         // management plane. There is no cheap region-agnostic probe, so skip.
         "bedrock" => return true,

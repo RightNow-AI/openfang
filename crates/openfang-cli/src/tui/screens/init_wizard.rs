@@ -69,6 +69,22 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
+        name: "volcengine_coding",
+        display: "Volcano Engine Coding Plan",
+        env_var: "VOLCENGINE_API_KEY",
+        default_model: "ark-code-latest",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
+        name: "volcengine",
+        display: "Volcano Engine",
+        env_var: "VOLCENGINE_API_KEY",
+        default_model: "doubao-seed-1-6-251015",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
         name: "openrouter",
         display: "OpenRouter",
         env_var: "OPENROUTER_API_KEY",
@@ -328,6 +344,18 @@ struct ModelEntry {
     cost: String,
 }
 
+fn model_cost_label(provider: &str, input_cost_per_m: f64, output_cost_per_m: f64) -> String {
+    if input_cost_per_m == 0.0 && output_cost_per_m == 0.0 {
+        if provider == "volcengine_coding" {
+            "see provider pricing".to_string()
+        } else {
+            "free".to_string()
+        }
+    } else {
+        format!("${:.2}/${:.2}", input_cost_per_m, output_cost_per_m)
+    }
+}
+
 const ROUTING_TIER_NAMES: [&str; 3] = ["Fast", "Balanced", "Frontier"];
 const ROUTING_TIER_DESC: [&str; 3] = [
     "quick lookups, greetings, simple Q&A",
@@ -515,11 +543,7 @@ impl State {
 
         for (i, m) in models.iter().enumerate() {
             let tier = tier_label(m.tier);
-            let cost = if m.input_cost_per_m == 0.0 && m.output_cost_per_m == 0.0 {
-                "free".to_string()
-            } else {
-                format!("${:.2}/${:.2}", m.input_cost_per_m, m.output_cost_per_m)
-            };
+            let cost = model_cost_label(p.name, m.input_cost_per_m, m.output_cost_per_m);
 
             if m.id == p.default_model {
                 default_idx = i;
@@ -1197,6 +1221,24 @@ fn handle_migration_key(
                 state.advance_to_provider();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_cost_label;
+
+    #[test]
+    fn volcengine_coding_zero_cost_models_do_not_render_as_free() {
+        assert_eq!(
+            model_cost_label("volcengine_coding", 0.0, 0.0),
+            "see provider pricing"
+        );
+    }
+
+    #[test]
+    fn zero_cost_models_for_other_providers_still_render_as_free() {
+        assert_eq!(model_cost_label("ollama", 0.0, 0.0), "free");
     }
 }
 

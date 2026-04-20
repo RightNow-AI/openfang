@@ -522,6 +522,7 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
         ("gemini", "gemini-2.5-flash", "GEMINI_API_KEY"),
         ("groq", "llama-3.3-70b-versatile", "GROQ_API_KEY"),
         ("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY"),
+        ("volcengine_coding", "ark-code-latest", "VOLCENGINE_API_KEY"),
         (
             "openrouter",
             "openrouter/google/gemini-2.5-flash",
@@ -600,6 +601,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "kimi_coding",
         "qianfan",
         "volcengine",
+        "volcengine_coding",
         "chutes",
         "venice",
         "nvidia",
@@ -706,6 +708,7 @@ mod tests {
         assert!(providers.contains(&"kimi_coding"));
         assert!(providers.contains(&"qianfan"));
         assert!(providers.contains(&"volcengine"));
+        assert!(providers.contains(&"volcengine_coding"));
         assert!(providers.contains(&"chutes"));
         assert!(providers.contains(&"nvidia"));
         assert!(providers.contains(&"novita"));
