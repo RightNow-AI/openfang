@@ -158,8 +158,20 @@ impl TelegramAdapter {
         // Any other tag (e.g. <name>, <thinking>) causes a 400 Bad Request.
         let sanitized = sanitize_telegram_html(text);
 
-        // Telegram has a 4096 character limit per message — split if needed
+        // Telegram has a 4096 character limit per message — split if needed.
+        //
+        // Error semantics for multi-chunk sends match the convention used by
+        // sibling adapters that also call `split_message` (Discord, Gitter,
+        // Mattermost, Nextcloud, Twitch, Pumble): fail loudly if NOTHING was
+        // delivered (first-chunk failure → return Err so the caller knows), but
+        // treat a mid-stream failure as best-effort — warn and continue — so the
+        // user isn't told "send failed" after they've already received
+        // preceding chunks. The motivating bug (HTML parse errors) is always a
+        // first-chunk failure anyway (sanitization/parse_mode applies to the
+        // whole text), so this keeps the fix effective while avoiding a
+        // partial-delivery-then-error regression.
         let chunks = split_message(&sanitized, 4096);
+        let mut delivered_any = false;
         for chunk in chunks {
             let mut body = serde_json::json!({
                 "chat_id": chat_id,
@@ -175,7 +187,15 @@ impl TelegramAdapter {
             if !status.is_success() {
                 let body_text = resp.text().await.unwrap_or_default();
                 warn!("Telegram sendMessage failed ({status}): {body_text}");
+                if !delivered_any {
+                    return Err(
+                        format!("Telegram sendMessage failed ({status}): {body_text}").into(),
+                    );
+                }
+                // Partial delivery already happened; continue on best-effort.
+                continue;
             }
+            delivered_any = true;
         }
         Ok(())
     }
@@ -201,9 +221,11 @@ impl TelegramAdapter {
             body["message_thread_id"] = serde_json::json!(tid);
         }
         let resp = self.client.post(&url).json(&body).send().await?;
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            warn!("Telegram sendPhoto failed: {body_text}");
+            warn!("Telegram sendPhoto failed ({status}): {body_text}");
+            return Err(format!("Telegram sendPhoto failed ({status}): {body_text}").into());
         }
         Ok(())
     }
@@ -230,9 +252,11 @@ impl TelegramAdapter {
             body["message_thread_id"] = serde_json::json!(tid);
         }
         let resp = self.client.post(&url).json(&body).send().await?;
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            warn!("Telegram sendDocument failed: {body_text}");
+            warn!("Telegram sendDocument failed ({status}): {body_text}");
+            return Err(format!("Telegram sendDocument failed ({status}): {body_text}").into());
         }
         Ok(())
     }
@@ -268,9 +292,13 @@ impl TelegramAdapter {
         }
 
         let resp = self.client.post(&url).multipart(form).send().await?;
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            warn!("Telegram sendDocument upload failed: {body_text}");
+            warn!("Telegram sendDocument upload failed ({status}): {body_text}");
+            return Err(
+                format!("Telegram sendDocument upload failed ({status}): {body_text}").into(),
+            );
         }
         Ok(())
     }
@@ -291,9 +319,11 @@ impl TelegramAdapter {
             body["message_thread_id"] = serde_json::json!(tid);
         }
         let resp = self.client.post(&url).json(&body).send().await?;
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            warn!("Telegram sendVoice failed: {body_text}");
+            warn!("Telegram sendVoice failed ({status}): {body_text}");
+            return Err(format!("Telegram sendVoice failed ({status}): {body_text}").into());
         }
         Ok(())
     }
@@ -320,9 +350,11 @@ impl TelegramAdapter {
             body["message_thread_id"] = serde_json::json!(tid);
         }
         let resp = self.client.post(&url).json(&body).send().await?;
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            warn!("Telegram sendLocation failed: {body_text}");
+            warn!("Telegram sendLocation failed ({status}): {body_text}");
+            return Err(format!("Telegram sendLocation failed ({status}): {body_text}").into());
         }
         Ok(())
     }
@@ -1909,4 +1941,164 @@ mod tests {
         }
         assert!(!msg.metadata.contains_key("reply_to_message_id"));
     }
+
+    // -----------------------------------------------------------------------
+    // Stub Telegram Bot API server for send-path and reaction-cache tests.
+    //
+    // Binds an axum app to an ephemeral port, returns a base URL that the
+    // `TelegramAdapter` can be pointed at via the `api_url` constructor
+    // parameter, and records per-call response fixtures + hit count.
+    // -----------------------------------------------------------------------
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct StubServer {
+        hits: AtomicUsize,
+        responses: std::sync::Mutex<Vec<(u16, String)>>,
+    }
+
+    impl StubServer {
+        fn new(responses: Vec<(u16, &str)>) -> Arc<Self> {
+            Arc::new(Self {
+                hits: AtomicUsize::new(0),
+                responses: std::sync::Mutex::new(
+                    responses
+                        .into_iter()
+                        .map(|(s, b)| (s, b.to_string()))
+                        .collect(),
+                ),
+            })
+        }
+
+        fn hit_count(&self) -> usize {
+            self.hits.load(Ordering::SeqCst)
+        }
+    }
+
+    async fn spawn_stub_server(stub: Arc<StubServer>) -> String {
+        use axum::{http::StatusCode, routing::any, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stub_for_handler = stub.clone();
+        let app = Router::new().fallback(any(move || {
+            let stub = stub_for_handler.clone();
+            async move {
+                let i = stub.hits.fetch_add(1, Ordering::SeqCst);
+                let responses = stub.responses.lock().unwrap();
+                if i < responses.len() {
+                    let (status, body) = responses[i].clone();
+                    (
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                        body,
+                    )
+                } else {
+                    (
+                        StatusCode::OK,
+                        r#"{"ok":true,"result":true}"#.to_string(),
+                    )
+                }
+            }
+        }));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{}", addr)
+    }
+
+    /// Build an adapter pointed at a stub server, bypassing `start()` (which
+    /// would call `getMe` / `setMyCommands` against the real API).
+    fn test_adapter(api_url: String) -> TelegramAdapter {
+        TelegramAdapter::new(
+            "test:token".to_string(),
+            vec![],
+            Duration::from_millis(10),
+            Some(api_url),
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // send-path error propagation (api_send_message)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_api_send_message_single_chunk_400_returns_err() {
+        let stub = StubServer::new(vec![(
+            400,
+            r#"{"ok":false,"error_code":400,"description":"Bad Request: can't parse entities"}"#,
+        )]);
+        let base = spawn_stub_server(stub.clone()).await;
+        let adapter = test_adapter(base);
+
+        let result = adapter.api_send_message(12345, "hello", None).await;
+
+        assert!(result.is_err(), "expected Err on single-chunk 400");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("400"), "err should include status: {err}");
+        assert!(
+            err.contains("can't parse entities"),
+            "err should include body: {err}"
+        );
+        assert_eq!(stub.hit_count(), 1, "expected exactly one POST");
+    }
+
+    #[tokio::test]
+    async fn test_api_send_message_single_chunk_200_returns_ok() {
+        let stub = StubServer::new(vec![(200, r#"{"ok":true,"result":{}}"#)]);
+        let base = spawn_stub_server(stub.clone()).await;
+        let adapter = test_adapter(base);
+
+        let result = adapter.api_send_message(12345, "hello", None).await;
+
+        assert!(result.is_ok(), "expected Ok on 200: {result:?}");
+        assert_eq!(stub.hit_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_api_send_message_first_chunk_fail_returns_err() {
+        // Two-chunk message; first POST fails. Nothing delivered → Err.
+        let big = "a".repeat(5000); // > 4096 → split into two chunks
+        let stub = StubServer::new(vec![
+            (500, r#"{"ok":false,"error_code":500,"description":"server"}"#),
+            (200, r#"{"ok":true,"result":{}}"#),
+        ]);
+        let base = spawn_stub_server(stub.clone()).await;
+        let adapter = test_adapter(base);
+
+        let result = adapter.api_send_message(12345, &big, None).await;
+
+        assert!(
+            result.is_err(),
+            "first-chunk failure must return Err, got Ok"
+        );
+        // Must have stopped after the failing first chunk — no partial send.
+        assert_eq!(
+            stub.hit_count(),
+            1,
+            "expected adapter to abort after first-chunk failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_api_send_message_partial_delivery_returns_ok() {
+        // Two-chunk message; first POST succeeds (user sees chunk 1), second
+        // fails. Match sibling-adapter best-effort convention: warn + continue,
+        // return Ok so the agent isn't told total failure after partial success.
+        let big = "a".repeat(5000);
+        let stub = StubServer::new(vec![
+            (200, r#"{"ok":true,"result":{}}"#),
+            (400, r#"{"ok":false,"error_code":400,"description":"some err"}"#),
+        ]);
+        let base = spawn_stub_server(stub.clone()).await;
+        let adapter = test_adapter(base);
+
+        let result = adapter.api_send_message(12345, &big, None).await;
+
+        assert!(
+            result.is_ok(),
+            "partial delivery must return Ok (best-effort), got {result:?}"
+        );
+        assert_eq!(stub.hit_count(), 2, "both chunks should have been attempted");
+    }
+
 }
