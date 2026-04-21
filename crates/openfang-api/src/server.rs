@@ -54,6 +54,10 @@ pub async fn build_router(
         budget_config: Arc::new(tokio::sync::RwLock::new(kernel.config.budget.clone())),
     });
 
+    // Start WS cron broadcaster — subscribes to kernel event bus and pushes
+    // cron job results to all connected WebSocket clients in real-time.
+    ws::start_ws_cron_broadcaster(kernel.clone());
+
     // CORS: allow localhost origins by default. If API key is set, the API
     // is protected anyway. For development, permissive CORS is convenient.
     let cors = if state.kernel.config.api_key.trim().is_empty() {

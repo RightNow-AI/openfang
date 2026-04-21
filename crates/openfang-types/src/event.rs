@@ -277,6 +277,21 @@ pub enum SystemEvent {
         /// How long the agent has been unresponsive.
         unresponsive_secs: u64,
     },
+    /// A scheduled cron job was executed and produced a result.
+    CronJobExecuted {
+        /// The agent that ran the job.
+        agent_id: AgentId,
+        /// The job's unique ID.
+        job_id: String,
+        /// The job's display name.
+        job_name: String,
+        /// The trigger message sent to the agent.
+        trigger_message: String,
+        /// The agent's text response.
+        response: String,
+        /// Whether the result was delivered to a channel (e.g. Telegram).
+        delivered_to_channel: bool,
+    },
 }
 
 /// A complete event in the OpenFang event system.
