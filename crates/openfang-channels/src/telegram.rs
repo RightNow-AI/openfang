@@ -11,9 +11,9 @@ use crate::types::{
 use async_trait::async_trait;
 use futures::Stream;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
@@ -49,6 +49,21 @@ pub struct TelegramAdapter {
     /// Bot username (without @), populated from `getMe` during `start()`.
     /// Used for @mention detection in group messages.
     bot_username: Arc<tokio::sync::RwLock<Option<String>>>,
+    /// `(chat_id, emoji)` pairs that Telegram has rejected with a terminal
+    /// `setMessageReaction` error for this bot instance. Checked before
+    /// issuing the API call so we don't keep retrying reactions that will
+    /// never succeed in that chat. Keyed by chat so that an emoji restricted
+    /// in one chat can still be attempted in another (`Chat.available_reactions`
+    /// can differ per chat and is settable by admins).
+    ///
+    /// Cached errors: `REACTION_INVALID` (emoji not in the free-reaction
+    /// allowlist, or not a valid reaction at all), `REACTION_NOT_AVAILABLE`
+    /// (chat admin restricted this emoji), and `REACTION_TOO_MANY` (bot hit
+    /// per-message reaction cap for this chat). Transient errors (429, 5xx,
+    /// unrelated 400s) are NOT cached. Grows monotonically over process
+    /// lifetime; cache resets on restart, which is fine because admins can
+    /// change allowed reactions at any time.
+    rejected_reactions: Arc<Mutex<HashSet<(i64, String)>>>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
 }
@@ -77,6 +92,7 @@ impl TelegramAdapter {
             poll_interval,
             api_base_url,
             bot_username: Arc::new(tokio::sync::RwLock::new(None)),
+            rejected_reactions: Arc::new(Mutex::new(HashSet::new())),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -388,7 +404,26 @@ impl TelegramAdapter {
     /// Sets or replaces the bot's emoji reaction on a message. Each new call
     /// automatically replaces the previous reaction, so there is no need to
     /// explicitly remove old ones.
+    ///
+    /// Telegram restricts non-premium bots to a free-reaction allowlist, and
+    /// chat admins can further restrict allowed reactions per chat via
+    /// `Chat.available_reactions`. Terminal errors
+    /// (`REACTION_INVALID`, `REACTION_NOT_AVAILABLE`, `REACTION_TOO_MANY`)
+    /// are cached per `(chat_id, emoji)` so we don't keep calling the API
+    /// with reactions that will never succeed in that chat. Because two
+    /// concurrent `fire_reaction` calls for the same `(chat_id, emoji)` can
+    /// both pass the cache check before either rejection lands, the first
+    /// rejection may produce up to N duplicate API calls where N is the
+    /// concurrency — this is benign (insert is idempotent) and self-limits
+    /// on the second turn.
     fn fire_reaction(&self, chat_id: i64, message_id: i64, emoji: &str) {
+        // Short-circuit: (chat_id, emoji) previously rejected for this bot.
+        if let Ok(rejected) = self.rejected_reactions.lock() {
+            if rejected.contains(&(chat_id, emoji.to_string())) {
+                return;
+            }
+        }
+
         let url = format!(
             "{}/bot{}/setMessageReaction",
             self.api_base_url,
@@ -400,11 +435,23 @@ impl TelegramAdapter {
             "reaction": [{"type": "emoji", "emoji": emoji}],
         });
         let client = self.client.clone();
+        let rejected_cache = self.rejected_reactions.clone();
+        let emoji = emoji.to_string();
         tokio::spawn(async move {
             match client.post(&url).json(&body).send().await {
                 Ok(resp) if !resp.status().is_success() => {
                     let body_text = resp.text().await.unwrap_or_default();
                     debug!("Telegram setMessageReaction failed: {body_text}");
+                    if is_terminal_reaction_error(&body_text) {
+                        if let Ok(mut rejected) = rejected_cache.lock() {
+                            if rejected.insert((chat_id, emoji.clone())) {
+                                debug!(
+                                    "Telegram: caching rejected reaction (chat={chat_id}, emoji={emoji:?}); \
+                                     further setMessageReaction calls with this pair will be skipped"
+                                );
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     debug!("Telegram setMessageReaction error: {e}");
@@ -413,6 +460,18 @@ impl TelegramAdapter {
             }
         });
     }
+}
+
+/// Terminal errors for `setMessageReaction` — retrying with the same
+/// `(chat, emoji)` pair will not succeed without an outside change (chat
+/// admin updating `Chat.available_reactions`, bot getting Premium, etc.).
+/// Callers cache these and stop retrying. Transient errors (429, 5xx,
+/// `RETRY_AFTER`, unrelated 400s like `MESSAGE_NOT_MODIFIED`) are NOT
+/// included here.
+fn is_terminal_reaction_error(body_text: &str) -> bool {
+    body_text.contains("REACTION_INVALID")
+        || body_text.contains("REACTION_NOT_AVAILABLE")
+        || body_text.contains("REACTION_TOO_MANY")
 }
 
 impl TelegramAdapter {
@@ -2017,6 +2076,20 @@ mod tests {
         )
     }
 
+    async fn wait_for<F>(mut cond: F, timeout_ms: u64) -> bool
+    where
+        F: FnMut() -> bool,
+    {
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+        while std::time::Instant::now() < deadline {
+            if cond() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        cond()
+    }
+
     // -----------------------------------------------------------------------
     // send-path error propagation (api_send_message)
     // -----------------------------------------------------------------------
@@ -2101,4 +2174,143 @@ mod tests {
         assert_eq!(stub.hit_count(), 2, "both chunks should have been attempted");
     }
 
+    // -----------------------------------------------------------------------
+    // reaction cache (fire_reaction + is_terminal_reaction_error)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_terminal_reaction_error_matches() {
+        assert!(is_terminal_reaction_error(
+            r#"{"ok":false,"description":"Bad Request: REACTION_INVALID"}"#
+        ));
+        assert!(is_terminal_reaction_error(
+            r#"{"description":"Bad Request: REACTION_NOT_AVAILABLE"}"#
+        ));
+        assert!(is_terminal_reaction_error(
+            r#"{"description":"Bad Request: REACTION_TOO_MANY"}"#
+        ));
+    }
+
+    #[test]
+    fn test_is_terminal_reaction_error_rejects_transient() {
+        assert!(!is_terminal_reaction_error(
+            r#"{"description":"Too Many Requests: retry after 5"}"#
+        ));
+        assert!(!is_terminal_reaction_error(
+            r#"{"description":"Bad Request: MESSAGE_NOT_MODIFIED"}"#
+        ));
+        assert!(!is_terminal_reaction_error(r#"{"ok":true}"#));
+        assert!(!is_terminal_reaction_error(""));
+    }
+
+    #[tokio::test]
+    async fn test_fire_reaction_caches_on_reaction_invalid() {
+        let stub = StubServer::new(vec![(
+            400,
+            r#"{"ok":false,"error_code":400,"description":"Bad Request: REACTION_INVALID"}"#,
+        )]);
+        let base = spawn_stub_server(stub.clone()).await;
+        let adapter = test_adapter(base);
+
+        adapter.fire_reaction(999, 1, "⏳");
+
+        let cached = wait_for(
+            || {
+                adapter
+                    .rejected_reactions
+                    .lock()
+                    .map(|s| s.contains(&(999_i64, "⏳".to_string())))
+                    .unwrap_or(false)
+            },
+            1000,
+        )
+        .await;
+        assert!(cached, "emoji should be cached after REACTION_INVALID");
+        assert_eq!(stub.hit_count(), 1);
+
+        // Second call with same (chat, emoji) must short-circuit.
+        adapter.fire_reaction(999, 2, "⏳");
+        // Give any rogue task time to fire.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            stub.hit_count(),
+            1,
+            "short-circuit should have prevented second POST"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fire_reaction_cache_is_per_chat() {
+        // Same emoji rejected in chat A should NOT short-circuit in chat B.
+        let stub = StubServer::new(vec![
+            (
+                400,
+                r#"{"ok":false,"error_code":400,"description":"Bad Request: REACTION_INVALID"}"#,
+            ),
+            (200, r#"{"ok":true,"result":true}"#),
+        ]);
+        let base = spawn_stub_server(stub.clone()).await;
+        let adapter = test_adapter(base);
+
+        adapter.fire_reaction(111, 1, "⏳");
+        wait_for(
+            || {
+                adapter
+                    .rejected_reactions
+                    .lock()
+                    .map(|s| s.contains(&(111_i64, "⏳".to_string())))
+                    .unwrap_or(false)
+            },
+            1000,
+        )
+        .await;
+        assert_eq!(stub.hit_count(), 1);
+
+        adapter.fire_reaction(222, 1, "⏳");
+        wait_for(|| stub.hit_count() >= 2, 1000).await;
+        assert_eq!(
+            stub.hit_count(),
+            2,
+            "different chat_id must still fire even when same emoji was cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fire_reaction_does_not_cache_non_terminal() {
+        let stub = StubServer::new(vec![(
+            400,
+            r#"{"ok":false,"error_code":400,"description":"Bad Request: MESSAGE_NOT_MODIFIED"}"#,
+        )]);
+        let base = spawn_stub_server(stub.clone()).await;
+        let adapter = test_adapter(base);
+
+        adapter.fire_reaction(999, 1, "⏳");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(stub.hit_count(), 1);
+
+        let cached = adapter
+            .rejected_reactions
+            .lock()
+            .map(|s| s.contains(&(999_i64, "⏳".to_string())))
+            .unwrap_or(true);
+        assert!(!cached, "non-terminal 400 must NOT populate the cache");
+    }
+
+    #[tokio::test]
+    async fn test_fire_reaction_does_not_cache_on_success() {
+        let stub = StubServer::new(vec![(200, r#"{"ok":true,"result":true}"#)]);
+        let base = spawn_stub_server(stub.clone()).await;
+        let adapter = test_adapter(base);
+
+        adapter.fire_reaction(999, 1, "🤔");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(stub.hit_count(), 1);
+
+        let cached = adapter
+            .rejected_reactions
+            .lock()
+            .map(|s| s.contains(&(999_i64, "🤔".to_string())))
+            .unwrap_or(true);
+        assert!(!cached, "successful reaction must NOT populate the cache");
+    }
 }
