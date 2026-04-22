@@ -464,6 +464,48 @@ fn append_daily_memory_log(workspace: &Path, response: &str) {
     }
 }
 
+fn manifests_differ_on_reload(
+    disk_manifest: &AgentManifest,
+    persisted_manifest: &AgentManifest,
+) -> bool {
+    let reload_fingerprint = |manifest: &AgentManifest| {
+        serde_json::json!({
+            "name": manifest.name,
+            "version": manifest.version,
+            "description": manifest.description,
+            "author": manifest.author,
+            "module": manifest.module,
+            "schedule": manifest.schedule,
+            "model": {
+                "provider": manifest.model.provider,
+                "model": manifest.model.model,
+                "system_prompt": manifest.model.system_prompt,
+                "api_key_env": manifest.model.api_key_env,
+                "base_url": manifest.model.base_url,
+            },
+            "fallback_models": manifest.fallback_models,
+            "resources": manifest.resources,
+            "priority": manifest.priority,
+            "capabilities": manifest.capabilities,
+            "profile": manifest.profile,
+            "tools": manifest.tools,
+            "skills": manifest.skills,
+            "mcp_servers": manifest.mcp_servers,
+            "metadata": manifest.metadata,
+            "tags": manifest.tags,
+            "routing": manifest.routing,
+            "autonomous": manifest.autonomous,
+            "pinned_model": manifest.pinned_model,
+            "workspace": manifest.workspace,
+            "generate_identity_files": manifest.generate_identity_files,
+            "tool_allowlist": manifest.tool_allowlist,
+            "tool_blocklist": manifest.tool_blocklist,
+        })
+    };
+
+    reload_fingerprint(disk_manifest) != reload_fingerprint(persisted_manifest)
+}
+
 /// Read a workspace identity file with a size cap to prevent prompt stuffing.
 /// Returns None if the file doesn't exist or is empty.
 fn read_identity_file(workspace: &Path, filename: &str) -> Option<String> {
@@ -1196,26 +1238,10 @@ impl OpenFangKernel {
                                     &toml_str,
                                 ) {
                                     Ok(disk_manifest) => {
-                                        // Compare key fields to detect changes
-                                        let changed = disk_manifest.name != entry.manifest.name
-                                            || disk_manifest.description
-                                                != entry.manifest.description
-                                            || disk_manifest.model.system_prompt
-                                                != entry.manifest.model.system_prompt
-                                            || disk_manifest.model.provider
-                                                != entry.manifest.model.provider
-                                            || disk_manifest.model.model
-                                                != entry.manifest.model.model
-                                            || disk_manifest.capabilities.tools
-                                                != entry.manifest.capabilities.tools
-                                            || disk_manifest.tool_allowlist
-                                                != entry.manifest.tool_allowlist
-                                            || disk_manifest.tool_blocklist
-                                                != entry.manifest.tool_blocklist
-                                            || disk_manifest.skills != entry.manifest.skills
-                                            || disk_manifest.mcp_servers
-                                                != entry.manifest.mcp_servers;
-                                        if changed {
+                                        if manifests_differ_on_reload(
+                                            &disk_manifest,
+                                            &entry.manifest,
+                                        ) {
                                             info!(
                                                 agent = %name,
                                                 "Agent TOML on disk differs from DB, updating"
@@ -7293,6 +7319,27 @@ mod tests {
             tool_blocklist: vec![],
             cache_context: false,
         }
+    }
+
+    #[test]
+    fn test_manifests_differ_on_reload_detects_workspace_changes() {
+        let mut persisted = test_manifest("coder", "A coder agent", vec![]);
+        let mut disk = persisted.clone();
+
+        persisted.workspace = Some(std::path::PathBuf::from("/tmp/old-workspace"));
+        disk.workspace = Some(std::path::PathBuf::from("/tmp/new-workspace"));
+
+        assert!(manifests_differ_on_reload(&disk, &persisted));
+    }
+
+    #[test]
+    fn test_manifests_differ_on_reload_ignores_identical_manifests() {
+        let mut persisted = test_manifest("coder", "A coder agent", vec!["coding".to_string()]);
+        persisted.capabilities.tools = vec!["file_read".to_string()];
+        persisted.workspace = Some(std::path::PathBuf::from("/tmp/workspace"));
+        let disk = persisted.clone();
+
+        assert!(!manifests_differ_on_reload(&disk, &persisted));
     }
 
     #[test]
