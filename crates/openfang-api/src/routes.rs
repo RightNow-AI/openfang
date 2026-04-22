@@ -8497,6 +8497,46 @@ fn remove_secret_env(path: &std::path::Path, key: &str) -> Result<(), std::io::E
     Ok(())
 }
 
+// ── OAuth token persistence helpers ────────────────────────────────────
+
+/// Persist a single OAuth secret to vault, secrets.env, and the process env.
+fn persist_oauth_secret(state: &AppState, env_var: &str, value: &str) -> Result<(), String> {
+    state.kernel.store_credential(env_var, value);
+    let secrets_path = state.kernel.config.home_dir.join("secrets.env");
+    write_secret_env(&secrets_path, env_var, value)
+        .map_err(|e| format!("Failed to save {env_var}: {e}"))?;
+    std::env::set_var(env_var, value);
+    Ok(())
+}
+
+/// Persist an `OAuthTokenSet` to multiple env vars (de-duplicated).
+///
+/// * `access_env_vars` — one or more env var names that should receive the access token.
+/// * `refresh_env_var` — optional env var name for the refresh token.
+fn persist_oauth_tokens(
+    state: &AppState,
+    access_env_vars: &[&str],
+    refresh_env_var: Option<&str>,
+    tokens: &openfang_runtime::oauth_providers::OAuthTokenSet,
+) -> Result<(), String> {
+    let mut persisted = std::collections::BTreeSet::new();
+    for env_var in access_env_vars {
+        if persisted.insert(*env_var) {
+            persist_oauth_secret(state, env_var, &tokens.access_token)?;
+        }
+    }
+    if let (Some(env_var), Some(refresh_token)) = (refresh_env_var, tokens.refresh_token.as_deref()) {
+        persist_oauth_secret(state, env_var, refresh_token)?;
+    }
+    state
+        .kernel
+        .model_catalog
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .detect_auth();
+    Ok(())
+}
+
 // ── Config.toml channel management helpers ──────────────────────────
 
 /// Upsert a `[channels.<name>]` section in config.toml with the given non-secret fields.
@@ -11675,6 +11715,472 @@ pub async fn copilot_oauth_poll(
         openfang_runtime::copilot_oauth::DeviceFlowStatus::Error(e) => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "error", "error": e})),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI Codex OAuth endpoints
+// ---------------------------------------------------------------------------
+
+/// Active Codex OAuth flows, keyed by poll_id.
+static CODEX_FLOWS: LazyLock<DashMap<String, CodexFlowState>> = LazyLock::new(DashMap::new);
+
+struct CodexFlowState {
+    device_code: String,
+    interval: u64,
+    expires_at: Instant,
+}
+
+/// POST /api/providers/openai-codex/oauth/start
+pub async fn openai_codex_oauth_start() -> impl IntoResponse {
+    use openfang_runtime::oauth_providers::openai_codex_start_device_flow;
+
+    // Clean up expired flows first
+    CODEX_FLOWS.retain(|_, state| state.expires_at > Instant::now());
+
+    match openai_codex_start_device_flow().await {
+        Ok(resp) => {
+            let poll_id = uuid::Uuid::new_v4().to_string();
+            let interval = resp.interval.unwrap_or(5);
+
+            CODEX_FLOWS.insert(
+                poll_id.clone(),
+                CodexFlowState {
+                    device_code: resp.device_code,
+                    interval,
+                    expires_at: Instant::now() + std::time::Duration::from_secs(resp.expires_in),
+                },
+            );
+
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "user_code": resp.user_code,
+                    "verification_uri": resp.verification_uri,
+                    "poll_id": poll_id,
+                    "expires_in": resp.expires_in,
+                    "interval": interval,
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        ),
+    }
+}
+
+/// GET /api/providers/openai-codex/oauth/poll/{poll_id}
+pub async fn openai_codex_oauth_poll(
+    State(state): State<Arc<AppState>>,
+    Path(poll_id): Path<String>,
+) -> impl IntoResponse {
+    use openfang_runtime::oauth_providers::{openai_codex_poll_device_flow, DeviceFlowStatus};
+
+    let flow = match CODEX_FLOWS.get(&poll_id) {
+        Some(f) => f,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"status": "not_found", "error": "Unknown poll_id"})),
+            )
+        }
+    };
+
+    if flow.expires_at <= Instant::now() {
+        drop(flow);
+        CODEX_FLOWS.remove(&poll_id);
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "expired"})),
+        );
+    }
+
+    let device_code = flow.device_code.clone();
+    drop(flow);
+
+    match openai_codex_poll_device_flow(&device_code).await {
+        DeviceFlowStatus::Complete { tokens } => {
+            if let Err(e) = persist_oauth_tokens(
+                &state,
+                &["OPENAI_API_KEY", "OPENAI_CODEX_OAUTH_TOKEN"],
+                Some("OPENAI_CODEX_OAUTH_REFRESH_TOKEN"),
+                &tokens,
+            ) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"status": "error", "error": e})),
+                );
+            }
+
+            CODEX_FLOWS.remove(&poll_id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "complete"})),
+            )
+        }
+        DeviceFlowStatus::Pending => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "pending"})),
+        ),
+        DeviceFlowStatus::SlowDown { new_interval } => {
+            if let Some(mut flow) = CODEX_FLOWS.get_mut(&poll_id) {
+                flow.interval = new_interval;
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "pending", "interval": new_interval})),
+            )
+        }
+        DeviceFlowStatus::Expired => {
+            CODEX_FLOWS.remove(&poll_id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "expired"})),
+            )
+        }
+        DeviceFlowStatus::AccessDenied => {
+            CODEX_FLOWS.remove(&poll_id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "denied"})),
+            )
+        }
+        DeviceFlowStatus::Error(e) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "error", "error": e})),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gemini OAuth endpoints
+// ---------------------------------------------------------------------------
+
+/// Active Gemini OAuth flows, keyed by poll_id.
+static GEMINI_FLOWS: LazyLock<DashMap<String, GeminiFlowState>> = LazyLock::new(DashMap::new);
+
+struct GeminiFlowState {
+    device_code: String,
+    interval: u64,
+    expires_at: Instant,
+}
+
+/// POST /api/providers/gemini-oauth/oauth/start
+pub async fn gemini_oauth_start() -> impl IntoResponse {
+    use openfang_runtime::oauth_providers::gemini_start_device_flow;
+
+    // Clean up expired flows first
+    GEMINI_FLOWS.retain(|_, state| state.expires_at > Instant::now());
+
+    match gemini_start_device_flow().await {
+        Ok(resp) => {
+            let poll_id = uuid::Uuid::new_v4().to_string();
+            let interval = resp.interval.unwrap_or(5);
+
+        GEMINI_FLOWS.insert(
+            poll_id.clone(),
+            GeminiFlowState {
+                device_code: resp.device_code,
+                interval,
+                expires_at: Instant::now() + std::time::Duration::from_secs(resp.expires_in),
+            },
+        );
+
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "user_code": resp.user_code,
+                    "verification_uri": resp.verification_uri,
+                    "poll_id": poll_id,
+                    "expires_in": resp.expires_in,
+                    "interval": interval,
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        ),
+    }
+}
+
+/// GET /api/providers/gemini-oauth/oauth/poll/{poll_id}
+pub async fn gemini_oauth_poll(
+    State(state): State<Arc<AppState>>,
+    Path(poll_id): Path<String>,
+) -> impl IntoResponse {
+    use openfang_runtime::oauth_providers::{gemini_poll_device_flow, DeviceFlowStatus};
+
+    let flow = match GEMINI_FLOWS.get(&poll_id) {
+        Some(f) => f,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"status": "not_found", "error": "Unknown poll_id"})),
+            )
+        }
+    };
+
+    if flow.expires_at <= Instant::now() {
+        drop(flow);
+        GEMINI_FLOWS.remove(&poll_id);
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "expired"})),
+        );
+    }
+
+    let device_code = flow.device_code.clone();
+    drop(flow);
+
+    match gemini_poll_device_flow(&device_code).await {
+        DeviceFlowStatus::Complete { tokens } => {
+            if let Err(e) = persist_oauth_tokens(
+                &state,
+                &["GEMINI_API_KEY", "GEMINI_OAUTH_TOKEN"],
+                Some("GEMINI_OAUTH_REFRESH_TOKEN"),
+                &tokens,
+            ) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"status": "error", "error": e})),
+                );
+            }
+
+            GEMINI_FLOWS.remove(&poll_id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "complete"})),
+            )
+        }
+        DeviceFlowStatus::Pending => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "pending"})),
+        ),
+            DeviceFlowStatus::SlowDown { new_interval } => {
+                // Update interval server-side like Copilot/Codex
+                if let Some(mut f) = GEMINI_FLOWS.get_mut(&poll_id) {
+                    f.interval = new_interval;
+                }
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"status": "pending", "interval": new_interval})),
+                )
+            }
+        DeviceFlowStatus::Expired => {
+            GEMINI_FLOWS.remove(&poll_id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "expired"})),
+            )
+        }
+        DeviceFlowStatus::AccessDenied => {
+            GEMINI_FLOWS.remove(&poll_id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "denied"})),
+            )
+        }
+        DeviceFlowStatus::Error(e) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "error", "error": e})),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Qwen OAuth endpoints
+// ---------------------------------------------------------------------------
+
+/// Active Qwen OAuth flows, keyed by poll_id.
+static QWEN_FLOWS: LazyLock<DashMap<String, QwenFlowState>> = LazyLock::new(DashMap::new);
+
+struct QwenFlowState {
+    start_time: Instant,
+    expires_in: u64,
+}
+
+/// POST /api/providers/qwen-oauth/oauth/start
+pub async fn qwen_oauth_start() -> impl IntoResponse {
+    use openfang_runtime::oauth_providers::qwen_start_oauth_flow;
+
+    // Clean up expired flows first
+    QWEN_FLOWS.retain(|_, state| {
+        state.start_time + std::time::Duration::from_secs(state.expires_in) > Instant::now()
+    });
+
+    match qwen_start_oauth_flow().await {
+        Ok(_) => {
+            let poll_id = uuid::Uuid::new_v4().to_string();
+            QWEN_FLOWS.insert(
+                poll_id.clone(),
+                QwenFlowState {
+                    start_time: Instant::now(),
+                    expires_in: 300, // 5 minutes for Qwen
+                },
+            );
+
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "ready",
+                    "poll_id": poll_id,
+                    "message": "Qwen OAuth credentials loaded from ~/.qwen/oauth_creds.json",
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        ),
+    }
+}
+
+/// GET /api/providers/qwen-oauth/oauth/poll/{poll_id}
+pub async fn qwen_oauth_poll(
+    State(state): State<Arc<AppState>>,
+    Path(poll_id): Path<String>,
+) -> impl IntoResponse {
+    use openfang_runtime::oauth_providers::qwen_poll_oauth_flow;
+
+    let flow = match QWEN_FLOWS.get(&poll_id) {
+        Some(f) => f,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"status": "not_found", "error": "Unknown poll_id"})),
+            )
+        }
+    };
+
+    if flow.start_time + std::time::Duration::from_secs(flow.expires_in) <= Instant::now() {
+        drop(flow);
+        QWEN_FLOWS.remove(&poll_id);
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "expired"})),
+        );
+    }
+
+    drop(flow);
+
+    match qwen_poll_oauth_flow().await {
+        Ok(tokens) => {
+            if let Err(e) = persist_oauth_tokens(
+                &state,
+                &["DASHSCOPE_API_KEY", "QWEN_OAUTH_TOKEN"],
+                Some("QWEN_OAUTH_REFRESH_TOKEN"),
+                &tokens,
+            ) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"status": "error", "error": e})),
+                );
+            }
+
+            QWEN_FLOWS.remove(&poll_id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "complete"})),
+            )
+        }
+        Err(e) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "error", "error": e})),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MiniMax OAuth endpoints
+// ---------------------------------------------------------------------------
+
+/// Active MiniMax OAuth flows, keyed by poll_id.
+static MINIMAX_FLOWS: LazyLock<DashMap<String, MiniMaxFlowState>> = LazyLock::new(DashMap::new);
+
+struct MiniMaxFlowState {
+    start_time: Instant,
+    expires_in: u64,
+}
+
+/// POST /api/providers/minimax-oauth/oauth/start
+pub async fn minimax_oauth_start() -> impl IntoResponse {
+    use openfang_runtime::oauth_providers::minimax_start_oauth_flow;
+
+    // Clean up expired flows first
+    MINIMAX_FLOWS.retain(|_, state| {
+        state.start_time + std::time::Duration::from_secs(state.expires_in) > Instant::now()
+    });
+
+    match minimax_start_oauth_flow().await {
+        Ok(_) => {
+            let poll_id = uuid::Uuid::new_v4().to_string();
+            MINIMAX_FLOWS.insert(
+                poll_id.clone(),
+                MiniMaxFlowState {
+                    start_time: Instant::now(),
+                    expires_in: 300, // 5 minutes for MiniMax
+                },
+            );
+
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "ready",
+                    "poll_id": poll_id,
+                    "message": "MiniMax OAuth flow initiated",
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        ),
+    }
+}
+
+/// GET /api/providers/minimax-oauth/oauth/poll/{poll_id}
+pub async fn minimax_oauth_poll(Path(poll_id): Path<String>) -> impl IntoResponse {
+    use openfang_runtime::oauth_providers::minimax_poll_oauth_flow;
+
+    let flow = match MINIMAX_FLOWS.get(&poll_id) {
+        Some(f) => f,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"status": "not_found", "error": "Unknown poll_id"})),
+            )
+        }
+    };
+
+    if flow.start_time + std::time::Duration::from_secs(flow.expires_in) <= Instant::now() {
+        drop(flow);
+        MINIMAX_FLOWS.remove(&poll_id);
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "expired"})),
+        );
+    }
+
+    drop(flow);
+
+    match minimax_poll_oauth_flow().await {
+        Ok(tokens) => {
+            MINIMAX_FLOWS.remove(&poll_id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "complete",
+                    "access_token": tokens.access_token,
+                    "refresh_token": tokens.refresh_token,
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "pending", "error": e})),
         ),
     }
 }
