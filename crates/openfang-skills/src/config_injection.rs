@@ -154,8 +154,7 @@ pub fn render_config_block(resolved: &HashMap<String, String>) -> String {
     let mut keys: Vec<&String> = resolved.keys().collect();
     keys.sort();
 
-    let mut out =
-        String::from("[Skill config from ~/.openfang/config.toml:\n");
+    let mut out = String::from("[Skill config from ~/.openfang/config.toml:\n");
     for key in keys {
         let raw = &resolved[key];
         let shown = redact_value(key, raw);

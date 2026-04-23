@@ -36,5 +36,8 @@ ignore = [
     "RUSTSEC-2026-0097",  # Transitive dependency
     "RUSTSEC-2026-0098",  # Transitive dependency
     "RUSTSEC-2026-0099",  # Transitive dependency
-    "RUSTSEC-2026-0104",  # rustls-webpki 0.102.8/0.103.10 CRL panic + gimli yanked
+    "RUSTSEC-2026-0104",  # gimli 0.33.1 yanked
 ]
+
+# Note: RUSTSEC-2026-0095 (wasmtime) was fixed by upgrading wasmtime from 41.0.4 to 43.0.1
+# Note: RUSTSEC-2026-0049 (rustls-webpki CRL issue) - wasmtime-43 did NOT resolve it, keeping ignore

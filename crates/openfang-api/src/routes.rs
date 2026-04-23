@@ -6287,7 +6287,7 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
     // Index probe results by provider list position for O(1) lookup
     let mut probe_map: HashMap<usize, openfang_runtime::provider_health::ProbeResult> =
         HashMap::with_capacity(local_providers.len());
-    for ((idx, _, _), result) in local_providers.iter().zip(probe_results.into_iter()) {
+    for ((idx, _, _), result) in local_providers.iter().zip(probe_results) {
         probe_map.insert(*idx, result);
     }
 
@@ -8030,7 +8030,9 @@ fn build_skill_config_snapshot(
             .read()
             .unwrap_or_else(|e| e.into_inner());
         let source: &std::collections::HashMap<String, std::collections::HashMap<String, String>> =
-            override_guard.as_ref().unwrap_or(&state.kernel.config.skills);
+            override_guard
+                .as_ref()
+                .unwrap_or(&state.kernel.config.skills);
         source.get(skill_name).cloned().unwrap_or_default()
     };
 
@@ -8392,7 +8394,9 @@ fn remove_skill_config_var(
 
     let mut remove_skill = false;
     if let Some(skills_table) = root.get_mut("skills").and_then(|v| v.as_table_mut()) {
-        if let Some(skill_section) = skills_table.get_mut(skill_name).and_then(|v| v.as_table_mut())
+        if let Some(skill_section) = skills_table
+            .get_mut(skill_name)
+            .and_then(|v| v.as_table_mut())
         {
             skill_section.remove(var_name);
             if skill_section.is_empty() {
@@ -9019,9 +9023,8 @@ pub async fn create_schedule(
     }
     if let Some(arr) = delivery_targets_raw.as_array() {
         for (idx, t) in arr.iter().enumerate() {
-            if let Err(e) = serde_json::from_value::<
-                openfang_types::scheduler::CronDeliveryTarget,
-            >(t.clone())
+            if let Err(e) =
+                serde_json::from_value::<openfang_types::scheduler::CronDeliveryTarget>(t.clone())
             {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -9152,9 +9155,8 @@ pub async fn update_schedule(
         let mut parsed: Vec<openfang_types::scheduler::CronDeliveryTarget> =
             Vec::with_capacity(arr.len());
         for (idx, t) in arr.iter().enumerate() {
-            match serde_json::from_value::<openfang_types::scheduler::CronDeliveryTarget>(
-                t.clone(),
-            ) {
+            match serde_json::from_value::<openfang_types::scheduler::CronDeliveryTarget>(t.clone())
+            {
                 Ok(dt) => parsed.push(dt),
                 Err(e) => {
                     return (

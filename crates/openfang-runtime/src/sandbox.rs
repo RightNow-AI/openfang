@@ -286,23 +286,25 @@ impl WasmSandbox {
                 |mut caller: Caller<'_, GuestState>,
                  request_ptr: i32,
                  request_len: i32|
-                 -> Result<i64, Error> {
+                 -> Result<i64, wasmtime::Error> {
+                    use wasmtime::Error;
                     // Read request from guest memory
                     let memory = caller
                         .get_export("memory")
                         .and_then(|e| e.into_memory())
-                        .ok_or_else(|| format_err!("no memory export"))?;
+                        .ok_or_else(|| Error::msg("no memory export"))?;
 
                     let data = memory.data(&caller);
                     let start = request_ptr as usize;
                     let end = start + request_len as usize;
                     if end > data.len() {
-                        bail!("host_call: request out of bounds");
+                        return Err(Error::msg("host_call: request out of bounds"));
                     }
                     let request_bytes = data[start..end].to_vec();
 
                     // Parse request
-                    let request: serde_json::Value = serde_json::from_slice(&request_bytes)?;
+                    let request: serde_json::Value = serde_json::from_slice(&request_bytes)
+                        .map_err(|e| Error::msg(format!("JSON parse error: {}", e)))?;
                     let method = request
                         .get("method")
                         .and_then(|m| m.as_str())
@@ -317,14 +319,15 @@ impl WasmSandbox {
                     let response = host_functions::dispatch(caller.data(), &method, &params);
 
                     // Serialize response JSON
-                    let response_bytes = serde_json::to_vec(&response)?;
+                    let response_bytes = serde_json::to_vec(&response)
+                        .map_err(|e| Error::msg(format!("JSON serialize error: {}", e)))?;
                     let len = response_bytes.len() as i32;
 
                     // Allocate space in guest for response
                     let alloc_fn = caller
                         .get_export("alloc")
                         .and_then(|e| e.into_func())
-                        .ok_or_else(|| format_err!("no alloc export"))?;
+                        .ok_or_else(|| Error::msg("no alloc export"))?;
                     let alloc_typed = alloc_fn.typed::<i32, i32>(&caller)?;
                     let ptr = alloc_typed.call(&mut caller, len)?;
 
@@ -332,12 +335,12 @@ impl WasmSandbox {
                     let memory = caller
                         .get_export("memory")
                         .and_then(|e| e.into_memory())
-                        .ok_or_else(|| format_err!("no memory export"))?;
+                        .ok_or_else(|| Error::msg("no memory export"))?;
                     let mem_data = memory.data_mut(&mut caller);
                     let dest_start = ptr as usize;
                     let dest_end = dest_start + response_bytes.len();
                     if dest_end > mem_data.len() {
-                        bail!("host_call: response exceeds memory bounds");
+                        return Err(Error::msg("host_call: response exceeds memory bounds"));
                     }
                     mem_data[dest_start..dest_end].copy_from_slice(&response_bytes);
 
@@ -356,17 +359,18 @@ impl WasmSandbox {
                  level: i32,
                  msg_ptr: i32,
                  msg_len: i32|
-                 -> Result<(), Error> {
+                 -> Result<(), wasmtime::Error> {
+                    use wasmtime::Error;
                     let memory = caller
                         .get_export("memory")
                         .and_then(|e| e.into_memory())
-                        .ok_or_else(|| format_err!("no memory export"))?;
+                        .ok_or_else(|| Error::msg("no memory export"))?;
 
                     let data = memory.data(&caller);
                     let start = msg_ptr as usize;
                     let end = start + msg_len as usize;
                     if end > data.len() {
-                        bail!("host_log: pointer out of bounds");
+                        return Err(Error::msg("host_log: pointer out of bounds"));
                     }
                     let msg = std::str::from_utf8(&data[start..end]).unwrap_or("<invalid utf8>");
                     let agent_id = &caller.data().agent_id;

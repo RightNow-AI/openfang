@@ -436,7 +436,9 @@ mod tests {
             auth_header: Some("Bearer test-token".to_string()),
         };
         let engine = test_engine(MockBridge::new());
-        let results = engine.deliver(&[target], "daily-report", "result body").await;
+        let results = engine
+            .deliver(&[target], "daily-report", "result body")
+            .await;
 
         assert!(results[0].success, "error: {:?}", results[0].error);
 
@@ -732,8 +734,6 @@ mod tests {
     }
 
     fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-        haystack
-            .windows(needle.len())
-            .position(|w| w == needle)
+        haystack.windows(needle.len()).position(|w| w == needle)
     }
 }

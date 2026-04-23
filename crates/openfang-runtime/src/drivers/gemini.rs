@@ -985,14 +985,14 @@ impl LlmDriver for GeminiDriver {
                                                     thought_signature.clone(),
                                                 ));
                                             }
-                                            GeminiPart::Thought { ref text, .. } => {
-                                                if !text.is_empty() {
-                                                    let _ = tx
-                                                        .send(StreamEvent::ThinkingDelta {
-                                                            text: text.clone(),
-                                                        })
-                                                        .await;
-                                                }
+                                            GeminiPart::Thought { ref text, .. }
+                                                if !text.is_empty() =>
+                                            {
+                                                let _ = tx
+                                                    .send(StreamEvent::ThinkingDelta {
+                                                        text: text.clone(),
+                                                    })
+                                                    .await;
                                             }
                                             _ => {}
                                         }

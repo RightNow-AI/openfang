@@ -219,8 +219,7 @@ impl SkillsState {
                         if self.installed[sel].config_declared > 0 {
                             return SkillsAction::LoadSkillConfig(name);
                         } else {
-                            self.status_msg =
-                                format!("'{}' declares no runtime config.", name);
+                            self.status_msg = format!("'{}' declares no runtime config.", name);
                         }
                     }
                 }
@@ -531,10 +530,7 @@ fn draw_skill_config_details(f: &mut Frame, area: Rect, state: &SkillsState) {
 
     if rows.is_empty() {
         f.render_widget(
-            Paragraph::new(Span::styled(
-                "No config declared.",
-                theme::dim_style(),
-            )),
+            Paragraph::new(Span::styled("No config declared.", theme::dim_style())),
             inner,
         );
         return;
