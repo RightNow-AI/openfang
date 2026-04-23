@@ -3605,6 +3605,43 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                       </div>
                     </div>
                   </template>
+
+                  <!-- OpenAI Codex OAuth button -->
+                  <template x-if="p.id === 'openai-codex' && p.auth_status !== 'configured'">
+                    <div class="mt-2">
+                      <button class="btn btn-primary btn-sm" @click="startCodexOAuth()" :disabled="codexOAuth.polling" x-show="!codexOAuth.userCode">Login with OpenAI</button>
+                      <div x-show="codexOAuth.userCode" class="mt-2">
+                        <div class="text-sm">Visit <a :href="codexOAuth.verificationUri" target="_blank" x-text="codexOAuth.verificationUri" style="color:var(--accent-light)"></a> and enter:</div>
+                        <div style="font-size:24px;font-weight:bold;letter-spacing:4px;margin:8px 0;color:var(--accent-light)" x-text="codexOAuth.userCode"></div>
+                        <div class="text-xs text-dim"><span class="spinner" style="width:10px;height:10px;border-width:2px;display:inline-block;vertical-align:middle"></span> Waiting for authorization...</div>
+                      </div>
+                    </div>
+                  </template>
+                  <!-- Gemini OAuth button -->
+                  <template x-if="p.id === 'gemini-oauth' && p.auth_status !== 'configured'">
+                    <div class="mt-2">
+                      <button class="btn btn-primary btn-sm" @click="startGeminiOAuth()" :disabled="geminiOAuth.polling" x-show="!geminiOAuth.userCode">Login with Google</button>
+                      <div x-show="geminiOAuth.userCode" class="mt-2">
+                        <div class="text-sm">Visit <a :href="geminiOAuth.verificationUri" target="_blank" x-text="geminiOAuth.verificationUri" style="color:var(--accent-light)"></a> and enter:</div>
+                        <div style="font-size:24px;font-weight:bold;letter-spacing:4px;margin:8px 0;color:var(--accent-light)" x-text="geminiOAuth.userCode"></div>
+                        <div class="text-xs text-dim"><span class="spinner" style="width:10px;height:10px;border-width:2px;display:inline-block;vertical-align:middle"></span> Waiting for authorization...</div>
+                      </div>
+                    </div>
+                  </template>
+                  <!-- Qwen OAuth button -->
+                  <template x-if="p.id === 'qwen-oauth' && p.auth_status !== 'configured'">
+                    <div class="mt-2">
+                      <button class="btn btn-primary btn-sm" @click="startQwenOAuth()" :disabled="qwenOAuth.polling">Load Qwen Credentials</button>
+                      <div x-show="qwenOAuth.message" class="mt-2 text-sm" style="color:var(--accent-light)" x-text="qwenOAuth.message"></div>
+                    </div>
+                  </template>
+                  <!-- MiniMax OAuth button -->
+                  <template x-if="p.id === 'minimax-oauth' && p.auth_status !== 'configured'">
+                    <div class="mt-2">
+                      <button class="btn btn-primary btn-sm" @click="startMiniMaxOAuth()" :disabled="minimaxOAuth.polling">Login with MiniMax</button>
+                      <div x-show="minimaxOAuth.message" class="mt-2 text-sm" style="color:var(--accent-light)" x-text="minimaxOAuth.message"></div>
+                    </div>
+                  </template>
                   <!-- Claude Code install hint -->
                   <template x-if="p.id === 'claude-code' && p.auth_status !== 'configured'">
                     <div class="mt-2 text-xs text-dim">Install: <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">npm install -g @anthropic-ai/claude-code</code></div>
