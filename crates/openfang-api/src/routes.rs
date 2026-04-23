@@ -12114,35 +12114,32 @@ pub async fn minimax_oauth_start() -> impl IntoResponse {
         state.start_time + std::time::Duration::from_secs(state.expires_in) > Instant::now()
     });
 
+    // TODO: Implement MiniMax OAuth device code flow when API becomes available.
+    // Currently minimax_start_oauth_flow() always returns Err — MiniMax does not
+    // support browser-based OAuth; a pre-stored refresh token is required instead.
     match minimax_start_oauth_flow().await {
-        Ok(_) => {
-            let poll_id = uuid::Uuid::new_v4().to_string();
-            MINIMAX_FLOWS.insert(
-                poll_id.clone(),
-                MiniMaxFlowState {
-                    start_time: Instant::now(),
-                    expires_in: 300, // 5 minutes for MiniMax
-                },
-            );
-
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "status": "ready",
-                    "poll_id": poll_id,
-                    "message": "MiniMax OAuth flow initiated",
-                })),
-            )
-        }
         Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": e })),
         ),
+        Ok(_) => {
+            // This branch is unreachable as long as minimax_start_oauth_flow()
+            // remains a stub that always returns Err. When MiniMax adds OAuth
+            // support, implement the flow here (insert into MINIMAX_FLOWS, return
+            // poll_id and user instructions).
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "ready", "message": "MiniMax OAuth flow initiated"})),
+            )
+        }
     }
 }
 
 /// GET /api/providers/minimax-oauth/oauth/poll/{poll_id}
-pub async fn minimax_oauth_poll(Path(poll_id): Path<String>) -> impl IntoResponse {
+pub async fn minimax_oauth_poll(
+    State(_state): State<Arc<AppState>>,
+    Path(poll_id): Path<String>,
+) -> impl IntoResponse {
     use openfang_runtime::oauth_providers::minimax_poll_oauth_flow;
 
     let flow = match MINIMAX_FLOWS.get(&poll_id) {
@@ -12166,22 +12163,22 @@ pub async fn minimax_oauth_poll(Path(poll_id): Path<String>) -> impl IntoRespons
 
     drop(flow);
 
+    // TODO: Implement MiniMax OAuth polling when API becomes available.
+    // Currently minimax_poll_oauth_flow() always returns Err.
     match minimax_poll_oauth_flow().await {
-        Ok(tokens) => {
-            MINIMAX_FLOWS.remove(&poll_id);
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "status": "complete",
-                    "access_token": tokens.access_token,
-                    "refresh_token": tokens.refresh_token,
-                })),
-            )
-        }
         Err(e) => (
             StatusCode::OK,
-            Json(serde_json::json!({"status": "pending", "error": e})),
+            Json(serde_json::json!({"status": "error", "error": e})),
         ),
+        Ok(_tokens) => {
+            // This branch is unreachable as long as minimax_poll_oauth_flow()
+            // remains a stub. When MiniMax adds OAuth support, persist tokens
+            // here like the other providers do.
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "complete"})),
+            )
+        }
     }
 }
 

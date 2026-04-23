@@ -1,15 +1,10 @@
 //! OAuth providers for LLM services — OpenAI Codex, Gemini, Qwen, MiniMax.
 //!
-//! This module implements OAuth2 authentication flows for:
-//! - OpenAI Codex (ChatGPT subscription) — device code flow + PKCE
-//! - Gemini (Google OAuth) — PKCE + device code
-//! - Qwen (Alibaba) — **file-based token import** from ~/.qwen/oauth_creds.json
-//!   (not a true OAuth flow — reads pre-existing tokens from Qwen CLI)
-//! - MiniMax — refresh token based (requires stored refresh token in vault)
-//!
-//! All tokens are stored in the credential vault.
-
-use base64::Engine;
+//! This module implements provider-specific auth helpers for:
+//! - OpenAI Codex (ChatGPT subscription) — device code flow
+//! - Gemini (Google OAuth) — device code flow
+//! - Qwen (Alibaba) — file-based token import from ~/.qwen/oauth_creds.json
+//! - MiniMax — refresh token based access using externally obtained credentials
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -465,7 +460,6 @@ pub fn read_qwen_credentials() -> Option<OAuthTokenSet> {
 }
 
 /// Start Qwen "OAuth" flow — reads tokens from ~/.qwen/oauth_creds.json.
-///
 /// **Note**: This is NOT a true OAuth flow. Qwen tokens must first be obtained
 /// via the Qwen CLI (`qwen login`), which creates the credential file.
 /// This function merely imports those pre-existing tokens into OpenFang's vault.
@@ -479,7 +473,6 @@ pub async fn qwen_start_oauth_flow() -> Result<(), String> {
 }
 
 /// Poll Qwen "OAuth" flow — returns tokens from the credential file.
-///
 /// **Note**: This is a file import, not a polling mechanism.
 /// The tokens are read directly from ~/.qwen/oauth_creds.json.
 pub async fn qwen_poll_oauth_flow() -> Result<OAuthTokenSet, String> {
@@ -562,7 +555,6 @@ pub async fn refresh_minimax_token(
 }
 
 /// Start MiniMax OAuth flow — requires a stored refresh token.
-///
 /// MiniMax does not support device code or authorization code flow;
 /// authentication must be initiated externally (e.g. via their console)
 /// and the resulting refresh token stored in the vault before calling
@@ -572,7 +564,6 @@ pub async fn minimax_start_oauth_flow() -> Result<(), String> {
 }
 
 /// Check whether a MiniMax refresh token is available in the vault.
-///
 /// Returns `Ok(())` if a refresh token exists for MiniMax, `Err` otherwise.
 /// This is not a traditional OAuth poll — MiniMax has no device code flow.
 pub async fn minimax_poll_oauth_flow() -> Result<OAuthTokenSet, String> {
@@ -594,34 +585,6 @@ fn url_encode(input: &str) -> String {
         .collect::<String>()
 }
 
-/// Generate PKCE code verifier and challenge using a cryptographically secure RNG.
-///
-/// Uses `OsRng` as the entropy source per RFC 7636 §4.1 requirements.
-/// The verifier is 32 bytes (256 bits) of CSPRNG output, base64url-encoded.
-/// The challenge is the SHA-256 hash of the verifier, base64url-encoded.
-pub fn generate_pkce() -> (String, String) {
-    use rand::RngCore;
-    let mut bytes = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
-
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(verifier.as_bytes());
-    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
-
-    (verifier, challenge)
-}
-
-/// Generate a cryptographically random OAuth state parameter (128 bits from OsRng).
-///
-/// Per RFC 6749 §10.12, the state parameter must be unguessable to prevent CSRF.
-pub fn generate_state() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-}
-
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -630,37 +593,7 @@ mod tests {
 
     #[test]
     fn test_openai_constants() {
-        assert!(OPENAI_CODEX_AUTH_URL.starts_with("https://"));
         assert!(OPENAI_CODEX_TOKEN_URL.starts_with("https://"));
-    }
-
-    #[test]
-    fn test_pkce_generation() {
-        let (verifier, challenge) = generate_pkce();
-        assert!(!verifier.is_empty());
-        assert!(!challenge.is_empty());
-        assert_ne!(verifier, challenge);
-        // Verifier should be 43 chars (32 bytes base64url no-pad)
-        assert_eq!(
-            verifier.len(),
-            43,
-            "PKCE verifier must be 43 chars (256-bit base64url)"
-        );
-    }
-
-    #[test]
-    fn test_pkce_uniqueness() {
-        // Two consecutive calls must produce different verifiers (CSPRNG)
-        let (v1, _) = generate_pkce();
-        let (v2, _) = generate_pkce();
-        assert_ne!(v1, v2, "CSPRNG must produce unique verifiers");
-    }
-
-    #[test]
-    fn test_state_uniqueness() {
-        let s1 = generate_state();
-        let s2 = generate_state();
-        assert_ne!(s1, s2, "CSPRNG must produce unique state values");
     }
 
     #[test]

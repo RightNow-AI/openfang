@@ -235,9 +235,30 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         }),
         "vertex-ai" | "vertex" | "google-vertex" => Some(ProviderDefaults {
             // Vertex AI uses OAuth, not API keys - base_url is per-project
-            base_url: "https://us-central1-aiplatform.googleapis.com",
+            base_url: "",
             api_key_env: "GOOGLE_APPLICATION_CREDENTIALS",
-            key_required: false, // Uses OAuth service account, not API key
+            key_required: true,
+        }),
+        // OAuth-based providers (key_required=false indicates OAuth, not API key)
+        "openai-codex-oauth" => Some(ProviderDefaults {
+            base_url: "https://chatgpt.com/backend-api/codex/responses",
+            api_key_env: "",
+            key_required: false,
+        }),
+        "gemini-oauth" => Some(ProviderDefaults {
+            base_url: "",
+            api_key_env: "",
+            key_required: false,
+        }),
+        "qwen-oauth" => Some(ProviderDefaults {
+            base_url: "",
+            api_key_env: "",
+            key_required: false,
+        }),
+        "minimax-oauth" => Some(ProviderDefaults {
+            base_url: "",
+            api_key_env: "",
+            key_required: false,
         }),
         _ => None,
     }
@@ -976,5 +997,44 @@ mod tests {
             driver.is_ok(),
             "Bedrock with explicit api_key should construct successfully"
         );
+    }
+
+    #[test]
+    fn test_provider_defaults_github_copilot() {
+        let d = provider_defaults("github-copilot").unwrap();
+        assert_eq!(d.api_key_env, "COPILOT_CLIENT_ID");
+        assert!(!d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_vertex_ai() {
+        let d = provider_defaults("vertex-ai").unwrap();
+        assert_eq!(d.base_url, "");
+        assert_eq!(d.api_key_env, "GOOGLE_APPLICATION_CREDENTIALS");
+        assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_openai_codex_oauth() {
+        let d = provider_defaults("openai-codex-oauth").unwrap();
+        assert!(!d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_gemini_oauth() {
+        let d = provider_defaults("gemini-oauth").unwrap();
+        assert!(!d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_qwen_oauth() {
+        let d = provider_defaults("qwen-oauth").unwrap();
+        assert!(!d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_minimax_oauth() {
+        let d = provider_defaults("minimax-oauth").unwrap();
+        assert!(!d.key_required);
     }
 }

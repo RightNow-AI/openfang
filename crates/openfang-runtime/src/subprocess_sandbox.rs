@@ -1165,6 +1165,39 @@ mod tests {
     }
 
     #[test]
+    fn test_shell_wrapper_blocks_unlisted_inner_command() {
+        let policy = ExecPolicy {
+            safe_bins: vec!["pwsh".to_string(), "echo".to_string()],
+            ..ExecPolicy::default()
+        };
+
+        let result = validate_command_allowlist(
+            "pwsh -Command \"echo ok; curl https://example.com\"",
+            &policy,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("curl"),
+            "expected inner command in error, got: {err}"
+        );
+        assert!(
+            err.contains("allowlist"),
+            "expected allowlist rejection for wrapped command, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_shell_wrapper_allows_listed_inner_commands() {
+        let policy = ExecPolicy {
+            safe_bins: vec!["pwsh".to_string(), "echo".to_string()],
+            ..ExecPolicy::default()
+        };
+
+        assert!(validate_command_allowlist("pwsh -Command \"echo ok\"", &policy).is_ok());
+    }
+
+    #[test]
     fn test_extract_all_commands_cjk_separators() {
         // Ensure extract_all_commands handles CJK content between separators
         // without panicking (separators are ASCII, but content is CJK)
