@@ -166,7 +166,9 @@ async fn get_config_returns_declared_and_resolved() {
         body["resolved"]["github_token"]["source"], "unresolved",
         "github_token should be unresolved without env"
     );
-    assert!(body["resolved"]["github_token"]["is_secret"].as_bool().unwrap());
+    assert!(body["resolved"]["github_token"]["is_secret"]
+        .as_bool()
+        .unwrap());
 
     // default_branch falls back to default "main".
     assert_eq!(body["resolved"]["default_branch"]["source"], "default");
@@ -255,10 +257,7 @@ async fn put_rejects_unknown_variable() {
         .unwrap();
     assert_eq!(resp.status(), 400);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .contains("nonexistent_var"));
+    assert!(body["error"].as_str().unwrap().contains("nonexistent_var"));
 }
 
 #[tokio::test]
@@ -377,12 +376,7 @@ async fn put_reloads_registry_so_agents_see_change() {
         .unwrap();
 
     // The kernel's live override map must now hold the new values.
-    let guard = server
-        .state
-        .kernel
-        .skill_config_overrides
-        .read()
-        .unwrap();
+    let guard = server.state.kernel.skill_config_overrides.read().unwrap();
     let overrides = guard.as_ref().expect("override map set after PUT");
     let skill_cfg = overrides.get("test-config-skill").expect("skill present");
     assert_eq!(skill_cfg.get("github_token").unwrap(), "ghp_new");

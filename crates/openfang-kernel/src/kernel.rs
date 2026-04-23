@@ -4481,7 +4481,10 @@ impl OpenFangKernel {
     /// Periodically checks all running agents' last_active timestamps and
     /// publishes `HealthCheckFailed` events for unresponsive agents.
     fn start_heartbeat_monitor(self: &Arc<Self>) {
-        use crate::heartbeat::{check_agents, is_quiet_hours, HeartbeatConfig, RecoveryTracker};
+        use crate::heartbeat::{
+            check_agents, is_quiet_hours, should_exempt_idle_reactive_agent, HeartbeatConfig,
+            RecoveryTracker,
+        };
 
         let kernel = Arc::clone(self);
         let config = HeartbeatConfig {
@@ -4505,13 +4508,31 @@ impl OpenFangKernel {
 
                 let statuses = check_agents(&kernel.registry, &config);
                 for status in &statuses {
+                    let Some(entry) = kernel.registry.get(status.agent_id) else {
+                        continue;
+                    };
+
+                    // Reactive agents are expected to be silent while idle.
+                    // Keep them in Running instead of treating normal quiet time
+                    // as a crash unless a turn is actively executing.
+                    if should_exempt_idle_reactive_agent(
+                        &entry,
+                        kernel.running_tasks.contains_key(&status.agent_id),
+                    ) {
+                        if entry.state == AgentState::Crashed {
+                            let _ = kernel
+                                .registry
+                                .set_state(status.agent_id, AgentState::Running);
+                        }
+                        recovery_tracker.reset(status.agent_id);
+                        continue;
+                    }
+
                     // Skip agents in quiet hours (per-agent config)
-                    if let Some(entry) = kernel.registry.get(status.agent_id) {
-                        if let Some(ref auto_cfg) = entry.manifest.autonomous {
-                            if let Some(ref qh) = auto_cfg.quiet_hours {
-                                if is_quiet_hours(qh) {
-                                    continue;
-                                }
+                    if let Some(ref auto_cfg) = entry.manifest.autonomous {
+                        if let Some(ref qh) = auto_cfg.quiet_hours {
+                            if is_quiet_hours(qh) {
+                                continue;
                             }
                         }
                     }
@@ -6383,11 +6404,7 @@ struct KernelCronBridge {
 
 #[async_trait]
 impl openfang_channels::bridge::ChannelBridgeHandle for KernelCronBridge {
-    async fn send_message(
-        &self,
-        _agent_id: AgentId,
-        _message: &str,
-    ) -> Result<String, String> {
+    async fn send_message(&self, _agent_id: AgentId, _message: &str) -> Result<String, String> {
         Err("KernelCronBridge only supports send_channel_message".to_string())
     }
 
