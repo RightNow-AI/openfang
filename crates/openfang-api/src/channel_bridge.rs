@@ -55,6 +55,7 @@ use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_channels::wecom::WeComAdapter;
 use openfang_kernel::OpenFangKernel;
+use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_types::agent::AgentId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -523,6 +524,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                         timeout_secs: None,
                     },
                     delivery: openfang_types::scheduler::CronDelivery::None,
+                    delivery_targets: Vec::new(),
                     created_at: chrono::Utc::now(),
                     last_run: None,
                     next_run: None,
@@ -891,6 +893,23 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                 .memory
                 .structured_set(agent_id, "delivery.last_channel", kv_val);
         }
+    }
+
+    async fn send_channel_message(
+        &self,
+        channel_type: &str,
+        recipient: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        <OpenFangKernel as KernelHandle>::send_channel_message(
+            &self.kernel,
+            channel_type,
+            recipient,
+            message,
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn check_auto_reply(&self, agent_id: AgentId, message: &str) -> Option<String> {

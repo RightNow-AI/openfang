@@ -343,6 +343,10 @@ pub async fn build_router(
             "/api/schedules/{id}/run",
             axum::routing::post(routes::run_schedule),
         )
+        .route(
+            "/api/schedules/{id}/delivery-log",
+            axum::routing::get(routes::schedule_delivery_log),
+        )
         // Workflow endpoints
         .route(
             "/api/workflows",
@@ -375,6 +379,14 @@ pub async fn build_router(
         .route(
             "/api/skills/reload",
             axum::routing::post(routes::reload_skills),
+        )
+        .route(
+            "/api/skills/{id}/config",
+            axum::routing::get(routes::get_skill_config).put(routes::put_skill_config),
+        )
+        .route(
+            "/api/skills/{id}/config/{var_name}",
+            axum::routing::delete(routes::delete_skill_config_var),
         )
         .route(
             "/api/marketplace/search",

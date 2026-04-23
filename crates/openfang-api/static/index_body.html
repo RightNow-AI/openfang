@@ -1720,6 +1720,7 @@
                       <th>Schedule</th>
                       <th>Agent</th>
                       <th>Status</th>
+                      <th>Delivery</th>
                       <th>Last Run</th>
                       <th>Next Run</th>
                       <th>Actions</th>
@@ -1731,6 +1732,34 @@
                         <td>
                           <span class="font-bold" x-text="job.name || job.description || '(unnamed)'"></span>
                           <div class="text-xs text-dim" x-show="job.message" x-text="(job.message || '').substring(0, 60) + ((job.message || '').length > 60 ? '...' : '')" :title="job.message"></div>
+                          <div x-show="expandedJobId === job.id" style="margin-top:8px;padding:8px;background:rgba(148,163,184,0.06);border-left:3px solid var(--accent);border-radius:3px">
+                            <div class="font-bold" style="font-size:12px;margin-bottom:6px">Delivery Log</div>
+                            <div x-show="deliveryLogLoading" class="text-xs text-dim">Loading delivery log...</div>
+                            <div x-show="!deliveryLogLoading && deliveryLogError" class="text-xs" style="color:var(--error)" x-text="deliveryLogError"></div>
+                            <div x-show="!deliveryLogLoading && !deliveryLogError">
+                              <div class="text-xs text-dim" style="margin-bottom:4px">Configured targets (<span x-text="(deliveryLog.targets || []).length"></span>):</div>
+                              <div x-show="!(deliveryLog.targets || []).length" class="text-xs text-dim">No fan-out targets configured.</div>
+                              <template x-for="(t, ti) in (deliveryLog.targets || [])" :key="ti">
+                                <div class="text-xs" style="padding:2px 0">
+                                  <span class="badge" :class="targetChipClass(t)" x-text="targetChipLabel(t)"></span>
+                                  <span class="text-dim" style="margin-left:6px" x-text="targetSummary(t)"></span>
+                                </div>
+                              </template>
+                              <div class="text-xs text-dim" style="margin-top:8px">Recent deliveries (<span x-text="(deliveryLog.entries || []).length"></span>):</div>
+                              <div x-show="!(deliveryLog.entries || []).length" class="text-xs text-dim">
+                                Delivery history will appear here after the next run. Per-run results are not yet
+                                persisted — the fan-out engine emits tracing events you can view under
+                                <a href="#logs" style="color:var(--accent)">Logs</a>.
+                              </div>
+                              <template x-for="(e, ei) in (deliveryLog.entries || [])" :key="ei">
+                                <div class="text-xs" style="padding:2px 0">
+                                  <span class="badge" :class="e.success ? 'badge-success' : 'badge-error'" x-text="e.success ? 'ok' : 'err'"></span>
+                                  <span style="margin-left:6px" x-text="e.target"></span>
+                                  <span class="text-dim" style="margin-left:6px" x-show="e.error" x-text="e.error"></span>
+                                </div>
+                              </template>
+                            </div>
+                          </div>
                         </td>
                         <td>
                           <code style="font-size:11px;color:var(--accent)" x-text="job.cron"></code>
@@ -1740,15 +1769,25 @@
                         <td>
                           <span class="badge" :class="job.enabled ? 'badge-success' : 'badge-dim'" x-text="job.enabled ? 'Active' : 'Paused'"></span>
                         </td>
+                        <td>
+                          <div class="flex gap-1" style="flex-wrap:wrap;max-width:240px" x-show="(job.delivery_targets || []).length">
+                            <template x-for="(t, ti) in (job.delivery_targets || [])" :key="ti">
+                              <span class="badge" :class="targetChipClass(t)" :title="targetSummary(t)" x-text="targetChipLabel(t)"></span>
+                            </template>
+                          </div>
+                          <span class="text-xs text-dim" x-show="!(job.delivery_targets || []).length">(none)</span>
+                        </td>
                         <td class="text-xs" :title="formatTime(job.last_run)" x-text="relativeTime(job.last_run)"></td>
                         <td class="text-xs" :title="formatTime(job.next_run)" x-text="relativeTime(job.next_run)"></td>
                         <td>
-                          <div class="flex gap-1">
+                          <div class="flex gap-1" style="flex-wrap:wrap">
                             <button class="btn btn-primary btn-sm" @click="runNow(job)" :disabled="runningJobId === job.id">
                               <span x-show="runningJobId !== job.id">Run</span>
                               <span x-show="runningJobId === job.id">...</span>
                             </button>
                             <button class="btn btn-ghost btn-sm" @click="toggleJob(job)" x-text="job.enabled ? 'Pause' : 'Enable'"></button>
+                            <button class="btn btn-ghost btn-sm" @click="toggleExpand(job)" x-text="expandedJobId === job.id ? 'Hide' : 'Details'"></button>
+                            <button class="btn btn-ghost btn-sm" @click="startEditTargets(job)">Targets</button>
                             <button class="btn btn-danger btn-sm" @click="deleteJob(job)">Del</button>
                           </div>
                         </td>
@@ -1820,10 +1859,218 @@
                     </label>
                   </div>
 
+                  <div class="form-group">
+                    <div class="flex items-center justify-between" style="margin-bottom:6px">
+                      <label style="margin:0">Delivery Targets</label>
+                      <button class="btn btn-ghost btn-sm" type="button" @click="openTargetPicker()">+ Add target</button>
+                    </div>
+                    <div class="text-xs text-dim mt-1" x-show="!(newJob.delivery_targets || []).length">
+                      The job output is delivered to the agent's last channel by default. Add one or more
+                      fan-out destinations — channels, webhooks, local files, or email — to copy the output
+                      to extra destinations each run.
+                    </div>
+                    <div x-show="(newJob.delivery_targets || []).length" style="margin-top:6px">
+                      <template x-for="(t, ti) in (newJob.delivery_targets || [])" :key="ti">
+                        <div class="card" style="padding:8px;margin-bottom:6px">
+                          <div class="flex items-center justify-between">
+                            <span class="badge" :class="targetChipClass(t)" x-text="targetChipLabel(t)"></span>
+                            <button class="btn btn-ghost btn-sm" type="button" @click="removeTarget(ti)">Remove</button>
+                          </div>
+                          <div class="text-xs text-dim" style="margin-top:4px" x-text="targetSummary(t)"></div>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+
+                  <!-- Target picker (shared by create + edit flows) -->
+                  <div class="card" x-show="showTargetPicker && !editingTargetsJobId" style="border-left:3px solid var(--accent);margin-top:8px">
+                    <div class="font-bold" style="font-size:12px;margin-bottom:6px">New Delivery Target</div>
+                    <div class="form-group">
+                      <label>Type</label>
+                      <select class="form-select" x-model="pickerType" @change="onPickerTypeChange()">
+                        <option value="channel">Channel</option>
+                        <option value="webhook">Webhook</option>
+                        <option value="local_file">Local File</option>
+                        <option value="email">Email</option>
+                      </select>
+                    </div>
+                    <template x-if="draftTarget && draftTarget.type === 'channel'">
+                      <div>
+                        <div class="form-group">
+                          <label>Channel type</label>
+                          <select class="form-select" x-model="draftTarget.channel_type" x-show="channelTypes.length">
+                            <option value="">-- pick --</option>
+                            <template x-for="c in channelTypes" :key="c">
+                              <option :value="c" x-text="c"></option>
+                            </template>
+                          </select>
+                          <input class="form-input" x-model="draftTarget.channel_type" placeholder="telegram" x-show="!channelTypes.length">
+                        </div>
+                        <div class="form-group">
+                          <label>Recipient</label>
+                          <input class="form-input" x-model="draftTarget.recipient" placeholder="chat_12345">
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="draftTarget && draftTarget.type === 'webhook'">
+                      <div>
+                        <div class="form-group">
+                          <label>URL</label>
+                          <input class="form-input" x-model="draftTarget.url" placeholder="https://example.com/hook">
+                        </div>
+                        <div class="form-group">
+                          <label>Authorization header (optional)</label>
+                          <input class="form-input" x-model="draftTarget.auth_header" placeholder="Bearer abc123">
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="draftTarget && draftTarget.type === 'local_file'">
+                      <div>
+                        <div class="form-group">
+                          <label>Path</label>
+                          <input class="form-input" x-model="draftTarget.path" placeholder="/var/log/openfang-cron.log">
+                        </div>
+                        <div class="form-group">
+                          <label class="flex items-center gap-2">
+                            <div class="toggle" :class="{ active: draftTarget.append }" @click="draftTarget.append = !draftTarget.append"></div>
+                            <span x-text="draftTarget.append ? 'Append' : 'Overwrite'"></span>
+                          </label>
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="draftTarget && draftTarget.type === 'email'">
+                      <div>
+                        <div class="form-group">
+                          <label>To</label>
+                          <input class="form-input" x-model="draftTarget.to" placeholder="alice@example.com">
+                        </div>
+                        <div class="form-group">
+                          <label>Subject template (optional)</label>
+                          <input class="form-input" x-model="draftTarget.subject_template" placeholder="Cron: {job}">
+                          <div class="text-xs text-dim mt-1">Placeholders: <code>{job}</code></div>
+                        </div>
+                      </div>
+                    </template>
+                    <div class="flex gap-2" style="margin-top:6px">
+                      <button class="btn btn-primary btn-sm" type="button" @click="addDraftTarget()">Add</button>
+                      <button class="btn btn-ghost btn-sm" type="button" @click="cancelTargetPicker()">Cancel</button>
+                    </div>
+                  </div>
+
                   <button class="btn btn-primary btn-block mt-4" @click="createJob()" :disabled="creating">
                     <span x-show="!creating">Create Schedule</span>
                     <span x-show="creating">Creating...</span>
                   </button>
+                </div>
+              </div>
+            </template>
+
+            <!-- Edit Targets Modal -->
+            <template x-if="editingTargetsJobId">
+              <div class="modal-overlay" @click.self="cancelEditTargets()" @keydown.escape.window="cancelEditTargets()">
+                <div class="modal">
+                  <div class="modal-header">
+                    <h3>Edit Delivery Targets</h3>
+                    <button class="modal-close" @click="cancelEditTargets()">x</button>
+                  </div>
+                  <div class="form-group">
+                    <div class="flex items-center justify-between" style="margin-bottom:6px">
+                      <div class="text-xs text-dim">
+                        Targets are replaced on save. Leave empty to remove all fan-out destinations.
+                      </div>
+                      <button class="btn btn-ghost btn-sm" type="button" @click="addEditTarget()">+ Add target</button>
+                    </div>
+                    <div x-show="!editingTargets.length" class="text-xs text-dim">No targets configured.</div>
+                    <template x-for="(t, ti) in editingTargets" :key="ti">
+                      <div class="card" style="padding:8px;margin-bottom:6px">
+                        <div class="flex items-center justify-between">
+                          <span class="badge" :class="targetChipClass(t)" x-text="targetChipLabel(t)"></span>
+                          <button class="btn btn-ghost btn-sm" type="button" @click="removeEditTarget(ti)">Remove</button>
+                        </div>
+                        <div class="text-xs text-dim" style="margin-top:4px" x-text="targetSummary(t)"></div>
+                      </div>
+                    </template>
+                  </div>
+                  <div class="card" x-show="showTargetPicker" style="border-left:3px solid var(--accent)">
+                    <div class="font-bold" style="font-size:12px;margin-bottom:6px">New Delivery Target</div>
+                    <div class="form-group">
+                      <label>Type</label>
+                      <select class="form-select" x-model="pickerType" @change="onPickerTypeChange()">
+                        <option value="channel">Channel</option>
+                        <option value="webhook">Webhook</option>
+                        <option value="local_file">Local File</option>
+                        <option value="email">Email</option>
+                      </select>
+                    </div>
+                    <template x-if="draftTarget && draftTarget.type === 'channel'">
+                      <div>
+                        <div class="form-group">
+                          <label>Channel type</label>
+                          <select class="form-select" x-model="draftTarget.channel_type" x-show="channelTypes.length">
+                            <option value="">-- pick --</option>
+                            <template x-for="c in channelTypes" :key="c">
+                              <option :value="c" x-text="c"></option>
+                            </template>
+                          </select>
+                          <input class="form-input" x-model="draftTarget.channel_type" placeholder="telegram" x-show="!channelTypes.length">
+                        </div>
+                        <div class="form-group">
+                          <label>Recipient</label>
+                          <input class="form-input" x-model="draftTarget.recipient" placeholder="chat_12345">
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="draftTarget && draftTarget.type === 'webhook'">
+                      <div>
+                        <div class="form-group">
+                          <label>URL</label>
+                          <input class="form-input" x-model="draftTarget.url" placeholder="https://example.com/hook">
+                        </div>
+                        <div class="form-group">
+                          <label>Authorization header (optional)</label>
+                          <input class="form-input" x-model="draftTarget.auth_header" placeholder="Bearer abc123">
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="draftTarget && draftTarget.type === 'local_file'">
+                      <div>
+                        <div class="form-group">
+                          <label>Path</label>
+                          <input class="form-input" x-model="draftTarget.path" placeholder="/var/log/openfang-cron.log">
+                        </div>
+                        <div class="form-group">
+                          <label class="flex items-center gap-2">
+                            <div class="toggle" :class="{ active: draftTarget.append }" @click="draftTarget.append = !draftTarget.append"></div>
+                            <span x-text="draftTarget.append ? 'Append' : 'Overwrite'"></span>
+                          </label>
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="draftTarget && draftTarget.type === 'email'">
+                      <div>
+                        <div class="form-group">
+                          <label>To</label>
+                          <input class="form-input" x-model="draftTarget.to" placeholder="alice@example.com">
+                        </div>
+                        <div class="form-group">
+                          <label>Subject template (optional)</label>
+                          <input class="form-input" x-model="draftTarget.subject_template" placeholder="Cron: {job}">
+                          <div class="text-xs text-dim mt-1">Placeholders: <code>{job}</code></div>
+                        </div>
+                      </div>
+                    </template>
+                    <div class="flex gap-2" style="margin-top:6px">
+                      <button class="btn btn-primary btn-sm" type="button" @click="addDraftTargetToEdit()">Add</button>
+                      <button class="btn btn-ghost btn-sm" type="button" @click="cancelTargetPicker()">Cancel</button>
+                    </div>
+                  </div>
+                  <div class="flex gap-2 mt-4">
+                    <button class="btn btn-primary" @click="saveEditTargets()" :disabled="savingTargets">
+                      <span x-show="!savingTargets">Save</span>
+                      <span x-show="savingTargets">Saving...</span>
+                    </button>
+                    <button class="btn btn-ghost" @click="cancelEditTargets()">Cancel</button>
+                  </div>
                 </div>
               </div>
             </template>
@@ -2234,8 +2481,12 @@
                       <span class="text-xs text-dim" x-text="skill.tools_count + ' tool(s)'"></span>
                       <span class="text-xs text-dim" x-show="skill.version" x-text="'v' + skill.version"></span>
                       <span class="text-xs text-dim" x-show="skill.has_prompt_context">(prompt context)</span>
+                      <span class="text-xs text-dim" x-show="skill.config_declared_count > 0" x-text="skill.config_declared_count + ' config var(s)'"></span>
                     </div>
-                    <button class="btn btn-danger btn-sm" @click="uninstallSkill(skill.name)">Uninstall</button>
+                    <div class="flex gap-2">
+                      <button class="btn btn-ghost btn-sm" x-show="skill.config_declared_count > 0" @click="openSkillConfig(skill)" title="Configure skill variables">&#9881; Configure</button>
+                      <button class="btn btn-danger btn-sm" @click="uninstallSkill(skill.name)">Uninstall</button>
+                    </div>
                   </div>
                 </div>
               </template>
@@ -2505,6 +2756,80 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                     <div class="text-xs text-dim mt-2 text-center">Skills are security-scanned before installation. Prompt injection and malware patterns are blocked.</div>
                   </div>
                 </template>
+              </div>
+            </div>
+          </template>
+
+          <!-- Skill Config Modal (SKILL.md frontmatter `config:` variables) -->
+          <template x-if="configSkill">
+            <div class="modal-overlay" @click.self="closeSkillConfig()" @keydown.escape.window="closeSkillConfig()">
+              <div class="modal" style="max-width:640px">
+                <div class="modal-header">
+                  <div>
+                    <h3>Configure: <span x-text="configSkill.name"></span></h3>
+                    <div class="text-xs text-dim mt-1" x-text="configSkill.description"></div>
+                  </div>
+                  <button class="modal-close" @click="closeSkillConfig()">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  </button>
+                </div>
+
+                <div x-show="configLoading" class="loading-state" style="padding:20px 0">
+                  <div class="spinner"></div><span>Loading configuration&hellip;</span>
+                </div>
+
+                <div x-show="!configLoading && configError" class="error-state">
+                  <span class="error-icon">!</span>
+                  <p x-text="configError"></p>
+                </div>
+
+                <div x-show="!configLoading && !configError">
+                  <div x-show="configDeclaredNames.length === 0" class="empty-state" style="padding:16px 0">
+                    <p class="text-dim">This skill does not declare any runtime config variables.</p>
+                  </div>
+
+                  <template x-for="name in configDeclaredNames" :key="name">
+                    <div class="form-group" style="margin-bottom:16px">
+                      <label style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                        <code x-text="name" style="font-size:0.8rem"></code>
+                        <span x-show="configDeclared[name] && configDeclared[name].required" class="badge badge-danger" style="font-size:0.6rem">required</span>
+                        <span class="badge" :class="sourceBadgeClass(configResolved[name] && configResolved[name].source)" style="font-size:0.6rem">
+                          <template x-if="configResolved[name] && configResolved[name].source === 'user'"><span>user override</span></template>
+                          <template x-if="configResolved[name] && configResolved[name].source === 'env'">
+                            <span>env<template x-if="configDeclared[name] && configDeclared[name].env"><span>:<span x-text="configDeclared[name].env"></span></span></template></span>
+                          </template>
+                          <template x-if="configResolved[name] && configResolved[name].source === 'default'"><span>default</span></template>
+                          <template x-if="!configResolved[name] || configResolved[name].source === 'unresolved'"><span>unresolved &#9888;</span></template>
+                        </span>
+                      </label>
+                      <div class="text-xs text-dim" x-show="configDeclared[name] && configDeclared[name].description" x-text="configDeclared[name] ? configDeclared[name].description : ''" style="margin:2px 0 6px 0"></div>
+                      <div class="flex gap-2 items-center" style="position:relative">
+                        <input
+                          style="flex:1"
+                          :type="(configResolved[name] && configResolved[name].is_secret && !configRevealed[name]) ? 'password' : 'text'"
+                          :placeholder="(configResolved[name] && configResolved[name].source !== 'user' && configResolved[name].value != null) ? ('Currently: ' + configResolved[name].value) : ((configDeclared[name] && configDeclared[name].default) ? ('default: ' + configDeclared[name].default) : 'Enter value')"
+                          x-model="configDraft[name]"
+                          :class="{ 'input-error': configRowInvalid(name) }">
+                        <button type="button" class="btn btn-ghost btn-sm" x-show="configResolved[name] && configResolved[name].is_secret" @click="toggleReveal(name)" :title="configRevealed[name] ? 'Hide' : 'Reveal'">
+                          <svg x-show="!configRevealed[name]" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                          <svg x-show="configRevealed[name]" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-10-8-10-8a19.77 19.77 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 10 8 10 8a19.77 19.77 0 0 1-2.16 3.19M1 1l22 22"/></svg>
+                        </button>
+                      </div>
+                      <div class="text-xs" style="margin-top:4px;display:flex;justify-content:space-between;align-items:center">
+                        <div class="text-dim" style="font-style:italic" x-show="configResolved[name] && configResolved[name].source === 'user'">Leaving blank and saving keeps existing override. Use Reset to remove it.</div>
+                        <a href="#" class="text-dim" style="font-size:0.7rem" x-show="configResolved[name] && configResolved[name].source === 'user'" @click.prevent="resetSkillConfigVar(name)">Reset to env/default</a>
+                      </div>
+                    </div>
+                  </template>
+
+                  <div class="text-xs text-dim" style="margin-top:12px">
+                    Values are stored in <code>~/.openfang/config.toml</code> under <code>[skills.<span x-text="configSkill.name"></span>]</code>. Secrets are redacted in this view.
+                  </div>
+                  <div class="flex justify-end gap-2" style="margin-top:16px">
+                    <button class="btn btn-ghost" @click="closeSkillConfig()" :disabled="configSaving">Cancel</button>
+                    <button class="btn btn-primary" @click="saveSkillConfig()" :disabled="configSaving || hasInvalidConfig()" x-text="configSaving ? 'Saving...' : 'Save'"></button>
+                  </div>
+                </div>
               </div>
             </div>
           </template>
