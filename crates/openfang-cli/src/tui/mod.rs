@@ -2023,10 +2023,8 @@ impl App {
         match canonical_head.as_str() {
             "/exit" => self.handle_chat_action(chat::ChatAction::Back),
             "/help" => {
-                self.chat.push_message(
-                    chat::Role::System,
-                    commands::render_help(Surfaces::CLI),
-                );
+                self.chat
+                    .push_message(chat::Role::System, commands::render_help(Surfaces::CLI));
             }
             "/status" => {
                 let mut s = Vec::new();

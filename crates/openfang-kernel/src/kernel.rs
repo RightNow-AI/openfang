@@ -6383,11 +6383,7 @@ struct KernelCronBridge {
 
 #[async_trait]
 impl openfang_channels::bridge::ChannelBridgeHandle for KernelCronBridge {
-    async fn send_message(
-        &self,
-        _agent_id: AgentId,
-        _message: &str,
-    ) -> Result<String, String> {
+    async fn send_message(&self, _agent_id: AgentId, _message: &str) -> Result<String, String> {
         Err("KernelCronBridge only supports send_channel_message".to_string())
     }
 
