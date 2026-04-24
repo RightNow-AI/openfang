@@ -13,6 +13,7 @@
 //! Phase 5.4 pinboard treat as a route-to-pinboard signal — never as
 //! permission-to-release.
 
+pub mod classifier;
 pub mod heuristic;
 pub mod moonlock;
 
@@ -60,7 +61,7 @@ impl Verdict {
 }
 
 /// Outcome of a single scanner run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScanOutcome {
     /// Scanner identifier (matches `ContentScanner::name`).
     pub scanner: String,
