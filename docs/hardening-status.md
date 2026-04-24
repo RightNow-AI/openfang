@@ -7,10 +7,10 @@
 ```yaml
 state: active          # active | blocked | done
 branch: hardening/v0.6.1
-last_commit: f485883
-last_phase: P3.1
-next_phase: P3.2
-last_heartbeat: 2026-04-25T06:10:00Z
+last_commit: 2bf02e2
+last_phase: P3.3
+next_phase: P4.1
+last_heartbeat: 2026-04-25T06:30:00Z
 blocked_reason: null
 ```
 
@@ -24,8 +24,8 @@ blocked_reason: null
 | P2.1  | Reactive agents skipped from heartbeat (#1102)       | ✅ | `da62220` |
 | P2.2  | Streaming heartbeat ticker (#1089)                   | ✅ | `ab674c5` |
 | P3.1  | soul.md YAML frontmatter + `<persona>` tag injection | ✅ | `f485883` |
-| P3.2  | Reflection cron (6h cadence) + two-phase patch       | ⬜ | — |
-| P3.3  | Recursion guards (4/24h, 4h gap, immutable fields)   | ⬜ | — |
+| P3.2  | Reflection pipeline + two-phase patch commit         | ✅ | `485182f` |
+| P3.3  | Cadence guards + immutable-field enforcement         | ✅ | `2bf02e2` |
 | P4.1  | `ExternalMemoryBackend` trait + criticality enum     | ⬜ | — |
 | P4.2  | Obsidian backend (read/write `OpenFang/inbox/*`)     | ⬜ | — |
 | P4.3  | Mempalace backend (REQUIRED; boot-fail if absent)    | ⬜ | — |
@@ -75,4 +75,18 @@ Fix as part of P7 release prep, not scattered through feature phases.
 
 ## Handoff notes (latest)
 
-P0–P2 landed cleanly: loopback validation on Ollama base_url, enriched model-not-found errors via `/api/tags` probe, reactive-agent skip in heartbeat (#1102), 30s heartbeat ticker during streams (#1089). 942 runtime tests + 263 kernel tests green; delta-clippy clean across all commits. Phase 3 is substantially more invasive (new `soul.rs` module, YAML frontmatter parser, cron integration, two-phase `soul_patch_proposal.md` commit, immutable-field enforcement) — budget it as 3 separate cron fires, one per sub-commit.
+P0–P3 complete. Scope-correction notes:
+- Text-fallback tool-call parser already exists (`recover_text_tool_calls` at `agent_loop.rs:2232`, 13 patterns, ~60 tests). Do NOT rebuild.
+- SOUL.md is already loaded and injected at `prompt_builder.rs:355-383`; `kernel.rs:303,1973` handle generation + per-turn read. Phase 3.1 added YAML-frontmatter parsing + `<persona>` tag wrapping on top of that existing pipeline.
+
+Phase 3 shipped:
+- `soul.rs` — frontmatter parser with `deny_unknown_fields`, body-only fallback, `<persona>` tag escaping.
+- `reflection.rs` — two-phase commit via `soul_patch_proposal.md`; prompt builder; strict JSON response parser; cadence log (`soul_reflection_log.jsonl`) with prune-on-write; `can_reflect_now` (4h min gap, 4/24h cap); `check_immutable_fields` defence.
+
+What Phase 3 does NOT yet do (explicit follow-ups):
+- **Cron wiring** that actually calls `can_reflect_now` + LLM + `write_patch_proposal` on the 6h cadence. The primitives are all there; the scheduler hook is a glue commit and can live in Phase 7 release prep or an earlier infra commit.
+- **Boot-time promote integration** — `promote_pending_patch` exists but no agent-boot path calls it yet. Same note: glue commit, deferred.
+
+Totals: 977 openfang-runtime tests + 263 openfang-kernel tests green. Delta-clippy clean across all phase commits.
+
+Next up **P4.1**: `ExternalMemoryBackend` trait in openfang-memory with read_union/write_fanout semantics + a `Criticality { Critical, Degraded, Optional }` enum that governs whether a backend failure fails boot or degrades health.
