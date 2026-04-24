@@ -8,6 +8,7 @@
 //! Agents interact with a single `Memory` trait that abstracts over all three stores.
 
 pub mod consolidation;
+pub mod external;
 #[cfg(feature = "http-memory")]
 pub mod http_client;
 pub mod knowledge;
