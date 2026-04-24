@@ -13,6 +13,7 @@ pub mod external;
 pub mod http_client;
 pub mod knowledge;
 pub mod migration;
+pub mod obsidian;
 pub mod semantic;
 pub mod session;
 pub mod structured;

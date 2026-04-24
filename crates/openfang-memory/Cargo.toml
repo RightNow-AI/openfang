@@ -22,6 +22,8 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"], optional = true }
+walkdir = { workspace = true }
+serde_yaml = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
