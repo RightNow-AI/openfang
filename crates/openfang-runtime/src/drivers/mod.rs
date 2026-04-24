@@ -460,6 +460,13 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .clone()
             .unwrap_or_else(|| defaults.base_url.to_string());
 
+        // Local LLM providers default to loopback. A non-loopback endpoint silently
+        // exposes the agent's tool-calling surface to whatever else can reach the
+        // configured host. Require an explicit opt-in for non-loopback.
+        if provider == "ollama" {
+            validate_local_base_url(provider, &base_url)?;
+        }
+
         return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
     }
 
@@ -567,6 +574,68 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
     None
 }
 
+/// Check whether a parsed URL host is a loopback or unspecified address.
+///
+/// Accepts: `127.0.0.0/8`, `::1`, `0.0.0.0`, `::`, and the literal domain `localhost`.
+/// `0.0.0.0`/`::` are accepted because a *client* dialing them reaches the local
+/// machine on macOS/Linux — the "expose to LAN" risk only applies to the server.
+fn is_loopback_host(host: &url::Host<&str>) -> bool {
+    match host {
+        url::Host::Ipv4(addr) => addr.is_loopback() || addr.is_unspecified(),
+        url::Host::Ipv6(addr) => addr.is_loopback() || addr.is_unspecified(),
+        url::Host::Domain(d) => *d == "localhost",
+    }
+}
+
+/// Validate that a local-LLM provider's `base_url` points at loopback.
+///
+/// Local LLM servers (Ollama, vLLM, LM Studio, Lemonade) usually run without auth.
+/// A stray `base_url = "http://192.168.1.5:11434"` silently exposes the agent's
+/// tool-calling to whoever can reach that host. Default-deny any non-loopback
+/// endpoint; the operator can opt in via
+/// `OPENFANG_<PROVIDER>_ALLOW_NON_LOOPBACK=1` when they really mean it.
+fn validate_local_base_url(provider: &str, base_url: &str) -> Result<(), LlmError> {
+    let env_override = format!(
+        "OPENFANG_{}_ALLOW_NON_LOOPBACK",
+        provider.to_uppercase().replace('-', "_")
+    );
+    let allow = std::env::var(&env_override).ok().as_deref() == Some("1");
+    check_local_base_url(provider, base_url, allow, &env_override)
+}
+
+/// Pure loopback check, no env access. Split out so tests can exercise it without
+/// racing on process-wide environment variables.
+fn check_local_base_url(
+    provider: &str,
+    base_url: &str,
+    allow_non_loopback: bool,
+    env_override_name: &str,
+) -> Result<(), LlmError> {
+    if allow_non_loopback {
+        return Ok(());
+    }
+
+    let parsed = url::Url::parse(base_url).map_err(|e| LlmError::Api {
+        status: 0,
+        message: format!("Invalid base_url '{base_url}' for provider '{provider}': {e}"),
+    })?;
+
+    if let Some(host) = parsed.host() {
+        if is_loopback_host(&host) {
+            return Ok(());
+        }
+    }
+
+    Err(LlmError::Api {
+        status: 0,
+        message: format!(
+            "Refusing non-loopback base_url '{base_url}' for local provider '{provider}'. \
+             Local LLM endpoints default to loopback for security. \
+             To allow a remote endpoint on a trusted network, set {env_override_name}=1."
+        ),
+    })
+}
+
 /// List all known provider names.
 pub fn known_providers() -> &'static [&'static str] {
     &[
@@ -634,6 +703,70 @@ mod tests {
     fn test_provider_defaults_ollama() {
         let d = provider_defaults("ollama").unwrap();
         assert!(!d.key_required);
+    }
+
+    #[test]
+    fn test_local_base_url_loopback_accepted() {
+        for url in [
+            "http://127.0.0.1:11434/v1",
+            "http://localhost:11434/v1",
+            "http://[::1]:11434/v1",
+            "http://0.0.0.0:11434/v1",
+        ] {
+            assert!(
+                check_local_base_url("ollama", url, false, "OPENFANG_OLLAMA_ALLOW_NON_LOOPBACK")
+                    .is_ok(),
+                "expected loopback accept for {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_local_base_url_non_loopback_rejected() {
+        let result = check_local_base_url(
+            "ollama",
+            "http://192.168.1.5:11434/v1",
+            false,
+            "OPENFANG_OLLAMA_ALLOW_NON_LOOPBACK",
+        );
+        let err = result.expect_err("non-loopback base_url should be rejected");
+        match err {
+            LlmError::Api { status: 0, message } => {
+                assert!(message.contains("192.168.1.5"));
+                assert!(message.contains("OPENFANG_OLLAMA_ALLOW_NON_LOOPBACK"));
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_local_base_url_allow_override() {
+        assert!(
+            check_local_base_url(
+                "ollama",
+                "http://10.0.0.7:11434/v1",
+                true,
+                "OPENFANG_OLLAMA_ALLOW_NON_LOOPBACK"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_local_base_url_malformed_rejected() {
+        let err = check_local_base_url(
+            "ollama",
+            "not a url",
+            false,
+            "OPENFANG_OLLAMA_ALLOW_NON_LOOPBACK",
+        )
+        .expect_err("malformed URL should be rejected");
+        match err {
+            LlmError::Api { status: 0, message } => {
+                assert!(message.contains("Invalid base_url"));
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
     }
 
     #[test]

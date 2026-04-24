@@ -34,6 +34,7 @@ rmcp = { workspace = true }
 http = "1"
 tokio-tungstenite = "0.24"
 shlex = "1"
+url = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
