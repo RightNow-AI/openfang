@@ -45,6 +45,7 @@ pub mod routing;
 pub mod sandbox;
 pub mod session_repair;
 pub mod shell_bleed;
+pub mod soul;
 pub mod str_utils;
 pub mod subprocess_sandbox;
 pub mod think_filter;

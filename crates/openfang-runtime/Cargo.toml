@@ -35,6 +35,7 @@ http = "1"
 tokio-tungstenite = "0.24"
 shlex = "1"
 url = { workspace = true }
+serde_yaml = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
