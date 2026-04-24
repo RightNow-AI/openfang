@@ -10,6 +10,7 @@ pub mod claude_code;
 pub mod copilot;
 pub mod fallback;
 pub mod gemini;
+pub mod ollama;
 pub mod openai;
 pub mod qwen_code;
 pub mod vertex;
@@ -465,6 +466,9 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         // configured host. Require an explicit opt-in for non-loopback.
         if provider == "ollama" {
             validate_local_base_url(provider, &base_url)?;
+            let root_url = ollama::ollama_root_from_base(&base_url);
+            let inner = openai::OpenAIDriver::new(api_key, base_url);
+            return Ok(Arc::new(ollama::OllamaDriver::new(inner, root_url)));
         }
 
         return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
