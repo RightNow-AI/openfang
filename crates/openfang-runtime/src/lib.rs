@@ -39,6 +39,7 @@ pub mod process_manager;
 pub mod prompt_builder;
 pub mod provider_health;
 pub mod python_runtime;
+pub mod reflection;
 pub mod reply_directives;
 pub mod retry;
 pub mod routing;
