@@ -7,10 +7,10 @@
 ```yaml
 state: active          # active | blocked | done
 branch: hardening/v0.6.1
-last_commit: ab674c5
-last_phase: P2.2
-next_phase: P3.1
-last_heartbeat: 2026-04-25T05:55:00Z
+last_commit: f485883
+last_phase: P3.1
+next_phase: P3.2
+last_heartbeat: 2026-04-25T06:10:00Z
 blocked_reason: null
 ```
 
@@ -23,7 +23,7 @@ blocked_reason: null
 | P1.2  | Ollama model-not-found → enriched via `/api/tags`    | ✅ | `9fbb2aa` |
 | P2.1  | Reactive agents skipped from heartbeat (#1102)       | ✅ | `da62220` |
 | P2.2  | Streaming heartbeat ticker (#1089)                   | ✅ | `ab674c5` |
-| P3.1  | soul.md persona loader + hot-reload                  | ⬜ | — |
+| P3.1  | soul.md YAML frontmatter + `<persona>` tag injection | ✅ | `f485883` |
 | P3.2  | Reflection cron (6h cadence) + two-phase patch       | ⬜ | — |
 | P3.3  | Recursion guards (4/24h, 4h gap, immutable fields)   | ⬜ | — |
 | P4.1  | `ExternalMemoryBackend` trait + criticality enum     | ⬜ | — |
