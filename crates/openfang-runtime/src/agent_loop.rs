@@ -1657,9 +1657,36 @@ pub async fn run_agent_loop_streaming(
             }
         }
 
-        // Stream LLM call with retry, error classification, and circuit breaker
+        // Stream LLM call with retry, error classification, and circuit breaker.
+        //
+        // #1089: local LLM backends (Ollama with a model not yet loaded in RAM,
+        // long-context streams) can spend 2–5+ minutes producing tokens. The
+        // heartbeat monitor flags the agent as unresponsive after ~180s of no
+        // `last_active` updates, erroneously triggering recovery mid-stream.
+        //
+        // Stamp `last_active` once before the stream (matches the non-streaming
+        // path at ~line 449) and spawn a background ticker that keeps stamping
+        // every 30s while the stream runs. Abort the ticker as soon as the
+        // stream resolves (success, error, or cancellation).
+        if let Some(k) = &kernel {
+            k.touch_agent(&agent_id_str);
+        }
+        let heartbeat_ticker = kernel.as_ref().map(|k| {
+            let k = k.clone();
+            let aid = agent_id_str.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                interval.tick().await; // consume the immediate tick
+                loop {
+                    interval.tick().await;
+                    k.touch_agent(&aid);
+                }
+            })
+        });
+
         let provider_name = manifest.model.provider.as_str();
-        let mut response = stream_with_retry(
+        let stream_outcome = stream_with_retry(
             &*driver,
             request,
             stream_tx.clone(),
@@ -1667,7 +1694,13 @@ pub async fn run_agent_loop_streaming(
             None,
             &manifest.fallback_models,
         )
-        .await?;
+        .await;
+
+        if let Some(h) = heartbeat_ticker {
+            h.abort();
+        }
+
+        let mut response = stream_outcome?;
 
         total_usage.input_tokens += response.usage.input_tokens;
         total_usage.output_tokens += response.usage.output_tokens;
