@@ -12,6 +12,7 @@ pub mod external;
 #[cfg(feature = "http-memory")]
 pub mod http_client;
 pub mod knowledge;
+pub mod mempalace;
 pub mod migration;
 pub mod obsidian;
 pub mod semantic;
