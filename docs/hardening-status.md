@@ -7,10 +7,10 @@
 ```yaml
 state: active          # active | blocked | done
 branch: hardening/v0.6.1
-last_commit: 482b0f0
-last_phase: P5.3
-next_phase: P5.4
-last_heartbeat: 2026-04-25T09:17:00Z
+last_commit: dfc158e
+last_phase: P5.4
+next_phase: P6.1
+last_heartbeat: 2026-04-25T09:47:00Z
 blocked_reason: null
 ```
 
@@ -32,7 +32,7 @@ blocked_reason: null
 | P5.1  | Universal untrusted-content channel + isolation dir  | ✅ | `d597a1d` |
 | P5.2  | Security scanners (Moonlock + heuristic, fail-closed)| ✅ | `95dbc49` |
 | P5.3  | Cyber-agent + classifier pipeline + vault docs       | ✅ | `482b0f0` |
-| P5.4  | Pinboard + escalation surface                        | ⬜ | — |
+| P5.4  | Pinboard storage + state machine + Obsidian render   | ✅ | `dfc158e` |
 | P6.1  | Boot-warm health gating (`warming` → `degraded`/`ok`)| ⬜ | — |
 | P6.2  | launchd/systemd/Warp/shell assets                    | ⬜ | — |
 | P7.1  | Release prep v0.6.1 + `tests/hardening_smoke.rs`     | ⬜ | — |
