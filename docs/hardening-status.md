@@ -7,10 +7,10 @@
 ```yaml
 state: active          # active | blocked | done
 branch: hardening/v0.6.1
-last_commit: e4432f3
-last_phase: P4.3
-next_phase: P5.1
-last_heartbeat: 2026-04-25T07:47:00Z
+last_commit: d597a1d
+last_phase: P5.1
+next_phase: P5.2
+last_heartbeat: 2026-04-25T08:17:00Z
 blocked_reason: null
 ```
 
@@ -29,7 +29,7 @@ blocked_reason: null
 | P4.1  | `ExternalMemoryBackend` trait + criticality registry | ✅ | `0fb5563` |
 | P4.2  | Obsidian backend (read/write `OpenFang/inbox/*`)     | ✅ | `c5007bf` |
 | P4.3  | Mempalace backend skeleton (REQUIRED, Critical)      | ✅ | `e4432f3` |
-| P5.1  | Universal untrusted-content channel + isolation dir  | ⬜ | — |
+| P5.1  | Universal untrusted-content channel + isolation dir  | ✅ | `d597a1d` |
 | P5.2  | Security scanners (Moonlock deepscan + heuristic)    | ⬜ | — |
 | P5.3  | Cyber-agent + classifier pipeline                    | ⬜ | — |
 | P5.4  | Pinboard + escalation surface                        | ⬜ | — |
