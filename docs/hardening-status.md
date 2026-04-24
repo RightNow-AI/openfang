@@ -7,10 +7,10 @@
 ```yaml
 state: active          # active | blocked | done
 branch: hardening/v0.6.1
-last_commit: 2bf02e2
-last_phase: P3.3
-next_phase: P4.1
-last_heartbeat: 2026-04-25T06:30:00Z
+last_commit: 0fb5563
+last_phase: P4.1
+next_phase: P4.2
+last_heartbeat: 2026-04-25T06:50:00Z
 blocked_reason: null
 ```
 
@@ -26,7 +26,7 @@ blocked_reason: null
 | P3.1  | soul.md YAML frontmatter + `<persona>` tag injection | ✅ | `f485883` |
 | P3.2  | Reflection pipeline + two-phase patch commit         | ✅ | `485182f` |
 | P3.3  | Cadence guards + immutable-field enforcement         | ✅ | `2bf02e2` |
-| P4.1  | `ExternalMemoryBackend` trait + criticality enum     | ⬜ | — |
+| P4.1  | `ExternalMemoryBackend` trait + criticality registry | ✅ | `0fb5563` |
 | P4.2  | Obsidian backend (read/write `OpenFang/inbox/*`)     | ⬜ | — |
 | P4.3  | Mempalace backend (REQUIRED; boot-fail if absent)    | ⬜ | — |
 | P5.1  | Universal untrusted-content channel + isolation dir  | ⬜ | — |
