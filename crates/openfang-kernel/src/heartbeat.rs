@@ -12,7 +12,7 @@
 use crate::registry::AgentRegistry;
 use chrono::Utc;
 use dashmap::DashMap;
-use openfang_types::agent::{AgentId, AgentState};
+use openfang_types::agent::{AgentId, AgentState, ScheduleMode};
 use tracing::{debug, warn};
 
 /// Default heartbeat check interval (seconds).
@@ -177,6 +177,30 @@ pub fn check_agents(registry: &AgentRegistry, config: &HeartbeatConfig) -> Vec<H
                 agent = %entry_ref.name,
                 inactive_secs,
                 "Skipping idle agent — never received a message"
+            );
+            continue;
+        }
+
+        // --- Skip reactive Running agents (GitHub #1102) ---
+        //
+        // Reactive agents wake up on incoming messages/events. Between messages
+        // they legitimately sit idle for arbitrary periods. Flagging them as
+        // "unresponsive" whenever `inactive_secs > timeout` caused the kernel
+        // to mark clean idle agents Crashed → trigger recovery → loop.
+        //
+        // Tradeoff: we no longer detect a reactive agent that has crashed
+        // *mid-processing* (receiver loop deadlocked while holding a turn).
+        // That requires an explicit "in-flight" signal on the agent entry,
+        // which is out of scope here. Surface mid-processing crashes via
+        // explicit error paths (LLM timeouts, tool errors) instead of
+        // wall-clock heartbeat.
+        if entry_ref.state == AgentState::Running
+            && matches!(entry_ref.manifest.schedule, ScheduleMode::Reactive)
+        {
+            debug!(
+                agent = %entry_ref.name,
+                inactive_secs,
+                "Skipping reactive agent — idle between messages is expected"
             );
             continue;
         }
@@ -378,16 +402,20 @@ mod tests {
 
     #[test]
     fn test_active_agent_detected_unresponsive() {
-        // An agent that WAS active (last_active >> created_at) but has gone
-        // silent for longer than the timeout — should be flagged unresponsive.
+        // A non-reactive agent that WAS active (last_active >> created_at) but
+        // has gone silent longer than the timeout — should be flagged unresponsive.
+        // Uses Periodic schedule; reactive agents are now skipped outright (#1102).
         let registry = crate::registry::AgentRegistry::new();
         let ten_min_ago = Utc::now() - Duration::seconds(600);
         let five_min_ago = Utc::now() - Duration::seconds(300);
-        let active_agent = make_entry(
+        let active_agent = make_entry_with_schedule(
             "active-agent",
             AgentState::Running,
             ten_min_ago,
             five_min_ago,
+            ScheduleMode::Periodic {
+                cron: "*/1 * * * *".to_string(),
+            },
         );
         registry.register(active_agent).unwrap();
 
@@ -403,11 +431,19 @@ mod tests {
 
     #[test]
     fn test_active_agent_within_timeout_is_ok() {
-        // An agent that has been active recently (within timeout).
+        // A non-reactive agent that has been active recently (within timeout).
         let registry = crate::registry::AgentRegistry::new();
         let ten_min_ago = Utc::now() - Duration::seconds(600);
         let just_now = Utc::now() - Duration::seconds(10);
-        let healthy_agent = make_entry("healthy-agent", AgentState::Running, ten_min_ago, just_now);
+        let healthy_agent = make_entry_with_schedule(
+            "healthy-agent",
+            AgentState::Running,
+            ten_min_ago,
+            just_now,
+            ScheduleMode::Periodic {
+                cron: "*/1 * * * *".to_string(),
+            },
+        );
         registry.register(healthy_agent).unwrap();
 
         let config = HeartbeatConfig::default(); // timeout = 180s
@@ -418,6 +454,94 @@ mod tests {
             !statuses[0].unresponsive,
             "recently active agent should not be unresponsive"
         );
+    }
+
+    /// Helper: build an entry with a specific schedule mode.
+    fn make_entry_with_schedule(
+        name: &str,
+        state: AgentState,
+        created_at: chrono::DateTime<Utc>,
+        last_active: chrono::DateTime<Utc>,
+        schedule: ScheduleMode,
+    ) -> AgentEntry {
+        let mut e = make_entry(name, state, created_at, last_active);
+        e.manifest.schedule = schedule;
+        e
+    }
+
+    #[test]
+    fn test_reactive_running_idle_agent_not_flagged_unresponsive() {
+        // GitHub #1102 regression: a reactive agent with no recent messages
+        // must not be flagged as unresponsive just because wall-clock idle time
+        // exceeds the heartbeat timeout.
+        let registry = crate::registry::AgentRegistry::new();
+        let twenty_min_ago = Utc::now() - Duration::seconds(1200);
+        let ten_min_ago = Utc::now() - Duration::seconds(600);
+        let agent = make_entry_with_schedule(
+            "reactive-idle",
+            AgentState::Running,
+            twenty_min_ago, // created long ago
+            ten_min_ago,    // last message 10 min back — long past 180s timeout
+            ScheduleMode::Reactive,
+        );
+        registry.register(agent).unwrap();
+
+        let statuses = check_agents(&registry, &HeartbeatConfig::default());
+
+        // Reactive agents are skipped entirely from statuses (no flag, no crash).
+        assert!(
+            statuses.is_empty(),
+            "reactive Running agent should be skipped — got {:?}",
+            statuses
+        );
+    }
+
+    #[test]
+    fn test_periodic_idle_agent_still_flagged_unresponsive() {
+        // Non-reactive agents (Periodic/Proactive/Continuous) should remain
+        // subject to heartbeat — they SHOULD be doing work on a cadence.
+        let registry = crate::registry::AgentRegistry::new();
+        let twenty_min_ago = Utc::now() - Duration::seconds(1200);
+        let ten_min_ago = Utc::now() - Duration::seconds(600);
+        let agent = make_entry_with_schedule(
+            "periodic-stuck",
+            AgentState::Running,
+            twenty_min_ago,
+            ten_min_ago,
+            ScheduleMode::Periodic {
+                cron: "0 * * * *".to_string(),
+            },
+        );
+        registry.register(agent).unwrap();
+
+        let statuses = check_agents(&registry, &HeartbeatConfig::default());
+        assert_eq!(statuses.len(), 1);
+        assert!(
+            statuses[0].unresponsive,
+            "periodic agent past timeout should still be flagged"
+        );
+    }
+
+    #[test]
+    fn test_reactive_crashed_agent_still_surfaced_for_recovery() {
+        // If a reactive agent is already in Crashed state (e.g. an explicit
+        // error path marked it), we still want to see it in heartbeat output
+        // so the recovery worker can retry.
+        let registry = crate::registry::AgentRegistry::new();
+        let ten_min_ago = Utc::now() - Duration::seconds(600);
+        let agent = make_entry_with_schedule(
+            "reactive-crashed",
+            AgentState::Crashed,
+            ten_min_ago,
+            ten_min_ago,
+            ScheduleMode::Reactive,
+        );
+        registry.register(agent).unwrap();
+
+        let statuses = check_agents(&registry, &HeartbeatConfig::default());
+        assert_eq!(statuses.len(), 1);
+        assert!(statuses[0].unresponsive);
+        assert_eq!(statuses[0].state, AgentState::Crashed);
     }
 
     #[test]
