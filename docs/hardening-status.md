@@ -5,13 +5,14 @@
 ## Machine-readable header
 
 ```yaml
-state: active          # active | blocked | done
+state: done            # active | blocked | done
 branch: hardening/v0.6.1
-last_commit: 3188ad2
-last_phase: P6.2
-next_phase: P7.1
-last_heartbeat: 2026-04-25T10:47:00Z
+last_commit: 1209e80
+last_phase: P7.1
+next_phase: ~
+last_heartbeat: 2026-04-25T11:17:00Z
 blocked_reason: null
+release_note: "v0.6.1 hardening branch ready for review/merge. Cron c060e8e0 can be deleted via CronList → CronDelete."
 ```
 
 ## Phase map
@@ -35,7 +36,7 @@ blocked_reason: null
 | P5.4  | Pinboard storage + state machine + Obsidian render   | ✅ | `dfc158e` |
 | P6.1  | Boot-warm registry primitive (Warming/Degraded/Ok/Failed)| ✅ | `5a1e494` |
 | P6.2  | launchd/systemd-user/Warp/shell/brew assets          | ✅ | `3188ad2` |
-| P7.1  | Release prep v0.6.1 + `tests/hardening_smoke.rs`     | ⬜ | — |
+| P7.1  | Release prep v0.6.1 (version bump + CHANGELOG + docs + smoke) | ✅ | `1209e80` |
 
 ## Cron contract (for fresh sessions picking up from a heartbeat fire)
 
