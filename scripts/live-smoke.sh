@@ -89,4 +89,24 @@ curl -sSf "${BASE}/api/network/status" >/dev/null || fail "/api/network/status f
 log "GET /"
 curl -sSf "${BASE}/" >/dev/null || fail "dashboard / failed"
 
+# Step 7 — hardening v0.6.1 endpoints (best-effort: skip if the kernel
+# AppState wiring isn't in yet). These targets are documented in
+# docs/hardening-status.md as the plumbing follow-up; once they land,
+# this smoke test becomes load-bearing.
+log "GET /api/pinboard (hardening v0.6.1; skipped if 404)"
+status=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/pinboard")
+case "$status" in
+    200|401) log "  pinboard route responded with HTTP $status (ok)" ;;
+    404) log "  pinboard route not yet wired (HTTP 404) — expected pre-plumbing" ;;
+    *) fail "/api/pinboard returned unexpected HTTP $status" ;;
+esac
+
+log "GET /api/health expecting JSON state field once boot-warm is wired"
+warm_state=$(curl -s "${BASE}/api/health" | grep -oE '"state":[[:space:]]*"[a-z_]+"' || true)
+if [ -n "$warm_state" ]; then
+    log "  boot-warm state present: $warm_state"
+else
+    log "  boot-warm state field not yet on /api/health — expected pre-plumbing"
+fi
+
 log "ALL CHECKS PASSED"

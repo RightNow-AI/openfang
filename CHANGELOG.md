@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-25
+
+Hardening release — pure additive primitives with no breaking API changes. Most new modules ship as standalone primitives behind explicit feature seams; the kernel/AppState wiring that turns them into end-to-end behavior is queued as follow-up plumbing and tracked in `docs/hardening-status.md`.
+
+### Added
+
+- **soul.md YAML frontmatter** — agents now carry structured `name / archetype / values / non_negotiables / memory_focus / last_reflection_at` in SOUL.md frontmatter. Persona is injected into the system prompt inside explicit `<persona>…</persona>` tags so prompt-injection in scraped tool output cannot impersonate persona content. Backward-compatible: SOUL.md without frontmatter renders the same content unchanged.
+- **soul reflection pipeline** — `reflection.rs` provides the building blocks for the 6-hour cadence self-update: prompt builder, strict-JSON response parser with `deny_unknown_fields`, two-phase `soul_patch_proposal.md` write that's only applied on next boot, cadence log + `can_reflect_now` guard (4h min gap, 4 reflections per 24h max), and `check_immutable_fields` defending `name / archetype / values / non_negotiables`.
+- **Ollama base_url loopback enforcement** — local LLM provider `base_url` must resolve to a loopback address. Override with `OPENFANG_OLLAMA_ALLOW_NON_LOOPBACK=1` for trusted-LAN deployments.
+- **Ollama model-not-found enrichment** — opaque 404s on missing Ollama models now resolve through `/api/tags` and surface as `ModelNotFound` errors listing the available models.
+- **External memory backend trait** — `openfang_memory::external::ExternalMemoryBackend` lets the kernel register additional memory backends with criticality-aware fanout. `ExternalBackends` registry implements `search_union`, `write_fanout` (errors only on `Critical` backends), `aggregate_health`.
+- **Obsidian vault backend** — read-union and write-fanout against an Obsidian vault. Walks `.md` files under the vault root with hard caps (2000 files / 64 KiB per note). Writes land under `<vault>/OpenFang/inbox/<date>-<slug>.md` with YAML frontmatter (`agent_id, confidence, source_url, untrusted, source, scope`). Slug sanitisation + canonical-parent traversal guards. Defaults to `Degraded` criticality.
+- **Mempalace MCP backend skeleton** — `MempalaceClient` trait + `MempalaceBackend` (`Critical` criticality by default). `verify_boot()` helper for the kernel's boot-warm path, returning the verbatim remediation string pointing at `~/Library/Mobile Documents/com~apple~CloudDocs/mempalace/INTEGRATION_PLAN.md` on failure. Concrete rmcp wire-up lives in a higher crate.
+- **Universal untrusted-content channel** — `openfang_runtime::untrusted` with `wrap(source, body)`, `strip_jailbreak_markers` (16 markers including ChatML role tags, Llama `</s>`, `<persona>`/`</persona>`, and the tool-call delimiters consumed by `recover_text_tool_calls`), and `quarantine_write()` for isolation-first staging under `$XDG_DATA_HOME/openfang/quarantine/<agent_id>/<sha-prefix>/`. Hard path-traversal guards on agent-id and post-canonicalisation base-prefix check.
+- **Triage scanners** — `openfang_runtime::triage` with `ContentScanner` trait, `Verdict {Safe, Suspicious, Malicious, ScanFailed}` + `worst_of` reducer (explicit fail-closed precedence: Malicious > ScanFailed > Suspicious > Safe). `HeuristicScanner` covers 12 regex rules (jailbreak preludes, credential exfil, SSRF / cloud-metadata, obfuscation). `MoonlockDeepscanner` shells out to `OPENFANG_MOONLOCK_PATH` or `which moonlock` with a 30s timeout and a permissive verdict-alias JSON parser; every failure path is categorised in `findings`.
+- **Cyber-agent classifier pipeline** — `triage::classifier::run_classifier(driver, model, …)` invokes the bundled `agents/cyber/` (frontier-model only, claude-opus-4-7, temp 0.0) with scanner outcomes + content summary + cyber-intel excerpts. Strict JSON output schema, `deny_unknown_fields`, range-checked confidence, `questionable ↔ suspicious` alias. Fail-closed: any LLM or parse error yields `ClassifierDecision::scan_failed_pinboard()` so questionable content reaches the pinboard rather than memory. Operator doc at `docs/security/cyber-intel-vault-setup.md`.
+- **Triage pinboard** — `triage::pinboard::PinboardStore` filesystem layer with `submit / list / get / decide`, an explicit state machine (`Pending → Allowed via Allow`, `Pending → Quarantined via Quarantine`, `Comment` is audit-only), append-only audit log, `render_for_obsidian()` producing a single Markdown doc with YAML frontmatter for `<vault>/OpenFang/pinboard/<id>.md`. Reverse transitions (`Allowed → Quarantined`) are rejected as `InvalidTransition` so a release cannot be silently undone.
+- **Boot-warm registry** — `openfang_runtime::boot_warm` provides the data type the future `/api/health` change reads. `Criticality {Critical, NonCritical}`, `SubsystemStatus {Pending, Ok, Degraded, Failed}`, `AggregateState {Warming, Degraded, Failed, Ok}` with `http_status()` mapping (Warming/Failed → 503, others → 200). `tick_deadline()` auto-flips Pending NonCritical entries to a "warm timeout" Degraded after the configured window; Critical entries never auto-flip.
+- **Deploy assets** under `deploy/` — macOS launchd plist, Linux user-mode systemd unit, Warp workflow pack, bash + zsh tab completion, Homebrew tap formula skeleton. The pre-existing system-wide `deploy/openfang.service` is unchanged. See `deploy/README.md`.
+- **Hardening status doc** at `docs/hardening-status.md` — single source of truth tracking the v0.6.1 phase rollout and what remains as plumbing follow-up.
+
+### Fixed
+
+- Heartbeat monitor no longer marks idle reactive agents as `Crashed`. Reactive agents legitimately wait between messages; flagging them was producing a crash/recover loop on otherwise healthy Slack/Discord-bound agents. Fixes #1102.
+- Streaming LLM calls keep `last_active` fresh via a background 30-second `touch_agent` ticker around `stream_with_retry`. Long-running local-LLM streams (Ollama cold-load, large context windows) no longer trip the unresponsive-agent threshold mid-stream. Fixes #1089.
+
+### Security
+
+- Local LLM `base_url` is now loopback-only by default. A stray `provider="ollama"` with `base_url="http://192.168.1.5:11434"` previously exposed the agent's tool-calling surface to the LAN with no auth; this configuration is now refused unless the operator opts in via `OPENFANG_OLLAMA_ALLOW_NON_LOOPBACK=1`.
+- The persona section of the system prompt is now wrapped in explicit `<persona>…</persona>` tags. Body text (including SOUL.md edits) is sanitised so a hostile edit cannot close the persona tag early or open a fake one.
+- Tool-call delimiters consumed by the text-fallback parser at `agent_loop.rs:2232` (`<tool_use>`, `<tool_call>`, `<function_call>`) are now neutralised inside `untrusted::wrap()`. Scraped pages cannot smuggle fake tool calls through tool output.
+- All known prompt-injection role delimiters (ChatML `<|im_start|>` / role tags, Llama `</s>`, Anthropic `<thinking>`) are stripped from external content before the model sees it.
+- Triage pipeline's filesystem layer (quarantine, pinboard, Obsidian inbox) enforces post-canonicalisation parent-prefix checks so id-derived paths cannot escape their roots even if the sanitiser regresses.
+
+### Notes for v0.6.0 → v0.6.1 upgrade
+
+- No breaking API changes. All new behaviour is either default-on for new code paths or gated behind explicit config keys / env vars.
+- The CLI subcommand surface advertised by the new shell completions (`pinboard`, `soul`, `reflection`, …) reflects what the primitives support; the actual subcommand handlers land in a follow-up commit.
+- See `docs/hardening-status.md` for the still-pending plumbing (AppState wiring of `BootWarmRegistry`, `/api/health` enrichment, `/api/pinboard` routes, kernel call sites for the new modules).
+
 ## [0.5.10] - 2026-04-17
 
 ### Fixed

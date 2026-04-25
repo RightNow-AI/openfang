@@ -105,6 +105,30 @@ taskkill //PID <pid> //F
 | `/api/a2a/discover` | POST | Discover A2A agent at URL |
 | `/api/a2a/send` | POST | Send task to external A2A agent |
 | `/api/a2a/tasks/{id}/status` | GET | Check external A2A task status |
+| `/api/health/detail` | GET | Authenticated health detail (uptime, panics, agent count, db, config warnings) |
+| `/api/pinboard` | GET | List triage pinboard entries (v0.6.1 — wired in plumbing follow-up) |
+| `/api/pinboard/{id}` | GET | One entry detail with cyber-agent rationale (v0.6.1, follow-up) |
+| `/api/pinboard/{id}/decision` | POST | Apply Allow / Quarantine / Comment to a pinboard entry (v0.6.1, follow-up) |
+
+### v0.6.1 hardening verification additions
+
+After Phase 6/7 plumbing lands, the live-smoke flow grows by:
+
+```bash
+# Boot-warm gating — expect a `state: warming` field while subsystems load,
+# 200 with `state: ok` once all critical subsystems are warm.
+curl -s http://127.0.0.1:4200/api/health | jq .state
+
+# Pinboard — list pending Suspicious / ScanFailed items
+curl -s -H "Authorization: Bearer $OPENFANG_API_KEY" \
+  http://127.0.0.1:4200/api/pinboard | jq '.[] | {id, state, source}'
+
+# Mempalace required-backend boot check — daemon should refuse to start if
+# the mempalace MCP is unreachable. Stop mempalace, then:
+"$BIN" start && echo "BUG: should have failed boot" || echo "ok: boot refused as expected"
+```
+
+The v0.6.1 hardening primitives are documented in `docs/hardening-status.md`; the still-pending plumbing (AppState wiring, route handlers, kernel call sites) is also tracked there.
 
 ## Architecture Notes
 - **Don't touch `openfang-cli`** — user is actively building the interactive CLI
