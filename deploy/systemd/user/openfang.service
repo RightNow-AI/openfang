@@ -1,0 +1,47 @@
+# OpenFang Agent OS — Linux user-mode systemd service.
+#
+# Runs the daemon as the logged-in user (NOT root, NOT a dedicated `openfang`
+# system user). For the system-wide variant with hardening directives and a
+# dedicated service user, see deploy/openfang.service.
+#
+# INSTALL:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/systemd/user/openfang.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now openfang.service
+#   curl -s http://127.0.0.1:4200/api/health   # verify
+#
+# UNINSTALL:
+#   systemctl --user disable --now openfang.service
+#   rm ~/.config/systemd/user/openfang.service
+#   systemctl --user daemon-reload
+#
+# TAIL LOGS:
+#   journalctl --user -u openfang.service -f
+#
+# To survive logout, enable lingering for the user:
+#   loginctl enable-linger $(whoami)
+
+[Unit]
+Description=OpenFang Agent OS (user)
+Documentation=https://github.com/RightNow-AI/openfang
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/openfang start
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Environment: API keys go in ~/.openfang/env (sourced via EnvironmentFile),
+# kept off the systemd unit itself so the unit file is safe to commit.
+EnvironmentFile=-%h/.openfang/env
+WorkingDirectory=%h/.openfang
+
+# Resource limits (per-user instance, kept generous for long-running agents).
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=default.target

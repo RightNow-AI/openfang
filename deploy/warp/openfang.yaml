@@ -1,0 +1,127 @@
+# OpenFang — Warp workflow pack.
+#
+# A Warp workflow lives in ~/.warp/workflows/<name>.yaml. Each entry defines
+# a runnable command with optional arguments. Drop this file (or its entries)
+# into your Warp workflow dir to get one-click `Start OpenFang`, `Tail logs`,
+# `Health`, `Pinboard list`, and `Approvals` actions in your terminal.
+#
+# INSTALL:
+#   mkdir -p ~/.warp/workflows
+#   cp deploy/warp/openfang.yaml ~/.warp/workflows/
+#   # Restart Warp; the workflows surface in the command palette and the
+#   # workflows panel.
+#
+# Adjust `command` paths if openfang isn't on your PATH.
+
+---
+name: Start OpenFang (foreground)
+command: openfang start
+description: |
+  Start the OpenFang Agent OS daemon in the foreground. Logs stream to this
+  pane. Ctrl-C to stop. For background install use the launchd or systemd
+  unit under deploy/.
+tags:
+  - openfang
+  - daemon
+shells:
+  - bash
+  - zsh
+  - fish
+
+---
+name: OpenFang health (basic)
+command: curl -s http://127.0.0.1:{{port}}/api/health | jq .
+description: Hit the public health endpoint. No auth required.
+arguments:
+  - name: port
+    description: API port
+    default_value: "4200"
+tags:
+  - openfang
+  - health
+
+---
+name: OpenFang health (detail)
+command: curl -s -H "Authorization: Bearer ${{api_key_env}}" http://127.0.0.1:{{port}}/api/health/detail | jq .
+description: Authenticated detailed health probe — db, panic count, agent count, config warnings.
+arguments:
+  - name: port
+    description: API port
+    default_value: "4200"
+  - name: api_key_env
+    description: env var holding the OpenFang API key
+    default_value: "OPENFANG_API_KEY"
+tags:
+  - openfang
+  - health
+
+---
+name: OpenFang tail logs (launchd)
+command: tail -F ~/Library/Logs/openfang/stdout.log ~/Library/Logs/openfang/stderr.log
+description: Tail the macOS launchd logs from the deploy/launchd plist.
+tags:
+  - openfang
+  - logs
+  - macos
+shells:
+  - bash
+  - zsh
+
+---
+name: OpenFang tail logs (systemd-user)
+command: journalctl --user -u openfang.service -f
+description: Tail the Linux user-mode systemd unit's journal.
+tags:
+  - openfang
+  - logs
+  - linux
+
+---
+name: OpenFang pinboard — list
+command: curl -s -H "Authorization: Bearer ${{api_key_env}}" http://127.0.0.1:{{port}}/api/pinboard | jq .
+description: |
+  List pinboard entries (Phase 5 triage review surface). Pending items appear
+  first, then resolved (allowed/quarantined). Wired in P6.2 plumbing follow-up.
+arguments:
+  - name: port
+    default_value: "4200"
+  - name: api_key_env
+    default_value: "OPENFANG_API_KEY"
+tags:
+  - openfang
+  - pinboard
+  - security
+
+---
+name: OpenFang agents — list
+command: curl -s -H "Authorization: Bearer ${{api_key_env}}" http://127.0.0.1:{{port}}/api/agents | jq .
+description: List all registered agents with their state and last-active timestamp.
+arguments:
+  - name: port
+    default_value: "4200"
+  - name: api_key_env
+    default_value: "OPENFANG_API_KEY"
+tags:
+  - openfang
+  - agents
+
+---
+name: OpenFang budget
+command: curl -s -H "Authorization: Bearer ${{api_key_env}}" http://127.0.0.1:{{port}}/api/budget | jq .
+description: Inspect the global budget envelope and current spend.
+arguments:
+  - name: port
+    default_value: "4200"
+  - name: api_key_env
+    default_value: "OPENFANG_API_KEY"
+tags:
+  - openfang
+  - budget
+
+---
+name: OpenFang stop daemon
+command: pkill -TERM -x openfang
+description: Send SIGTERM to the daemon. The graceful-shutdown path drains in-flight agent loops before exit.
+tags:
+  - openfang
+  - daemon

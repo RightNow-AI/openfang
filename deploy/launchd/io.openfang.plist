@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OpenFang Agent OS — macOS launchd LaunchAgent.
+
+  Installs as a per-user agent so the daemon runs under the logged-in user's
+  identity (matches CLAUDE.md: keys live in ~/.openfang and Mempalace MCP
+  uses ~/Library/Mobile Documents/...). Loopback-bound by default; flip to
+  RunAtLoad=false if you only want it on demand.
+
+  INSTALL:
+    cp deploy/launchd/io.openfang.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/io.openfang.plist
+    curl -s http://127.0.0.1:4200/api/health   # verify
+
+  UNINSTALL:
+    launchctl unload -w ~/Library/LaunchAgents/io.openfang.plist
+    rm ~/Library/LaunchAgents/io.openfang.plist
+
+  TAIL LOGS:
+    tail -F ~/Library/Logs/openfang/stdout.log ~/Library/Logs/openfang/stderr.log
+
+  Replace `/usr/local/bin/openfang` if you installed via `cargo install` to
+  ~/.cargo/bin (use the absolute path; launchd doesn't expand $HOME / $PATH).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.openfang</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/openfang</string>
+        <string>start</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <!--
+      ProcessType: Standard keeps the daemon at normal scheduling priority.
+      Adaptive would let macOS down-prioritise it under memory pressure
+      which is undesirable for a background agent host.
+    -->
+    <key>ProcessType</key>
+    <string>Standard</string>
+
+    <!--
+      EnvironmentVariables: load API keys from the user's shell config or
+      a tiny pre-flight script. launchd does NOT source ~/.zshrc / ~/.bashrc
+      automatically. The recommended pattern is to keep secrets in
+      ~/.openfang/env (sourced by `openfang start`) so this plist stays
+      minimal and the secrets file can have 0600 perms.
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/REPLACE_ME</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/REPLACE_ME/Library/Logs/openfang/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/REPLACE_ME/Library/Logs/openfang/stderr.log</string>
+
+    <!--
+      ThrottleInterval: minimum seconds between automatic relaunches when
+      KeepAlive forces a restart. Default 10s lets transient errors
+      propagate without thrashing.
+    -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!--
+      WorkingDirectory: ~/.openfang holds config, sessions, agents/.
+      Replace REPLACE_ME with your username before installing.
+    -->
+    <key>WorkingDirectory</key>
+    <string>/Users/REPLACE_ME/.openfang</string>
+</dict>
+</plist>
