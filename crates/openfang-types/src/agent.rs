@@ -67,7 +67,7 @@ impl Default for ModelRoutingConfig {
 }
 
 /// Autonomous agent configuration — guardrails for 24/7 agents.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AutonomousConfig {
     /// Cron expression for quiet hours (e.g., "0 22 * * *" to "0 6 * * *").
@@ -223,7 +223,7 @@ impl AgentMode {
 }
 
 /// How an agent is scheduled to run.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScheduleMode {
     /// Agent wakes up when a message/event arrives (default).
@@ -245,7 +245,7 @@ fn default_check_interval() -> u64 {
 }
 
 /// Resource limits for an agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ResourceQuota {
     /// Maximum WASM memory in bytes.

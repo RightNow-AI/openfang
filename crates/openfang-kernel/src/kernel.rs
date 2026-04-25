@@ -1196,7 +1196,11 @@ impl OpenFangKernel {
                                     &toml_str,
                                 ) {
                                     Ok(disk_manifest) => {
-                                        // Compare key fields to detect changes
+                                        // Compare key fields to detect changes.
+                                        // IMPORTANT: keep this list in sync with AgentManifest
+                                        // fields that users may legitimately edit in agent.toml.
+                                        // Missing a field here means changes to it are silently
+                                        // ignored until the agent is deleted and recreated.
                                         let changed = disk_manifest.name != entry.manifest.name
                                             || disk_manifest.description
                                                 != entry.manifest.description
@@ -1214,7 +1218,19 @@ impl OpenFangKernel {
                                                 != entry.manifest.tool_blocklist
                                             || disk_manifest.skills != entry.manifest.skills
                                             || disk_manifest.mcp_servers
-                                                != entry.manifest.mcp_servers;
+                                                != entry.manifest.mcp_servers
+                                            // Fields previously missing from this check (#1087):
+                                            // Only compare workspace when the TOML explicitly sets
+                                            // one, so the kernel-assigned default path in the DB
+                                            // is not overwritten for agents that omit the field.
+                                            || disk_manifest.workspace.as_ref().is_some_and(
+                                                |w| Some(w) != entry.manifest.workspace.as_ref(),
+                                            )
+                                            || disk_manifest.schedule != entry.manifest.schedule
+                                            || disk_manifest.autonomous != entry.manifest.autonomous
+                                            || disk_manifest.resources != entry.manifest.resources
+                                            || disk_manifest.exec_policy
+                                                != entry.manifest.exec_policy;
                                         if changed {
                                             info!(
                                                 agent = %name,
