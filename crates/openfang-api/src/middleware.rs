@@ -262,14 +262,15 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Bo
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
     headers.insert("x-content-type-options", "nosniff".parse().unwrap());
-    headers.insert("x-frame-options", "DENY".parse().unwrap());
+    // Allow embedding in Command Center (localhost:3000)
+    headers.insert("x-frame-options", "SAMEORIGIN".parse().unwrap());
     headers.insert("x-xss-protection", "1; mode=block".parse().unwrap());
     // The dashboard handler (webchat_page) sets its own nonce-based CSP.
     // For all other responses (API endpoints), apply a strict default.
     if !headers.contains_key("content-security-policy") {
         headers.insert(
             "content-security-policy",
-            "default-src 'none'; frame-ancestors 'none'"
+            "default-src 'none'; frame-ancestors 'self' http://localhost:3000"
                 .parse()
                 .unwrap(),
         );
