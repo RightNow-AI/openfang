@@ -614,6 +614,39 @@ pub fn known_providers() -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn test_provider_defaults_groq() {
@@ -772,8 +805,9 @@ mod tests {
 
     #[test]
     fn test_novita_provider_with_env_key() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
         let unique_key = "test-novita-key-12345";
-        std::env::set_var("NOVITA_API_KEY", unique_key);
+        let _env = EnvVarGuard::set("NOVITA_API_KEY", unique_key);
         let config = DriverConfig {
             provider: "novita".to_string(),
             api_key: None,
@@ -785,11 +819,12 @@ mod tests {
             driver.is_ok(),
             "Novita provider with env var should succeed"
         );
-        std::env::remove_var("NOVITA_API_KEY");
     }
 
     #[test]
     fn test_novita_provider_no_key_errors() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvVarGuard::remove("NOVITA_API_KEY");
         let config = DriverConfig {
             provider: "novita".to_string(),
             api_key: None,
@@ -803,8 +838,9 @@ mod tests {
     #[test]
     fn test_nvidia_provider_with_env_key() {
         // NVIDIA NIM is a known provider — set API key and verify driver creation succeeds.
+        let _env_lock = ENV_LOCK.lock().unwrap();
         let unique_key = "test-nvidia-key-12345";
-        std::env::set_var("NVIDIA_API_KEY", unique_key);
+        let _env = EnvVarGuard::set("NVIDIA_API_KEY", unique_key);
         let config = DriverConfig {
             provider: "nvidia".to_string(),
             api_key: None, // picked up from env via provider_defaults
@@ -816,12 +852,13 @@ mod tests {
             driver.is_ok(),
             "NVIDIA provider with env var should succeed"
         );
-        std::env::remove_var("NVIDIA_API_KEY");
     }
 
     #[test]
     fn test_nvidia_provider_no_key_errors() {
         // NVIDIA NIM provider with no API key should error.
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvVarGuard::remove("NVIDIA_API_KEY");
         let config = DriverConfig {
             provider: "nvidia".to_string(),
             api_key: None,
@@ -835,8 +872,9 @@ mod tests {
     #[test]
     fn test_custom_provider_key_no_url_helpful_error() {
         // Custom provider with key set (via env) but no base_url should give helpful error.
+        let _env_lock = ENV_LOCK.lock().unwrap();
         let unique_key = "test-custom-key-67890";
-        std::env::set_var("MYCUSTOM_API_KEY", unique_key);
+        let _env = EnvVarGuard::set("MYCUSTOM_API_KEY", unique_key);
         let config = DriverConfig {
             provider: "mycustom".to_string(),
             api_key: None,
@@ -851,7 +889,6 @@ mod tests {
             "Error should mention base_url: {}",
             err
         );
-        std::env::remove_var("MYCUSTOM_API_KEY");
     }
 
     #[test]
