@@ -327,7 +327,11 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         let cli_path = config.base_url.clone();
         // Timeout precedence (highest wins):
         //   1. OPENFANG_SUBPROCESS_TIMEOUT_SECS env var (no-rebuild override for emergencies)
-        //   2. DriverConfig.subprocess_timeout_secs (config.toml-driven)
+        //   2. DriverConfig.subprocess_timeout_secs, populated upstream from
+        //      config.toml — `default_model.subprocess_timeout_secs` for the
+        //      primary driver, `[[fallback_providers]].subprocess_timeout_secs`
+        //      for global fallbacks. See kernel.rs::resolve_driver and
+        //      kernel.rs::create_drivers for the wiring.
         //   3. Driver default (currently 300s, set inside ClaudeCodeDriver::new)
         // NOTE: The field and env var are scope-named to apply to any subprocess
         // driver, but today only `provider = "claude-code"` reads them. Other
