@@ -188,6 +188,27 @@ pub struct DriverConfig {
     /// restricts what agents can do, making this safe.
     #[serde(default = "default_skip_permissions")]
     pub skip_permissions: bool,
+
+    /// Per-message subprocess turn timeout in seconds.
+    ///
+    /// Caps how long the runtime will wait for a single CLI subprocess turn
+    /// (one message round-trip) before killing the process and reporting a
+    /// timeout failure. When unset, the driver's own default is used
+    /// (currently 300s). Long-context Opus calls with heavy tool surfaces
+    /// routinely take >4 minutes, so users running large prompts may want
+    /// to bump this to 480–600s.
+    ///
+    /// Can also be overridden at runtime via the
+    /// `OPENFANG_SUBPROCESS_TIMEOUT_SECS` env var, which wins over both
+    /// this field and the driver default.
+    ///
+    /// **Scope:** Currently only honored by `provider = "claude-code"`.
+    /// Other providers (`default`, `qwen-code`, `openai`, `bedrock`, etc.)
+    /// accept the field for forward-compatibility but silently ignore it
+    /// today. As additional subprocess-based drivers are added, they will
+    /// opt in to this field individually.
+    #[serde(default)]
+    pub subprocess_timeout_secs: Option<u64>,
 }
 
 fn default_skip_permissions() -> bool {
@@ -202,6 +223,7 @@ impl std::fmt::Debug for DriverConfig {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("base_url", &self.base_url)
             .field("skip_permissions", &self.skip_permissions)
+            .field("subprocess_timeout_secs", &self.subprocess_timeout_secs)
             .finish()
     }
 }

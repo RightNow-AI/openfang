@@ -7531,6 +7531,7 @@ pub async fn set_provider_key(
                     model: model_id,
                     api_key_env: env_var.clone(),
                     base_url: None,
+                    subprocess_timeout_secs: None,
                 };
                 let mut guard = state
                     .kernel
@@ -7698,6 +7699,7 @@ pub async fn test_provider(
             Some(base_url)
         },
         skip_permissions: true,
+        subprocess_timeout_secs: None,
     };
 
     match openfang_runtime::drivers::create_driver(&driver_config) {

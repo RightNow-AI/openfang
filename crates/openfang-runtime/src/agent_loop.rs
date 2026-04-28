@@ -1143,6 +1143,7 @@ async fn call_with_retry(
                             api_key,
                             base_url: fb.base_url.clone(),
                             skip_permissions: true,
+                            subprocess_timeout_secs: None,
                         };
                         let fb_driver = match crate::drivers::create_driver(&fb_config) {
                             Ok(d) => d,
@@ -1326,6 +1327,7 @@ async fn stream_with_retry(
                             api_key,
                             base_url: fb.base_url.clone(),
                             skip_permissions: true,
+                            subprocess_timeout_secs: None,
                         };
                         let fb_driver = match crate::drivers::create_driver(&fb_config) {
                             Ok(d) => d,
