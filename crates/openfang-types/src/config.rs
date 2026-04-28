@@ -733,7 +733,12 @@ impl Default for VaultConfig {
 }
 
 /// Agent binding — routes specific channel/account/peer patterns to agents.
+///
+/// `deny_unknown_fields` so typos at the binding level (e.g. `match_rule` →
+/// `match_rules`) fail loudly at config-load instead of silently leaving the
+/// rule defaulted to "match everything".
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentBinding {
     /// Target agent name or ID.
     pub agent: String,
@@ -741,15 +746,78 @@ pub struct AgentBinding {
     pub match_rule: BindingMatchRule,
 }
 
+/// Lowercased channel-name strings whose adapters place a channel/conversation/
+/// room/space/chat ID directly in `ChannelMessage::sender.platform_id` (these
+/// adapters overload that field because it doubles as the send target).
+///
+/// Single source of truth shared between:
+/// - Config validation (warn the user when their `channel_id` binding targets
+///   an adapter that doesn't populate `ctx.channel_id`).
+/// - `ChannelMessage::channel_id()` in `openfang-channels::types` (routing-time
+///   accessor that reads from this list to decide where to source the ID).
+///
+/// Adapters not listed fall back to `metadata["channel_id"]` if present, then
+/// `None`. Hybrid adapters whose `platform_id` flips between channel and user
+/// based on `is_group` (IRC, Zulip) are intentionally excluded — a single
+/// channel-scoped binding would silently match DMs.
+///
+/// Compared against the lowercased `channel` string from `BindingMatchRule`
+/// or from `channel_type_str()` at routing time.
+pub const CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL: &[&str] = &[
+    "discord",
+    "slack",
+    "telegram",
+    "matrix",
+    "mattermost",
+    "teams",
+    "webex",
+    "rocketchat",
+    "nextcloud",
+    "pumble",
+    "revolt",
+    "guilded",
+    "feishu",
+    // Feishu Intl region emits `Custom("lark")` from `feishu.rs` (region.as_str()
+    // returns "lark" when configured for international). Listed alongside
+    // "feishu" so both regional spellings resolve identically at routing and
+    // validation time.
+    "lark",
+    "keybase",
+    "google_chat",
+    "line",
+    "twist",
+    "flock",
+    "twitch",
+];
+
 /// Match rule for agent bindings. All specified (non-None) fields must match.
+///
+/// `deny_unknown_fields` ensures typos (e.g. `channnel_id`) fail fast at config
+/// load instead of silently parsing into a no-op rule that matches everything.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BindingMatchRule {
     /// Channel type (e.g., "discord", "telegram", "slack").
     pub channel: Option<String>,
     /// Specific account/bot ID within the channel.
     pub account_id: Option<String>,
-    /// Peer/user ID for DM routing.
+    /// Peer/user ID. Matches `BindingContext::peer_id`, which the bridge
+    /// populates from `ChannelMessage::sender_user_id()` — i.e. the platform's
+    /// *user* identity (Discord user ID, Slack user ID, etc.).
+    ///
+    /// Note: the legacy `AgentRouter::resolve()` entry point (kept for tests
+    /// and any caller without bridge context) builds a synthetic context
+    /// where `peer_id` is filled from the raw `platform_user_id` argument. On
+    /// adapters that overload `platform_id` as the channel ID (Discord, Slack,
+    /// …), passing those callers a channel-scoped value will match here. New
+    /// code should route through `resolve_with_context` and a bridge-built
+    /// `BindingContext`. For platform-native channel/conversation matching,
+    /// use `channel_id` instead.
     pub peer_id: Option<String>,
+    /// Platform-native channel/conversation/chat ID.
+    /// Discord: text channel ID. Slack: conversation ID. Telegram: chat ID.
+    /// Pair with `channel` to disambiguate across platforms (channel IDs are not portable).
+    pub channel_id: Option<String>,
     /// Guild/server ID (Discord/Slack).
     pub guild_id: Option<String>,
     /// Role-based routing (user must have at least one).
@@ -760,9 +828,16 @@ pub struct BindingMatchRule {
 impl BindingMatchRule {
     /// Calculate specificity score for binding priority ordering.
     /// Higher = more specific = checked first.
+    ///
+    /// `peer_id` and `channel_id` are weighted equally (8) — both identify a
+    /// specific facet of "where the message came from". A binding that
+    /// specifies both naturally beats either alone (sum = 16).
     pub fn specificity(&self) -> u32 {
         let mut score = 0u32;
         if self.peer_id.is_some() {
+            score += 8;
+        }
+        if self.channel_id.is_some() {
             score += 8;
         }
         if self.guild_id.is_some() {
@@ -1028,6 +1103,14 @@ impl Default for ThinkingConfig {
 }
 
 /// Top-level kernel configuration.
+///
+/// `deny_unknown_fields` is intentionally *not* applied here. Spec §5.5 scoped
+/// strict-field validation to bindings (`AgentBinding` + `BindingMatchRule`),
+/// where silent no-op routing is the failure mode worth catching loudly.
+/// Adding it to the top-level kernel struct would also reject forward-compat
+/// keys, downstream-fork-only keys, and "I'm trying out a future field early"
+/// workflows — a wider behavior change than this PR's mandate. If we want it
+/// later, it ships as its own decision.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KernelConfig {
@@ -3701,6 +3784,42 @@ impl KernelConfig {
             SearchProvider::DuckDuckGo | SearchProvider::Auto => {}
         }
 
+        // --- Binding validation (channel_id) ---
+        // Use the shared allowlist (CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL) so this
+        // validation cannot drift from the routing-time accessor in
+        // ChannelMessage::channel_id(). Adapters not on the list may still
+        // populate ctx.channel_id via metadata["channel_id"], but we cannot
+        // detect that statically — so we warn conservatively and document the
+        // metadata escape hatch in docs/channel-adapters.md.
+        for (idx, binding) in self.bindings.iter().enumerate() {
+            let rule = &binding.match_rule;
+            if let Some(ref cid) = rule.channel_id {
+                match rule.channel.as_deref() {
+                    None => {
+                        warnings.push(format!(
+                            "Binding #{} (agent='{}') sets channel_id='{}' without channel; \
+                             channel IDs are not portable across platforms. Pair with channel = \"discord\" (or similar).",
+                            idx, binding.agent, cid
+                        ));
+                    }
+                    Some(ch) => {
+                        let ch_lower = ch.to_lowercase();
+                        if !CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL
+                            .iter()
+                            .any(|p| *p == ch_lower)
+                        {
+                            warnings.push(format!(
+                                "Binding #{} (agent='{}') sets channel_id='{}' for channel='{}', \
+                                 but the {} adapter does not populate ctx.channel_id from sender.platform_id; \
+                                 this binding will only match if the adapter writes channel_id into message metadata.",
+                                idx, binding.agent, cid, ch, ch
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         // --- Production bounds validation ---
         // Clamp dangerous zero/extreme values to safe defaults instead of crashing.
         warnings
@@ -3751,6 +3870,156 @@ mod tests {
         assert_eq!(config.log_level, "info");
         assert_eq!(config.api_listen, "127.0.0.1:50051");
         assert!(!config.network_enabled);
+    }
+
+    #[test]
+    fn test_binding_match_rule_deny_unknown_fields_rejects_typo() {
+        // Typo (`channnel_id` with three n's) should fail to parse rather than
+        // silently producing a no-op rule that matches every message.
+        let toml_input = r#"
+            channel = "discord"
+            channnel_id = "12345"
+        "#;
+        let result: Result<BindingMatchRule, _> = toml::from_str(toml_input);
+        assert!(
+            result.is_err(),
+            "expected deny_unknown_fields to reject typo'd field, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_binding_match_rule_accepts_channel_id() {
+        let toml_input = r#"
+            channel = "discord"
+            channel_id = "1234567890"
+        "#;
+        let rule: BindingMatchRule = toml::from_str(toml_input).unwrap();
+        assert_eq!(rule.channel.as_deref(), Some("discord"));
+        assert_eq!(rule.channel_id.as_deref(), Some("1234567890"));
+    }
+
+    #[test]
+    fn test_validate_warns_channel_id_without_channel() {
+        let mut config = KernelConfig::default();
+        config.bindings.push(AgentBinding {
+            agent: "ghost".to_string(),
+            match_rule: BindingMatchRule {
+                channel_id: Some("99999".to_string()),
+                ..Default::default()
+            },
+        });
+        let warnings = config.validate();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("channel_id") && w.contains("without channel")),
+            "expected channel_id-without-channel warning, got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn test_validate_warns_channel_id_for_unsupported_adapter() {
+        // Reddit's `platform_id` is the post author, not a subreddit; no
+        // per-conversation channel_id, so the binding can never match.
+        let mut config = KernelConfig::default();
+        config.bindings.push(AgentBinding {
+            agent: "ghost".to_string(),
+            match_rule: BindingMatchRule {
+                channel: Some("reddit".to_string()),
+                channel_id: Some("r/something".to_string()),
+                ..Default::default()
+            },
+        });
+        let warnings = config.validate();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("reddit") && w.contains("does not populate")),
+            "expected unsupported-adapter warning, got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn test_validate_no_warning_for_telegram_channel_id() {
+        // Telegram's `platform_id` is the chat ID — must not warn.
+        let mut config = KernelConfig::default();
+        config.bindings.push(AgentBinding {
+            agent: "ok".to_string(),
+            match_rule: BindingMatchRule {
+                channel: Some("telegram".to_string()),
+                channel_id: Some("-100123".to_string()),
+                ..Default::default()
+            },
+        });
+        let warnings = config.validate();
+        assert!(
+            !warnings.iter().any(|w| w.contains("does not populate")),
+            "did not expect channel_id-coverage warning for telegram, got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn test_validate_no_warning_for_slack_channel_id() {
+        let mut config = KernelConfig::default();
+        config.bindings.push(AgentBinding {
+            agent: "ok".to_string(),
+            match_rule: BindingMatchRule {
+                channel: Some("slack".to_string()),
+                channel_id: Some("C12345".to_string()),
+                ..Default::default()
+            },
+        });
+        let warnings = config.validate();
+        assert!(
+            !warnings.iter().any(|w| w.contains("does not populate")),
+            "did not expect channel_id-coverage warning for slack, got: {:?}",
+            warnings
+        );
+    }
+
+    // Note: the *behavioral* tiebreak test (declaration-order wins when
+    // specificity is equal) lives next to `AgentRouter` in
+    // `openfang-channels::router` — that's the only place where the tiebreak
+    // actually resolves. This crate doesn't depend on the router.
+
+    #[test]
+    fn test_agent_binding_deny_unknown_fields() {
+        // A typo at the AgentBinding level (`match_rules` plural instead of
+        // `match_rule`) must fail config load — silent default would make the
+        // binding a wildcard.
+        let toml_str = r#"
+            agent = "x"
+            [match_rules]
+            channel = "discord"
+        "#;
+        let result: Result<AgentBinding, _> = toml::from_str(toml_str);
+        assert!(
+            result.is_err(),
+            "expected deny_unknown_fields rejection, got Ok"
+        );
+    }
+
+    #[test]
+    fn test_validate_no_warning_for_discord_channel_id() {
+        let mut config = KernelConfig::default();
+        config.bindings.push(AgentBinding {
+            agent: "ok".to_string(),
+            match_rule: BindingMatchRule {
+                channel: Some("discord".to_string()),
+                channel_id: Some("12345".to_string()),
+                ..Default::default()
+            },
+        });
+        let warnings = config.validate();
+        assert!(
+            !warnings.iter().any(|w| w.contains("channel_id")),
+            "did not expect channel_id warnings for discord, got: {:?}",
+            warnings
+        );
     }
 
     #[test]

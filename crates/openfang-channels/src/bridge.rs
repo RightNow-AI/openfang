@@ -4,7 +4,7 @@
 //! `BridgeManager` which owns running adapters and dispatches messages.
 
 use crate::formatter;
-use crate::router::AgentRouter;
+use crate::router::{AgentRouter, BindingContext};
 use crate::types::{
     default_phase_emoji, AgentPhase, ChannelAdapter, ChannelContent, ChannelMessage, ChannelUser,
     LifecycleReaction,
@@ -679,6 +679,30 @@ fn sender_user_id(message: &ChannelMessage) -> &str {
         .unwrap_or(&message.sender.platform_id)
 }
 
+/// Build a `BindingContext` for routing the given inbound message.
+///
+/// Populates `channel_id` so per-channel bindings (e.g. `channel_id = "<discord_channel>"`)
+/// can route to dedicated agents. The channel ID source is delegated to
+/// [`ChannelMessage::channel_id`] — the single source of truth shared with
+/// config validation (see `CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL` in
+/// `openfang-types::config`). `peer_id` uses the resolved user ID, not
+/// `sender.platform_id`, so user-scoped bindings still match correctly on
+/// Discord/Slack/etc. where `platform_id` holds the channel.
+fn binding_context_for(message: &ChannelMessage) -> BindingContext {
+    BindingContext {
+        channel: channel_type_str(&message.channel).to_string(),
+        account_id: None,
+        peer_id: sender_user_id(message).to_string(),
+        channel_id: message.channel_id(),
+        guild_id: message
+            .metadata
+            .get("guild_id")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        roles: Vec::new(),
+    }
+}
+
 /// If an error contains "Agent not found", try to re-resolve the channel's default agent
 /// by name (the name stored at bridge startup). Returns `Some(new_id)` on success.
 async fn try_reresolution(
@@ -1001,10 +1025,13 @@ async fn dispatch_message(
     // Route to agent (standard path).
     // Use sender_user_id() so user-keyed bindings (peer_id) match for adapters like
     // Discord/Slack where sender.platform_id is the channel ID, not the user ID.
-    let agent_id = router.resolve(
+    // Use resolve_with_context so channel_id-scoped bindings can route per channel.
+    let binding_ctx = binding_context_for(message);
+    let agent_id = router.resolve_with_context(
         &message.channel,
         sender_user_id(message),
         message.sender.openfang_user.as_deref(),
+        &binding_ctx,
     );
 
     let agent_id = match agent_id {
@@ -1445,10 +1472,13 @@ async fn dispatch_with_blocks(
 ) {
     // Route to agent (same logic as text path).
     // Use sender_user_id() so user-keyed bindings match for Discord/Slack.
-    let agent_id = router.resolve(
+    // Use resolve_with_context so channel_id-scoped bindings can route per channel.
+    let binding_ctx = binding_context_for(message);
+    let agent_id = router.resolve_with_context(
         &message.channel,
         sender_user_id(message),
         message.sender.openfang_user.as_deref(),
+        &binding_ctx,
     );
 
     let agent_id = match agent_id {
@@ -2181,6 +2211,122 @@ mod tests {
             default_output_format_for_channel("signal"),
             OutputFormat::PlainText
         )
+    }
+
+    // -- binding_context_for / ChannelMessage::channel_id() coverage --
+    //
+    // These tests pin the routing-time behavior so future adapter additions to
+    // CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL cannot silently regress the bridge.
+
+    fn make_msg(
+        channel: ChannelType,
+        platform_id: &str,
+        metadata: Vec<(&str, serde_json::Value)>,
+    ) -> ChannelMessage {
+        let mut md = std::collections::HashMap::new();
+        for (k, v) in metadata {
+            md.insert(k.to_string(), v);
+        }
+        ChannelMessage {
+            channel,
+            platform_message_id: "msg-1".to_string(),
+            sender: crate::types::ChannelUser {
+                platform_id: platform_id.to_string(),
+                display_name: "Tester".to_string(),
+                openfang_user: None,
+            },
+            content: ChannelContent::Text("hi".to_string()),
+            target_agent: None,
+            timestamp: chrono::Utc::now(),
+            is_group: true,
+            thread_id: None,
+            metadata: md,
+        }
+    }
+
+    #[test]
+    fn test_binding_context_for_discord_uses_platform_id_as_channel() {
+        let msg = make_msg(ChannelType::Discord, "1234567890", vec![]);
+        let ctx = binding_context_for(&msg);
+        assert_eq!(ctx.channel, "discord");
+        assert_eq!(ctx.channel_id.as_deref(), Some("1234567890"));
+    }
+
+    #[test]
+    fn test_binding_context_for_telegram_uses_platform_id_as_channel() {
+        // Regression guard: Telegram is on the channel-ID allowlist.
+        let msg = make_msg(ChannelType::Telegram, "-100123", vec![]);
+        let ctx = binding_context_for(&msg);
+        assert_eq!(ctx.channel, "telegram");
+        assert_eq!(ctx.channel_id.as_deref(), Some("-100123"));
+    }
+
+    #[test]
+    fn test_binding_context_for_matrix_uses_room_id_from_platform_id() {
+        let msg = make_msg(ChannelType::Matrix, "!room:server.tld", vec![]);
+        let ctx = binding_context_for(&msg);
+        assert_eq!(ctx.channel_id.as_deref(), Some("!room:server.tld"));
+    }
+
+    #[test]
+    fn test_binding_context_for_custom_supported_adapter() {
+        // Custom("twitch") is on the allowlist.
+        let msg = make_msg(
+            ChannelType::Custom("twitch".to_string()),
+            "channel-foo",
+            vec![],
+        );
+        let ctx = binding_context_for(&msg);
+        assert_eq!(ctx.channel, "twitch");
+        assert_eq!(ctx.channel_id.as_deref(), Some("channel-foo"));
+    }
+
+    #[test]
+    fn test_binding_context_for_user_id_adapter_returns_none() {
+        // Reddit's platform_id is the post author, not a subreddit/conversation.
+        // The bridge must not surface that as `channel_id` (would silently match
+        // user-scoped bindings against a user ID).
+        let msg = make_msg(
+            ChannelType::Custom("reddit".to_string()),
+            "u/some-user",
+            vec![],
+        );
+        let ctx = binding_context_for(&msg);
+        assert_eq!(ctx.channel, "reddit");
+        assert!(ctx.channel_id.is_none());
+        // peer_id still falls through to platform_id (sender_user_id default).
+        assert_eq!(ctx.peer_id, "u/some-user");
+    }
+
+    #[test]
+    fn test_binding_context_for_metadata_fallback() {
+        // For non-allowlisted adapters, metadata["channel_id"] is the
+        // documented escape hatch — verify the bridge honors it.
+        let msg = make_msg(
+            ChannelType::Custom("reddit".to_string()),
+            "u/some-user",
+            vec![("channel_id", serde_json::json!("r/rust"))],
+        );
+        let ctx = binding_context_for(&msg);
+        assert_eq!(ctx.channel_id.as_deref(), Some("r/rust"));
+    }
+
+    #[test]
+    fn test_binding_context_for_metadata_guild_id() {
+        let msg = make_msg(
+            ChannelType::Discord,
+            "1234567890",
+            vec![("guild_id", serde_json::json!("99999"))],
+        );
+        let ctx = binding_context_for(&msg);
+        assert_eq!(ctx.guild_id.as_deref(), Some("99999"));
+    }
+
+    #[test]
+    fn test_channel_message_channel_id_email_returns_none() {
+        // Email's platform_id is the sender address — not a channel.
+        let msg = make_msg(ChannelType::Email, "alice@example.com", vec![]);
+        assert!(msg.channel_id().is_none());
     }
 
     #[tokio::test]

@@ -16,6 +16,14 @@ pub struct BindingContext {
     pub account_id: Option<String>,
     /// Peer/user ID (platform_user_id).
     pub peer_id: String,
+    /// Platform-native channel/conversation/chat/room ID, when available.
+    /// Populated for adapters listed in
+    /// `openfang_types::config::CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL`
+    /// (Discord text channel, Slack conversation, Telegram chat, Matrix room,
+    /// Mattermost/Teams/Webex/RocketChat/Pumble/etc.).
+    /// `None` for user-scoped adapters (Reddit, Mastodon, Email, ntfy, Signal,
+    /// …) unless they write `channel_id` into message metadata.
+    pub channel_id: Option<String>,
     /// Guild/server ID.
     pub guild_id: Option<String>,
     /// User's roles.
@@ -146,11 +154,18 @@ impl AgentRouter {
     ) -> Option<AgentId> {
         let channel_key = format!("{channel_type:?}");
 
-        // 0. Check bindings (most specific first)
+        // 0. Check bindings (most specific first).
+        // Note: the legacy `resolve()` entry point has no inbound message in
+        // hand, so `channel_id` and `guild_id` are unavailable here. Callers
+        // that want channel_id-scoped routing must use `resolve_with_context`
+        // (the bridge does this — see `binding_context_for` in bridge.rs).
+        // Bindings that require `channel_id` will simply not match through
+        // this path, which is the safe default.
         let ctx = BindingContext {
             channel: channel_type_to_str(channel_type).to_string(),
             account_id: None,
             peer_id: platform_user_id.to_string(),
+            channel_id: None,
             guild_id: None,
             roles: Vec::new(),
         };
@@ -321,6 +336,11 @@ impl AgentRouter {
         }
         if let Some(ref pid) = rule.peer_id {
             if pid != &ctx.peer_id {
+                return false;
+            }
+        }
+        if let Some(ref cid) = rule.channel_id {
+            if ctx.channel_id.as_ref() != Some(cid) {
                 return false;
             }
         }
@@ -636,10 +656,232 @@ mod tests {
         let full = BindingMatchRule {
             channel: Some("discord".to_string()),
             peer_id: Some("user".to_string()),
+            channel_id: None,
             guild_id: Some("guild".to_string()),
             roles: vec!["admin".to_string()],
             account_id: Some("bot".to_string()),
         };
         assert_eq!(full.specificity(), 17); // 8+4+2+2+1
+
+        // channel_id alone weighs the same as peer_id (both = 8).
+        let cid_only = BindingMatchRule {
+            channel_id: Some("123".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cid_only.specificity(), 8);
+
+        // channel_id + peer_id stack: 8 + 8 = 16.
+        let cid_and_pid = BindingMatchRule {
+            peer_id: Some("user".to_string()),
+            channel_id: Some("123".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cid_and_pid.specificity(), 16);
+    }
+
+    #[test]
+    fn test_binding_channel_id_match() {
+        let router = AgentRouter::new();
+        let agent_id = AgentId::new();
+        router.register_agent("medical-agent".to_string(), agent_id);
+        router.load_bindings(&[AgentBinding {
+            agent: "medical-agent".to_string(),
+            match_rule: openfang_types::config::BindingMatchRule {
+                channel: Some("discord".to_string()),
+                channel_id: Some("medical_channel_123".to_string()),
+                ..Default::default()
+            },
+        }]);
+
+        // Matching channel_id resolves.
+        let ctx = BindingContext {
+            channel: "discord".to_string(),
+            peer_id: "user1".to_string(),
+            channel_id: Some("medical_channel_123".to_string()),
+            ..Default::default()
+        };
+        let resolved = router.resolve_with_context(&ChannelType::Discord, "user1", None, &ctx);
+        assert_eq!(resolved, Some(agent_id));
+
+        // Different channel_id does not match.
+        let ctx2 = BindingContext {
+            channel: "discord".to_string(),
+            peer_id: "user1".to_string(),
+            channel_id: Some("business_channel_999".to_string()),
+            ..Default::default()
+        };
+        let resolved = router.resolve_with_context(&ChannelType::Discord, "user1", None, &ctx2);
+        assert_eq!(resolved, None);
+
+        // ctx.channel_id = None never matches a channel_id rule.
+        let ctx3 = BindingContext {
+            channel: "discord".to_string(),
+            peer_id: "user1".to_string(),
+            channel_id: None,
+            ..Default::default()
+        };
+        let resolved = router.resolve_with_context(&ChannelType::Discord, "user1", None, &ctx3);
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn test_binding_channel_id_with_peer_id_combined() {
+        let router = AgentRouter::new();
+        let agent_id = AgentId::new();
+        router.register_agent("combo".to_string(), agent_id);
+        router.load_bindings(&[AgentBinding {
+            agent: "combo".to_string(),
+            match_rule: openfang_types::config::BindingMatchRule {
+                channel: Some("discord".to_string()),
+                channel_id: Some("ch_1".to_string()),
+                peer_id: Some("user_1".to_string()),
+                ..Default::default()
+            },
+        }]);
+
+        // Both match -> resolves.
+        let ctx = BindingContext {
+            channel: "discord".to_string(),
+            peer_id: "user_1".to_string(),
+            channel_id: Some("ch_1".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            router.resolve_with_context(&ChannelType::Discord, "user_1", None, &ctx),
+            Some(agent_id)
+        );
+
+        // Right channel_id, wrong peer_id -> no match.
+        let ctx2 = BindingContext {
+            channel: "discord".to_string(),
+            peer_id: "user_2".to_string(),
+            channel_id: Some("ch_1".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            router.resolve_with_context(&ChannelType::Discord, "user_2", None, &ctx2),
+            None
+        );
+    }
+
+    #[test]
+    fn test_resolve_routes_to_correct_agent_when_channel_id_matches() {
+        // Three-binding scenario: two channel_id-scoped agents plus a peer_id fallback.
+        // The channel-specific bindings should win over the peer-only one when
+        // the message arrives in their channel.
+        let router = AgentRouter::new();
+        let medical = AgentId::new();
+        let business = AgentId::new();
+        let fallback = AgentId::new();
+        router.register_agent("researcher-medical".to_string(), medical);
+        router.register_agent("researcher-business".to_string(), business);
+        router.register_agent("assistant-fallback".to_string(), fallback);
+
+        router.load_bindings(&[
+            AgentBinding {
+                agent: "researcher-medical".to_string(),
+                match_rule: openfang_types::config::BindingMatchRule {
+                    channel: Some("discord".to_string()),
+                    channel_id: Some("medical".to_string()),
+                    ..Default::default()
+                },
+            },
+            AgentBinding {
+                agent: "researcher-business".to_string(),
+                match_rule: openfang_types::config::BindingMatchRule {
+                    channel: Some("discord".to_string()),
+                    channel_id: Some("business".to_string()),
+                    ..Default::default()
+                },
+            },
+            AgentBinding {
+                agent: "assistant-fallback".to_string(),
+                match_rule: openfang_types::config::BindingMatchRule {
+                    channel: Some("discord".to_string()),
+                    peer_id: Some("the_user".to_string()),
+                    ..Default::default()
+                },
+            },
+        ]);
+
+        // Medical channel.
+        let ctx_med = BindingContext {
+            channel: "discord".to_string(),
+            peer_id: "the_user".to_string(),
+            channel_id: Some("medical".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            router.resolve_with_context(&ChannelType::Discord, "the_user", None, &ctx_med),
+            Some(medical)
+        );
+
+        // Business channel.
+        let ctx_biz = BindingContext {
+            channel: "discord".to_string(),
+            peer_id: "the_user".to_string(),
+            channel_id: Some("business".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            router.resolve_with_context(&ChannelType::Discord, "the_user", None, &ctx_biz),
+            Some(business)
+        );
+
+        // Some other channel — peer_id fallback applies.
+        let ctx_other = BindingContext {
+            channel: "discord".to_string(),
+            peer_id: "the_user".to_string(),
+            channel_id: Some("random".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            router.resolve_with_context(&ChannelType::Discord, "the_user", None, &ctx_other),
+            Some(fallback)
+        );
+    }
+
+    #[test]
+    fn test_specificity_tiebreak_first_declared_wins() {
+        // Two bindings with identical match rules (and therefore identical
+        // specificity). The router must pick the first-declared agent —
+        // declaration order is the documented tiebreak. Exercising
+        // `resolve_with_context` directly so this is a behavioral assertion,
+        // not just a specificity-equality check.
+        let router = AgentRouter::new();
+        let first = AgentId::new();
+        let second = AgentId::new();
+        router.register_agent("first".to_string(), first);
+        router.register_agent("second".to_string(), second);
+
+        router.load_bindings(&[
+            AgentBinding {
+                agent: "first".to_string(),
+                match_rule: openfang_types::config::BindingMatchRule {
+                    channel: Some("discord".to_string()),
+                    peer_id: Some("u1".to_string()),
+                    ..Default::default()
+                },
+            },
+            AgentBinding {
+                agent: "second".to_string(),
+                match_rule: openfang_types::config::BindingMatchRule {
+                    channel: Some("discord".to_string()),
+                    peer_id: Some("u1".to_string()),
+                    ..Default::default()
+                },
+            },
+        ]);
+
+        let ctx = BindingContext {
+            channel: "discord".to_string(),
+            peer_id: "u1".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            router.resolve_with_context(&ChannelType::Discord, "u1", None, &ctx),
+            Some(first),
+            "tied bindings should resolve to the first-declared agent"
+        );
     }
 }
