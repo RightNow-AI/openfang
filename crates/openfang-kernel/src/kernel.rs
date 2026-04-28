@@ -660,6 +660,7 @@ impl OpenFangKernel {
                     .cloned()
             }),
             skip_permissions: true,
+            subprocess_timeout_secs: None,
         };
         // Primary driver failure is non-fatal: the dashboard should remain accessible
         // even if the LLM provider is misconfigured. Users can fix config via dashboard.
@@ -683,6 +684,7 @@ impl OpenFangKernel {
                             .map(|z: zeroize::Zeroizing<String>| z.to_string()),
                         base_url: config.provider_urls.get(provider).cloned(),
                         skip_permissions: true,
+                        subprocess_timeout_secs: None,
                     };
                     match drivers::create_driver(&auto_config) {
                         Ok(d) => {
@@ -731,6 +733,7 @@ impl OpenFangKernel {
                     .clone()
                     .or_else(|| config.provider_urls.get(&fb.provider).cloned()),
                 skip_permissions: true,
+                subprocess_timeout_secs: None,
             };
             match drivers::create_driver(&fb_config) {
                 Ok(d) => {
@@ -5025,6 +5028,7 @@ impl OpenFangKernel {
                 api_key,
                 base_url,
                 skip_permissions: true,
+                subprocess_timeout_secs: None,
             };
 
             match drivers::create_driver(&driver_config) {
@@ -5101,6 +5105,7 @@ impl OpenFangKernel {
                     .or_else(|| dm.base_url.clone())
                     .or_else(|| self.lookup_provider_url(&fb_provider)),
                 skip_permissions: true,
+                subprocess_timeout_secs: None,
             };
             match drivers::create_driver(&config) {
                 Ok(d) => chain.push((d, strip_provider_prefix(&fb_model_name, &fb_provider))),
@@ -5131,6 +5136,7 @@ impl OpenFangKernel {
                     .clone()
                     .or_else(|| self.lookup_provider_url(&fb.provider)),
                 skip_permissions: true,
+                subprocess_timeout_secs: None,
             };
             match drivers::create_driver(&fb_config) {
                 Ok(d) => {
