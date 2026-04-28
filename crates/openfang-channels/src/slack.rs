@@ -501,6 +501,9 @@ async fn parse_slack_event(
 
     // Check if the bot was @-mentioned (for group_policy = "mention_only")
     let mut metadata = HashMap::new();
+    // Stash the Slack user ID so the router can key bindings on user, not channel.
+    // (`sender.platform_id` below is the channel ID, used for the send path.)
+    metadata.insert("sender_user_id".to_string(), serde_json::json!(user_id));
     if event_type == "app_mention" {
         metadata.insert("was_mentioned".to_string(), serde_json::Value::Bool(true));
     }
