@@ -41,6 +41,7 @@ Thumbs.db
 .idea/
 .vscode/
 .claude/
+.ag/
 *.swp
 *.swo
 *~
@@ -48,3 +49,7 @@ Thumbs.db
 
 # Personal deploy scripts
 scripts/deploy-remote.sh
+
+# OpenCode repo-local state
+.ag/logs/
+.beads/
