@@ -1241,7 +1241,25 @@ impl OpenFangKernel {
                                                 agent = %name,
                                                 "Agent TOML on disk differs from DB, updating"
                                             );
-                                            entry.manifest = disk_manifest;
+                                            // Merge: take disk values but preserve kernel-assigned
+                                            // defaults the user didn't set in TOML. Without this,
+                                            // editing any field (e.g. description) would silently
+                                            // wipe the auto-assigned workspace path / inherited
+                                            // exec_policy.
+                                            let mut new_manifest = disk_manifest;
+                                            if new_manifest.workspace.is_none()
+                                                && entry.manifest.workspace.is_some()
+                                            {
+                                                new_manifest.workspace =
+                                                    entry.manifest.workspace.clone();
+                                            }
+                                            if new_manifest.exec_policy.is_none()
+                                                && entry.manifest.exec_policy.is_some()
+                                            {
+                                                new_manifest.exec_policy =
+                                                    entry.manifest.exec_policy.clone();
+                                            }
+                                            entry.manifest = new_manifest;
                                             // Persist the update back to DB
                                             if let Err(e) = kernel.memory.save_agent(&entry) {
                                                 warn!(
