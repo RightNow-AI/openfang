@@ -18,6 +18,10 @@ pub struct BindingContext {
     pub peer_id: String,
     /// Guild/server ID.
     pub guild_id: Option<String>,
+    /// Channel/conversation ID (e.g. Discord channel, Slack conversation,
+    /// Telegram chat, IRC channel name). Populated by bridges so bindings can
+    /// route by room independent of which user posted.
+    pub channel_id: Option<String>,
     /// User's roles.
     pub roles: Vec<String>,
 }
@@ -144,6 +148,19 @@ impl AgentRouter {
         platform_user_id: &str,
         user_key: Option<&str>,
     ) -> Option<AgentId> {
+        self.resolve_with_channel_id(channel_type, platform_user_id, user_key, None)
+    }
+
+    /// Resolve with an explicit channel/conversation ID, so bindings whose
+    /// `match_rule.channel_id` is set can match. Used by bridges that know the
+    /// room/conversation the message arrived in (Discord/Slack/Telegram/IRC).
+    pub fn resolve_with_channel_id(
+        &self,
+        channel_type: &ChannelType,
+        platform_user_id: &str,
+        user_key: Option<&str>,
+        channel_id: Option<&str>,
+    ) -> Option<AgentId> {
         let channel_key = format!("{channel_type:?}");
 
         // 0. Check bindings (most specific first)
@@ -152,6 +169,7 @@ impl AgentRouter {
             account_id: None,
             peer_id: platform_user_id.to_string(),
             guild_id: None,
+            channel_id: channel_id.map(|s| s.to_string()),
             roles: Vec::new(),
         };
         if let Some(agent_id) = self.resolve_binding(&ctx) {
@@ -326,6 +344,11 @@ impl AgentRouter {
         }
         if let Some(ref gid) = rule.guild_id {
             if ctx.guild_id.as_ref() != Some(gid) {
+                return false;
+            }
+        }
+        if let Some(ref cid) = rule.channel_id {
+            if ctx.channel_id.as_ref() != Some(cid) {
                 return false;
             }
         }
@@ -639,7 +662,128 @@ mod tests {
             guild_id: Some("guild".to_string()),
             roles: vec!["admin".to_string()],
             account_id: Some("bot".to_string()),
+            channel_id: Some("ch_42".to_string()),
         };
-        assert_eq!(full.specificity(), 17); // 8+4+2+2+1
+        assert_eq!(full.specificity(), 25); // 8+8+4+2+2+1
+
+        // peer_id alone vs channel_id alone — both worth 8.
+        let peer_only = BindingMatchRule {
+            peer_id: Some("u".to_string()),
+            ..Default::default()
+        };
+        let channel_id_only = BindingMatchRule {
+            channel_id: Some("c".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(peer_only.specificity(), 8);
+        assert_eq!(channel_id_only.specificity(), 8);
+
+        // Combined peer_id + channel_id (16) outranks either alone (8).
+        let peer_and_channel = BindingMatchRule {
+            peer_id: Some("u".to_string()),
+            channel_id: Some("c".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(peer_and_channel.specificity(), 16);
+    }
+
+    #[test]
+    fn test_binding_channel_id_match() {
+        // A binding scoped to a specific Discord channel should match messages
+        // from that channel and reject messages from other channels.
+        let router = AgentRouter::new();
+        let agent_id = AgentId::new();
+        router.register_agent("ops-bot".to_string(), agent_id);
+        router.load_bindings(&[AgentBinding {
+            agent: "ops-bot".to_string(),
+            match_rule: openfang_types::config::BindingMatchRule {
+                channel: Some("discord".to_string()),
+                channel_id: Some("1477803840265781391".to_string()),
+                ..Default::default()
+            },
+        }]);
+
+        // Same channel, any user — matches.
+        let resolved = router.resolve_with_channel_id(
+            &ChannelType::Discord,
+            "any-user",
+            None,
+            Some("1477803840265781391"),
+        );
+        assert_eq!(resolved, Some(agent_id));
+
+        // Different channel — no match.
+        let resolved = router.resolve_with_channel_id(
+            &ChannelType::Discord,
+            "any-user",
+            None,
+            Some("9999999999999999999"),
+        );
+        assert_eq!(resolved, None);
+
+        // Missing channel_id on the wire — no match (the binding is restrictive).
+        let resolved = router.resolve_with_channel_id(&ChannelType::Discord, "any-user", None, None);
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn test_binding_channel_id_plus_peer_outranks_channel_id_alone() {
+        // user A in #medical → researcher; anyone else in #medical → general.
+        let router = AgentRouter::new();
+        let researcher = AgentId::new();
+        let general = AgentId::new();
+        router.register_agent("researcher".to_string(), researcher);
+        router.register_agent("general".to_string(), general);
+        router.load_bindings(&[
+            AgentBinding {
+                agent: "general".to_string(),
+                match_rule: openfang_types::config::BindingMatchRule {
+                    channel_id: Some("ch-medical".to_string()),
+                    ..Default::default()
+                },
+            },
+            AgentBinding {
+                agent: "researcher".to_string(),
+                match_rule: openfang_types::config::BindingMatchRule {
+                    channel_id: Some("ch-medical".to_string()),
+                    peer_id: Some("user-a".to_string()),
+                    ..Default::default()
+                },
+            },
+        ]);
+
+        // user-a in #medical → researcher (more specific wins)
+        let r = router.resolve_with_channel_id(
+            &ChannelType::Discord,
+            "user-a",
+            None,
+            Some("ch-medical"),
+        );
+        assert_eq!(r, Some(researcher));
+
+        // user-b in #medical → general (channel_id alone matches)
+        let r = router.resolve_with_channel_id(
+            &ChannelType::Discord,
+            "user-b",
+            None,
+            Some("ch-medical"),
+        );
+        assert_eq!(r, Some(general));
+    }
+
+    #[test]
+    fn test_binding_match_rule_unknown_field_rejected() {
+        // Typos like `channnel_id` must fail loudly at deserialization rather
+        // than silently producing a wide-open binding. This is the highest-
+        // leverage line in the patch from issue #1127.
+        let bad = r#"{ "channnel_id": "ch-1" }"#;
+        let r: Result<openfang_types::config::BindingMatchRule, _> = serde_json::from_str(bad);
+        assert!(r.is_err(), "unknown field must be rejected by serde");
+
+        // Sanity: known fields still parse.
+        let good = r#"{ "channel_id": "ch-1", "channel": "discord" }"#;
+        let r: openfang_types::config::BindingMatchRule = serde_json::from_str(good).unwrap();
+        assert_eq!(r.channel_id.as_deref(), Some("ch-1"));
+        assert_eq!(r.channel.as_deref(), Some("discord"));
     }
 }
