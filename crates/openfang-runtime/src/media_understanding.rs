@@ -129,12 +129,7 @@ impl MediaEngine {
                     .config
                     .audio_base_url
                     .as_deref()
-                    .map(|base| {
-                        format!(
-                            "{}/v1/audio/transcriptions",
-                            base.trim_end_matches('/')
-                        )
-                    })
+                    .map(|base| format!("{}/v1/audio/transcriptions", base.trim_end_matches('/')))
                     .unwrap_or_else(|| {
                         "https://api.groq.com/openai/v1/audio/transcriptions".to_string()
                     });
@@ -148,12 +143,7 @@ impl MediaEngine {
                     .config
                     .audio_base_url
                     .as_deref()
-                    .map(|base| {
-                        format!(
-                            "{}/v1/audio/transcriptions",
-                            base.trim_end_matches('/')
-                        )
-                    })
+                    .map(|base| format!("{}/v1/audio/transcriptions", base.trim_end_matches('/')))
                     .unwrap_or_else(|| {
                         "https://api.openai.com/v1/audio/transcriptions".to_string()
                     });

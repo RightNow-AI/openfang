@@ -6027,9 +6027,10 @@ impl OpenFangKernel {
                         // Multi-destination fan-out (never aborts the job on delivery error).
                         cron_fan_out_targets(self, job_name, &result.response, &delivery_targets)
                             .await;
-                        let delivered_to_channel = cron_deliver_response(self, agent_id, &result.response, &delivery)
-                            .await
-                            .is_ok();
+                        let delivered_to_channel =
+                            cron_deliver_response(self, agent_id, &result.response, &delivery)
+                                .await
+                                .is_ok();
                         // Publish event for WS broadcast (API layer subscribes and pushes to WebSocket connections).
                         let cron_event = Event::new(
                             AgentId::new(),
@@ -6050,7 +6051,8 @@ impl OpenFangKernel {
                             self.cron_scheduler.record_success(job_id);
                             Ok(result.response)
                         } else {
-                            self.cron_scheduler.record_failure(job_id, "channel delivery failed");
+                            self.cron_scheduler
+                                .record_failure(job_id, "channel delivery failed");
                             Err("channel delivery failed".to_string())
                         }
                     }
@@ -6095,9 +6097,10 @@ impl OpenFangKernel {
                     Ok(Ok((_run_id, output))) => {
                         // Multi-destination fan-out (never aborts the job on delivery error).
                         cron_fan_out_targets(self, job_name, &output, &delivery_targets).await;
-                        let delivered_to_channel = cron_deliver_response(self, agent_id, &output, &delivery)
-                            .await
-                            .is_ok();
+                        let delivered_to_channel =
+                            cron_deliver_response(self, agent_id, &output, &delivery)
+                                .await
+                                .is_ok();
                         // Publish event for WS broadcast (API layer subscribes and pushes to WebSocket connections).
                         let cron_event = Event::new(
                             AgentId::new(),
@@ -6116,7 +6119,8 @@ impl OpenFangKernel {
                             self.cron_scheduler.record_success(job_id);
                             Ok(output)
                         } else {
-                            self.cron_scheduler.record_failure(job_id, "channel delivery failed");
+                            self.cron_scheduler
+                                .record_failure(job_id, "channel delivery failed");
                             Err("channel delivery failed".to_string())
                         }
                     }

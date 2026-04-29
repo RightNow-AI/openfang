@@ -896,9 +896,7 @@ fn derive_capabilities(tools: &[String]) -> AgentCapabilities {
             "shell_exec" => {
                 caps.shell = vec!["*".to_string()];
             }
-            "web_fetch" | "web_search" | "browser_navigate"
-                if caps.network.is_empty() =>
-            {
+            "web_fetch" | "web_search" | "browser_navigate" if caps.network.is_empty() => {
                 caps.network = vec!["*".to_string()];
             }
             "agent_send" | "agent_list" => {
