@@ -636,6 +636,9 @@ async fn parse_discord_message(
     if was_mentioned {
         metadata.insert("was_mentioned".to_string(), serde_json::json!(true));
     }
+    // Stash the Discord author ID so the router can key bindings on user, not channel.
+    // (`sender.platform_id` below is the channel ID, used for the send path.)
+    metadata.insert("sender_user_id".to_string(), serde_json::json!(author_id));
 
     Some(ChannelMessage {
         channel: ChannelType::Discord,
