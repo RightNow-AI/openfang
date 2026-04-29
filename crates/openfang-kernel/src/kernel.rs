@@ -660,6 +660,7 @@ impl OpenFangKernel {
                     .cloned()
             }),
             skip_permissions: true,
+            subprocess_timeout_secs: config.default_model.subprocess_timeout_secs,
         };
         // Primary driver failure is non-fatal: the dashboard should remain accessible
         // even if the LLM provider is misconfigured. Users can fix config via dashboard.
@@ -683,6 +684,9 @@ impl OpenFangKernel {
                             .map(|z: zeroize::Zeroizing<String>| z.to_string()),
                         base_url: config.provider_urls.get(provider).cloned(),
                         skip_permissions: true,
+                        // Inherit operator's default-model timeout intent: auto-detect
+                        // is replacing the *provider*, not the timeout policy.
+                        subprocess_timeout_secs: config.default_model.subprocess_timeout_secs,
                     };
                     match drivers::create_driver(&auto_config) {
                         Ok(d) => {
@@ -731,6 +735,7 @@ impl OpenFangKernel {
                     .clone()
                     .or_else(|| config.provider_urls.get(&fb.provider).cloned()),
                 skip_permissions: true,
+                subprocess_timeout_secs: fb.subprocess_timeout_secs,
             };
             match drivers::create_driver(&fb_config) {
                 Ok(d) => {
@@ -5062,6 +5067,15 @@ impl OpenFangKernel {
                 api_key,
                 base_url,
                 skip_permissions: true,
+                // Inherit the default-model timeout only when the agent is using the
+                // default provider. If the agent overrides to a different provider,
+                // we have no per-provider config in scope today, so leave it unset
+                // (env var still applies, then driver default).
+                subprocess_timeout_secs: if agent_provider == default_provider {
+                    effective_default.subprocess_timeout_secs
+                } else {
+                    None
+                },
             };
 
             match drivers::create_driver(&driver_config) {
@@ -5129,6 +5143,10 @@ impl OpenFangKernel {
                 let env_var = self.config.resolve_api_key_env(&fb_provider);
                 self.resolve_credential(&env_var)
             };
+            // The manifest-fallback "default" sentinel resolves both provider and
+            // model to dm; inherit dm's timeout in that case. Custom-provider
+            // manifest fallbacks have no per-provider config, so leave unset.
+            let resolved_to_default = fb.provider.is_empty() || fb.provider == "default";
             let config = DriverConfig {
                 provider: fb_provider.clone(),
                 api_key: fb_api_key,
@@ -5138,6 +5156,11 @@ impl OpenFangKernel {
                     .or_else(|| dm.base_url.clone())
                     .or_else(|| self.lookup_provider_url(&fb_provider)),
                 skip_permissions: true,
+                subprocess_timeout_secs: if resolved_to_default {
+                    dm.subprocess_timeout_secs
+                } else {
+                    None
+                },
             };
             match drivers::create_driver(&config) {
                 Ok(d) => chain.push((d, strip_provider_prefix(&fb_model_name, &fb_provider))),
@@ -5168,6 +5191,7 @@ impl OpenFangKernel {
                     .clone()
                     .or_else(|| self.lookup_provider_url(&fb.provider)),
                 skip_permissions: true,
+                subprocess_timeout_secs: fb.subprocess_timeout_secs,
             };
             match drivers::create_driver(&fb_config) {
                 Ok(d) => {

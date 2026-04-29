@@ -24,6 +24,7 @@ fn test_config(provider: &str, model: &str, api_key_env: &str) -> KernelConfig {
             model: model.to_string(),
             api_key_env: api_key_env.to_string(),
             base_url: None,
+            subprocess_timeout_secs: None,
         },
         ..KernelConfig::default()
     }
