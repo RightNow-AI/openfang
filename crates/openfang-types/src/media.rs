@@ -386,9 +386,11 @@ mod tests {
 
     #[test]
     fn test_media_config_audio_base_url_serde_roundtrip() {
-        let mut config = MediaConfig::default();
-        config.audio_base_url = Some("http://127.0.0.1:8000".to_string());
-        config.audio_provider = Some("openai".to_string());
+        let config = MediaConfig {
+            audio_base_url: Some("http://127.0.0.1:8000".to_string()),
+            audio_provider: Some("openai".to_string()),
+            ..MediaConfig::default()
+        };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: MediaConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(
