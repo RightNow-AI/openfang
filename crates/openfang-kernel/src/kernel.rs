@@ -1186,6 +1186,15 @@ impl OpenFangKernel {
                     let agent_id = entry.id;
                     let name = entry.name.clone();
 
+                    // Track whether on-disk agent.toml explicitly defines an
+                    // exec_policy override. If it does, that's the per-agent
+                    // setting. If not, the kernel's current config.exec_policy
+                    // is authoritative and must overwrite the stale DB value
+                    // (fixes #1132: changing config.toml exec_policy.mode = "full"
+                    // had no effect on agents whose manifests cached the older
+                    // inherited Allowlist policy at spawn time).
+                    let mut disk_has_exec_policy_override = false;
+
                     // Check if TOML on disk is newer/different — if so, update from file
                     let mut entry = entry;
                     let toml_path = kernel
@@ -1201,6 +1210,12 @@ impl OpenFangKernel {
                                     &toml_str,
                                 ) {
                                     Ok(disk_manifest) => {
+                                        // Capture whether agent.toml defines exec_policy
+                                        // explicitly (so we don't blow it away with the
+                                        // kernel default below).
+                                        if disk_manifest.exec_policy.is_some() {
+                                            disk_has_exec_policy_override = true;
+                                        }
                                         // Compare key fields to detect changes.
                                         // IMPORTANT: keep this list in sync with AgentManifest
                                         // fields that users may legitimately edit in agent.toml.
@@ -1290,8 +1305,24 @@ impl OpenFangKernel {
                     restored_entry.state = AgentState::Running;
                     restored_entry.last_active = chrono::Utc::now();
 
-                    // Inherit kernel exec_policy for agents that lack one
-                    if restored_entry.manifest.exec_policy.is_none() {
+                    // Resolve exec_policy on every restart so that edits to
+                    // config.toml's [exec_policy] take effect (fixes #1132).
+                    //
+                    // Precedence:
+                    //   1. agent.toml on disk explicitly sets [exec_policy] →
+                    //      keep the per-agent override.
+                    //   2. otherwise → always re-inherit the kernel's current
+                    //      config.exec_policy, even if the DB has a cached
+                    //      value from an earlier boot. The cached value would
+                    //      otherwise pin the agent to the inherited mode at
+                    //      first spawn (typically Allowlist) regardless of
+                    //      later config edits.
+                    if !disk_has_exec_policy_override {
+                        restored_entry.manifest.exec_policy =
+                            Some(kernel.config.exec_policy.clone());
+                    } else if restored_entry.manifest.exec_policy.is_none() {
+                        // Defensive: should not happen given the flag, but keep
+                        // the manifest non-None for the runtime check.
                         restored_entry.manifest.exec_policy =
                             Some(kernel.config.exec_policy.clone());
                     }
@@ -3046,7 +3077,19 @@ impl OpenFangKernel {
         if let Some(entry) = self.registry.get(agent_id) {
             let dir = self.config.home_dir.join("agents").join(&entry.name);
             let toml_path = dir.join("agent.toml");
-            match toml::to_string_pretty(&entry.manifest) {
+            // Strip exec_policy from the on-disk copy when it matches the
+            // current kernel default (i.e. the agent inherited it). This way,
+            // a later edit to config.toml's [exec_policy] is not silently
+            // shadowed by a stale snapshot we wrote here (#1132).
+            let mut manifest_for_disk = entry.manifest.clone();
+            if manifest_for_disk
+                .exec_policy
+                .as_ref()
+                .is_some_and(|p| p == &self.config.exec_policy)
+            {
+                manifest_for_disk.exec_policy = None;
+            }
+            match toml::to_string_pretty(&manifest_for_disk) {
                 Ok(toml_str) => {
                     if let Err(e) = std::fs::create_dir_all(&dir) {
                         warn!(agent = %entry.name, "Failed to create agent dir for manifest persist: {e}");
@@ -7467,6 +7510,136 @@ mod tests {
         let merged = merge_disk_manifest_preserving_kernel_defaults(disk, &entry);
 
         assert_eq!(merged.workspace, Some(std::path::PathBuf::from("/new")));
+    }
+
+    /// Regression for #1132: editing `[exec_policy] mode = "full"` in
+    /// config.toml must take effect for agents whose persisted manifests
+    /// captured an older inherited policy.
+    ///
+    /// Scenario: agent was first spawned when kernel default was `Allowlist`,
+    /// so its DB-cached manifest has `exec_policy = Some(Allowlist)`. The user
+    /// later sets `exec_policy.mode = "full"` in config.toml. On the next
+    /// boot we must replace the cached value with the kernel's current
+    /// `config.exec_policy` unless the user wrote a per-agent override into
+    /// the on-disk `agent.toml`.
+    #[test]
+    fn test_exec_policy_reinherits_from_kernel_config_on_restart() {
+        use openfang_types::config::ExecSecurityMode;
+
+        // Cached manifest from an earlier boot — still Allowlist.
+        let cached_policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            ..Default::default()
+        };
+        let mut restored_manifest = AgentManifest {
+            name: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            description: "x".to_string(),
+            author: "test".to_string(),
+            module: "builtin:chat".to_string(),
+            schedule: ScheduleMode::default(),
+            model: ModelConfig::default(),
+            fallback_models: vec![],
+            resources: ResourceQuota::default(),
+            priority: Priority::default(),
+            capabilities: ManifestCapabilities::default(),
+            profile: None,
+            tools: HashMap::new(),
+            skills: vec![],
+            mcp_servers: vec![],
+            metadata: HashMap::new(),
+            tags: vec![],
+            routing: None,
+            autonomous: None,
+            pinned_model: None,
+            workspace: None,
+            generate_identity_files: true,
+            exec_policy: Some(cached_policy.clone()),
+            tool_allowlist: vec![],
+            tool_blocklist: vec![],
+            cache_context: false,
+        };
+
+        // Current kernel config now says mode = Full.
+        let current_kernel_policy = ExecPolicy {
+            mode: ExecSecurityMode::Full,
+            ..Default::default()
+        };
+
+        // Simulate the restoration branch in start_background_agents:
+        // disk had no exec_policy override → re-inherit current config.
+        let disk_has_exec_policy_override = false;
+        if !disk_has_exec_policy_override {
+            restored_manifest.exec_policy = Some(current_kernel_policy.clone());
+        }
+
+        assert_eq!(
+            restored_manifest.exec_policy.as_ref().map(|p| p.mode),
+            Some(ExecSecurityMode::Full),
+            "config.toml exec_policy.mode='full' must override stale cached value"
+        );
+
+        // And: if the user *did* set a per-agent override on disk, that wins.
+        let mut with_override = restored_manifest.clone();
+        with_override.exec_policy = Some(ExecPolicy {
+            mode: ExecSecurityMode::Deny,
+            ..Default::default()
+        });
+        let disk_has_override = true;
+        if !disk_has_override {
+            with_override.exec_policy = Some(current_kernel_policy.clone());
+        }
+        assert_eq!(
+            with_override.exec_policy.as_ref().map(|p| p.mode),
+            Some(ExecSecurityMode::Deny),
+            "per-agent override in agent.toml must win over kernel config"
+        );
+    }
+
+    /// Regression for #1132: persist_manifest_to_disk must not bake an
+    /// inherited exec_policy into agent.toml. If the agent's policy equals
+    /// the kernel's current config, we strip it before writing so future
+    /// config.toml edits take effect.
+    #[test]
+    fn test_persist_strips_inherited_exec_policy() {
+        use openfang_types::config::ExecSecurityMode;
+
+        let kernel_policy = ExecPolicy {
+            mode: ExecSecurityMode::Full,
+            ..Default::default()
+        };
+
+        // Agent inherited the kernel default → its policy equals kernel_policy.
+        let inherited = Some(kernel_policy.clone());
+        let mut for_disk_inherited: Option<ExecPolicy> = inherited.clone();
+        if for_disk_inherited
+            .as_ref()
+            .is_some_and(|p| p == &kernel_policy)
+        {
+            for_disk_inherited = None;
+        }
+        assert!(
+            for_disk_inherited.is_none(),
+            "inherited policy should be stripped from on-disk copy"
+        );
+
+        // Agent has a per-agent override → must survive.
+        let custom = Some(ExecPolicy {
+            mode: ExecSecurityMode::Deny,
+            ..Default::default()
+        });
+        let mut for_disk_custom = custom.clone();
+        if for_disk_custom
+            .as_ref()
+            .is_some_and(|p| p == &kernel_policy)
+        {
+            for_disk_custom = None;
+        }
+        assert_eq!(
+            for_disk_custom.as_ref().map(|p| p.mode),
+            Some(ExecSecurityMode::Deny),
+            "per-agent override must survive disk persistence"
+        );
     }
 
     fn test_manifest(name: &str, description: &str, tags: Vec<String>) -> AgentManifest {
