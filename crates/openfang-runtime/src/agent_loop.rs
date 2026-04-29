@@ -1657,6 +1657,12 @@ pub async fn run_agent_loop_streaming(
             }
         }
 
+        // Stamp last_active before the (potentially long) LLM call so the
+        // heartbeat monitor doesn't flag us as unresponsive mid-iteration.
+        if let Some(k) = &kernel {
+            k.touch_agent(&agent_id_str);
+        }
+
         // Stream LLM call with retry, error classification, and circuit breaker
         let provider_name = manifest.model.provider.as_str();
         let mut response = stream_with_retry(
