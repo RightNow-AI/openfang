@@ -114,16 +114,54 @@ impl MediaEngine {
 
         let model = default_audio_model(provider);
 
-        // Build API request
+        // Build API request.
+        //
+        // `audio_base_url` (config.media.audio_base_url) overrides the hardcoded
+        // provider URL when set, allowing the same OpenAI-compatible multipart
+        // wire format to be sent to a local Whisper service (speaches,
+        // faster-whisper-server, LM Studio, etc.) instead of the cloud provider.
+        // The Authorization header is still built from the provider's standard
+        // env var (`*_API_KEY`); local services typically accept any non-empty
+        // bearer token. Closes #1051.
         let (api_url, api_key) = match provider {
-            "groq" => (
-                "https://api.groq.com/openai/v1/audio/transcriptions",
-                std::env::var("GROQ_API_KEY").map_err(|_| "GROQ_API_KEY not set")?,
-            ),
-            "openai" => (
-                "https://api.openai.com/v1/audio/transcriptions",
-                std::env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY not set")?,
-            ),
+            "groq" => {
+                let url = self
+                    .config
+                    .audio_base_url
+                    .as_deref()
+                    .map(|base| {
+                        format!(
+                            "{}/v1/audio/transcriptions",
+                            base.trim_end_matches('/')
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        "https://api.groq.com/openai/v1/audio/transcriptions".to_string()
+                    });
+                (
+                    url,
+                    std::env::var("GROQ_API_KEY").map_err(|_| "GROQ_API_KEY not set")?,
+                )
+            }
+            "openai" => {
+                let url = self
+                    .config
+                    .audio_base_url
+                    .as_deref()
+                    .map(|base| {
+                        format!(
+                            "{}/v1/audio/transcriptions",
+                            base.trim_end_matches('/')
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        "https://api.openai.com/v1/audio/transcriptions".to_string()
+                    });
+                (
+                    url,
+                    std::env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY not set")?,
+                )
+            }
             other => return Err(format!("Unsupported audio provider: {}", other)),
         };
 
@@ -141,7 +179,7 @@ impl MediaEngine {
 
         let client = reqwest::Client::new();
         let resp = client
-            .post(api_url)
+            .post(&api_url)
             .bearer_auth(&api_key)
             .multipart(form)
             .timeout(std::time::Duration::from_secs(60))
@@ -410,6 +448,62 @@ mod tests {
         let engine = MediaEngine::new(config);
         // Semaphore was clamped to 8
         assert!(engine.semaphore.available_permits() <= 8);
+    }
+
+    /// Closes #1051: when `audio_base_url` is set, the URL building logic
+    /// must use the override (with `/v1/audio/transcriptions` appended) and
+    /// strip any trailing slash from the user-supplied base. When unset, the
+    /// hardcoded provider URL is used.
+    #[test]
+    fn test_audio_base_url_override_logic() {
+        // Helper closure mirroring the URL construction in `transcribe_audio`
+        // for both providers, kept in sync intentionally.
+        fn build(provider: &str, base: Option<&str>) -> String {
+            match provider {
+                "groq" => base
+                    .map(|b| format!("{}/v1/audio/transcriptions", b.trim_end_matches('/')))
+                    .unwrap_or_else(|| {
+                        "https://api.groq.com/openai/v1/audio/transcriptions".to_string()
+                    }),
+                "openai" => base
+                    .map(|b| format!("{}/v1/audio/transcriptions", b.trim_end_matches('/')))
+                    .unwrap_or_else(|| {
+                        "https://api.openai.com/v1/audio/transcriptions".to_string()
+                    }),
+                _ => unreachable!(),
+            }
+        }
+
+        // Default: hardcoded provider URLs preserved (backward compatibility).
+        assert_eq!(
+            build("openai", None),
+            "https://api.openai.com/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            build("groq", None),
+            "https://api.groq.com/openai/v1/audio/transcriptions"
+        );
+
+        // Override applied for both providers.
+        assert_eq!(
+            build("openai", Some("http://127.0.0.1:8000")),
+            "http://127.0.0.1:8000/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            build("groq", Some("http://localhost:9000")),
+            "http://localhost:9000/v1/audio/transcriptions"
+        );
+
+        // Trailing slash on the user-supplied base is stripped to avoid
+        // double slashes in the final URL.
+        assert_eq!(
+            build("openai", Some("http://127.0.0.1:8000/")),
+            "http://127.0.0.1:8000/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            build("openai", Some("https://whisper.example.com/")),
+            "https://whisper.example.com/v1/audio/transcriptions"
+        );
     }
 
     #[tokio::test]
