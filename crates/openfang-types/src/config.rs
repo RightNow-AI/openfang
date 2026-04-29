@@ -742,16 +742,32 @@ pub struct AgentBinding {
 }
 
 /// Match rule for agent bindings. All specified (non-None) fields must match.
+///
+/// `#[serde(deny_unknown_fields)]` is intentional: a typo like `channnel_id` or
+/// `chan_id` would otherwise be silently dropped, producing a wide-open binding
+/// that matches every message. Failing loudly at config load is the safer default.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BindingMatchRule {
     /// Channel type (e.g., "discord", "telegram", "slack").
+    #[serde(default)]
     pub channel: Option<String>,
     /// Specific account/bot ID within the channel.
+    #[serde(default)]
     pub account_id: Option<String>,
     /// Peer/user ID for DM routing.
+    #[serde(default)]
     pub peer_id: Option<String>,
     /// Guild/server ID (Discord/Slack).
+    #[serde(default)]
     pub guild_id: Option<String>,
+    /// Channel/conversation ID — the per-channel routing dimension.
+    /// On Discord this is the channel/thread ID; on Slack it is the conversation
+    /// ID (`C…`/`D…`/`G…`); on Telegram it is the chat ID; on IRC it is the
+    /// channel name. Bridges populate this from the message's channel/conversation
+    /// identifier so bindings can route by room independent of which user posted.
+    #[serde(default)]
+    pub channel_id: Option<String>,
     /// Role-based routing (user must have at least one).
     #[serde(default)]
     pub roles: Vec<String>,
@@ -760,9 +776,15 @@ pub struct BindingMatchRule {
 impl BindingMatchRule {
     /// Calculate specificity score for binding priority ordering.
     /// Higher = more specific = checked first.
+    ///
+    /// Weights: peer_id and channel_id are both 8 so a binding that combines
+    /// both (a specific user in a specific room) cleanly outranks either alone.
     pub fn specificity(&self) -> u32 {
         let mut score = 0u32;
         if self.peer_id.is_some() {
+            score += 8;
+        }
+        if self.channel_id.is_some() {
             score += 8;
         }
         if self.guild_id.is_some() {

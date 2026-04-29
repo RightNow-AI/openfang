@@ -679,6 +679,34 @@ fn sender_user_id(message: &ChannelMessage) -> &str {
         .unwrap_or(&message.sender.platform_id)
 }
 
+/// Extract the channel/conversation ID from a message, for bindings whose
+/// `match_rule.channel_id` is set.
+///
+/// On Discord and Slack, `sender.platform_id` already holds the channel/
+/// conversation ID (per `discord.rs` and `slack.rs`, where the user ID lives
+/// in metadata under `sender_user_id`). On other adapters where the platform
+/// ID is the user, callers can opt-in by stashing the channel ID under the
+/// `sender_channel_id` metadata key.
+fn sender_channel_id(message: &ChannelMessage) -> Option<&str> {
+    if let Some(v) = message
+        .metadata
+        .get("sender_channel_id")
+        .and_then(|v| v.as_str())
+    {
+        return Some(v);
+    }
+    // On Discord/Slack, the metadata `sender_user_id` is set and differs from
+    // `sender.platform_id` — in that case, platform_id IS the channel ID.
+    let user_in_meta = message
+        .metadata
+        .get("sender_user_id")
+        .and_then(|v| v.as_str());
+    match user_in_meta {
+        Some(uid) if uid != message.sender.platform_id => Some(&message.sender.platform_id),
+        _ => None,
+    }
+}
+
 /// If an error contains "Agent not found", try to re-resolve the channel's default agent
 /// by name (the name stored at bridge startup). Returns `Some(new_id)` on success.
 async fn try_reresolution(
@@ -1001,10 +1029,13 @@ async fn dispatch_message(
     // Route to agent (standard path).
     // Use sender_user_id() so user-keyed bindings (peer_id) match for adapters like
     // Discord/Slack where sender.platform_id is the channel ID, not the user ID.
-    let agent_id = router.resolve(
+    // Pass the channel/conversation ID separately so bindings with `channel_id`
+    // can match (e.g. "messages in Discord channel X → agent Y").
+    let agent_id = router.resolve_with_channel_id(
         &message.channel,
         sender_user_id(message),
         message.sender.openfang_user.as_deref(),
+        sender_channel_id(message),
     );
 
     let agent_id = match agent_id {
@@ -1444,11 +1475,13 @@ async fn dispatch_with_blocks(
     prefix_style: PrefixStyle,
 ) {
     // Route to agent (same logic as text path).
-    // Use sender_user_id() so user-keyed bindings match for Discord/Slack.
-    let agent_id = router.resolve(
+    // Use sender_user_id() so user-keyed bindings match for Discord/Slack;
+    // pass channel_id so per-room bindings match too.
+    let agent_id = router.resolve_with_channel_id(
         &message.channel,
         sender_user_id(message),
         message.sender.openfang_user.as_deref(),
+        sender_channel_id(message),
     );
 
     let agent_id = match agent_id {
