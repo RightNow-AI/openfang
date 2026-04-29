@@ -695,6 +695,15 @@ function chatPage() {
       switch (data.type) {
         case 'connected': break;
 
+        // Incoming message from server (e.g., cron trigger) — display as user message
+        case 'message':
+          if (data.content) {
+            var meta = data.source === 'cron' ? '[Scheduled: ' + (data.job_name || data.job_id || '') + ']' : '';
+            this.messages.push({ id: ++msgId, role: 'user', text: data.content, meta: meta, tools: [], images: [], ts: Date.now() });
+            this.scrollToBottom();
+          }
+          break;
+
         // Legacy thinking event (backward compat)
         case 'thinking':
           if (!this.messages.length || !this.messages[this.messages.length - 1].thinking) {

@@ -5987,17 +5987,31 @@ impl OpenFangKernel {
                         // Multi-destination fan-out (never aborts the job on delivery error).
                         cron_fan_out_targets(self, job_name, &result.response, &delivery_targets)
                             .await;
-                        match cron_deliver_response(self, agent_id, &result.response, &delivery)
+                        let delivered_to_channel = cron_deliver_response(self, agent_id, &result.response, &delivery)
                             .await
-                        {
-                            Ok(()) => {
-                                self.cron_scheduler.record_success(job_id);
-                                Ok(result.response)
-                            }
-                            Err(e) => {
-                                self.cron_scheduler.record_failure(job_id, &e);
-                                Err(e)
-                            }
+                            .is_ok();
+                        // Publish event for WS broadcast (API layer subscribes and pushes to WebSocket connections).
+                        let cron_event = Event::new(
+                            AgentId::new(),
+                            EventTarget::System,
+                            EventPayload::System(SystemEvent::CronJobExecuted {
+                                agent_id,
+                                job_id: job_id.to_string(),
+                                job_name: job_name.clone(),
+                                trigger_message: message.clone(),
+                                response: result.response.clone(),
+                                delivered_to_channel,
+                            }),
+                        );
+                        self.publish_event(cron_event).await;
+                        // Note: WS broadcast happens regardless of channel delivery success/failure.
+                        // Channel delivery failure is recorded as a job failure.
+                        if delivered_to_channel {
+                            self.cron_scheduler.record_success(job_id);
+                            Ok(result.response)
+                        } else {
+                            self.cron_scheduler.record_failure(job_id, "channel delivery failed");
+                            Err("channel delivery failed".to_string())
                         }
                     }
                     Ok(Err(e)) => {
@@ -6041,15 +6055,29 @@ impl OpenFangKernel {
                     Ok(Ok((_run_id, output))) => {
                         // Multi-destination fan-out (never aborts the job on delivery error).
                         cron_fan_out_targets(self, job_name, &output, &delivery_targets).await;
-                        match cron_deliver_response(self, agent_id, &output, &delivery).await {
-                            Ok(()) => {
-                                self.cron_scheduler.record_success(job_id);
-                                Ok(output)
-                            }
-                            Err(e) => {
-                                self.cron_scheduler.record_failure(job_id, &e);
-                                Err(e)
-                            }
+                        let delivered_to_channel = cron_deliver_response(self, agent_id, &output, &delivery)
+                            .await
+                            .is_ok();
+                        // Publish event for WS broadcast (API layer subscribes and pushes to WebSocket connections).
+                        let cron_event = Event::new(
+                            AgentId::new(),
+                            EventTarget::System,
+                            EventPayload::System(SystemEvent::CronJobExecuted {
+                                agent_id,
+                                job_id: job_id.to_string(),
+                                job_name: job_name.clone(),
+                                trigger_message: format!("workflow: {}", workflow_id),
+                                response: output.clone(),
+                                delivered_to_channel,
+                            }),
+                        );
+                        self.publish_event(cron_event).await;
+                        if delivered_to_channel {
+                            self.cron_scheduler.record_success(job_id);
+                            Ok(output)
+                        } else {
+                            self.cron_scheduler.record_failure(job_id, "channel delivery failed");
+                            Err("channel delivery failed".to_string())
                         }
                     }
                     Ok(Err(e)) => {

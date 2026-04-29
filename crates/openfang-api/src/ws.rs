@@ -19,6 +19,7 @@ use axum::response::IntoResponse;
 use dashmap::DashMap;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
+use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_runtime::llm_driver::StreamEvent;
 use openfang_runtime::llm_errors;
@@ -30,7 +31,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 /// Per-IP WebSocket connection tracker.
@@ -96,6 +97,62 @@ impl VerboseLevel {
 fn ws_tracker() -> &'static DashMap<IpAddr, AtomicUsize> {
     static TRACKER: std::sync::OnceLock<DashMap<IpAddr, AtomicUsize>> = std::sync::OnceLock::new();
     TRACKER.get_or_init(DashMap::new)
+}
+
+/// Per-agent WebSocket sender entry.
+struct WsSender {
+    sender: Arc<Mutex<SplitSink<WebSocket, Message>>>,
+}
+
+/// Global registry: agent_id → active WebSocket senders.
+/// Uses RwLock for fine-grained read/write access to the sender list.
+fn ws_agent_connections() -> &'static DashMap<AgentId, RwLock<Vec<WsSender>>> {
+    static REGISTRY: std::sync::OnceLock<DashMap<AgentId, RwLock<Vec<WsSender>>>> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(DashMap::new)
+}
+
+/// Register a WebSocket connection for an agent (async).
+pub async fn register_ws_connection(
+    agent_id: AgentId,
+    sender: Arc<Mutex<SplitSink<WebSocket, Message>>>,
+) {
+    let entry = ws_agent_connections().entry(agent_id).or_default();
+    let mut senders = entry.value().write().await;
+    senders.push(WsSender { sender });
+}
+
+/// Deregister a WebSocket connection for an agent.
+/// Returns the number of remaining connections for this agent.
+pub async fn deregister_ws_connection(
+    agent_id: AgentId,
+    sender: &Arc<Mutex<SplitSink<WebSocket, Message>>>,
+) -> usize {
+    let entry = match ws_agent_connections().get(&agent_id) {
+        Some(e) => e,
+        None => return 0,
+    };
+    let mut senders = entry.value().write().await;
+    senders.retain(|s| !Arc::ptr_eq(&s.sender, sender));
+    senders.len()
+}
+
+/// Broadcast a JSON message to all active WebSocket connections for an agent.
+/// Returns the number of connections the message was sent to.
+pub async fn broadcast_to_ws(agent_id: AgentId, msg: serde_json::Value) -> usize {
+    let entry = match ws_agent_connections().get(&agent_id) {
+        Some(e) => e,
+        None => return 0,
+    };
+    let senders = entry.value().read().await;
+    let mut success_count = 0;
+    for ws_sender in senders.iter() {
+        let sender = &ws_sender.sender;
+        if send_json(sender, &msg).await.is_ok() {
+            success_count += 1;
+        }
+    }
+    success_count
 }
 
 /// RAII guard that decrements the connection count on drop.
@@ -264,6 +321,9 @@ async fn handle_agent_ws(
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(Mutex::new(sender));
 
+    // Register this connection in the global agent-WS registry
+    register_ws_connection(agent_id, Arc::clone(&sender)).await;
+
     // Per-connection verbose level (default: Full)
     let verbose = Arc::new(AtomicU8::new(VerboseLevel::Full as u8));
 
@@ -416,7 +476,8 @@ async fn handle_agent_ws(
         }
     }
 
-    // Cleanup
+    // Cleanup: deregister from agent-WS registry and abort background tasks
+    deregister_ws_connection(agent_id, &sender).await;
     update_handle.abort();
     info!(agent_id = %id_str, "WebSocket disconnected");
 }
@@ -1331,6 +1392,110 @@ pub fn strip_think_tags(text: &str) -> String {
     }
     result.push_str(remaining);
     result
+}
+
+// ---------------------------------------------------------------------------
+// Cron Job WS Broadcasting
+// ---------------------------------------------------------------------------
+
+/// Start a background task that subscribes to the kernel's event bus and
+/// broadcasts cron job results to all connected WebSocket clients for the
+/// relevant agent.
+///
+/// This runs independently of the channel bridge — it uses the kernel's
+/// event bus to receive `CronJobExecuted` events and pushes them to WS.
+pub fn start_ws_cron_broadcaster(kernel: Arc<OpenFangKernel>) {
+    tokio::spawn(async move {
+        let mut rx = kernel.event_bus.subscribe_all();
+        loop {
+            let event = rx.recv().await;
+            match event {
+                Ok(event) => {
+                    if let openfang_types::event::EventPayload::System(
+                        openfang_types::event::SystemEvent::CronJobExecuted {
+                            agent_id,
+                            job_id,
+                            job_name,
+                            trigger_message,
+                            response,
+                            delivered_to_channel: _,
+                        },
+                    ) = event.payload
+                    {
+                        // Build the trigger message (synthetic user message from cron)
+                        let trigger_msg = serde_json::json!({
+                            "type": "message",
+                            "content": trigger_message,
+                            "source": "cron",
+                            "job_id": job_id,
+                            "job_name": job_name
+                        });
+                        let _ = broadcast_to_ws(agent_id, trigger_msg).await;
+
+                        // Send typing start
+                        let _ = broadcast_to_ws(
+                            agent_id,
+                            serde_json::json!({"state": "start", "type": "typing"}),
+                        )
+                        .await;
+
+                        // Send streaming phase
+                        let _ = broadcast_to_ws(
+                            agent_id,
+                            serde_json::json!({"detail": null, "phase": "streaming", "type": "phase"}),
+                        )
+                        .await;
+
+                        // Send text delta (full response since we don't have streaming chunks)
+                        let text_delta = serde_json::json!({
+                            "content": response,
+                            "type": "text_delta"
+                        });
+                        let _ = broadcast_to_ws(agent_id, text_delta).await;
+
+                        // Send done phase
+                        let _ = broadcast_to_ws(
+                            agent_id,
+                            serde_json::json!({"detail": null, "phase": "done", "type": "phase"}),
+                        )
+                        .await;
+
+                        // Send typing stop
+                        let _ = broadcast_to_ws(
+                            agent_id,
+                            serde_json::json!({"state": "stop", "type": "typing"}),
+                        )
+                        .await;
+
+                        // Send final response (mimics the format from agent_loop)
+                        let response_msg = serde_json::json!({
+                            "type": "response",
+                            "content": response,
+                            "context_pressure": "low",
+                            "cost_usd": null,
+                            "input_tokens": 0,
+                            "iterations": 0,
+                            "output_tokens": 0
+                        });
+                        let _ = broadcast_to_ws(agent_id, response_msg).await;
+
+                        info!(
+                            agent_id = %agent_id,
+                            job_id = %job_id,
+                            "Cron job result broadcast to WS"
+                        );
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(lagged_messages = n, "WS cron broadcaster lagged, skipping");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    info!("WS cron broadcaster channel closed, stopping");
+                    break;
+                }
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
