@@ -2291,6 +2291,7 @@ impl OpenFangKernel {
             max_memory_bytes: entry.manifest.resources.max_memory_bytes as usize,
             capabilities: caps,
             timeout_secs: Some(30),
+            ssrf_allowed_hosts: self.config.web.fetch.ssrf_allowed_hosts.clone(),
         };
 
         let input = serde_json::json!({
