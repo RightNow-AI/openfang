@@ -331,7 +331,7 @@ fn reorder_tool_results(messages: &mut Vec<Message>) -> usize {
 
     // Insert in reverse order so indices remain valid
     let mut sorted_insertions: Vec<(usize, Vec<ContentBlock>)> = insertions.into_iter().collect();
-    sorted_insertions.sort_by(|a, b| b.0.cmp(&a.0));
+    sorted_insertions.sort_by_key(|b| std::cmp::Reverse(b.0));
 
     for (orig_assistant_idx, blocks) in sorted_insertions {
         if let Some(&current_idx) = current_assistant_positions.get(&orig_assistant_idx) {
@@ -433,7 +433,7 @@ fn insert_synthetic_results(messages: &mut Vec<Message>) -> usize {
 
     // Insert in reverse order so indices stay valid
     let mut sorted: Vec<(usize, Vec<ContentBlock>)> = grouped.into_iter().collect();
-    sorted.sort_by(|a, b| b.0.cmp(&a.0));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.0));
 
     for (assistant_idx, blocks) in sorted {
         let insert_pos = assistant_idx + 1;

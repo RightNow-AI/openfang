@@ -192,24 +192,18 @@ impl SkillsState {
 
         let total = self.installed.len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.installed_list.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.installed_list.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.installed_list.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.installed_list.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.installed_list.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.installed_list.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.installed_list.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.installed_list.select(Some(next));
             }
-            KeyCode::Char('u') => {
-                if self.installed_list.selected().is_some() {
-                    self.confirm_uninstall = true;
-                }
+            KeyCode::Char('u') if self.installed_list.selected().is_some() => {
+                self.confirm_uninstall = true;
             }
             KeyCode::Char('c') => {
                 if let Some(sel) = self.installed_list.selected() {
@@ -255,19 +249,15 @@ impl SkillsState {
 
         let total = self.clawhub_results.len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.clawhub_list.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.clawhub_list.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.clawhub_list.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.clawhub_list.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.clawhub_list.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.clawhub_list.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.clawhub_list.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.clawhub_list.select(Some(next));
             }
             KeyCode::Char('i') => {
                 if let Some(sel) = self.clawhub_list.selected() {
@@ -295,19 +285,15 @@ impl SkillsState {
     fn handle_mcp(&mut self, key: KeyEvent) -> SkillsAction {
         let total = self.mcp_servers.len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.mcp_list.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.mcp_list.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.mcp_list.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.mcp_list.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.mcp_list.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.mcp_list.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.mcp_list.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.mcp_list.select(Some(next));
             }
             KeyCode::Char('r') => return SkillsAction::RefreshMcp,
             _ => {}

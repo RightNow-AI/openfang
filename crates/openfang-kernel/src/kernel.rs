@@ -3591,10 +3591,10 @@ impl OpenFangKernel {
         for req in &def.requires {
             match req.requirement_type {
                 openfang_hands::RequirementType::ApiKey
-                | openfang_hands::RequirementType::EnvVar => {
-                    if !req.check_value.is_empty() && !allowed_env.contains(&req.check_value) {
-                        allowed_env.push(req.check_value.clone());
-                    }
+                | openfang_hands::RequirementType::EnvVar
+                    if !req.check_value.is_empty() && !allowed_env.contains(&req.check_value) =>
+                {
+                    allowed_env.push(req.check_value.clone());
                 }
                 _ => {}
             }
@@ -3801,7 +3801,7 @@ impl OpenFangKernel {
         let mut bindings = self.bindings.lock().unwrap_or_else(|e| e.into_inner());
         bindings.push(binding);
         // Sort by specificity descending
-        bindings.sort_by(|a, b| b.match_rule.specificity().cmp(&a.match_rule.specificity()));
+        bindings.sort_by_key(|b| std::cmp::Reverse(b.match_rule.specificity()));
     }
 
     /// Remove a binding by index, returns the removed binding if valid.

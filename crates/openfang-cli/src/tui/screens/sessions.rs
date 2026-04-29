@@ -130,19 +130,15 @@ impl SessionsState {
 
         let total = self.filtered.len();
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if total > 0 {
-                    let i = self.list_state.selected().unwrap_or(0);
-                    let next = if i == 0 { total - 1 } else { i - 1 };
-                    self.list_state.select(Some(next));
-                }
+            KeyCode::Up | KeyCode::Char('k') if total > 0 => {
+                let i = self.list_state.selected().unwrap_or(0);
+                let next = if i == 0 { total - 1 } else { i - 1 };
+                self.list_state.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if total > 0 {
-                    let i = self.list_state.selected().unwrap_or(0);
-                    let next = (i + 1) % total;
-                    self.list_state.select(Some(next));
-                }
+            KeyCode::Down | KeyCode::Char('j') if total > 0 => {
+                let i = self.list_state.selected().unwrap_or(0);
+                let next = (i + 1) % total;
+                self.list_state.select(Some(next));
             }
             KeyCode::Enter => {
                 if let Some(sel) = self.list_state.selected() {
@@ -155,10 +151,8 @@ impl SessionsState {
                     }
                 }
             }
-            KeyCode::Char('d') => {
-                if self.list_state.selected().is_some() {
-                    self.confirm_delete = true;
-                }
+            KeyCode::Char('d') if self.list_state.selected().is_some() => {
+                self.confirm_delete = true;
             }
             KeyCode::Char('/') => {
                 self.search_mode = true;
