@@ -91,7 +91,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --check
+      # Gate every workspace crate on rustfmt to keep `cargo fmt --all --check` clean.
+      # See issue #1121.
+      - run: cargo fmt --all -- --check
 
   audit:
     name: Security Audit
