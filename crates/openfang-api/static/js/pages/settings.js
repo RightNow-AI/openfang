@@ -26,6 +26,10 @@ function settingsPage() {
     providerTesting: {},
     providerTestResults: {},
     copilotOAuth: { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 },
+      codexOAuth: { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 },
+      geminiOAuth: { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 },
+      qwenOAuth: { polling: false, status: '', pollId: '', message: '' },
+      minimaxOAuth: { polling: false, status: '', pollId: '', message: '' },
     customProviderName: '',
     customProviderUrl: '',
     customProviderKey: '',
@@ -473,6 +477,193 @@ function settingsPage() {
         }
       }, self.copilotOAuth.interval * 1000);
     },
+
+    // OpenAI Codex OAuth
+    async startCodexOAuth() {
+      this.codexOAuth.polling = true;
+      this.codexOAuth.userCode = '';
+      try {
+        var resp = await OpenFangAPI.post('/api/providers/openai-codex/oauth/start', {});
+        this.codexOAuth.userCode = resp.user_code;
+        this.codexOAuth.verificationUri = resp.verification_uri;
+        this.codexOAuth.pollId = resp.poll_id;
+        this.codexOAuth.interval = resp.interval || 5;
+        window.open(resp.verification_uri, '_blank');
+        this.pollCodexOAuth();
+      } catch(e) {
+        OpenFangToast.error('Failed to start Codex login: ' + e.message);
+        this.codexOAuth.polling = false;
+      }
+    },
+
+    pollCodexOAuth() {
+      var self = this;
+      setTimeout(async function() {
+        if (!self.codexOAuth.pollId) return;
+        try {
+          var resp = await OpenFangAPI.get('/api/providers/openai-codex/oauth/poll/' + self.codexOAuth.pollId);
+          if (resp.status === 'complete') {
+            OpenFangToast.success('OpenAI Codex authenticated successfully!');
+            self.codexOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
+            await self.loadProviders();
+            await self.loadModels();
+          } else if (resp.status === 'pending') {
+            if (resp.interval) self.codexOAuth.interval = resp.interval;
+            self.pollCodexOAuth();
+          } else if (resp.status === 'expired') {
+            OpenFangToast.error('Device code expired. Please try again.');
+            self.codexOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
+          } else if (resp.status === 'denied') {
+            OpenFangToast.error('Access denied by user.');
+            self.codexOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
+          } else {
+            OpenFangToast.error('OAuth error: ' + (resp.error || resp.status));
+            self.codexOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
+          }
+        } catch(e) {
+          OpenFangToast.error('Poll error: ' + e.message);
+          self.codexOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
+        }
+      }, self.codexOAuth.interval * 1000);
+    },
+
+    // Gemini OAuth
+    async startGeminiOAuth() {
+      this.geminiOAuth.polling = true;
+      this.geminiOAuth.userCode = '';
+      try {
+        var resp = await OpenFangAPI.post('/api/providers/gemini-oauth/oauth/start', {});
+        this.geminiOAuth.userCode = resp.user_code;
+        this.geminiOAuth.verificationUri = resp.verification_uri;
+        this.geminiOAuth.pollId = resp.poll_id;
+        this.geminiOAuth.interval = resp.interval || 5;
+        window.open(resp.verification_uri, '_blank');
+        this.pollGeminiOAuth();
+      } catch(e) {
+        OpenFangToast.error('Failed to start Gemini login: ' + e.message);
+        this.geminiOAuth.polling = false;
+      }
+    },
+
+    pollGeminiOAuth() {
+      var self = this;
+      setTimeout(async function() {
+        if (!self.geminiOAuth.pollId) return;
+        try {
+          var resp = await OpenFangAPI.get('/api/providers/gemini-oauth/oauth/poll/' + self.geminiOAuth.pollId);
+          if (resp.status === 'complete') {
+            OpenFangToast.success('Google Gemini authenticated successfully!');
+            self.geminiOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
+            await self.loadProviders();
+            await self.loadModels();
+          } else if (resp.status === 'pending') {
+            if (resp.interval) self.geminiOAuth.interval = resp.interval;
+            self.pollGeminiOAuth();
+          } else if (resp.status === 'expired') {
+            OpenFangToast.error('Device code expired. Please try again.');
+            self.geminiOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
+          } else if (resp.status === 'denied') {
+            OpenFangToast.error('Access denied by user.');
+            self.geminiOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
+          } else {
+            OpenFangToast.error('OAuth error: ' + (resp.error || resp.status));
+            self.geminiOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
+          }
+        } catch(e) {
+          OpenFangToast.error('Poll error: ' + e.message);
+          self.geminiOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
+        }
+      }, self.geminiOAuth.interval * 1000);
+    },
+
+    // Qwen OAuth (file-based)
+    async startQwenOAuth() {
+      this.qwenOAuth.polling = true;
+      this.qwenOAuth.status = 'loading';
+      this.qwenOAuth.message = '';
+      try {
+        var resp = await OpenFangAPI.post('/api/providers/qwen-oauth/oauth/start', {});
+        this.qwenOAuth.pollId = resp.poll_id;
+        this.qwenOAuth.status = 'ready';
+        this.qwenOAuth.message = resp.message || 'Credentials loaded';
+        this.pollQwenOAuth();
+      } catch(e) {
+        OpenFangToast.error('Failed to load Qwen credentials: ' + e.message);
+        this.qwenOAuth = { polling: false, status: '', pollId: '', message: '' };
+      }
+    },
+
+    pollQwenOAuth() {
+      var self = this;
+      setTimeout(async function() {
+        if (!self.qwenOAuth.pollId) return;
+        try {
+          var resp = await OpenFangAPI.get('/api/providers/qwen-oauth/oauth/poll/' + self.qwenOAuth.pollId);
+          if (resp.status === 'complete') {
+            OpenFangToast.success('Qwen authenticated successfully!');
+            self.qwenOAuth = { polling: false, status: '', pollId: '', message: '' };
+            await self.loadProviders();
+            await self.loadModels();
+          } else if (resp.status === 'expired') {
+            OpenFangToast.error('Qwen OAuth expired. Please try again.');
+            self.qwenOAuth = { polling: false, status: '', pollId: '', message: '' };
+          } else if (resp.status === 'pending') {
+            self.pollQwenOAuth();
+          } else {
+            OpenFangToast.error('OAuth error: ' + (resp.error || resp.status));
+            self.qwenOAuth = { polling: false, status: '', pollId: '', message: '' };
+          }
+        } catch(e) {
+          OpenFangToast.error('Poll error: ' + e.message);
+          self.qwenOAuth = { polling: false, status: '', pollId: '', message: '' };
+        }
+      }, 2000);
+    },
+
+    // MiniMax OAuth
+    async startMiniMaxOAuth() {
+      this.minimaxOAuth.polling = true;
+      this.minimaxOAuth.status = 'loading';
+      this.minimaxOAuth.message = '';
+      try {
+        var resp = await OpenFangAPI.post('/api/providers/minimax-oauth/oauth/start', {});
+        this.minimaxOAuth.pollId = resp.poll_id;
+        this.minimaxOAuth.status = 'ready';
+        this.minimaxOAuth.message = resp.message || 'OAuth initiated';
+        this.pollMiniMaxOAuth();
+      } catch(e) {
+        OpenFangToast.error('Failed to start MiniMax OAuth: ' + e.message);
+        this.minimaxOAuth = { polling: false, status: '', pollId: '', message: '' };
+      }
+    },
+
+    pollMiniMaxOAuth() {
+      var self = this;
+      setTimeout(async function() {
+        if (!self.minimaxOAuth.pollId) return;
+        try {
+          var resp = await OpenFangAPI.get('/api/providers/minimax-oauth/oauth/poll/' + self.minimaxOAuth.pollId);
+          if (resp.status === 'complete') {
+            OpenFangToast.success('MiniMax authenticated successfully!');
+            self.minimaxOAuth = { polling: false, status: '', pollId: '', message: '' };
+            await self.loadProviders();
+            await self.loadModels();
+          } else if (resp.status === 'expired') {
+            OpenFangToast.error('MiniMax OAuth expired. Please try again.');
+            self.minimaxOAuth = { polling: false, status: '', pollId: '', message: '' };
+          } else if (resp.status === 'pending') {
+            self.pollMiniMaxOAuth();
+          } else {
+            OpenFangToast.error('OAuth error: ' + (resp.error || resp.status));
+            self.minimaxOAuth = { polling: false, status: '', pollId: '', message: '' };
+          }
+        } catch(e) {
+          OpenFangToast.error('Poll error: ' + e.message);
+          self.minimaxOAuth = { polling: false, status: '', pollId: '', message: '' };
+        }
+      }, 2000);
+    },
+
 
     async testProvider(provider) {
       this.providerTesting[provider.id] = true;

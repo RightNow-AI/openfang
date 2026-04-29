@@ -600,6 +600,42 @@ pub async fn build_router(
             "/api/providers/github-copilot/oauth/poll/{poll_id}",
             axum::routing::get(routes::copilot_oauth_poll),
         )
+        // OpenAI Codex OAuth
+        .route(
+            "/api/providers/openai-codex/oauth/start",
+            axum::routing::post(routes::openai_codex_oauth_start),
+        )
+        .route(
+            "/api/providers/openai-codex/oauth/poll/{poll_id}",
+            axum::routing::get(routes::openai_codex_oauth_poll),
+        )
+        // Gemini OAuth
+        .route(
+            "/api/providers/gemini-oauth/oauth/start",
+            axum::routing::post(routes::gemini_oauth_start),
+        )
+        .route(
+            "/api/providers/gemini-oauth/oauth/poll/{poll_id}",
+            axum::routing::get(routes::gemini_oauth_poll),
+        )
+        // Qwen OAuth
+        .route(
+            "/api/providers/qwen-oauth/oauth/start",
+            axum::routing::post(routes::qwen_oauth_start),
+        )
+        .route(
+            "/api/providers/qwen-oauth/oauth/poll/{poll_id}",
+            axum::routing::get(routes::qwen_oauth_poll),
+        )
+        // MiniMax OAuth
+        .route(
+            "/api/providers/minimax-oauth/oauth/start",
+            axum::routing::post(routes::minimax_oauth_start),
+        )
+        .route(
+            "/api/providers/minimax-oauth/oauth/poll/{poll_id}",
+            axum::routing::get(routes::minimax_oauth_poll),
+        )
         .route(
             "/api/providers/{name}/key",
             axum::routing::post(routes::set_provider_key).delete(routes::delete_provider_key),
