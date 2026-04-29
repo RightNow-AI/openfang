@@ -1241,25 +1241,11 @@ impl OpenFangKernel {
                                                 agent = %name,
                                                 "Agent TOML on disk differs from DB, updating"
                                             );
-                                            // Merge: take disk values but preserve kernel-assigned
-                                            // defaults the user didn't set in TOML. Without this,
-                                            // editing any field (e.g. description) would silently
-                                            // wipe the auto-assigned workspace path / inherited
-                                            // exec_policy.
-                                            let mut new_manifest = disk_manifest;
-                                            if new_manifest.workspace.is_none()
-                                                && entry.manifest.workspace.is_some()
-                                            {
-                                                new_manifest.workspace =
-                                                    entry.manifest.workspace.clone();
-                                            }
-                                            if new_manifest.exec_policy.is_none()
-                                                && entry.manifest.exec_policy.is_some()
-                                            {
-                                                new_manifest.exec_policy =
-                                                    entry.manifest.exec_policy.clone();
-                                            }
-                                            entry.manifest = new_manifest;
+                                            entry.manifest =
+                                                merge_disk_manifest_preserving_kernel_defaults(
+                                                    disk_manifest,
+                                                    &entry.manifest,
+                                                );
                                             // Persist the update back to DB
                                             if let Err(e) = kernel.memory.save_agent(&entry) {
                                                 warn!(
@@ -6163,6 +6149,25 @@ impl OpenFangKernel {
 /// If a `profile` is set and the manifest has no explicit tools, the profile's
 /// implied capabilities are used as a base — preserving any non-tool overrides
 /// from the manifest.
+/// Merge `disk` (manifest read from agent.toml) onto `entry` (manifest in DB),
+/// preserving kernel-assigned defaults that the user didn't write to TOML.
+///
+/// Without this merge, editing any field in agent.toml would silently wipe
+/// the kernel-auto-assigned `workspace` path or the inherited `exec_policy`,
+/// because they don't appear in user-authored TOML.
+pub(crate) fn merge_disk_manifest_preserving_kernel_defaults(
+    mut disk: AgentManifest,
+    entry: &AgentManifest,
+) -> AgentManifest {
+    if disk.workspace.is_none() && entry.workspace.is_some() {
+        disk.workspace = entry.workspace.clone();
+    }
+    if disk.exec_policy.is_none() && entry.exec_policy.is_some() {
+        disk.exec_policy = entry.exec_policy.clone();
+    }
+    disk
+}
+
 fn manifest_to_capabilities(manifest: &AgentManifest) -> Vec<Capability> {
     let mut caps = Vec::new();
 
@@ -7330,6 +7335,7 @@ impl openfang_wire::peer::PeerHandle for OpenFangKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openfang_types::config::ExecPolicy;
     use std::collections::HashMap;
 
     #[test]
@@ -7369,6 +7375,97 @@ mod tests {
         assert!(caps.contains(&Capability::ToolInvoke("file_read".to_string())));
         assert!(caps.contains(&Capability::AgentSpawn));
         assert_eq!(caps.len(), 3); // 2 tools + agent_spawn
+    }
+
+    /// Regression for #1087: when the user edits any field in agent.toml
+    /// (e.g. description) and the TOML doesn't carry `workspace`, the merge
+    /// must preserve the kernel-assigned workspace path that lives in the DB.
+    #[test]
+    fn test_merge_preserves_workspace_when_disk_omits_it() {
+        let entry = AgentManifest {
+            name: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            description: "old".to_string(),
+            author: "test".to_string(),
+            module: "builtin:chat".to_string(),
+            schedule: ScheduleMode::default(),
+            model: ModelConfig::default(),
+            fallback_models: vec![],
+            resources: ResourceQuota::default(),
+            priority: Priority::default(),
+            capabilities: ManifestCapabilities::default(),
+            profile: None,
+            tools: HashMap::new(),
+            skills: vec![],
+            mcp_servers: vec![],
+            metadata: HashMap::new(),
+            tags: vec![],
+            routing: None,
+            autonomous: None,
+            pinned_model: None,
+            workspace: Some(std::path::PathBuf::from("/var/lib/openfang/agents/demo")),
+            generate_identity_files: true,
+            exec_policy: Some(ExecPolicy::default()),
+            tool_allowlist: vec![],
+            tool_blocklist: vec![],
+            cache_context: false,
+        };
+        let mut disk = entry.clone();
+        disk.description = "new".to_string();
+        disk.workspace = None;
+        disk.exec_policy = None;
+
+        let merged = merge_disk_manifest_preserving_kernel_defaults(disk, &entry);
+
+        assert_eq!(merged.description, "new", "TOML edits must apply");
+        assert_eq!(
+            merged.workspace,
+            entry.workspace,
+            "kernel-assigned workspace must survive a TOML edit that omits it"
+        );
+        assert!(
+            merged.exec_policy.is_some(),
+            "inherited exec_policy must survive"
+        );
+    }
+
+    /// User explicitly setting workspace in TOML must take effect.
+    #[test]
+    fn test_merge_respects_explicit_disk_workspace() {
+        let entry = AgentManifest {
+            name: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            description: "x".to_string(),
+            author: "test".to_string(),
+            module: "builtin:chat".to_string(),
+            schedule: ScheduleMode::default(),
+            model: ModelConfig::default(),
+            fallback_models: vec![],
+            resources: ResourceQuota::default(),
+            priority: Priority::default(),
+            capabilities: ManifestCapabilities::default(),
+            profile: None,
+            tools: HashMap::new(),
+            skills: vec![],
+            mcp_servers: vec![],
+            metadata: HashMap::new(),
+            tags: vec![],
+            routing: None,
+            autonomous: None,
+            pinned_model: None,
+            workspace: Some(std::path::PathBuf::from("/old")),
+            generate_identity_files: true,
+            exec_policy: None,
+            tool_allowlist: vec![],
+            tool_blocklist: vec![],
+            cache_context: false,
+        };
+        let mut disk = entry.clone();
+        disk.workspace = Some(std::path::PathBuf::from("/new"));
+
+        let merged = merge_disk_manifest_preserving_kernel_defaults(disk, &entry);
+
+        assert_eq!(merged.workspace, Some(std::path::PathBuf::from("/new")));
     }
 
     fn test_manifest(name: &str, description: &str, tags: Vec<String>) -> AgentManifest {
