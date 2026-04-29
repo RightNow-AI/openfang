@@ -12,7 +12,7 @@
 use crate::registry::AgentRegistry;
 use chrono::Utc;
 use dashmap::DashMap;
-use openfang_types::agent::{AgentId, AgentState};
+use openfang_types::agent::{AgentEntry, AgentId, AgentState, ScheduleMode};
 use tracing::{debug, warn};
 
 /// Default heartbeat check interval (seconds).
@@ -131,6 +131,14 @@ impl Default for RecoveryTracker {
 /// be flagged as unresponsive.  This covers the small gap between registration
 /// and the initial `set_state(Running)` call.
 const IDLE_GRACE_SECS: i64 = 10;
+
+/// Reactive agents are healthy while idle between user messages.
+///
+/// They should only participate in heartbeat failure detection while a turn is
+/// actively running. Otherwise silence is the expected steady state.
+pub(crate) fn should_exempt_idle_reactive_agent(entry: &AgentEntry, is_running_task: bool) -> bool {
+    matches!(entry.manifest.schedule, ScheduleMode::Reactive) && !is_running_task
+}
 
 /// Check all running and crashed agents and return their heartbeat status.
 ///
@@ -374,6 +382,35 @@ mod tests {
             statuses.is_empty(),
             "idle agent should be skipped by heartbeat"
         );
+    }
+
+    #[test]
+    fn test_idle_reactive_agent_is_exempt_when_not_processing() {
+        let mut agent = make_entry(
+            "reactive-idle",
+            AgentState::Running,
+            Utc::now() - Duration::seconds(600),
+            Utc::now() - Duration::seconds(300),
+        );
+        agent.manifest.schedule = ScheduleMode::Reactive;
+
+        assert!(should_exempt_idle_reactive_agent(&agent, false));
+        assert!(!should_exempt_idle_reactive_agent(&agent, true));
+    }
+
+    #[test]
+    fn test_periodic_agent_is_not_exempt_when_idle() {
+        let mut agent = make_entry(
+            "periodic-idle",
+            AgentState::Running,
+            Utc::now() - Duration::seconds(600),
+            Utc::now() - Duration::seconds(300),
+        );
+        agent.manifest.schedule = ScheduleMode::Periodic {
+            cron: "0 * * * *".to_string(),
+        };
+
+        assert!(!should_exempt_idle_reactive_agent(&agent, false));
     }
 
     #[test]

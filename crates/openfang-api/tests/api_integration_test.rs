@@ -1156,7 +1156,10 @@ async fn test_commands_invalid_surface_400() {
     assert_eq!(resp.status(), 400);
     let body: serde_json::Value = resp.json().await.unwrap();
     let err = body["error"].as_str().unwrap_or_default();
-    assert!(err.contains("bogus"), "error should mention the bad value: {err}");
+    assert!(
+        err.contains("bogus"),
+        "error should mention the bad value: {err}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1211,7 +1214,10 @@ async fn test_schedules_delivery_targets_roundtrip() {
         .unwrap();
     assert_eq!(resp.status(), 201);
     let body: serde_json::Value = resp.json().await.unwrap();
-    let sched_id = body["id"].as_str().expect("created schedule id").to_string();
+    let sched_id = body["id"]
+        .as_str()
+        .expect("created schedule id")
+        .to_string();
     let got = body["delivery_targets"]
         .as_array()
         .expect("response must include delivery_targets");
@@ -1291,7 +1297,9 @@ async fn test_schedules_delivery_targets_update() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "updated");
     let echoed = &body["schedule"]["delivery_targets"];
-    let arr = echoed.as_array().expect("schedule.delivery_targets must be array");
+    let arr = echoed
+        .as_array()
+        .expect("schedule.delivery_targets must be array");
     assert_eq!(arr.len(), 2);
     assert_eq!(arr[0]["type"], "webhook");
     assert_eq!(arr[1]["type"], "local_file");
@@ -1406,10 +1414,7 @@ async fn test_schedules_delivery_log_endpoint() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 201);
-    let sched_id = resp
-        .json::<serde_json::Value>()
-        .await
-        .unwrap()["id"]
+    let sched_id = resp.json::<serde_json::Value>().await.unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
