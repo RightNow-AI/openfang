@@ -42,8 +42,8 @@ const MAX_MESSAGE_LEN: usize = 4000;
 /// Token refresh buffer — refresh 5 minutes before actual expiry.
 const TOKEN_REFRESH_BUFFER_SECS: u64 = 300;
 
-/// Feishu websocket endpoint discovery API.
-const FEISHU_WS_ENDPOINT_URL: &str = "https://open.feishu.cn/callback/ws/endpoint";
+/// WebSocket endpoint path (appended to the region domain).
+const FEISHU_WS_ENDPOINT_PATH: &str = "/callback/ws/endpoint";
 
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
@@ -269,13 +269,24 @@ impl FeishuAdapter {
     ///
     /// WebSocket mode does not require a public IP or webhook configuration.
     pub fn new_websocket(app_id: String, app_secret: String) -> Self {
+        Self::new_websocket_with_region(app_id, app_secret, FeishuRegion::Cn)
+    }
+
+    /// Create a new Feishu adapter in WebSocket mode with an explicit region.
+    ///
+    /// Use this when the app is registered on Lark international (`open.larksuite.com`).
+    pub fn new_websocket_with_region(
+        app_id: String,
+        app_secret: String,
+        region: FeishuRegion,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             app_id,
             app_secret: Zeroizing::new(app_secret),
             connection_mode: FeishuConnectionMode::WebSocket,
             webhook_port: 0,
-            region: FeishuRegion::Cn,
+            region,
             webhook_path: String::new(),
             verification_token: None,
             encrypt_key: None,
@@ -918,9 +929,10 @@ struct FeishuAdapterClone {
 impl FeishuAdapterClone {
     /// Get WebSocket endpoint from Feishu API.
     async fn get_websocket_endpoint(&self) -> Result<FeishuWsEndpoint, Box<dyn std::error::Error>> {
+        let url = format!("{}{}", self.region.domain(), FEISHU_WS_ENDPOINT_PATH);
         let resp = self
             .client
-            .post(FEISHU_WS_ENDPOINT_URL)
+            .post(&url)
             .json(&serde_json::json!({
                 "AppID": self.app_id,
                 "AppSecret": self.app_secret.as_str(),
