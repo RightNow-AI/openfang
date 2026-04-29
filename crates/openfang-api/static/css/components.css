@@ -3253,7 +3253,7 @@ mark.search-highlight {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 .trader-dashboard {
-  background: var(--bg-card);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
   width: 96vw;
@@ -3270,7 +3270,7 @@ mark.search-highlight {
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
-  background: var(--bg-card);
+  background: var(--surface);
   z-index: 10;
   border-radius: 12px 12px 0 0;
 }
@@ -3330,6 +3330,7 @@ mark.search-highlight {
   border-radius: 8px;
   padding: 14px 16px;
   min-width: 0;
+  position: relative;
 }
 .trader-chart-title {
   font-size: 0.75rem;
