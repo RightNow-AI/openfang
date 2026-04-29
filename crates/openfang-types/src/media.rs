@@ -75,6 +75,27 @@ pub struct MediaConfig {
     pub image_provider: Option<String>,
     /// Preferred audio transcription provider (auto-detect if None).
     pub audio_provider: Option<String>,
+    /// Optional override for the audio transcription endpoint base URL.
+    ///
+    /// When set, replaces the hardcoded provider URL with
+    /// `<audio_base_url>/v1/audio/transcriptions`. Use this to point to a
+    /// local OpenAI-compat Whisper service (e.g., speaches, faster-whisper-server,
+    /// LM Studio) while keeping the same multipart wire format and the
+    /// `audio_provider` semantics ("openai" or "groq" still selects which
+    /// `*_API_KEY` env var is used for the Authorization header).
+    ///
+    /// Closes <https://github.com/RightNow-AI/openfang/issues/1051>.
+    ///
+    /// Example:
+    /// ```toml
+    /// [media]
+    /// audio_provider = "openai"
+    /// audio_base_url = "http://127.0.0.1:8000"
+    /// # → POST http://127.0.0.1:8000/v1/audio/transcriptions
+    /// #   with Authorization: Bearer $OPENAI_API_KEY (any non-empty string
+    /// #   works for most local OpenAI-compat servers).
+    /// ```
+    pub audio_base_url: Option<String>,
 }
 
 impl Default for MediaConfig {
@@ -86,6 +107,7 @@ impl Default for MediaConfig {
             max_concurrency: 2,
             image_provider: None,
             audio_provider: None,
+            audio_base_url: None,
         }
     }
 }
@@ -359,6 +381,38 @@ mod tests {
         assert!(!config.video_description);
         assert_eq!(config.max_concurrency, 2);
         assert!(config.image_provider.is_none());
+        assert!(config.audio_base_url.is_none());
+    }
+
+    #[test]
+    fn test_media_config_audio_base_url_serde_roundtrip() {
+        let mut config = MediaConfig::default();
+        config.audio_base_url = Some("http://127.0.0.1:8000".to_string());
+        config.audio_provider = Some("openai".to_string());
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: MediaConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed.audio_base_url.as_deref(),
+            Some("http://127.0.0.1:8000")
+        );
+        assert_eq!(parsed.audio_provider.as_deref(), Some("openai"));
+    }
+
+    #[test]
+    fn test_media_config_backward_compat_no_audio_base_url() {
+        // Old TOML/JSON without `audio_base_url` must still parse with None,
+        // thanks to #[serde(default)] on the struct.
+        let legacy_json = r#"{
+            "image_description": true,
+            "audio_transcription": true,
+            "video_description": false,
+            "max_concurrency": 2,
+            "image_provider": null,
+            "audio_provider": "openai"
+        }"#;
+        let parsed: MediaConfig = serde_json::from_str(legacy_json).unwrap();
+        assert!(parsed.audio_base_url.is_none());
+        assert_eq!(parsed.audio_provider.as_deref(), Some("openai"));
     }
 
     #[test]
