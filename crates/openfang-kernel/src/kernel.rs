@@ -7252,6 +7252,8 @@ impl KernelHandle for OpenFangKernel {
             "file" => openfang_channels::types::ChannelContent::File {
                 url: media_url.to_string(),
                 filename: filename.unwrap_or("file").to_string(),
+                mime: None,
+                size: None,
             },
             _ => {
                 return Err(format!(
