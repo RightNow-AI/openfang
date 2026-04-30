@@ -11,7 +11,7 @@
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use openfang_types::message::{ContentBlock, Role, StopReason, TokenUsage};
+use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
@@ -130,6 +130,14 @@ impl ClaudeCodeDriver {
     }
 
     /// Build a text prompt from the completion request messages.
+    ///
+    /// The Claude Code CLI is text-only (`-p <prompt>`), so non-text content
+    /// blocks (images, etc.) cannot be sent natively. Rather than dropping
+    /// them silently — which causes the model to hallucinate about content
+    /// it can't see — we render each non-text block as a synthetic
+    /// `[attachment: ...]` marker. The model still can't *view* the
+    /// attachment, but it knows the attachment exists and can acknowledge
+    /// it coherently instead of confabulating.
     fn build_prompt(request: &CompletionRequest) -> String {
         let mut parts = Vec::new();
 
@@ -139,13 +147,50 @@ impl ClaudeCodeDriver {
                 Role::Assistant => "Assistant",
                 Role::System => "System",
             };
-            let text = msg.content.text_content();
-            if !text.is_empty() {
-                parts.push(format!("[{role_label}]\n{text}"));
+            let rendered = Self::render_content(&msg.content);
+            if !rendered.is_empty() {
+                parts.push(format!("[{role_label}]\n{rendered}"));
             }
         }
 
         parts.join("\n\n")
+    }
+
+    /// Render message content for the text-only CLI prompt.
+    ///
+    /// Text blocks pass through verbatim. Image blocks are rendered as
+    /// `[attachment: <media_type> image, ~N KB — not viewable on this
+    /// provider]` so the model receives a positive signal that an
+    /// attachment arrived. ToolUse/ToolResult/Thinking are omitted —
+    /// the CLI manages its own tool loop.
+    fn render_content(content: &MessageContent) -> String {
+        match content {
+            MessageContent::Text(s) => s.clone(),
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text, .. } => {
+                        if text.is_empty() {
+                            None
+                        } else {
+                            Some(text.clone())
+                        }
+                    }
+                    ContentBlock::Image { media_type, data } => {
+                        // base64 → ~3/4 the length in decoded bytes.
+                        let approx_kb = (data.len().saturating_mul(3) / 4) / 1024;
+                        Some(format!(
+                            "[attachment: {media_type} image, ~{approx_kb} KB — not viewable on this provider]"
+                        ))
+                    }
+                    ContentBlock::ToolUse { .. }
+                    | ContentBlock::ToolResult { .. }
+                    | ContentBlock::Thinking { .. }
+                    | ContentBlock::Unknown => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
     }
 
     /// Map a model ID like "claude-code/opus" to CLI --model flag value.
@@ -724,6 +769,77 @@ mod tests {
         assert!(!prompt.contains("You are helpful."));
         assert!(prompt.contains("[User]"));
         assert!(prompt.contains("Hello"));
+    }
+
+    #[test]
+    fn test_build_prompt_renders_image_attachment_marker() {
+        use openfang_types::message::{ContentBlock, Message, MessageContent};
+
+        // ~12 KB of base64 — decoded ~9 KB.
+        let fake_b64 = "A".repeat(12 * 1024);
+        let request = CompletionRequest {
+            model: "claude-code/sonnet".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::Text {
+                        text: "what's in this?".to_string(),
+                        provider_metadata: None,
+                    },
+                    ContentBlock::Image {
+                        media_type: "image/png".to_string(),
+                        data: fake_b64,
+                    },
+                ]),
+            }],
+            tools: vec![],
+            max_tokens: 1024,
+            temperature: 0.7,
+            system: None,
+            thinking: None,
+        };
+
+        let prompt = ClaudeCodeDriver::build_prompt(&request);
+        assert!(prompt.contains("what's in this?"), "text preserved");
+        assert!(
+            prompt.contains("[attachment: image/png image"),
+            "image rendered as synthetic attachment marker, got: {prompt}"
+        );
+        assert!(
+            prompt.contains("not viewable on this provider"),
+            "marker explains the limitation, got: {prompt}"
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_image_only_still_emits_marker() {
+        use openfang_types::message::{ContentBlock, Message, MessageContent};
+
+        let request = CompletionRequest {
+            model: "claude-code/sonnet".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::Image {
+                    media_type: "image/jpeg".to_string(),
+                    data: "Zm9v".to_string(),
+                }]),
+            }],
+            tools: vec![],
+            max_tokens: 1024,
+            temperature: 0.7,
+            system: None,
+            thinking: None,
+        };
+
+        let prompt = ClaudeCodeDriver::build_prompt(&request);
+        assert!(
+            prompt.contains("[User]"),
+            "user role label emitted even with image-only content, got: {prompt}"
+        );
+        assert!(
+            prompt.contains("[attachment: image/jpeg image"),
+            "bare image renders marker, got: {prompt}"
+        );
     }
 
     #[test]

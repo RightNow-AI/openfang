@@ -80,6 +80,12 @@ pub enum ChannelContent {
         name: String,
         args: Vec<String>,
     },
+    /// A composite message carrying multiple content blocks (e.g. a Discord
+    /// message with several attachments, or an image with a separate file
+    /// sibling). Blocks are flat-mapped by the bridge into multiple LLM
+    /// content blocks. Implementations should not produce nested `Multipart`
+    /// values; consumers may `debug_assert!` against nesting.
+    Multipart(Vec<ChannelContent>),
 }
 
 /// A unified message from any channel.

@@ -521,6 +521,17 @@ impl TelegramAdapter {
                 self.api_send_message(chat_id, text.trim(), thread_id)
                     .await?;
             }
+            ChannelContent::Multipart(parts) => {
+                // Send each child as its own Telegram message. Nested
+                // Multipart is rejected by adapters; flatten defensively.
+                for part in parts {
+                    if let ChannelContent::Multipart(_) = part {
+                        debug_assert!(false, "nested Multipart in send_to_user");
+                        continue;
+                    }
+                    Box::pin(self.send_content(user, part, thread_id)).await?;
+                }
+            }
         }
         Ok(())
     }
@@ -2056,10 +2067,7 @@ mod tests {
                         body,
                     )
                 } else {
-                    (
-                        StatusCode::OK,
-                        r#"{"ok":true,"result":true}"#.to_string(),
-                    )
+                    (StatusCode::OK, r#"{"ok":true,"result":true}"#.to_string())
                 }
             }
         }));
@@ -2136,7 +2144,10 @@ mod tests {
         // Two-chunk message; first POST fails. Nothing delivered → Err.
         let big = "a".repeat(5000); // > 4096 → split into two chunks
         let stub = StubServer::new(vec![
-            (500, r#"{"ok":false,"error_code":500,"description":"server"}"#),
+            (
+                500,
+                r#"{"ok":false,"error_code":500,"description":"server"}"#,
+            ),
             (200, r#"{"ok":true,"result":{}}"#),
         ]);
         let base = spawn_stub_server(stub.clone()).await;
@@ -2164,7 +2175,10 @@ mod tests {
         let big = "a".repeat(5000);
         let stub = StubServer::new(vec![
             (200, r#"{"ok":true,"result":{}}"#),
-            (400, r#"{"ok":false,"error_code":400,"description":"some err"}"#),
+            (
+                400,
+                r#"{"ok":false,"error_code":400,"description":"some err"}"#,
+            ),
         ]);
         let base = spawn_stub_server(stub.clone()).await;
         let adapter = test_adapter(base);
@@ -2175,7 +2189,11 @@ mod tests {
             result.is_ok(),
             "partial delivery must return Ok (best-effort), got {result:?}"
         );
-        assert_eq!(stub.hit_count(), 2, "both chunks should have been attempted");
+        assert_eq!(
+            stub.hit_count(),
+            2,
+            "both chunks should have been attempted"
+        );
     }
 
     // -----------------------------------------------------------------------
