@@ -909,6 +909,7 @@ async fn dispatch_message(
         ChannelContent::File {
             ref url,
             ref filename,
+            ..
         } => {
             format!("[User sent a file ({filename}): {url}]")
         }

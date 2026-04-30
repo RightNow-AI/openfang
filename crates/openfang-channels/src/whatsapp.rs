@@ -271,7 +271,7 @@ impl ChannelAdapter for WhatsAppAdapter {
                     return Err(format!("WhatsApp API error {status}: {body}").into());
                 }
             }
-            ChannelContent::File { url, filename } => {
+            ChannelContent::File { url, filename, .. } => {
                 let body = serde_json::json!({
                     "messaging_product": "whatsapp",
                     "to": user.platform_id,
