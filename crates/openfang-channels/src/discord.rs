@@ -546,6 +546,11 @@ async fn parse_discord_message(
     allowed_users: &[String],
     ignore_bots: bool,
 ) -> Option<ChannelMessage> {
+    // Diagnostic: dump the raw Discord payload so we can ground attachment
+    // parsing in real JSON. Gated by RUST_LOG; silent at default `info` level.
+    // Enable with: RUST_LOG=openfang_channels::discord=debug
+    debug!(target: "openfang_channels::discord", payload = %d, "discord raw message payload");
+
     let author = d.get("author")?;
     let author_id = author["id"].as_str()?;
 
