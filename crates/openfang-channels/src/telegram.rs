@@ -498,7 +498,7 @@ impl TelegramAdapter {
                 self.api_send_photo(chat_id, &url, caption.as_deref(), thread_id)
                     .await?;
             }
-            ChannelContent::File { url, filename } => {
+            ChannelContent::File { url, filename, .. } => {
                 self.api_send_document(chat_id, &url, &filename, thread_id)
                     .await?;
             }
@@ -934,7 +934,12 @@ async fn parse_telegram_update(
             .unwrap_or("document")
             .to_string();
         match telegram_get_file_url(token, client, file_id, api_base_url).await {
-            Some(url) => ChannelContent::File { url, filename },
+            Some(url) => ChannelContent::File {
+                url,
+                filename,
+                mime: None,
+                size: None,
+            },
             None => ChannelContent::Text(format!("[Document received: {filename}]")),
         }
     } else if message.get("voice").is_some() {

@@ -50,6 +50,16 @@ pub enum ChannelContent {
     File {
         url: String,
         filename: String,
+        /// Best-effort MIME type from the source platform (e.g. Discord's
+        /// `attachments[].content_type`). `None` if the platform did not
+        /// provide one; downstream consumers may sniff bytes or fall back
+        /// to extension-based detection.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime: Option<String>,
+        /// Size in bytes, when known. Useful for capacity gating before
+        /// the bridge attempts to materialize or transmit the file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<u64>,
     },
     /// Local file data (bytes read from disk). Used by the proactive `channel_send`
     /// tool when `file_path` is provided instead of `file_url`.
