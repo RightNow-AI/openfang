@@ -608,10 +608,63 @@ Features:
 
 The `AgentRouter` determines which agent receives an incoming message. The routing logic is:
 
-1. **Per-channel default**: Each channel config has a `default_agent` field. Messages from that channel go to that agent.
-2. **User-agent binding**: If a user has previously been associated with a specific agent (via commands or configuration), messages from that user route to that agent.
-3. **Command prefix**: Users can switch agents by sending a command like `/agent coder` in the chat. Subsequent messages will be routed to the "coder" agent.
-4. **Fallback**: If no routing applies, messages go to the first available agent.
+1. **Bindings** (most specific first). Declarative `[[bindings]]` rules in `config.toml` map message attributes (channel, channel_id, peer_id, guild_id, account_id, roles) to agents. The router scores each rule by specificity and picks the highest-scoring match.
+2. **Per-channel default**: Each channel config has a `default_agent` field. Messages from that channel go to that agent.
+3. **User-agent binding**: If a user has previously been associated with a specific agent (via commands or configuration), messages from that user route to that agent.
+4. **Command prefix**: Users can switch agents by sending a command like `/agent coder` in the chat. Subsequent messages will be routed to the "coder" agent.
+5. **Fallback**: If no routing applies, messages go to the first available agent.
+
+### Bindings
+
+A binding has an `agent` (the target) and a `match_rule` (the criteria). All non-empty fields in the rule must match.
+
+```toml
+# Route a specific Discord channel to a dedicated agent.
+[[bindings]]
+agent = "researcher-medical"
+match_rule = { channel = "discord", channel_id = "1234567890" }
+
+[[bindings]]
+agent = "researcher-business"
+match_rule = { channel = "discord", channel_id = "9876543210" }
+
+# Catch-all for the same user on any other channel.
+[[bindings]]
+agent = "assistant"
+match_rule = { channel = "discord", peer_id = "user_discord_id" }
+```
+
+**`peer_id` vs `channel_id`** — these are easy to confuse and the difference matters:
+
+- `peer_id` matches the **user** (Discord user ID, Slack user ID, etc.).
+- `channel_id` matches the **channel/conversation** (Discord text channel, Slack conversation, Telegram chat).
+
+Use `peer_id` for "messages from this person." Use `channel_id` for "messages in this room."
+
+**Specificity scores** (higher wins):
+
+| Field        | Score |
+| ------------ | ----- |
+| `peer_id`    | 8     |
+| `channel_id` | 8     |
+| `guild_id`   | 4     |
+| `roles`      | 2     |
+| `account_id` | 2     |
+| `channel`    | 1     |
+
+A binding's score is the sum of its set fields. `peer_id` and `channel_id` are equally specific, so a rule with both (16) beats either alone (8). Ties are broken by declaration order in the config.
+
+**Adapter coverage for `channel_id`** — the following adapters populate `ctx.channel_id` directly from `sender.platform_id` (their "user" field is overloaded as a channel/conversation/room/space ID because that field doubles as the send target):
+
+`discord`, `slack`, `telegram`, `matrix`, `mattermost`, `teams`, `webex`, `rocketchat`, `nextcloud`, `pumble`, `revolt`, `guilded`, `feishu`, `lark`, `keybase`, `google_chat`, `line`, `twist`, `flock`, `twitch`.
+
+(Feishu Intl region emits `Custom("lark")` rather than `Custom("feishu")`; both spellings are recognized.)
+
+Adapters not on this list (Reddit, Bluesky, Mastodon, Signal, Email, ntfy, Discourse, etc.) carry a *user* ID in `platform_id` and have no per-conversation concept, or use a hybrid scheme (IRC, Zulip flip between channel and user based on `is_group`). Bindings targeting `channel_id` on those platforms will only match if the adapter writes a `channel_id` key into message metadata.
+
+The kernel emits a startup warning when a binding sets `channel_id` for a non-supporting adapter, so misconfigurations surface early instead of silently routing nowhere. The single source of truth for this list is `CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL` in `openfang-types::config`, consumed by both routing (`ChannelMessage::channel_id()`) and config validation.
+
+**Strict parsing** — `AgentBinding` and `BindingMatchRule` use `#[serde(deny_unknown_fields)]`. Typos at the binding level (e.g. `match_rules` for `match_rule`, `channnel_id` for `channel_id`) fail config load with a clear error rather than parsing into a no-op rule that silently matches every message. Existing configs that work today are unaffected; only configs with stray/misspelled fields inside a `[[bindings]]` block need a fix. The top-level `KernelConfig` deliberately stays permissive so unrecognized top-level keys (forward-compat, downstream forks) don't break startup.
 
 ---
 
