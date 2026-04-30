@@ -1373,6 +1373,10 @@ fn media_type_from_url(url: &str) -> String {
 
 /// Download an image from a URL and build content blocks for multimodal LLM input.
 ///
+/// Accepts both `http(s)://` URLs (fetched via reqwest) and `file://` URLs
+/// (read from local disk — used by the channel inbox materialization path so
+/// agents see a stable local path even after a Discord CDN URL has expired).
+///
 /// Returns a `Vec<ContentBlock>` containing an image block (base64-encoded) and
 /// optionally a text block for the caption. If the download fails, returns a
 /// text-only block describing the failure.
@@ -1382,37 +1386,61 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
     // 5 MB limit to prevent memory abuse from oversized images
     const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
-    let client = reqwest::Client::new();
-    let resp = match client.get(url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("Failed to download image from channel: {e}");
-            return vec![ContentBlock::Text {
-                text: format!("[Image download failed: {e}]"),
-                provider_metadata: None,
-            }];
+    // Branch on URL scheme: file:// reads from local disk, everything else
+    // goes through HTTP. We unify both paths into (bytes, header_type) before
+    // the size/magic-byte logic below.
+    let (bytes, header_type): (Vec<u8>, Option<String>) = if let Some(path) =
+        url.strip_prefix("file://")
+    {
+        // file:// — local read. No content-type header to honor; magic-byte
+        // sniffing and URL extension fallback do all the work. We don't
+        // percent-decode: the inbox writer controls filenames and avoids
+        // characters that would need encoding.
+        match tokio::fs::read(path).await {
+            Ok(b) => (b, None),
+            Err(e) => {
+                warn!("Failed to read image from local path {path}: {e}");
+                return vec![ContentBlock::Text {
+                    text: format!("[Image read failed: {e}]"),
+                    provider_metadata: None,
+                }];
+            }
         }
-    };
+    } else {
+        let client = reqwest::Client::new();
+        let resp = match client.get(url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Failed to download image from channel: {e}");
+                return vec![ContentBlock::Text {
+                    text: format!("[Image download failed: {e}]"),
+                    provider_metadata: None,
+                }];
+            }
+        };
 
-    // Detect media type from Content-Type header — but only trust it if it's
-    // actually an image/* type. Many APIs (Telegram, S3 pre-signed URLs) return
-    // `application/octet-stream` for all files, which breaks vision.
-    let header_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|ct| ct.split(';').next().unwrap_or(ct).trim().to_string())
-        .filter(|ct| ct.starts_with("image/"));
+        // Detect media type from Content-Type header — but only trust it if
+        // it's actually an image/* type. Many APIs (Telegram, S3 pre-signed
+        // URLs) return `application/octet-stream` for all files, which
+        // breaks vision.
+        let header_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.split(';').next().unwrap_or(ct).trim().to_string())
+            .filter(|ct| ct.starts_with("image/"));
 
-    let bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!("Failed to read image bytes: {e}");
-            return vec![ContentBlock::Text {
-                text: format!("[Image read failed: {e}]"),
-                provider_metadata: None,
-            }];
-        }
+        let bytes = match resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("Failed to read image bytes: {e}");
+                return vec![ContentBlock::Text {
+                    text: format!("[Image read failed: {e}]"),
+                    provider_metadata: None,
+                }];
+            }
+        };
+        (bytes.to_vec(), header_type)
     };
 
     // Three-tier media type detection:
