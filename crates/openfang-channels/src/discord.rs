@@ -538,6 +538,77 @@ impl ChannelAdapter for DiscordAdapter {
     }
 }
 
+/// Maximum byte size for an attachment to be classified as a vision-eligible
+/// image. Anthropic's image content blocks are capped at 5 MB; oversize images
+/// fall through to `File` so the bridge passes the URL as text instead of
+/// attempting an inline image block.
+const VISION_IMAGE_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Best-effort MIME inference from a filename extension. Used as a fallback
+/// when Discord's `content_type` field is missing or empty (we've observed
+/// this on some bot-relayed attachments).
+fn mime_from_extension(filename: &str) -> Option<&'static str> {
+    let ext = filename.rsplit('.').next()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "heic" => Some("image/heic"),
+        "heif" => Some("image/heif"),
+        "pdf" => Some("application/pdf"),
+        "txt" => Some("text/plain"),
+        "md" => Some("text/markdown"),
+        "json" => Some("application/json"),
+        "mp4" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
+        "mp3" => Some("audio/mpeg"),
+        "wav" => Some("audio/wav"),
+        "ogg" => Some("audio/ogg"),
+        _ => None,
+    }
+}
+
+/// Classify a single Discord attachment JSON object into a `ChannelContent`
+/// block. Vision-eligible image MIME types (jpeg/png/gif/webp) under
+/// `VISION_IMAGE_MAX_BYTES` become `Image`; everything else becomes `File`
+/// (URL-pass-through; the bridge will surface it as a text descriptor in v1).
+///
+/// MIME resolution chain: `attachments[].content_type` (if non-empty) →
+/// extension lookup → `application/octet-stream`.
+fn classify_discord_attachment(att: &serde_json::Value) -> ChannelContent {
+    let url = att["url"].as_str().unwrap_or("").to_string();
+    let filename = att["filename"].as_str().unwrap_or("file").to_string();
+    let size = att["size"].as_u64();
+
+    let resolved_mime: String = att["content_type"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| mime_from_extension(&filename).map(str::to_string))
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    let is_vision_mime = matches!(
+        resolved_mime.as_str(),
+        "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+    );
+    // If size is unknown, optimistically allow the image — the bridge will
+    // surface a 4xx if Anthropic rejects it, which is better than silently
+    // demoting to a text URL.
+    let within_vision_limit = size.map(|s| s <= VISION_IMAGE_MAX_BYTES).unwrap_or(true);
+
+    if is_vision_mime && within_vision_limit {
+        ChannelContent::Image { url, caption: None }
+    } else {
+        ChannelContent::File {
+            url,
+            filename,
+            mime: Some(resolved_mime),
+            size,
+        }
+    }
+}
+
 /// Parse a Discord MESSAGE_CREATE or MESSAGE_UPDATE payload into a `ChannelMessage`.
 async fn parse_discord_message(
     d: &serde_json::Value,
@@ -582,10 +653,6 @@ async fn parse_discord_message(
     }
 
     let content_text = d["content"].as_str().unwrap_or("");
-    if content_text.is_empty() {
-        return None;
-    }
-
     let channel_id = d["channel_id"].as_str()?;
     let message_id = d["id"].as_str().unwrap_or("0");
     let username = author["username"].as_str().unwrap_or("Unknown");
@@ -602,7 +669,8 @@ async fn parse_discord_message(
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .unwrap_or_else(chrono::Utc::now);
 
-    // Parse commands (messages starting with /)
+    // Parse commands (messages starting with /). Commands do not carry
+    // attachments in v1; attachment processing only runs in the non-command path.
     let content = if content_text.starts_with('/') {
         let parts: Vec<&str> = content_text.splitn(2, ' ').collect();
         let cmd_name = &parts[0][1..];
@@ -616,7 +684,50 @@ async fn parse_discord_message(
             args,
         }
     } else {
-        ChannelContent::Text(content_text.to_string())
+        let attachment_blocks: Vec<ChannelContent> = d["attachments"]
+            .as_array()
+            .map(|arr| arr.iter().map(classify_discord_attachment).collect())
+            .unwrap_or_default();
+
+        match (content_text.is_empty(), attachment_blocks.len()) {
+            // No text, no attachments → nothing to ingest.
+            (true, 0) => return None,
+            // Text only.
+            (false, 0) => ChannelContent::Text(content_text.to_string()),
+            // Single attachment, no caption.
+            (true, 1) => attachment_blocks.into_iter().next().unwrap(),
+            // Single attachment + caption: emit Multipart with the caption as
+            // a sibling Text block. This keeps the caption visible to providers
+            // that flatten content to text only (e.g. claude-code/*, which
+            // currently drops Image blocks) — the user gets a coherent
+            // text-only response instead of a hallucination. Vision-capable
+            // providers see the same blocks and dispatch multimodally.
+            (false, 1) => {
+                let block = attachment_blocks.into_iter().next().unwrap();
+                let normalized = match block {
+                    // Drop any caption that classify_discord_attachment may have
+                    // attached; the sibling Text block is now the caption.
+                    ChannelContent::Image { url, caption: _ } => {
+                        ChannelContent::Image { url, caption: None }
+                    }
+                    other => other,
+                };
+                ChannelContent::Multipart(vec![
+                    ChannelContent::Text(content_text.to_string()),
+                    normalized,
+                ])
+            }
+            // Multiple attachments, no caption.
+            (true, _) => ChannelContent::Multipart(attachment_blocks),
+            // Multiple attachments + caption: text first, then attachments
+            // (matches Discord's visual ordering: text above attachments).
+            (false, _) => {
+                let mut blocks = Vec::with_capacity(attachment_blocks.len() + 1);
+                blocks.push(ChannelContent::Text(content_text.to_string()));
+                blocks.extend(attachment_blocks);
+                ChannelContent::Multipart(blocks)
+            }
+        }
     };
 
     // Determine if this is a group message (guild_id present = server channel)
@@ -1036,5 +1147,215 @@ mod tests {
         );
         assert_eq!(adapter.name(), "discord");
         assert_eq!(adapter.channel_type(), ChannelType::Discord);
+    }
+
+    // -- Multipart / attachment parsing tests (commit 4) ----------------------
+
+    fn att(filename: &str, content_type: Option<&str>, size: u64) -> serde_json::Value {
+        let mut obj = serde_json::json!({
+            "url": format!("https://cdn.discordapp.com/attachments/1/2/{filename}"),
+            "filename": filename,
+            "size": size,
+        });
+        if let Some(ct) = content_type {
+            obj["content_type"] = serde_json::Value::String(ct.to_string());
+        }
+        obj
+    }
+
+    fn payload_with(content: &str, attachments: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({
+            "id": "msg1",
+            "channel_id": "ch1",
+            "content": content,
+            "author": {
+                "id": "user456",
+                "username": "alice",
+                "discriminator": "0",
+                "bot": false
+            },
+            "timestamp": "2024-01-01T00:00:00+00:00",
+            "attachments": attachments,
+        })
+    }
+
+    #[tokio::test]
+    async fn test_parse_image_only_no_caption() {
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+        let d = payload_with("", vec![att("photo.png", Some("image/png"), 100_000)]);
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+            .await
+            .unwrap();
+        match msg.content {
+            ChannelContent::Image { caption, url } => {
+                assert!(caption.is_none());
+                assert!(url.contains("photo.png"));
+            }
+            other => panic!("expected Image, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_image_with_caption() {
+        // Single image + caption is emitted as Multipart([Text, Image]) so the
+        // caption survives providers that flatten content blocks to text only
+        // (e.g. claude-code/*). The Image carries no caption of its own; the
+        // sibling Text block IS the caption.
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+        let d = payload_with(
+            "look at this",
+            vec![att("photo.jpg", Some("image/jpeg"), 50_000)],
+        );
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+            .await
+            .unwrap();
+        match msg.content {
+            ChannelContent::Multipart(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(&parts[0], ChannelContent::Text(t) if t == "look at this"));
+                match &parts[1] {
+                    ChannelContent::Image { caption, url } => {
+                        assert!(
+                            caption.is_none(),
+                            "image caption should be None; the sibling Text block is the caption"
+                        );
+                        assert!(url.contains("photo.jpg"));
+                    }
+                    other => panic!("expected Image as second part, got {other:?}"),
+                }
+            }
+            other => panic!("expected Multipart, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_multi_image_no_caption() {
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+        let d = payload_with(
+            "",
+            vec![
+                att("a.png", Some("image/png"), 10_000),
+                att("b.png", Some("image/png"), 20_000),
+            ],
+        );
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+            .await
+            .unwrap();
+        match msg.content {
+            ChannelContent::Multipart(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert!(parts
+                    .iter()
+                    .all(|p| matches!(p, ChannelContent::Image { .. })));
+            }
+            other => panic!("expected Multipart, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_multi_image_with_caption() {
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+        let d = payload_with(
+            "two pics",
+            vec![
+                att("a.png", Some("image/png"), 10_000),
+                att("b.png", Some("image/png"), 20_000),
+            ],
+        );
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+            .await
+            .unwrap();
+        match msg.content {
+            ChannelContent::Multipart(parts) => {
+                assert_eq!(parts.len(), 3);
+                // Text first, then images.
+                assert!(matches!(&parts[0], ChannelContent::Text(t) if t == "two pics"));
+                assert!(matches!(&parts[1], ChannelContent::Image { .. }));
+                assert!(matches!(&parts[2], ChannelContent::Image { .. }));
+            }
+            other => panic!("expected Multipart, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_heic_falls_to_file() {
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+        let d = payload_with("", vec![att("photo.heic", Some("image/heic"), 100_000)]);
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+            .await
+            .unwrap();
+        match msg.content {
+            ChannelContent::File { mime, filename, .. } => {
+                assert_eq!(filename, "photo.heic");
+                assert_eq!(mime.as_deref(), Some("image/heic"));
+            }
+            other => panic!("expected File, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_oversize_image_falls_to_file() {
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+        // 6 MB exceeds VISION_IMAGE_MAX_BYTES (5 MB).
+        let d = payload_with(
+            "",
+            vec![att("huge.png", Some("image/png"), 6 * 1024 * 1024)],
+        );
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+            .await
+            .unwrap();
+        match msg.content {
+            ChannelContent::File {
+                filename,
+                mime,
+                size,
+                ..
+            } => {
+                assert_eq!(filename, "huge.png");
+                assert_eq!(mime.as_deref(), Some("image/png"));
+                assert_eq!(size, Some(6 * 1024 * 1024));
+            }
+            other => panic!("expected File, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_file_with_caption_yields_multipart() {
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+        let d = payload_with(
+            "see attached",
+            vec![att("doc.pdf", Some("application/pdf"), 200_000)],
+        );
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+            .await
+            .unwrap();
+        match msg.content {
+            ChannelContent::Multipart(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(&parts[0], ChannelContent::Text(t) if t == "see attached"));
+                assert!(matches!(&parts[1], ChannelContent::File { .. }));
+            }
+            other => panic!("expected Multipart, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_extension_fallback_when_content_type_missing() {
+        // Discord occasionally omits content_type on bot-relayed attachments;
+        // we should fall back to the filename extension.
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+        let d = payload_with("", vec![att("pic.png", None, 50_000)]);
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+            .await
+            .unwrap();
+        assert!(matches!(msg.content, ChannelContent::Image { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_parse_empty_message_with_no_attachments_returns_none() {
+        let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
+        let d = payload_with("", vec![]);
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await;
+        assert!(msg.is_none());
     }
 }
