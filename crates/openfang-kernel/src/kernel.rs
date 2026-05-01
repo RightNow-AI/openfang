@@ -164,6 +164,16 @@ pub struct OpenFangKernel {
     /// Hot-reloadable default model override (set via config hot-reload, read at agent spawn).
     pub default_model_override:
         std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
+    /// Hot-reloadable fallback provider chain override.
+    ///
+    /// Set by `apply_hot_actions(ReloadFallbackProviders)` when
+    /// `[[fallback_providers]]` changes in `config.toml`. `resolve_driver`
+    /// reads this in preference to `self.config.fallback_providers`, so
+    /// timeout edits and provider list mutations take effect on the next
+    /// driver build without a daemon bounce. `None` means "fall back to the
+    /// boot-time `self.config.fallback_providers`". (#1129)
+    pub fallback_providers_override:
+        std::sync::RwLock<Option<Vec<openfang_types::config::FallbackProviderConfig>>>,
     /// Per-agent message locks — serializes LLM calls for the same agent to prevent
     /// session corruption when multiple messages arrive concurrently (e.g. rapid voice
     /// messages via Telegram). Different agents can still run in parallel.
@@ -1174,6 +1184,7 @@ impl OpenFangKernel {
             whatsapp_gateway_pid: Arc::new(std::sync::Mutex::new(None)),
             channel_adapters: dashmap::DashMap::new(),
             default_model_override: std::sync::RwLock::new(None),
+            fallback_providers_override: std::sync::RwLock::new(None),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
         };
@@ -3922,14 +3933,33 @@ impl OpenFangKernel {
                 }
                 HotAction::UpdateDefaultModel => {
                     info!(
-                        "Hot-reload: updating default model to {}/{}",
-                        new_config.default_model.provider, new_config.default_model.model
+                        "Hot-reload: updating default model to {}/{} (subprocess_timeout_secs={:?})",
+                        new_config.default_model.provider,
+                        new_config.default_model.model,
+                        new_config.default_model.subprocess_timeout_secs,
                     );
                     let mut guard = self
                         .default_model_override
                         .write()
                         .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
                     *guard = Some(new_config.default_model.clone());
+                }
+                HotAction::ReloadFallbackProviders => {
+                    info!(
+                        "Hot-reload: applying fallback provider chain ({} provider(s))",
+                        new_config.fallback_providers.len()
+                    );
+                    for fb in &new_config.fallback_providers {
+                        info!(
+                            "Hot-reload: fallback provider '{}' subprocess_timeout_secs={:?}",
+                            fb.provider, fb.subprocess_timeout_secs,
+                        );
+                    }
+                    let mut guard = self
+                        .fallback_providers_override
+                        .write()
+                        .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+                    *guard = Some(new_config.fallback_providers.clone());
                 }
                 _ => {
                     // Other hot actions (channels, web, browser, extensions, etc.)
@@ -5069,6 +5099,19 @@ impl OpenFangKernel {
             .unwrap_or(&self.config.default_model);
         let default_provider = &effective_default.provider;
 
+        // Effective fallback provider chain: hot-reloaded override takes priority
+        // over the boot-time `[[fallback_providers]]`. Lets operators retune
+        // `subprocess_timeout_secs` on a non-default provider via
+        // `POST /api/config/reload` without bouncing the daemon (#1129).
+        let fb_override_guard = self
+            .fallback_providers_override
+            .read()
+            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+        let effective_fallbacks: &[openfang_types::config::FallbackProviderConfig] =
+            fb_override_guard
+                .as_deref()
+                .unwrap_or(&self.config.fallback_providers);
+
         let has_custom_key = manifest.model.api_key_env.is_some();
         let has_custom_url = manifest.model.base_url.is_some();
 
@@ -5110,20 +5153,30 @@ impl OpenFangKernel {
                 self.lookup_provider_url(agent_provider)
             };
 
+            // Per-provider timeout resolution for the primary driver:
+            //   - Default-provider agent: inherit `[default_model].subprocess_timeout_secs`.
+            //   - Cross-provider agent: look up `[[fallback_providers]]` keyed on
+            //     `agent_provider` (override-aware) and inherit its timeout. This
+            //     closes #1129 Gap 1 — a `codex` agent on a `claude-code`-default
+            //     daemon now picks up a `[[fallback_providers]] provider = "codex"`
+            //     timeout instead of being silently dropped to `None`.
+            //   - No matching fallback entry: leave unset (env var still wins, then
+            //     driver default).
+            let primary_timeout = if agent_provider == default_provider {
+                effective_default.subprocess_timeout_secs
+            } else {
+                effective_fallbacks
+                    .iter()
+                    .find(|fb| &fb.provider == agent_provider)
+                    .and_then(|fb| fb.subprocess_timeout_secs)
+            };
+
             let driver_config = DriverConfig {
                 provider: agent_provider.clone(),
                 api_key,
                 base_url,
                 skip_permissions: true,
-                // Inherit the default-model timeout only when the agent is using the
-                // default provider. If the agent overrides to a different provider,
-                // we have no per-provider config in scope today, so leave it unset
-                // (env var still applies, then driver default).
-                subprocess_timeout_secs: if agent_provider == default_provider {
-                    effective_default.subprocess_timeout_secs
-                } else {
-                    None
-                },
+                subprocess_timeout_secs: primary_timeout,
             };
 
             match drivers::create_driver(&driver_config) {
@@ -5222,7 +5275,11 @@ impl OpenFangKernel {
         //    These apply to every agent so that when the primary provider becomes
         //    unreachable at runtime (network failure, daemon shutdown, etc.) the
         //    agent loop fails over to the next provider in the chain. (#1003)
-        for fb in &self.config.fallback_providers {
+        //
+        //    Reads from `effective_fallbacks` so that hot-reloaded mutations to
+        //    `[[fallback_providers]]` (including `subprocess_timeout_secs`) take
+        //    effect on the next driver build without a daemon bounce (#1129).
+        for fb in effective_fallbacks {
             let fb_api_key = {
                 let env_var = if !fb.api_key_env.is_empty() {
                     fb.api_key_env.clone()
@@ -8067,6 +8124,180 @@ mod tests {
             .structured_get(shared, "__openfang_schedules_migrated_v1")
             .unwrap();
         assert_eq!(marker, Some(serde_json::Value::Bool(true)));
+
+        kernel.shutdown();
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #1129: per-provider hot-reloadable subprocess timeout.
+    // -----------------------------------------------------------------------
+
+    /// Editing `subprocess_timeout_secs` on a `[[fallback_providers]]` entry
+    /// and calling `apply_hot_actions(ReloadFallbackProviders)` must populate
+    /// the kernel's `fallback_providers_override` slot with the new value.
+    /// `resolve_driver` reads from this slot so cross-provider agents pick up
+    /// the new timeout on their next driver build, with no daemon restart.
+    #[test]
+    fn test_subprocess_timeout_hot_reload_fallback_providers() {
+        use crate::config_reload::{build_reload_plan, HotAction};
+        use openfang_types::config::FallbackProviderConfig;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-1129-fallback-timeout");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        // Boot with one fallback provider configured at 120s.
+        let mut config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+        config.fallback_providers.push(FallbackProviderConfig {
+            provider: "codex".to_string(),
+            model: "gpt-5-codex".to_string(),
+            api_key_env: String::new(),
+            base_url: None,
+            subprocess_timeout_secs: Some(120),
+        });
+
+        let kernel = OpenFangKernel::boot_with_config(config.clone()).expect("kernel boots");
+
+        // Pre-condition: nothing has been hot-reloaded yet — override slot is empty.
+        {
+            let guard = kernel.fallback_providers_override.read().unwrap();
+            assert!(
+                guard.is_none(),
+                "fallback_providers_override should start as None"
+            );
+        }
+
+        // Operator edits config.toml, raising the codex timeout to 900s.
+        let mut new_config = config.clone();
+        new_config.fallback_providers[0].subprocess_timeout_secs = Some(900);
+
+        // The reload-plan diff must spot the change and emit
+        // ReloadFallbackProviders.
+        let plan = build_reload_plan(&kernel.config, &new_config);
+        assert!(
+            !plan.restart_required,
+            "fallback timeout edits must be hot-reloadable"
+        );
+        assert!(
+            plan.hot_actions.contains(&HotAction::ReloadFallbackProviders),
+            "ReloadFallbackProviders must be present in the plan"
+        );
+
+        // Apply the plan and verify the override slot now carries the new
+        // timeout. Drivers built after this point will see 900s.
+        kernel.apply_hot_actions(&plan, &new_config);
+        {
+            let guard = kernel.fallback_providers_override.read().unwrap();
+            let slot = guard
+                .as_ref()
+                .expect("ReloadFallbackProviders must populate override slot");
+            assert_eq!(slot.len(), 1, "exactly one fallback provider expected");
+            assert_eq!(slot[0].provider, "codex");
+            assert_eq!(
+                slot[0].subprocess_timeout_secs,
+                Some(900),
+                "drivers built after reload must see 900s, not 120s"
+            );
+        }
+
+        kernel.shutdown();
+    }
+
+    /// Editing `[default_model].subprocess_timeout_secs` produces an
+    /// `UpdateDefaultModel` hot-action that populates `default_model_override`.
+    /// This is the path agents on the default provider use to pick up a new
+    /// timeout without a daemon restart.
+    #[test]
+    fn test_subprocess_timeout_hot_reload_default_model() {
+        use crate::config_reload::{build_reload_plan, HotAction};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-1129-default-timeout");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        let mut config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+        config.default_model.subprocess_timeout_secs = Some(180);
+
+        let kernel = OpenFangKernel::boot_with_config(config.clone()).expect("kernel boots");
+
+        // Operator raises the timeout to 1200s.
+        let mut new_config = config.clone();
+        new_config.default_model.subprocess_timeout_secs = Some(1200);
+
+        let plan = build_reload_plan(&kernel.config, &new_config);
+        assert!(
+            !plan.restart_required,
+            "default_model timeout edits must be hot-reloadable"
+        );
+        assert!(plan.hot_actions.contains(&HotAction::UpdateDefaultModel));
+
+        kernel.apply_hot_actions(&plan, &new_config);
+        {
+            let guard = kernel.default_model_override.read().unwrap();
+            let dm = guard
+                .as_ref()
+                .expect("UpdateDefaultModel must populate override slot");
+            assert_eq!(
+                dm.subprocess_timeout_secs,
+                Some(1200),
+                "default-provider drivers built after reload must see 1200s"
+            );
+        }
+
+        kernel.shutdown();
+    }
+
+    /// Adding a `[[fallback_providers]]` entry on reload (no prior entry)
+    /// must produce `ReloadFallbackProviders` and populate the override slot.
+    /// Mirrors the operator workflow of "I want to add a Codex fallback to my
+    /// Claude-default daemon mid-flight."
+    #[test]
+    fn test_subprocess_timeout_hot_reload_adds_new_fallback() {
+        use crate::config_reload::{build_reload_plan, HotAction};
+        use openfang_types::config::FallbackProviderConfig;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-1129-add-fallback");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config.clone()).expect("kernel boots");
+
+        // Operator adds a codex fallback with a 600s timeout.
+        let mut new_config = config.clone();
+        new_config.fallback_providers.push(FallbackProviderConfig {
+            provider: "codex".to_string(),
+            model: "gpt-5-codex".to_string(),
+            api_key_env: String::new(),
+            base_url: None,
+            subprocess_timeout_secs: Some(600),
+        });
+
+        let plan = build_reload_plan(&kernel.config, &new_config);
+        assert!(plan
+            .hot_actions
+            .contains(&HotAction::ReloadFallbackProviders));
+
+        kernel.apply_hot_actions(&plan, &new_config);
+        {
+            let guard = kernel.fallback_providers_override.read().unwrap();
+            let slot = guard.as_ref().expect("override populated");
+            assert_eq!(slot.len(), 1);
+            assert_eq!(slot[0].provider, "codex");
+            assert_eq!(slot[0].subprocess_timeout_secs, Some(600));
+        }
 
         kernel.shutdown();
     }

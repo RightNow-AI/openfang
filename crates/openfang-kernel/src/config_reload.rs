@@ -483,6 +483,79 @@ mod tests {
         assert!(plan.hot_actions.contains(&HotAction::ReloadProviderUrls));
     }
 
+    /// #1129: editing `[default_model].subprocess_timeout_secs` must produce
+    /// a hot-reload action so cross-message timeout retunes don't require
+    /// a daemon bounce. The whole `default_model` block round-trips through
+    /// `UpdateDefaultModel`, which carries the new timeout into the override
+    /// slot read by `resolve_driver`.
+    #[test]
+    fn test_default_model_subprocess_timeout_hot_reload() {
+        let a = default_cfg();
+        let mut b = default_cfg();
+        b.default_model.subprocess_timeout_secs = Some(900);
+        let plan = build_reload_plan(&a, &b);
+        assert!(
+            !plan.restart_required,
+            "subprocess_timeout_secs edits on default_model must be hot-reloadable"
+        );
+        assert!(plan.hot_actions.contains(&HotAction::UpdateDefaultModel));
+    }
+
+    /// #1129: editing `[[fallback_providers]]` (including
+    /// `subprocess_timeout_secs` on a non-default provider) must produce a
+    /// `ReloadFallbackProviders` hot-action. Without this, mixed-fleet
+    /// operators have no live tuning knob for their non-default driver.
+    #[test]
+    fn test_fallback_providers_subprocess_timeout_hot_reload() {
+        use openfang_types::config::FallbackProviderConfig;
+        let mut a = default_cfg();
+        let mut b = default_cfg();
+        a.fallback_providers.push(FallbackProviderConfig {
+            provider: "codex".to_string(),
+            model: "gpt-5-codex".to_string(),
+            api_key_env: String::new(),
+            base_url: None,
+            subprocess_timeout_secs: Some(120),
+        });
+        b.fallback_providers.push(FallbackProviderConfig {
+            provider: "codex".to_string(),
+            model: "gpt-5-codex".to_string(),
+            api_key_env: String::new(),
+            base_url: None,
+            // Operator raises the ceiling for slow Codex turns.
+            subprocess_timeout_secs: Some(900),
+        });
+        let plan = build_reload_plan(&a, &b);
+        assert!(
+            !plan.restart_required,
+            "[[fallback_providers]] edits must be hot-reloadable"
+        );
+        assert!(plan
+            .hot_actions
+            .contains(&HotAction::ReloadFallbackProviders));
+    }
+
+    /// #1129: adding a brand-new `[[fallback_providers]]` entry on reload also
+    /// emits the hot-action so the new provider is picked up without bounce.
+    #[test]
+    fn test_fallback_providers_add_entry_hot_reload() {
+        use openfang_types::config::FallbackProviderConfig;
+        let a = default_cfg();
+        let mut b = default_cfg();
+        b.fallback_providers.push(FallbackProviderConfig {
+            provider: "ollama".to_string(),
+            model: "llama3.2:latest".to_string(),
+            api_key_env: String::new(),
+            base_url: None,
+            subprocess_timeout_secs: Some(300),
+        });
+        let plan = build_reload_plan(&a, &b);
+        assert!(!plan.restart_required);
+        assert!(plan
+            .hot_actions
+            .contains(&HotAction::ReloadFallbackProviders));
+    }
+
     // -----------------------------------------------------------------------
     // Mixed changes
     // -----------------------------------------------------------------------
