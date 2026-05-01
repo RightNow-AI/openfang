@@ -11,6 +11,7 @@ Complete reference for `config.toml`, covering every configurable field in the O
 - [Full Example](#full-example)
 - [Section Reference](#section-reference)
   - [Top-Level Fields](#top-level-fields)
+  - [Exposing the Dashboard](#exposing-the-dashboard)
   - [\[default\_model\]](#default_model)
   - [\[memory\]](#memory)
   - [\[network\]](#network)
@@ -35,6 +36,13 @@ OpenFang reads its configuration from a single TOML file:
 ```
 
 On Windows, `~` resolves to `C:\Users\<username>`. If the home directory cannot be determined, the system temp directory is used as a fallback.
+
+The home directory is resolved with the following priority:
+
+1. `OPENFANG_HOME` environment variable (e.g. `OPENFANG_HOME=/data` in the official Docker image).
+2. `~/.openfang` (default).
+
+So inside the Docker container the config file must live at `/data/config.toml` (because the image sets `ENV OPENFANG_HOME=/data`). Placing it anywhere else (for example `/opt/openfang/config.toml`) will be silently ignored.
 
 **Key behaviors:**
 
@@ -227,7 +235,7 @@ These fields sit at the root of `config.toml` (not inside any `[section]`).
 | `home_dir` | path | `~/.openfang` | OpenFang home directory. Stores config, agents, skills. |
 | `data_dir` | path | `~/.openfang/data` | Directory for SQLite databases and persistent data. |
 | `log_level` | string | `"info"` | Log verbosity. One of: `trace`, `debug`, `info`, `warn`, `error`. |
-| `api_listen` | string | `"127.0.0.1:50051"` | Bind address for the HTTP/WebSocket/SSE API server. |
+| `api_listen` | string | `"127.0.0.1:50051"` | Bind address for the HTTP/WebSocket/SSE API server. Use `0.0.0.0:<port>` to accept connections from outside the host (LAN, Docker, remote clients). See [Exposing the Dashboard](#exposing-the-dashboard) below before doing so. Can be overridden at runtime with the `OPENFANG_LISTEN` environment variable. |
 | `network_enabled` | bool | `false` | Enable the OFP peer-to-peer network layer. |
 | `api_key` | string | `""` (empty) | API authentication key. When set, all endpoints except `/api/health` require `Authorization: Bearer <key>`. Empty means unauthenticated (local development only). |
 | `mode` | string | `"default"` | Kernel operating mode. See below. |
@@ -250,6 +258,59 @@ These fields sit at the root of `config.toml` (not inside any `[section]`).
 | `tokens` | Show token counts only. |
 | `cost` | Show estimated cost only. |
 | `full` | Show both token counts and estimated cost (default). |
+
+---
+
+### Exposing the Dashboard
+
+By default OpenFang binds the API and dashboard to `127.0.0.1` (loopback only) so the daemon is unreachable from anywhere except the local machine. To accept connections from your LAN, Docker host, or a remote client you must explicitly opt in to non-loopback binding.
+
+**Two ways to change the bind address:**
+
+1. Edit `config.toml`:
+
+   ```toml
+   api_listen = "0.0.0.0:4200"
+   ```
+
+2. Or set the `OPENFANG_LISTEN` environment variable (overrides `config.toml`):
+
+   ```bash
+   export OPENFANG_LISTEN=0.0.0.0:4200
+   ```
+
+   The env var route is the recommended path for Docker because it does not require mounting a config file.
+
+**Docker example.** The official image sets `OPENFANG_HOME=/data` and exposes port `4200`. The simplest end-to-end setup is:
+
+```yaml
+services:
+  openfang:
+    image: ghcr.io/rightnow-ai/openfang:latest
+    ports:
+      - "4200:4200"
+    volumes:
+      - openfang-data:/data
+    environment:
+      - OPENFANG_LISTEN=0.0.0.0:4200          # required: bind to all interfaces inside the container
+      - OPENFANG_API_KEY=${OPENFANG_API_KEY}  # strongly recommended when exposing
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+volumes:
+  openfang-data:
+```
+
+If you prefer mounting `config.toml`, the file must live at `/data/config.toml` inside the container (because of `OPENFANG_HOME=/data`). Placing it at `/opt/openfang/config.toml` or any other path will not be picked up. The port in `api_listen` must also match the port published in `ports:` — the example config in `openfang.toml.example` ships with port `50051` to be safe; change it to `4200` (or whatever port you publish) when running in Docker.
+
+**Security warning.** Once you bind to a non-loopback address, anyone reachable at that address can talk to the API. OpenFang's middleware enforces a fail-closed default:
+
+- If `api_key` is empty AND dashboard auth is disabled AND the bind address is not loopback, all non-loopback requests are rejected with `401 Unauthorized`.
+- To run in this configuration anyway (not recommended), set `OPENFANG_ALLOW_NO_AUTH=1`. This will be loudly logged.
+
+The supported ways to expose the dashboard safely:
+
+- Set `api_key = "..."` in `config.toml` (or `OPENFANG_API_KEY=...`) and send `Authorization: Bearer <key>` on every request.
+- Or enable the [`[auth]`](#auth) section to require username/password login on the dashboard UI.
+- Or keep `api_listen` on `127.0.0.1` and reach the dashboard through an SSH tunnel or reverse proxy that handles authentication for you.
 
 ---
 

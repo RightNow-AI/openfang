@@ -2,8 +2,12 @@
 # Copy to ~/.openfang/config.toml and customize.
 
 # API server settings
-# api_key = ""                               # Set to enable Bearer auth (recommended)
-# api_listen = "127.0.0.1:50051"             # HTTP API bind address (use 0.0.0.0 for public)
+# api_key = ""                               # Set to enable Bearer auth (strongly recommended when exposing)
+# api_listen = "127.0.0.1:50051"             # HTTP API bind address.
+                                             # Use "0.0.0.0:<port>" to expose on LAN / Docker. The port must
+                                             # match the port you publish (Docker image exposes 4200). You can
+                                             # also override at runtime with OPENFANG_LISTEN=0.0.0.0:4200.
+                                             # See docs/configuration.md "Exposing the Dashboard".
 
 [default_model]
 provider = "anthropic"                    # "anthropic", "gemini", "openai", "groq", "ollama", etc.
