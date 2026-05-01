@@ -97,7 +97,7 @@ dirs = "6"
 serde_yaml = "0.9"
 
 # JSON5 parsing
-json5 = "0.4"
+json5 = "1.3"
 
 # Directory walking
 walkdir = "2"
