@@ -85,10 +85,26 @@ pub enum ContentBlock {
         is_error: bool,
     },
     /// Extended thinking content block (model's reasoning trace).
+    ///
+    /// Preserved across turns so reasoning models retain state. Anthropic's
+    /// extended thinking requires the `signature` to be echoed on resubmission;
+    /// other providers (Gemini thought signatures, DeepSeek/Qwen
+    /// `reasoning_content`, MiniMax inline `<think>`) round-trip via
+    /// `provider_metadata` or by inlining into the assistant message body.
     #[serde(rename = "thinking")]
     Thinking {
         /// The thinking/reasoning text.
         thinking: String,
+        /// Provider-issued signature required to resubmit thinking blocks
+        /// (Anthropic extended thinking). `None` for providers that don't
+        /// emit a signature.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+        /// Provider-specific metadata (e.g. `{"format": "reasoning_content"}`
+        /// or `{"format": "inline_think"}` so the outbound driver knows how
+        /// the upstream model originally delivered the reasoning).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<serde_json::Value>,
     },
     /// Catch-all for unrecognized content block types (forward compatibility).
     #[serde(other)]
@@ -141,7 +157,7 @@ impl MessageContent {
                 .map(|b| match b {
                     ContentBlock::Text { text, .. } => text.len(),
                     ContentBlock::ToolResult { content, .. } => content.len(),
-                    ContentBlock::Thinking { thinking } => thinking.len(),
+                    ContentBlock::Thinking { thinking, .. } => thinking.len(),
                     ContentBlock::ToolUse { name, input, .. } => {
                         name.len() + input.to_string().len()
                     }
@@ -197,6 +213,17 @@ impl Message {
         Self {
             role: Role::Assistant,
             content: MessageContent::Text(content.into()),
+        }
+    }
+
+    /// Create an assistant message with structured content blocks.
+    ///
+    /// Used to preserve `Thinking` blocks (with signatures and reasoning text)
+    /// across persistence so reasoning models retain state between turns.
+    pub fn assistant_with_blocks(blocks: Vec<ContentBlock>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(blocks),
         }
     }
 }
@@ -309,6 +336,119 @@ mod tests {
         let json = serde_json::json!({"type": "future_block_type"});
         let block: ContentBlock = serde_json::from_value(json).unwrap();
         assert!(matches!(block, ContentBlock::Unknown));
+    }
+
+    #[test]
+    fn test_thinking_block_roundtrip_preserves_signature() {
+        // Anthropic extended thinking — the signature MUST round-trip through
+        // serde so it can be echoed on the next request.
+        let block = ContentBlock::Thinking {
+            thinking: "Let me reason about this carefully...".to_string(),
+            signature: Some("sig_abc123_anthropic_extended_thinking".to_string()),
+            provider_metadata: None,
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "thinking");
+        assert_eq!(json["signature"], "sig_abc123_anthropic_extended_thinking");
+
+        // Round-trip through serialize → deserialize (e.g. SQLite session blob)
+        let serialized = serde_json::to_string(&block).unwrap();
+        let restored: ContentBlock = serde_json::from_str(&serialized).unwrap();
+        match restored {
+            ContentBlock::Thinking {
+                thinking, signature, ..
+            } => {
+                assert_eq!(thinking, "Let me reason about this carefully...");
+                assert_eq!(
+                    signature.as_deref(),
+                    Some("sig_abc123_anthropic_extended_thinking")
+                );
+            }
+            _ => panic!("expected Thinking block"),
+        }
+    }
+
+    #[test]
+    fn test_thinking_block_roundtrip_with_provider_metadata() {
+        // OpenAI-compat models (DeepSeek-R1, Qwen3, MiniMax) — record the
+        // wire format so the outbound driver knows whether to re-emit as
+        // `reasoning_content` or inline `<think>` tags.
+        let block = ContentBlock::Thinking {
+            thinking: "step-by-step analysis".to_string(),
+            signature: None,
+            provider_metadata: Some(serde_json::json!({"format": "inline_think"})),
+        };
+        let serialized = serde_json::to_string(&block).unwrap();
+        let restored: ContentBlock = serde_json::from_str(&serialized).unwrap();
+        match restored {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+                provider_metadata,
+            } => {
+                assert_eq!(thinking, "step-by-step analysis");
+                assert!(signature.is_none());
+                let meta = provider_metadata.expect("provider_metadata preserved");
+                assert_eq!(meta["format"], "inline_think");
+            }
+            _ => panic!("expected Thinking block"),
+        }
+    }
+
+    #[test]
+    fn test_thinking_block_legacy_deser() {
+        // Existing sessions on disk only have `{"type": "thinking", "thinking": "..."}`.
+        // The new fields must be optional so old payloads still load.
+        let json = serde_json::json!({"type": "thinking", "thinking": "old session reasoning"});
+        let block: ContentBlock = serde_json::from_value(json).unwrap();
+        match block {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+                provider_metadata,
+            } => {
+                assert_eq!(thinking, "old session reasoning");
+                assert!(signature.is_none());
+                assert!(provider_metadata.is_none());
+            }
+            _ => panic!("expected Thinking block"),
+        }
+    }
+
+    #[test]
+    fn test_assistant_with_blocks_preserves_thinking() {
+        // A complete round-trip: build an assistant turn that mixes Thinking +
+        // Text (the shape we'll store after fix) and confirm the Thinking
+        // block survives serialization (msgpack is what session.rs uses; JSON
+        // exercises the same serde path).
+        let msg = Message::assistant_with_blocks(vec![
+            ContentBlock::Thinking {
+                thinking: "Internal reasoning".to_string(),
+                signature: Some("sig_xyz".to_string()),
+                provider_metadata: None,
+            },
+            ContentBlock::Text {
+                text: "Hello!".to_string(),
+                provider_metadata: None,
+            },
+        ]);
+        let bytes = rmp_serde::to_vec_named(&msg).expect("msgpack encode");
+        let restored: Message = rmp_serde::from_slice(&bytes).expect("msgpack decode");
+        match restored.content {
+            MessageContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                match &blocks[0] {
+                    ContentBlock::Thinking {
+                        thinking, signature, ..
+                    } => {
+                        assert_eq!(thinking, "Internal reasoning");
+                        assert_eq!(signature.as_deref(), Some("sig_xyz"));
+                    }
+                    _ => panic!("expected Thinking first"),
+                }
+            }
+            _ => panic!("expected Blocks content"),
+        }
     }
 
     #[test]

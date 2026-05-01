@@ -109,6 +109,70 @@ fn append_tool_error_guidance(tool_result_blocks: &mut Vec<ContentBlock>) {
     }
 }
 
+/// Build an assistant message that preserves Thinking blocks alongside the
+/// final visible text.
+///
+/// Issue #1098 — thinking-model state preservation.  When the LLM response
+/// contains `ContentBlock::Thinking` (Anthropic extended thinking with
+/// signatures, Gemini 2.5+ thoughts, OpenAI-compat reasoning_content,
+/// MiniMax/Qwen inline `<think>` blocks), the prior code stored only the
+/// final text via `Message::assistant(text)` — discarding all reasoning
+/// state.  On the next turn the model re-derived its answer from scratch
+/// and quality degraded.
+///
+/// This helper preserves the full block list whenever any Thinking block is
+/// present, otherwise returns the legacy `Message::assistant(text)` form so
+/// downstream consumers (channel formatters, JSONL mirrors, embeddings) keep
+/// working without changes.
+///
+/// Note: we deliberately replace any visible Text blocks in `response_blocks`
+/// with `final_text` so that any post-processing the agent loop applied
+/// (phantom-action recovery, accumulated_text fallback, EmptyResponse guard
+/// stub) is reflected in the persisted message.
+fn build_assistant_message_preserving_thinking(
+    response_blocks: &[ContentBlock],
+    final_text: &str,
+) -> Message {
+    let has_thinking = response_blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Thinking { .. }));
+    if !has_thinking {
+        return Message::assistant(final_text.to_string());
+    }
+
+    // Preserve order: Thinking blocks first (in original order), then a
+    // single Text block carrying `final_text`.  Tool blocks aren't expected
+    // here (StopReason::EndTurn path), but copy them through if present so
+    // we don't drop information.
+    let mut blocks: Vec<ContentBlock> = Vec::with_capacity(response_blocks.len() + 1);
+    let mut emitted_text = false;
+    for b in response_blocks {
+        match b {
+            ContentBlock::Thinking { .. } => blocks.push(b.clone()),
+            ContentBlock::Text { .. } if !emitted_text => {
+                blocks.push(ContentBlock::Text {
+                    text: final_text.to_string(),
+                    provider_metadata: None,
+                });
+                emitted_text = true;
+            }
+            ContentBlock::Text { .. } => {
+                // Drop additional text blocks — final_text already captures
+                // the canonical visible message.
+            }
+            other => blocks.push(other.clone()),
+        }
+    }
+    if !emitted_text && !final_text.is_empty() {
+        blocks.push(ContentBlock::Text {
+            text: final_text.to_string(),
+            provider_metadata: None,
+        });
+    }
+
+    Message::assistant_with_blocks(blocks)
+}
+
 /// Strip a provider prefix from a model ID before sending to the API.
 ///
 /// Many models are stored as `provider/org/model` (e.g. `openrouter/google/gemini-2.5-flash`)
@@ -605,7 +669,16 @@ pub async fn run_agent_loop(
                 };
 
                 final_response = text.clone();
-                session.messages.push(Message::assistant(text));
+                // Issue #1098: persist Thinking blocks alongside the text so
+                // reasoning models retain state across turns.  When the
+                // response carries any Thinking content (Anthropic extended
+                // thinking, Gemini 2.5 thought signatures, DeepSeek-R1/Qwen3
+                // `reasoning_content`, MiniMax inline `<think>`), save the
+                // full content blocks; otherwise fall back to the legacy
+                // Text shape so existing sessions/snapshots stay readable.
+                let assistant_msg =
+                    build_assistant_message_preserving_thinking(&response.content, &text);
+                session.messages.push(assistant_msg);
 
                 // Prune NO_REPLY heartbeat turns to save context budget
                 crate::session_repair::prune_heartbeat_turns(&mut session.messages, 10);
@@ -1798,7 +1871,13 @@ pub async fn run_agent_loop_streaming(
                     text
                 };
                 final_response = text.clone();
-                session.messages.push(Message::assistant(text));
+                // Issue #1098: preserve Thinking blocks (with Anthropic
+                // signatures / Gemini thought signatures / inline-think /
+                // reasoning_content) on the persisted assistant turn.  See
+                // build_assistant_message_preserving_thinking for details.
+                let assistant_msg =
+                    build_assistant_message_preserving_thinking(&response.content, &text);
+                session.messages.push(assistant_msg);
 
                 // Prune NO_REPLY heartbeat turns to save context budget
                 crate::session_repair::prune_heartbeat_turns(&mut session.messages, 10);
@@ -3090,6 +3169,94 @@ mod tests {
     #[test]
     fn test_max_iterations_constant() {
         assert_eq!(MAX_ITERATIONS, 50);
+    }
+
+    /// Issue #1098: when a response carries Thinking blocks, the persisted
+    /// assistant turn must keep them so the next turn round-trips reasoning
+    /// state to the model.
+    #[test]
+    fn test_build_assistant_message_preserves_thinking() {
+        let response_blocks = vec![
+            ContentBlock::Thinking {
+                thinking: "Let me reason carefully...".to_string(),
+                signature: Some("sig_anthropic_xyz".to_string()),
+                provider_metadata: Some(serde_json::json!({
+                    "format": "anthropic_extended_thinking"
+                })),
+            },
+            ContentBlock::Text {
+                text: "Initial response text".to_string(),
+                provider_metadata: None,
+            },
+        ];
+        // Final text might differ from the original Text block (phantom-action
+        // recovery / synthesis fallback rewrites it). The helper should adopt
+        // final_text into the persisted Text block.
+        let final_text = "Initial response text";
+        let msg = build_assistant_message_preserving_thinking(&response_blocks, final_text);
+        assert_eq!(msg.role, Role::Assistant);
+        let blocks = match &msg.content {
+            MessageContent::Blocks(b) => b,
+            other => panic!("expected blocks, got {other:?}"),
+        };
+        assert_eq!(blocks.len(), 2, "must preserve thinking + text");
+        match &blocks[0] {
+            ContentBlock::Thinking {
+                thinking, signature, ..
+            } => {
+                assert_eq!(thinking, "Let me reason carefully...");
+                assert_eq!(signature.as_deref(), Some("sig_anthropic_xyz"));
+            }
+            _ => panic!("expected Thinking first"),
+        }
+        match &blocks[1] {
+            ContentBlock::Text { text, .. } => assert_eq!(text, "Initial response text"),
+            _ => panic!("expected Text second"),
+        }
+    }
+
+    /// Without thinking, fall back to the legacy `Message::assistant(text)`
+    /// shape so existing JSONL mirrors and embeddings keep working.
+    #[test]
+    fn test_build_assistant_message_no_thinking_is_plain_text() {
+        let response_blocks = vec![ContentBlock::Text {
+            text: "Hi.".to_string(),
+            provider_metadata: None,
+        }];
+        let msg = build_assistant_message_preserving_thinking(&response_blocks, "Hi.");
+        match msg.content {
+            MessageContent::Text(t) => assert_eq!(t, "Hi."),
+            _ => panic!("expected plain text content for non-thinking responses"),
+        }
+    }
+
+    /// Final text supplied by the loop (e.g. recovery stub) must replace
+    /// the original text part — the persisted message reflects what was
+    /// actually returned to the user, not the raw LLM output.
+    #[test]
+    fn test_build_assistant_message_final_text_replaces_original_text() {
+        let response_blocks = vec![
+            ContentBlock::Thinking {
+                thinking: "deliberation".to_string(),
+                signature: None,
+                provider_metadata: Some(serde_json::json!({"format": "inline_think"})),
+            },
+            ContentBlock::Text {
+                text: "raw LLM output".to_string(),
+                provider_metadata: None,
+            },
+        ];
+        let final_text = "[Task completed — recovered after empty response.]";
+        let msg = build_assistant_message_preserving_thinking(&response_blocks, final_text);
+        let blocks = match &msg.content {
+            MessageContent::Blocks(b) => b,
+            _ => panic!("expected blocks"),
+        };
+        let saved_text = blocks.iter().find_map(|b| match b {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        });
+        assert_eq!(saved_text, Some(final_text));
     }
 
     #[test]
