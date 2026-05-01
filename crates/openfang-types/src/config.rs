@@ -1113,8 +1113,8 @@ impl Default for ThinkingConfig {
 
 /// Top-level kernel configuration.
 ///
-/// `deny_unknown_fields` is intentionally *not* applied here. Spec §5.5 scoped
-/// strict-field validation to bindings (`AgentBinding` + `BindingMatchRule`),
+/// `deny_unknown_fields` is intentionally *not* applied here. Strict-field
+/// validation is scoped to bindings (`AgentBinding` + `BindingMatchRule`),
 /// where silent no-op routing is the failure mode worth catching loudly.
 /// Adding it to the top-level kernel struct would also reject forward-compat
 /// keys, downstream-fork-only keys, and "I'm trying out a future field early"
