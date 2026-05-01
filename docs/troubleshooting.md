@@ -88,6 +88,21 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # Add to ~/.bashrc or ~/.zshrc to persist
 ```
 
+### Black screen on login after install (Arch / CachyOS / fish users)
+
+**Cause**: Older OpenFang installers (`<v0.6.4`) appended a PATH line directly to `~/.config/fish/config.fish`. On Arch derivatives like CachyOS, the desktop session can source fish on login — a malformed or invalid PATH line then prevents the session from finishing, leaving you on a black screen.
+
+**Fix**: Boot to a TTY (`Ctrl+Alt+F2`) and remove any OpenFang PATH lines from `config.fish`:
+```bash
+sed -i '/openfang/d' ~/.config/fish/config.fish
+```
+Then re-run the installer — current versions write to `~/.config/fish/conf.d/openfang.fish` (a drop-in directory) instead, and guard the path with `test -d` so a missing install dir can never wedge fish startup.
+
+To remove OpenFang's PATH entry cleanly:
+```bash
+rm ~/.config/fish/conf.d/openfang.fish
+```
+
 ### Docker container won't start
 
 **Common causes**:
