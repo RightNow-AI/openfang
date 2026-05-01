@@ -1,5 +1,10 @@
 /* OpenFang Layout — Grid + Sidebar + Responsive */
 
+/* Firefox compat: hide x-cloak elements until Alpine.js initializes.
+   Without this, the sidebar flashes hidden in Firefox while Alpine
+   processes the nested x-data scopes for nav sections. */
+[x-cloak] { display: none !important; }
+
 .app-layout {
   display: flex;
   height: 100vh;
