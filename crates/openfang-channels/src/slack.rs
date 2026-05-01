@@ -21,6 +21,38 @@ const SLACK_API_BASE: &str = "https://slack.com/api";
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const SLACK_MSG_LIMIT: usize = 3000;
+/// TTL for envelope_id dedup entries. Well above the typical Slack
+/// connection-rotation overlap window (< 10s).
+const ENVELOPE_TTL: Duration = Duration::from_secs(60);
+/// Soft cap on the dedup cache size. When exceeded we GC expired entries.
+/// Recent envelope IDs are not reused by Slack, so 10k is more than enough.
+const ENVELOPE_CACHE_CAP: usize = 10_000;
+
+/// Returns true if `envelope_id` was already seen within `ENVELOPE_TTL`.
+/// On first sight, records the timestamp and returns false. Performs
+/// opportunistic GC of expired entries when the cache grows large.
+///
+/// Slack Socket Mode delivers the same event to multiple active WebSocket
+/// connections during connection rotation. Apps must dedupe on `envelope_id`
+/// to avoid double-processing.
+fn is_duplicate_envelope(cache: &DashMap<String, Instant>, envelope_id: &str) -> bool {
+    if envelope_id.is_empty() {
+        return false;
+    }
+
+    // Opportunistic GC: bound growth without per-call work.
+    if cache.len() > ENVELOPE_CACHE_CAP {
+        cache.retain(|_, ts| ts.elapsed() < ENVELOPE_TTL);
+    }
+
+    if let Some(prev) = cache.get(envelope_id) {
+        if prev.elapsed() < ENVELOPE_TTL {
+            return true;
+        }
+    }
+    cache.insert(envelope_id.to_string(), Instant::now());
+    false
+}
 
 /// Slack Socket Mode adapter.
 pub struct SlackAdapter {
@@ -41,6 +73,9 @@ pub struct SlackAdapter {
     auto_thread_reply: bool,
     /// Whether to unfurl (expand previews for) links in posted messages.
     unfurl_links: bool,
+    /// Recently-seen envelope_ids. Slack Socket Mode redelivers the same event
+    /// across rotated WebSocket connections; this prevents double-processing.
+    seen_envelopes: Arc<DashMap<String, Instant>>,
 }
 
 impl SlackAdapter {
@@ -65,6 +100,7 @@ impl SlackAdapter {
             thread_ttl: Duration::from_secs(thread_ttl_hours * 3600),
             auto_thread_reply,
             unfurl_links,
+            seen_envelopes: Arc::new(DashMap::new()),
         }
     }
 
@@ -161,6 +197,7 @@ impl ChannelAdapter for SlackAdapter {
         let mut shutdown = self.shutdown_rx.clone();
         let active_threads = self.active_threads.clone();
         let auto_thread_reply = self.auto_thread_reply;
+        let seen_envelopes = self.seen_envelopes.clone();
 
         // Spawn periodic cleanup of expired thread entries.
         {
@@ -286,6 +323,16 @@ impl ChannelAdapter for SlackAdapter {
                                     error!("Slack: failed to send ack: {e}");
                                     break 'inner true;
                                 }
+                            }
+
+                            // Dedup: Slack redelivers the same event on the new
+                            // connection during the rotation overlap. Ack on
+                            // both, but only forward to the agent once.
+                            if is_duplicate_envelope(&seen_envelopes, envelope_id) {
+                                debug!(
+                                    "Slack: skipping duplicate envelope_id {envelope_id}"
+                                );
+                                continue;
                             }
 
                             // Extract the event
@@ -744,5 +791,59 @@ mod tests {
             false,
         );
         assert!(!adapter.unfurl_links);
+    }
+
+    #[test]
+    fn test_envelope_dedup_skips_second_delivery() {
+        // Simulates Slack redelivering the same event across a connection
+        // rotation: the envelope is acked on both connections but the agent
+        // must only see it once.
+        let cache: DashMap<String, Instant> = DashMap::new();
+        let envelope_id = "8d2e1c5a-4f3b-49a1-b6e2-7c0a9f1234ab";
+
+        // First delivery on the old connection: not a duplicate, forward.
+        assert!(
+            !is_duplicate_envelope(&cache, envelope_id),
+            "first sight of envelope must not be flagged as duplicate"
+        );
+
+        // Second delivery on the new connection: duplicate, skip.
+        assert!(
+            is_duplicate_envelope(&cache, envelope_id),
+            "second sight of same envelope must be flagged as duplicate"
+        );
+
+        // Simulate the receive-loop pattern: count how many times the agent
+        // would actually be invoked across two deliveries.
+        let mut agent_invocations = 0;
+        for _delivery in 0..2 {
+            if !is_duplicate_envelope(&cache, envelope_id) {
+                agent_invocations += 1;
+            }
+        }
+        assert_eq!(
+            agent_invocations, 0,
+            "after initial double-delivery, no further invocations should occur within TTL"
+        );
+    }
+
+    #[test]
+    fn test_envelope_dedup_distinct_ids_pass_through() {
+        let cache: DashMap<String, Instant> = DashMap::new();
+        assert!(!is_duplicate_envelope(&cache, "envelope-a"));
+        assert!(!is_duplicate_envelope(&cache, "envelope-b"));
+        assert!(!is_duplicate_envelope(&cache, "envelope-c"));
+        // Each unique envelope_id should be seen exactly once.
+        assert_eq!(cache.len(), 3);
+    }
+
+    #[test]
+    fn test_envelope_dedup_empty_id_never_dedupes() {
+        // Defensive: malformed payloads with no envelope_id should not poison
+        // the cache or short-circuit forwarding.
+        let cache: DashMap<String, Instant> = DashMap::new();
+        assert!(!is_duplicate_envelope(&cache, ""));
+        assert!(!is_duplicate_envelope(&cache, ""));
+        assert_eq!(cache.len(), 0);
     }
 }
