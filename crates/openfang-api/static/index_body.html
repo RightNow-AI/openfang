@@ -28,7 +28,7 @@
 
 <div class="app-layout" :class="{ 'focus-mode': $store.app.focusMode }">
   <!-- Sidebar -->
-  <nav class="sidebar" :class="{ collapsed: sidebarCollapsed, 'mobile-open': mobileMenuOpen }">
+  <nav class="sidebar" x-cloak :class="{ collapsed: sidebarCollapsed, 'mobile-open': mobileMenuOpen }">
     <div class="sidebar-header">
       <div class="sidebar-header-text">
         <div class="sidebar-logo">
@@ -68,8 +68,7 @@
           <span class="nav-label">Agents</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
-        <template x-if="!collapsed">
-          <div x-transition>
+        <div x-show="!collapsed" x-cloak x-transition>
             <a class="nav-item" :class="{ active: page === 'agents' }" @click="navigate('agents')" :aria-current="page === 'agents' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
               <span class="nav-label">Chat</span>
@@ -88,7 +87,6 @@
               <span class="nav-label">Comms</span>
             </a>
           </div>
-        </template>
       </div>
 
       <!-- Automation -->
@@ -97,8 +95,7 @@
           <span class="nav-label">Automation</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
-        <template x-if="!collapsed">
-          <div x-transition>
+        <div x-show="!collapsed" x-cloak x-transition>
             <a class="nav-item" :class="{ active: page === 'workflows' }" @click="navigate('workflows')" :aria-current="page === 'workflows' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M6 3v12M18 9a9 9 0 0 1-9 9"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/></svg></span>
               <span class="nav-label">Workflows</span>
@@ -108,7 +105,6 @@
               <span class="nav-label">Scheduler</span>
             </a>
           </div>
-        </template>
       </div>
 
       <!-- Extensions -->
@@ -117,8 +113,7 @@
           <span class="nav-label">Extensions</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
-        <template x-if="!collapsed">
-          <div x-transition>
+        <div x-show="!collapsed" x-cloak x-transition>
             <a class="nav-item" :class="{ active: page === 'channels' }" @click="navigate('channels')" :aria-current="page === 'channels' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3l-2 18M16 3l-2 18"/></svg></span>
               <span class="nav-label">Channels</span>
@@ -132,7 +127,6 @@
               <span class="nav-label">Hands</span>
             </a>
           </div>
-        </template>
       </div>
 
       <!-- Monitor -->
@@ -141,8 +135,7 @@
           <span class="nav-label">Monitor</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
-        <template x-if="!collapsed">
-          <div x-transition>
+        <div x-show="!collapsed" x-cloak x-transition>
             <a class="nav-item" :class="{ active: page === 'analytics' }" @click="navigate('analytics')" :aria-current="page === 'analytics' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg></span>
               <span class="nav-label">Analytics</span>
@@ -152,7 +145,6 @@
               <span class="nav-label">Logs</span>
             </a>
           </div>
-        </template>
       </div>
 
       <!-- System -->
@@ -161,8 +153,7 @@
           <span class="nav-label">System</span>
           <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
         </div>
-        <template x-if="!collapsed">
-          <div x-transition>
+        <div x-show="!collapsed" x-cloak x-transition>
             <a class="nav-item" :class="{ active: page === 'runtime' }" @click="navigate('runtime')" :aria-current="page === 'runtime' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>
               <span class="nav-label">Runtime</span>
@@ -172,7 +163,6 @@
               <span class="nav-label">Settings</span>
             </a>
           </div>
-        </template>
       </div>
     </div>
 
@@ -186,7 +176,7 @@
     <div class="sidebar-toggle" @click="toggleSidebar()" x-text="sidebarCollapsed ? '\u276F' : '\u276E'"></div>
   </nav>
 
-  <div class="sidebar-overlay" @click="mobileMenuOpen = false"></div>
+  <div class="sidebar-overlay" x-cloak @click="mobileMenuOpen = false"></div>
 
   <!-- Main Content -->
   <main class="main-content">
@@ -832,6 +822,7 @@
               </div>
             </div>
           </div>
+
         </template>
 
         <!-- MODE 2: Agent picker + Templates (no agent chatting) -->
