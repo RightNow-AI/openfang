@@ -586,7 +586,7 @@ impl SessionStore {
                             ContentBlock::Image { media_type, .. } => {
                                 text_parts.push(format!("[image: {media_type}]"));
                             }
-                            ContentBlock::Thinking { thinking } => {
+                            ContentBlock::Thinking { thinking, .. } => {
                                 text_parts.push(format!(
                                     "[thinking: {}]",
                                     openfang_types::truncate_str(thinking, 200)

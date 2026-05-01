@@ -289,6 +289,135 @@ fn strip_trailing_empty_assistant(messages: &mut Vec<OaiMessage>) {
     }
 }
 
+/// Assemble an outbound assistant `OaiMessage` from `ContentBlock`s, replaying
+/// any `Thinking` blocks in the format the upstream model originally emitted.
+///
+/// This is the fix for issue #1098 — thinking-model state preservation.
+/// Without this, `<think>...</think>` and `reasoning_content` are stripped on
+/// the next turn so the model loses its prior reasoning trace and re-derives
+/// the answer (degrading quality).  We honour `provider_metadata.format`:
+///
+/// - `"reasoning_content"` → emitted on the OpenAI `reasoning_content` field
+///   (DeepSeek-R1, Qwen3, MiniMax M2 via LM Studio/Ollama)
+/// - `"inline_think"`     → wrapped in `<think>...</think>` and prepended to
+///   the visible content (MiniMax M2.5, Llama-3.3-think variants)
+/// - missing/other        → fall back to the legacy Moonshot/Kimi behaviour
+///   (only emit `reasoning_content` when `needs_reasoning_content()` is true)
+fn assemble_assistant_message(
+    blocks: &[ContentBlock],
+    model: &str,
+    driver: &OpenAIDriver,
+) -> OaiMessage {
+    let mut text_parts: Vec<String> = Vec::new();
+    let mut tool_calls: Vec<OaiToolCall> = Vec::new();
+    let mut reasoning_field: Option<String> = None;
+    let mut inline_think: Option<String> = None;
+
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => {
+                tool_calls.push(OaiToolCall {
+                    id: id.clone(),
+                    call_type: "function".to_string(),
+                    function: OaiFunction {
+                        name: name.clone(),
+                        arguments: serde_json::to_string(input).unwrap_or_default(),
+                    },
+                });
+            }
+            ContentBlock::Thinking {
+                thinking,
+                provider_metadata,
+                ..
+            } => {
+                if thinking.is_empty() {
+                    continue;
+                }
+                let format = provider_metadata
+                    .as_ref()
+                    .and_then(|m| m.get("format"))
+                    .and_then(|v| v.as_str());
+                match format {
+                    Some("inline_think") => {
+                        // MiniMax / models trained to expect `<think>` in
+                        // historical assistant messages.  Concatenate
+                        // multiple thinking blocks if present.
+                        let entry = format!("<think>{thinking}</think>");
+                        match &mut inline_think {
+                            Some(existing) => existing.push_str(&entry),
+                            None => inline_think = Some(entry),
+                        }
+                    }
+                    Some("reasoning_content") => {
+                        // DeepSeek-R1 / Qwen3 / OpenAI-compat servers that
+                        // expose a separate `reasoning_content` field.
+                        match &mut reasoning_field {
+                            Some(existing) => existing.push_str(thinking),
+                            None => reasoning_field = Some(thinking.clone()),
+                        }
+                    }
+                    _ => {
+                        // Unknown format — preserve as inline_think since it's
+                        // safe (visible to the model as ordinary text).  The
+                        // legacy Moonshot path overrides this below.
+                        let entry = format!("<think>{thinking}</think>");
+                        match &mut inline_think {
+                            Some(existing) => existing.push_str(&entry),
+                            None => inline_think = Some(entry),
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Build the visible content by prepending inline_think (if any).
+    let mut visible = String::new();
+    if let Some(it) = inline_think.as_ref() {
+        visible.push_str(it);
+    }
+    if !text_parts.is_empty() {
+        visible.push_str(&text_parts.join(""));
+    }
+
+    let has_tool_calls = !tool_calls.is_empty();
+    let needs_reasoning = driver.needs_reasoning_content(model);
+
+    // Final reasoning_content field: the per-block format hint wins; otherwise
+    // fall back to legacy Moonshot/Kimi behaviour (empty string when needed).
+    let reasoning_content = if reasoning_field.is_some() {
+        reasoning_field
+    } else if needs_reasoning {
+        Some(String::new())
+    } else {
+        None
+    };
+
+    OaiMessage {
+        role: "assistant".to_string(),
+        content: if visible.is_empty() {
+            if has_tool_calls {
+                Some(OaiMessageContent::Text(String::new()))
+            } else {
+                None
+            }
+        } else {
+            Some(OaiMessageContent::Text(visible))
+        },
+        tool_calls: if tool_calls.is_empty() {
+            None
+        } else {
+            Some(tool_calls)
+        },
+        tool_call_id: None,
+        reasoning_content,
+    }
+}
+
 #[async_trait]
 impl LlmDriver for OpenAIDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
@@ -384,59 +513,8 @@ impl LlmDriver for OpenAIDriver {
                     }
                 }
                 (Role::Assistant, MessageContent::Blocks(blocks)) => {
-                    let mut text_parts = Vec::new();
-                    let mut tool_calls = Vec::new();
-                    let mut reasoning_text = String::new();
-                    for block in blocks {
-                        match block {
-                            ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
-                            ContentBlock::ToolUse {
-                                id, name, input, ..
-                            } => {
-                                tool_calls.push(OaiToolCall {
-                                    id: id.clone(),
-                                    call_type: "function".to_string(),
-                                    function: OaiFunction {
-                                        name: name.clone(),
-                                        arguments: serde_json::to_string(input).unwrap_or_default(),
-                                    },
-                                });
-                            }
-                            ContentBlock::Thinking { thinking, .. } => {
-                                reasoning_text = thinking.clone();
-                            }
-                            _ => {}
-                        }
-                    }
-                    let has_tool_calls = !tool_calls.is_empty();
-                    let needs_reasoning = self.needs_reasoning_content(&request.model);
-                    oai_messages.push(OaiMessage {
-                        role: "assistant".to_string(),
-                        content: if text_parts.is_empty() {
-                            if has_tool_calls {
-                                Some(OaiMessageContent::Text(String::new()))
-                            } else {
-                                None
-                            }
-                        } else {
-                            Some(OaiMessageContent::Text(text_parts.join("")))
-                        },
-                        tool_calls: if tool_calls.is_empty() {
-                            None
-                        } else {
-                            Some(tool_calls)
-                        },
-                        tool_call_id: None,
-                        reasoning_content: if needs_reasoning {
-                            Some(if reasoning_text.is_empty() {
-                                String::new()
-                            } else {
-                                reasoning_text
-                            })
-                        } else {
-                            None
-                        },
-                    });
+                    let assembled = assemble_assistant_message(blocks, &request.model, self);
+                    oai_messages.push(assembled);
                 }
                 _ => {}
             }
@@ -650,8 +728,15 @@ impl LlmDriver for OpenAIDriver {
                         len = reasoning.len(),
                         "Captured reasoning_content from response"
                     );
+                    // Mark the format so the outbound path knows to re-emit
+                    // this as a `reasoning_content` field rather than as
+                    // inline `<think>` tags. Issue #1098.
                     content.push(ContentBlock::Thinking {
                         thinking: reasoning.clone(),
+                        signature: None,
+                        provider_metadata: Some(serde_json::json!({
+                            "format": "reasoning_content"
+                        })),
                     });
                 }
             }
@@ -664,8 +749,14 @@ impl LlmDriver for OpenAIDriver {
                     if let Some(think_text) = thinking {
                         // Only add if we didn't already get reasoning_content
                         if choice.message.reasoning_content.is_none() {
+                            // Mark the format so we re-emit as inline `<think>`
+                            // tags on the next turn (MiniMax/M2.5 style).
                             content.push(ContentBlock::Thinking {
                                 thinking: think_text,
+                                signature: None,
+                                provider_metadata: Some(serde_json::json!({
+                                    "format": "inline_think"
+                                })),
                             });
                         }
                     }
@@ -692,7 +783,7 @@ impl LlmDriver for OpenAIDriver {
                 let thinking_text = content
                     .iter()
                     .find_map(|b| match b {
-                        ContentBlock::Thinking { thinking } => Some(thinking.as_str()),
+                        ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
                         _ => None,
                     })
                     .unwrap_or("");
@@ -841,59 +932,8 @@ impl LlmDriver for OpenAIDriver {
                     }
                 }
                 (Role::Assistant, MessageContent::Blocks(blocks)) => {
-                    let mut text_parts = Vec::new();
-                    let mut tool_calls_out = Vec::new();
-                    let mut reasoning_text = String::new();
-                    for block in blocks {
-                        match block {
-                            ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
-                            ContentBlock::ToolUse {
-                                id, name, input, ..
-                            } => {
-                                tool_calls_out.push(OaiToolCall {
-                                    id: id.clone(),
-                                    call_type: "function".to_string(),
-                                    function: OaiFunction {
-                                        name: name.clone(),
-                                        arguments: serde_json::to_string(input).unwrap_or_default(),
-                                    },
-                                });
-                            }
-                            ContentBlock::Thinking { thinking, .. } => {
-                                reasoning_text = thinking.clone();
-                            }
-                            _ => {}
-                        }
-                    }
-                    let has_tool_calls = !tool_calls_out.is_empty();
-                    let needs_reasoning = self.needs_reasoning_content(&request.model);
-                    oai_messages.push(OaiMessage {
-                        role: "assistant".to_string(),
-                        content: if text_parts.is_empty() {
-                            if has_tool_calls {
-                                Some(OaiMessageContent::Text(String::new()))
-                            } else {
-                                None
-                            }
-                        } else {
-                            Some(OaiMessageContent::Text(text_parts.join("")))
-                        },
-                        tool_calls: if tool_calls_out.is_empty() {
-                            None
-                        } else {
-                            Some(tool_calls_out)
-                        },
-                        tool_call_id: None,
-                        reasoning_content: if needs_reasoning {
-                            Some(if reasoning_text.is_empty() {
-                                String::new()
-                            } else {
-                                reasoning_text
-                            })
-                        } else {
-                            None
-                        },
-                    });
+                    let assembled = assemble_assistant_message(blocks, &request.model, self);
+                    oai_messages.push(assembled);
                 }
                 _ => {}
             }
@@ -1292,8 +1332,15 @@ impl LlmDriver for OpenAIDriver {
 
             // Add reasoning/thinking content if present
             if !reasoning_content.is_empty() {
+                // Mark format so outbound path replays this as
+                // `reasoning_content` (DeepSeek-R1, Qwen3, MiniMax via
+                // LM Studio/Ollama). Issue #1098.
                 content.push(ContentBlock::Thinking {
                     thinking: reasoning_content.clone(),
+                    signature: None,
+                    provider_metadata: Some(serde_json::json!({
+                        "format": "reasoning_content"
+                    })),
                 });
             }
 
@@ -1303,8 +1350,14 @@ impl LlmDriver for OpenAIDriver {
                 if let Some(think_text) = thinking {
                     // Only add if we didn't already get reasoning_content
                     if reasoning_content.is_empty() {
+                        // Mark as inline-think so the next outbound turn
+                        // re-emits the content wrapped in `<think>...</think>`.
                         content.push(ContentBlock::Thinking {
                             thinking: think_text,
+                            signature: None,
+                            provider_metadata: Some(serde_json::json!({
+                                "format": "inline_think"
+                            })),
                         });
                     }
                 }
@@ -1329,7 +1382,7 @@ impl LlmDriver for OpenAIDriver {
                 let thinking_text = content
                     .iter()
                     .find_map(|b| match b {
-                        ContentBlock::Thinking { thinking } => Some(thinking.as_str()),
+                        ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
                         _ => None,
                     })
                     .unwrap_or("");
@@ -1893,5 +1946,138 @@ mod tests {
         // moonshot-v1-128k should NOT redirect (stays on .ai)
         let url = driver.chat_url("moonshot-v1-128k");
         assert_eq!(url, "https://api.moonshot.ai/v1/chat/completions");
+    }
+
+    // ── issue #1098: thinking-block round-trip ────────────────────────
+
+    /// Inline `<think>` blocks captured on ingress must be re-emitted in
+    /// historical assistant turns so MiniMax-style models retain reasoning
+    /// state across turns.
+    #[test]
+    fn test_assemble_assistant_replays_inline_think() {
+        let driver = OpenAIDriver::new(
+            "test".to_string(),
+            "https://api.minimax.chat/v1".to_string(),
+        );
+        let blocks = vec![
+            ContentBlock::Thinking {
+                thinking: "step-by-step reasoning".to_string(),
+                signature: None,
+                provider_metadata: Some(serde_json::json!({"format": "inline_think"})),
+            },
+            ContentBlock::Text {
+                text: "Hello, user.".to_string(),
+                provider_metadata: None,
+            },
+        ];
+        let msg = assemble_assistant_message(&blocks, "minimax-m2.5", &driver);
+        let content = match msg.content {
+            Some(OaiMessageContent::Text(t)) => t,
+            _ => panic!("expected text content"),
+        };
+        assert_eq!(
+            content, "<think>step-by-step reasoning</think>Hello, user.",
+            "inline_think must be re-emitted as <think> wrapping prepended to text"
+        );
+        // No reasoning_content field should be set for non-Moonshot models.
+        assert!(msg.reasoning_content.is_none());
+    }
+
+    /// `reasoning_content`-flavoured Thinking blocks must re-emit on the
+    /// `reasoning_content` field, NOT inline (DeepSeek-R1, Qwen3, MiniMax M2
+    /// via LM Studio/Ollama).
+    #[test]
+    fn test_assemble_assistant_replays_reasoning_content_field() {
+        let driver = OpenAIDriver::new(
+            "test".to_string(),
+            "https://api.deepseek.com/v1".to_string(),
+        );
+        let blocks = vec![
+            ContentBlock::Thinking {
+                thinking: "internal chain-of-thought".to_string(),
+                signature: None,
+                provider_metadata: Some(serde_json::json!({"format": "reasoning_content"})),
+            },
+            ContentBlock::Text {
+                text: "answer".to_string(),
+                provider_metadata: None,
+            },
+        ];
+        let msg = assemble_assistant_message(&blocks, "deepseek-reasoner", &driver);
+        let content = match msg.content {
+            Some(OaiMessageContent::Text(t)) => t,
+            _ => panic!("expected text content"),
+        };
+        assert_eq!(content, "answer", "visible content must not include <think>");
+        assert_eq!(
+            msg.reasoning_content.as_deref(),
+            Some("internal chain-of-thought"),
+            "reasoning_content field must carry the reasoning text"
+        );
+    }
+
+    /// Without thinking blocks, the outbound message should be a plain
+    /// assistant message — preserve the legacy shape.
+    #[test]
+    fn test_assemble_assistant_no_thinking_is_plain() {
+        let driver =
+            OpenAIDriver::new("test".to_string(), "https://api.openai.com/v1".to_string());
+        let blocks = vec![ContentBlock::Text {
+            text: "Hi.".to_string(),
+            provider_metadata: None,
+        }];
+        let msg = assemble_assistant_message(&blocks, "gpt-4o", &driver);
+        match msg.content {
+            Some(OaiMessageContent::Text(t)) => assert_eq!(t, "Hi."),
+            _ => panic!("expected text content"),
+        }
+        assert!(msg.reasoning_content.is_none());
+    }
+
+    /// Issue #1098 round-trip: parse a wire response with `reasoning_content`,
+    /// then feed the parsed assistant turn back through the outbound path
+    /// and confirm the reasoning is replayed.
+    #[test]
+    fn test_reasoning_content_full_round_trip() {
+        // Step 1: parse server response shape.
+        let json = serde_json::json!({
+            "content": "Final answer.",
+            "reasoning_content": "I considered options A, B, and C…",
+            "tool_calls": null
+        });
+        let server_msg: OaiResponseMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(server_msg.content.as_deref(), Some("Final answer."));
+        assert_eq!(
+            server_msg.reasoning_content.as_deref(),
+            Some("I considered options A, B, and C…")
+        );
+
+        // Step 2: simulate the driver building blocks (mirrors the live
+        // path in `complete()`).
+        let mut content = Vec::new();
+        if let Some(ref reasoning) = server_msg.reasoning_content {
+            content.push(ContentBlock::Thinking {
+                thinking: reasoning.clone(),
+                signature: None,
+                provider_metadata: Some(serde_json::json!({"format": "reasoning_content"})),
+            });
+        }
+        content.push(ContentBlock::Text {
+            text: server_msg.content.unwrap(),
+            provider_metadata: None,
+        });
+
+        // Step 3: replay through the outbound path.
+        let driver = OpenAIDriver::new(
+            "test".to_string(),
+            "https://api.deepseek.com/v1".to_string(),
+        );
+        let outbound = assemble_assistant_message(&content, "deepseek-reasoner", &driver);
+        // The reasoning_content field must round-trip verbatim.
+        assert_eq!(
+            outbound.reasoning_content.as_deref(),
+            Some("I considered options A, B, and C…"),
+            "issue #1098 regression: reasoning was stripped on resubmission"
+        );
     }
 }
