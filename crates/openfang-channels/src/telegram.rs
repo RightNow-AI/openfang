@@ -57,12 +57,12 @@ pub struct TelegramAdapter {
     /// can differ per chat and is settable by admins).
     ///
     /// Cached errors: `REACTION_INVALID` (emoji not in the free-reaction
-    /// allowlist, or not a valid reaction at all), `REACTION_NOT_AVAILABLE`
-    /// (chat admin restricted this emoji), and `REACTION_TOO_MANY` (bot hit
-    /// per-message reaction cap for this chat). Transient errors (429, 5xx,
-    /// unrelated 400s) are NOT cached. Grows monotonically over process
-    /// lifetime; cache resets on restart, which is fine because admins can
-    /// change allowed reactions at any time.
+    /// allowlist, or not a valid reaction at all) and `REACTION_NOT_AVAILABLE`
+    /// (chat admin restricted this emoji). Transient errors (429, 5xx,
+    /// `REACTION_TOO_MANY` per-message rate-limit, unrelated 400s) are NOT
+    /// cached. Grows monotonically over process lifetime; cache resets on
+    /// restart, which is fine because admins can change allowed reactions at
+    /// any time.
     rejected_reactions: Arc<Mutex<HashSet<(i64, String)>>>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
@@ -408,9 +408,10 @@ impl TelegramAdapter {
     /// Telegram restricts non-premium bots to a free-reaction allowlist, and
     /// chat admins can further restrict allowed reactions per chat via
     /// `Chat.available_reactions`. Terminal errors
-    /// (`REACTION_INVALID`, `REACTION_NOT_AVAILABLE`, `REACTION_TOO_MANY`)
-    /// are cached per `(chat_id, emoji)` so we don't keep calling the API
-    /// with reactions that will never succeed in that chat. Because two
+    /// (`REACTION_INVALID`, `REACTION_NOT_AVAILABLE`) are cached per
+    /// `(chat_id, emoji)` so we don't keep calling the API with reactions
+    /// that will never succeed in that chat. `REACTION_TOO_MANY` is a
+    /// transient per-message rate-limit and is NOT cached. Because two
     /// concurrent `fire_reaction` calls for the same `(chat_id, emoji)` can
     /// both pass the cache check before either rejection lands, the first
     /// rejection may produce up to N duplicate API calls where N is the
@@ -466,12 +467,10 @@ impl TelegramAdapter {
 /// `(chat, emoji)` pair will not succeed without an outside change (chat
 /// admin updating `Chat.available_reactions`, bot getting Premium, etc.).
 /// Callers cache these and stop retrying. Transient errors (429, 5xx,
-/// `RETRY_AFTER`, unrelated 400s like `MESSAGE_NOT_MODIFIED`) are NOT
-/// included here.
+/// `RETRY_AFTER`, `REACTION_TOO_MANY` per-message rate-limit, unrelated
+/// 400s like `MESSAGE_NOT_MODIFIED`) are NOT included here.
 fn is_terminal_reaction_error(body_text: &str) -> bool {
-    body_text.contains("REACTION_INVALID")
-        || body_text.contains("REACTION_NOT_AVAILABLE")
-        || body_text.contains("REACTION_TOO_MANY")
+    body_text.contains("REACTION_INVALID") || body_text.contains("REACTION_NOT_AVAILABLE")
 }
 
 impl TelegramAdapter {
@@ -2186,13 +2185,16 @@ mod tests {
         assert!(is_terminal_reaction_error(
             r#"{"description":"Bad Request: REACTION_NOT_AVAILABLE"}"#
         ));
-        assert!(is_terminal_reaction_error(
-            r#"{"description":"Bad Request: REACTION_TOO_MANY"}"#
-        ));
     }
 
     #[test]
     fn test_is_terminal_reaction_error_rejects_transient() {
+        // REACTION_TOO_MANY is a per-message rate-limit, not permanent.
+        // Caching it would suppress valid future reactions on that emoji
+        // for the lifetime of the process — see issue #1133.
+        assert!(!is_terminal_reaction_error(
+            r#"{"description":"Bad Request: REACTION_TOO_MANY"}"#
+        ));
         assert!(!is_terminal_reaction_error(
             r#"{"description":"Too Many Requests: retry after 5"}"#
         ));
@@ -2201,6 +2203,34 @@ mod tests {
         ));
         assert!(!is_terminal_reaction_error(r#"{"ok":true}"#));
         assert!(!is_terminal_reaction_error(""));
+    }
+
+    #[tokio::test]
+    async fn test_fire_reaction_does_not_cache_reaction_too_many() {
+        // Regression test for #1133: REACTION_TOO_MANY is a transient
+        // per-message rate-limit and must NOT be cached as a permanent
+        // rejection. Caching it would suppress valid future reactions on
+        // that (chat_id, emoji) pair for the lifetime of the process.
+        let stub = StubServer::new(vec![(
+            400,
+            r#"{"ok":false,"error_code":400,"description":"Bad Request: REACTION_TOO_MANY"}"#,
+        )]);
+        let base = spawn_stub_server(stub.clone()).await;
+        let adapter = test_adapter(base);
+
+        adapter.fire_reaction(999, 1, "⏳");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(stub.hit_count(), 1);
+
+        let cached = adapter
+            .rejected_reactions
+            .lock()
+            .map(|s| s.contains(&(999_i64, "⏳".to_string())))
+            .unwrap_or(true);
+        assert!(
+            !cached,
+            "REACTION_TOO_MANY is transient and must NOT populate the cache"
+        );
     }
 
     #[tokio::test]
