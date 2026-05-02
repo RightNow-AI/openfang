@@ -69,12 +69,26 @@ pub fn load_config(path: Option<&Path>) -> KernelConfig {
                         }
                     }
 
+                    // GAP-012 (Tier 1): pre-validate the [[bindings]] array so a
+                    // single malformed entry doesn't poison the whole config and
+                    // force a fall-back to defaults (which would silently unbind
+                    // every agent). Bad entries are logged at ERROR and dropped;
+                    // survivors are passed through to typed deserialization.
+                    lenient_extract_bindings(&mut root_value);
+
                     match root_value.try_into::<KernelConfig>() {
                         Ok(config) => {
                             info!(path = %config_path.display(), "Loaded configuration");
                             return config;
                         }
                         Err(e) => {
+                            // TODO(GAP-012-Tier-2): this fallback still silently
+                            // swaps the user's intent for `KernelConfig::default()`
+                            // on any non-binding deserialization failure. Tier 1
+                            // closes the binding-shape footgun; Tier 2 should
+                            // surface remaining failures via a health endpoint
+                            // and/or stderr banner so the silent-default path
+                            // can't hide a broken config.
                             tracing::warn!(
                                 error = %e,
                                 path = %config_path.display(),
@@ -240,6 +254,89 @@ pub fn deep_merge_toml(base: &mut toml::Value, overlay: &toml::Value) {
             *base = overlay.clone();
         }
     }
+}
+
+/// Lenient pre-pass over the `[[bindings]]` array (GAP-012 Tier 1).
+///
+/// Strict whole-config deserialization is fragile: any one malformed binding
+/// (e.g. a typo'd field that trips `deny_unknown_fields`) causes
+/// `try_into::<KernelConfig>()` to fail, which the caller then handles by
+/// falling back to `KernelConfig::default()` — silently unbinding *every*
+/// agent. That's the worst possible failure mode for a routing config: the
+/// user's intent is silently discarded, with only a single line in the logs.
+///
+/// This pass runs *before* typed deserialization. It walks the bindings
+/// array entry-by-entry, attempts to deserialize each into `AgentBinding`,
+/// logs malformed entries at ERROR with index + agent name + serde error,
+/// and replaces the array with the survivors. The downstream
+/// `try_into::<KernelConfig>()` then sees a clean array and succeeds.
+///
+/// `deny_unknown_fields` on `AgentBinding`/`BindingMatchRule` still applies
+/// per-entry — typos in surviving bindings would still produce errors here
+/// and be dropped. The strict-field guarantee is preserved at the entry
+/// level; only the all-or-nothing behavior is relaxed.
+///
+/// No-op if `root_value` is not a table or has no `bindings` array.
+fn lenient_extract_bindings(root_value: &mut toml::Value) {
+    use openfang_types::config::AgentBinding;
+
+    let tbl = match root_value {
+        toml::Value::Table(t) => t,
+        _ => return,
+    };
+
+    // Replace the array in place if (and only if) `bindings` is present
+    // and is an array. Anything else (missing, wrong type) we leave alone
+    // so the typed deserializer can produce its own targeted error.
+    let original = match tbl.get("bindings") {
+        Some(toml::Value::Array(arr)) => arr.clone(),
+        _ => return,
+    };
+
+    let mut survivors: Vec<toml::Value> = Vec::with_capacity(original.len());
+    let mut dropped = 0usize;
+
+    for (idx, entry) in original.into_iter().enumerate() {
+        match entry.clone().try_into::<AgentBinding>() {
+            Ok(_) => survivors.push(entry),
+            Err(e) => {
+                dropped += 1;
+                // Lazy: only allocate the agent-name fallback string when we
+                // actually need it for an error log. The happy path skips this.
+                let agent_name = entry
+                    .get("agent")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<unknown>")
+                    .to_string();
+                tracing::error!(
+                    binding_index = idx,
+                    agent = %agent_name,
+                    error = %e,
+                    "Skipping malformed binding #{} (agent='{}'): {}. \
+                     Other bindings will continue to load. \
+                     Fix the entry and reload to restore routing.",
+                    idx,
+                    agent_name,
+                    e
+                );
+            }
+        }
+    }
+
+    if dropped > 0 {
+        // Per-entry ERRORs above carry the root cause; this summary is a
+        // grep-friendly one-liner, so WARN keeps ERROR == per-binding cause.
+        tracing::warn!(
+            dropped,
+            survivors = survivors.len(),
+            "Dropped {} malformed binding(s); {} binding(s) will load. \
+             See preceding ERROR lines for per-binding details.",
+            dropped,
+            survivors.len()
+        );
+    }
+
+    tbl.insert("bindings".to_string(), toml::Value::Array(survivors));
 }
 
 /// Get the default config file path.
@@ -440,6 +537,224 @@ mod tests {
 
         let config = load_config(Some(&root));
         assert_eq!(config.log_level, "info"); // defaults
+    }
+
+    // ─── GAP-012 Tier 1: lenient bindings extraction ───────────────────
+
+    #[test]
+    fn test_lenient_bindings_drops_typo_keeps_rest() {
+        // Two bindings; the first has a typo'd field (`channnel_id`) that
+        // `BindingMatchRule`'s `deny_unknown_fields` would reject. The second
+        // is well-formed. Pre-fix behavior: whole config falls back to
+        // defaults (zero bindings). Post-fix: bad one dropped, good one loads.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"
+log_level = "info"
+
+[[bindings]]
+agent = "researcher-broken"
+match_rule = {{ channel = "discord", channnel_id = "123" }}
+
+[[bindings]]
+agent = "researcher-good"
+match_rule = {{ channel = "discord", channel_id = "456" }}
+"#
+        )
+        .unwrap();
+        drop(f);
+
+        let config = load_config(Some(&path));
+        assert_eq!(
+            config.bindings.len(),
+            1,
+            "expected exactly the well-formed binding to survive"
+        );
+        assert_eq!(config.bindings[0].agent, "researcher-good");
+        assert_eq!(
+            config.bindings[0].match_rule.channel_id.as_deref(),
+            Some("456")
+        );
+    }
+
+    #[test]
+    fn test_lenient_bindings_all_valid_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"
+log_level = "info"
+
+[[bindings]]
+agent = "a"
+match_rule = {{ channel = "discord", channel_id = "1" }}
+
+[[bindings]]
+agent = "b"
+match_rule = {{ channel = "telegram", channel_id = "2" }}
+"#
+        )
+        .unwrap();
+        drop(f);
+
+        let config = load_config(Some(&path));
+        assert_eq!(config.bindings.len(), 2);
+        assert_eq!(config.bindings[0].agent, "a");
+        assert_eq!(config.bindings[1].agent, "b");
+    }
+
+    #[test]
+    fn test_lenient_bindings_all_malformed_yields_empty_but_keeps_rest_of_config() {
+        // Every binding is broken, but the rest of the config (log_level,
+        // api_listen) must still load. Pre-fix: total fallback to defaults.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"
+log_level = "trace"
+api_listen = "127.0.0.1:9999"
+
+[[bindings]]
+agent = "broken-1"
+match_rule = {{ channnel_id = "1" }}
+
+[[bindings]]
+agent = "broken-2"
+match_rule = {{ peer_idd = "u" }}
+"#
+        )
+        .unwrap();
+        drop(f);
+
+        let config = load_config(Some(&path));
+        assert!(config.bindings.is_empty(), "all bindings should be dropped");
+        assert_eq!(
+            config.log_level, "trace",
+            "non-binding config must still load"
+        );
+        assert_eq!(config.api_listen, "127.0.0.1:9999");
+    }
+
+    #[test]
+    fn test_lenient_bindings_no_bindings_section_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "log_level = \"info\"").unwrap();
+        drop(f);
+
+        let config = load_config(Some(&path));
+        assert!(config.bindings.is_empty());
+        assert_eq!(config.log_level, "info");
+    }
+
+    #[test]
+    fn test_lenient_bindings_missing_agent_field_dropped() {
+        // A binding missing the required `agent` field can't deserialize at
+        // all; it should be dropped (logged as agent='<unknown>') and the
+        // good one should still load.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"
+[[bindings]]
+match_rule = {{ channel = "discord" }}
+
+[[bindings]]
+agent = "good"
+match_rule = {{ channel = "discord", channel_id = "1" }}
+"#
+        )
+        .unwrap();
+        drop(f);
+
+        let config = load_config(Some(&path));
+        assert_eq!(config.bindings.len(), 1);
+        assert_eq!(config.bindings[0].agent, "good");
+    }
+
+    #[test]
+    fn test_lenient_bindings_preserves_survivor_order() {
+        // Three bindings with the *middle* one malformed. Survivors must
+        // retain their original relative order (1st, 3rd) — match-rule
+        // routing can be order-sensitive (first-match-wins), so silently
+        // reshuffling on a drop would be a subtle regression.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"
+[[bindings]]
+agent = "first"
+match_rule = {{ channel = "discord", channel_id = "1" }}
+
+[[bindings]]
+agent = "middle-broken"
+match_rule = {{ channnel_id = "2" }}
+
+[[bindings]]
+agent = "third"
+match_rule = {{ channel = "telegram", channel_id = "3" }}
+"#
+        )
+        .unwrap();
+        drop(f);
+
+        let config = load_config(Some(&path));
+        assert_eq!(config.bindings.len(), 2, "middle binding should be dropped");
+        assert_eq!(
+            config.bindings[0].agent, "first",
+            "first survivor must remain first"
+        );
+        assert_eq!(
+            config.bindings[1].agent, "third",
+            "third must remain after first (order preserved)"
+        );
+    }
+
+    #[test]
+    fn test_lenient_bindings_top_level_field_typo_dropped() {
+        // Operator typos `agnt` instead of `agent` on the binding itself
+        // (not inside `match_rule`). `AgentBinding`'s `deny_unknown_fields`
+        // should reject the entry, the lenient pass should drop it, and
+        // the well-formed sibling should still load. This is the more
+        // common operator mistake than missing-field-entirely, so we lock
+        // the behavior in explicitly.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"
+[[bindings]]
+agnt = "typo-at-top-level"
+match_rule = {{ channel = "discord", channel_id = "1" }}
+
+[[bindings]]
+agent = "good"
+match_rule = {{ channel = "discord", channel_id = "2" }}
+"#
+        )
+        .unwrap();
+        drop(f);
+
+        let config = load_config(Some(&path));
+        assert_eq!(
+            config.bindings.len(),
+            1,
+            "binding with top-level field typo should be dropped"
+        );
+        assert_eq!(config.bindings[0].agent, "good");
     }
 
     #[test]
