@@ -287,6 +287,7 @@ pub fn resolve_attachments(
                 blocks.push(openfang_types::message::ContentBlock::Image {
                     media_type: content_type,
                     data: b64,
+                    source_url: None,
                 });
             }
             Err(e) => {
@@ -520,6 +521,7 @@ pub async fn get_agent_session(
                                 openfang_types::message::ContentBlock::Image {
                                     media_type,
                                     data,
+                                    ..
                                 } => {
                                     texts.push("[Image]".to_string());
                                     // Persist image to upload dir so it can be
