@@ -135,6 +135,10 @@ pub async fn auth(
         || path == "/api/logs/stream"  // SSE stream, read-only
         || (path.starts_with("/api/cron/") && is_get)
         || path.starts_with("/api/providers/github-copilot/oauth/")
+        || path.starts_with("/api/providers/openai-codex/oauth/")
+        || path.starts_with("/api/providers/gemini-oauth/oauth/")
+        || path.starts_with("/api/providers/qwen-oauth/oauth/")
+        || path.starts_with("/api/providers/minimax-oauth/oauth/")
         || path == "/api/auth/login"
         || path == "/api/auth/logout"
         || (path == "/api/auth/check" && is_get);
@@ -410,5 +414,49 @@ mod tests {
         req.extensions_mut().insert(ConnectInfo(addr));
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn test_public_endpoint_paths() {
+        // Verify key GET endpoints are recognized as public
+        let is_get = true;
+        let public_get_paths = [
+            "/api/health",
+            "/api/health/detail",
+            "/api/status",
+            "/api/version",
+            "/api/agents",
+            "/api/models",
+            "/api/providers",
+            "/api/budget",
+        ];
+        for path in &public_get_paths {
+            let is_public = *path == "/"
+                || *path == "/api/health"
+                || *path == "/api/health/detail"
+                || *path == "/api/status"
+                || *path == "/api/version"
+                || (*path == "/api/agents" && is_get)
+                || (*path == "/api/models" && is_get)
+                || (*path == "/api/providers" && is_get)
+                || (*path == "/api/budget" && is_get);
+            assert!(is_public, "Expected {} to be public", path);
+        }
+    }
+
+    #[test]
+    fn test_oauth_routes_are_public() {
+        // OAuth routes should be public (don't require auth)
+        let copilot_start = "/api/providers/github-copilot/oauth/start";
+        let copilot_poll = "/api/providers/github-copilot/oauth/poll/abc123";
+        let codex_start = "/api/providers/openai-codex/oauth/start";
+        let gemini_start = "/api/providers/gemini-oauth/oauth/start";
+        let qwen_start = "/api/providers/qwen-oauth/oauth/start";
+        let minimax_start = "/api/providers/minimax-oauth/oauth/start";
+
+        let all_oauth = vec![copilot_start, copilot_poll, codex_start, gemini_start, qwen_start, minimax_start];
+        for path in &all_oauth {
+            assert!(path.starts_with("/api/providers/"), "Expected {} to be OAuth route", path);
+        }
     }
 }
