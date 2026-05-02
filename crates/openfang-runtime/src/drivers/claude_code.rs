@@ -10,10 +10,14 @@
 
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
+use base64::Engine;
 use dashmap::DashMap;
-use openfang_types::message::{ContentBlock, Role, StopReason, TokenUsage};
+use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Once;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tracing::{debug, info, warn};
 
@@ -52,6 +56,110 @@ const SENSITIVE_SUFFIXES: &[&str] = &["_SECRET", "_TOKEN", "_PASSWORD"];
 /// Default subprocess timeout in seconds (5 minutes).
 const DEFAULT_MESSAGE_TIMEOUT_SECS: u64 = 300;
 
+/// TTL for materialized image tmpfiles (24 hours). Files older than this
+/// are swept on driver init.
+const IMAGE_TMP_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// One-shot guard so the TTL sweep only fires once per process.
+static IMAGE_TMP_SWEEP_ONCE: Once = Once::new();
+
+/// Resolve the directory used for materializing image attachments.
+///
+/// Lives under `$HOME/.openfang/tmp/images` so it travels with the OpenFang
+/// install. Falls back to the OS temp dir when `$HOME` isn't set (which
+/// shouldn't happen in our deployed daemon but is handled defensively).
+fn image_tmp_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        let mut p = PathBuf::from(home);
+        p.push(".openfang");
+        p.push("tmp");
+        p.push("images");
+        p
+    } else {
+        let mut p = std::env::temp_dir();
+        p.push("openfang-images");
+        p
+    }
+}
+
+/// Map a MIME type to a sensible filename extension.
+fn ext_for_mime(media_type: &str) -> &'static str {
+    match media_type.to_ascii_lowercase().as_str() {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/heic" => "heic",
+        "image/heif" => "heif",
+        "image/bmp" => "bmp",
+        "image/svg+xml" => "svg",
+        _ => "bin",
+    }
+}
+
+/// Decode the base64 image and write it to a content-addressed file under
+/// `dir`. Idempotent: if a file with the same content hash already exists,
+/// the existing path is returned without rewriting. Returns `None` on
+/// decode or I/O failure (caller falls back to the textual placeholder).
+fn materialize_image(media_type: &str, data: &str, dir: &Path) -> Option<PathBuf> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .ok()?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let hash = hasher.finalize();
+    let hex: String = hash.iter().take(16).map(|b| format!("{:02x}", b)).collect();
+    let filename = format!("{hex}.{ext}", ext = ext_for_mime(media_type));
+    let path = dir.join(filename);
+    if path.exists() {
+        return Some(path);
+    }
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        warn!(dir = ?dir, error = %e, "failed to create claude_code image tmp dir");
+        return None;
+    }
+    if let Err(e) = std::fs::write(&path, &bytes) {
+        warn!(path = ?path, error = %e, "failed to write claude_code image tmpfile");
+        return None;
+    }
+    Some(path)
+}
+
+/// Delete image tmpfiles older than [`IMAGE_TMP_TTL_SECS`]. Best-effort:
+/// any error is logged at debug and the sweep moves on.
+fn sweep_old_image_tmpfiles(dir: &Path) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            debug!(dir = ?dir, error = %e, "image tmp sweep: read_dir failed (likely missing dir, fine)");
+            return;
+        }
+    };
+    let now = std::time::SystemTime::now();
+    let ttl = std::time::Duration::from_secs(IMAGE_TMP_TTL_SECS);
+    let mut removed = 0u32;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else { continue };
+        if let Ok(age) = now.duration_since(modified) {
+            if age > ttl {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    debug!(path = ?path, error = %e, "image tmp sweep: remove failed");
+                } else {
+                    removed += 1;
+                }
+            }
+        }
+    }
+    if removed > 0 {
+        info!(removed, "swept stale claude_code image tmpfiles");
+    }
+}
+
 /// LLM driver that delegates to the Claude Code CLI.
 pub struct ClaudeCodeDriver {
     cli_path: String,
@@ -77,6 +185,12 @@ impl ClaudeCodeDriver {
                  OpenFang's own capability/RBAC system enforces access control."
             );
         }
+
+        // Best-effort sweep of stale image tmpfiles, once per process.
+        IMAGE_TMP_SWEEP_ONCE.call_once(|| {
+            let dir = image_tmp_dir();
+            std::thread::spawn(move || sweep_old_image_tmpfiles(&dir));
+        });
 
         Self {
             cli_path: cli_path
@@ -131,6 +245,7 @@ impl ClaudeCodeDriver {
 
     /// Build a text prompt from the completion request messages.
     fn build_prompt(request: &CompletionRequest) -> String {
+        let tmp_dir = image_tmp_dir();
         let mut parts = Vec::new();
 
         for msg in &request.messages {
@@ -139,13 +254,72 @@ impl ClaudeCodeDriver {
                 Role::Assistant => "Assistant",
                 Role::System => "System",
             };
-            let text = msg.content.text_content();
-            if !text.is_empty() {
-                parts.push(format!("[{role_label}]\n{text}"));
+            let rendered = Self::render_content(&msg.content, Some(&tmp_dir));
+            if !rendered.is_empty() {
+                parts.push(format!("[{role_label}]\n{rendered}"));
             }
         }
 
         parts.join("\n\n")
+    }
+
+    /// Render message content for the text-only CLI prompt.
+    ///
+    /// Text blocks pass through verbatim. Image blocks are materialized to
+    /// an on-disk tmpfile (when `image_dir` is provided) so the model can
+    /// view them via the CLI's `Read` tool — Claude Code is multimodal and
+    /// will load the file as native image content. We render a directive
+    /// telling the model exactly which path to read, plus the original
+    /// `source_url` (e.g. Discord CDN) when known. If materialization
+    /// fails or `image_dir` is `None` (test path), we fall back to the
+    /// legacy textual placeholder so the model at least knows an
+    /// attachment arrived. ToolUse/ToolResult/Thinking are omitted —
+    /// the CLI manages its own tool loop.
+    fn render_content(content: &MessageContent, image_dir: Option<&Path>) -> String {
+        match content {
+            MessageContent::Text(s) => s.clone(),
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text, .. } => {
+                        if text.is_empty() {
+                            None
+                        } else {
+                            Some(text.clone())
+                        }
+                    }
+                    ContentBlock::Image {
+                        media_type,
+                        data,
+                        source_url,
+                    } => {
+                        // base64 → ~3/4 the length in decoded bytes.
+                        let approx_kb = (data.len().saturating_mul(3) / 4) / 1024;
+                        let url_suffix = match source_url {
+                            Some(u) => format!(" (original: {u})"),
+                            None => String::new(),
+                        };
+                        if let Some(dir) = image_dir {
+                            if let Some(path) = materialize_image(&media_type, &data, dir) {
+                                return Some(format!(
+                                    "[attachment: {media_type} image, ~{approx_kb} KB — view with the Read tool at {path}{url_suffix}]",
+                                    path = path.display()
+                                ));
+                            }
+                        }
+                        // Fallback: at least surface the URL if we have one.
+                        Some(format!(
+                            "[attachment: {media_type} image, ~{approx_kb} KB — not viewable on this provider{url_suffix}]"
+                        ))
+                    }
+                    ContentBlock::ToolUse { .. }
+                    | ContentBlock::ToolResult { .. }
+                    | ContentBlock::Thinking { .. }
+                    | ContentBlock::Unknown => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
     }
 
     /// Map a model ID like "claude-code/opus" to CLI --model flag value.
@@ -724,6 +898,83 @@ mod tests {
         assert!(!prompt.contains("You are helpful."));
         assert!(prompt.contains("[User]"));
         assert!(prompt.contains("Hello"));
+    }
+
+    #[test]
+    fn test_build_prompt_renders_image_attachment_marker() {
+        use openfang_types::message::{ContentBlock, Message, MessageContent};
+
+        // ~12 KB of base64 — decoded ~9 KB.
+        let fake_b64 = "A".repeat(12 * 1024);
+        let request = CompletionRequest {
+            model: "claude-code/sonnet".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::Text {
+                        text: "what's in this?".to_string(),
+                        provider_metadata: None,
+                    },
+                    ContentBlock::Image {
+                        media_type: "image/png".to_string(),
+                        data: fake_b64,
+                        source_url: None,
+                    },
+                ]),
+            }],
+            tools: vec![],
+            max_tokens: 1024,
+            temperature: 0.7,
+            system: None,
+            thinking: None,
+        };
+
+        let prompt = ClaudeCodeDriver::build_prompt(&request);
+        assert!(prompt.contains("what's in this?"), "text preserved");
+        assert!(
+            prompt.contains("[attachment: image/png image"),
+            "image rendered as synthetic attachment marker, got: {prompt}"
+        );
+        // Either materialized to a tmpfile (preferred) or fell back to
+        // the legacy "not viewable" placeholder. Both are acceptable
+        // outcomes for this test; we just need the marker to be emitted.
+        assert!(
+            prompt.contains("view with the Read tool at")
+                || prompt.contains("not viewable on this provider"),
+            "marker either points at a tmpfile or explains the limitation, got: {prompt}"
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_image_only_still_emits_marker() {
+        use openfang_types::message::{ContentBlock, Message, MessageContent};
+
+        let request = CompletionRequest {
+            model: "claude-code/sonnet".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::Image {
+                    media_type: "image/jpeg".to_string(),
+                    data: "Zm9v".to_string(),
+                    source_url: Some("https://cdn.example/foo.jpg".to_string()),
+                }]),
+            }],
+            tools: vec![],
+            max_tokens: 1024,
+            temperature: 0.7,
+            system: None,
+            thinking: None,
+        };
+
+        let prompt = ClaudeCodeDriver::build_prompt(&request);
+        assert!(
+            prompt.contains("[User]"),
+            "user role label emitted even with image-only content, got: {prompt}"
+        );
+        assert!(
+            prompt.contains("[attachment: image/jpeg image"),
+            "bare image renders marker, got: {prompt}"
+        );
     }
 
     #[test]

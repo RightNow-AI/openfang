@@ -1453,7 +1453,14 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
         }
     }
 
-    blocks.push(ContentBlock::Image { media_type, data });
+    blocks.push(ContentBlock::Image {
+        media_type,
+        data,
+        // Preserve the original CDN/source URL so text-only drivers (e.g.
+        // Claude Code) can reference it, and vision-capable drivers retain
+        // it for diagnostics.
+        source_url: Some(url.to_string()),
+    });
 
     blocks
 }
@@ -2233,6 +2240,7 @@ mod tests {
             ContentBlock::Image {
                 media_type: "image/jpeg".to_string(),
                 data: "base64data".to_string(),
+                source_url: None,
             },
         ];
 
@@ -2255,6 +2263,7 @@ mod tests {
         let blocks = vec![ContentBlock::Image {
             media_type: "image/png".to_string(),
             data: "base64data".to_string(),
+            source_url: None,
         }];
 
         // Default impl sends empty text when no text blocks
@@ -2457,5 +2466,66 @@ mod tests {
             media_type_from_url("https://api.telegram.org/file/bot123/photos/file_42"),
             "image/jpeg"
         );
+    }
+
+    /// Regression test: `download_image_to_blocks` must populate the
+    /// `source_url` field on the resulting `ContentBlock::Image`. Text-only
+    /// drivers (e.g. Claude Code) rely on this URL to reference the image
+    /// without re-uploading bytes; a regression here silently breaks vision
+    /// for those drivers.
+    ///
+    /// Spins up a local TCP listener that serves a stub PNG response so we
+    /// can drive the function end-to-end without external dependencies.
+    #[tokio::test]
+    async fn download_image_to_blocks_populates_source_url() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/test.png");
+
+        // Body is arbitrary — the function trusts the Content-Type header
+        // when it starts with `image/`. PNG signature is included so any
+        // future magic-byte fallback also matches.
+        let body: &[u8] = b"\x89PNG\r\n\x1a\nfakepngbytes";
+        let response_head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            // Drain the request — we don't care what reqwest sent.
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            sock.write_all(response_head.as_bytes()).await.unwrap();
+            sock.write_all(body).await.unwrap();
+            let _ = sock.shutdown().await;
+        });
+
+        let blocks = download_image_to_blocks(&url, Some("hello")).await;
+
+        // Caption first, image second.
+        assert_eq!(blocks.len(), 2, "expected caption + image blocks");
+        match &blocks[0] {
+            ContentBlock::Text { text, .. } => assert_eq!(text, "hello"),
+            other => panic!("expected text caption block, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::Image {
+                source_url,
+                media_type,
+                ..
+            } => {
+                assert_eq!(
+                    source_url.as_deref(),
+                    Some(url.as_str()),
+                    "source_url must round-trip the fetched URL"
+                );
+                assert_eq!(media_type, "image/png");
+            }
+            other => panic!("expected image block, got {other:?}"),
+        }
     }
 }

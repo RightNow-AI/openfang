@@ -55,6 +55,12 @@ pub enum ContentBlock {
         media_type: String,
         /// Base64-encoded image data.
         data: String,
+        /// Original source URL (e.g. Discord CDN), if the image was
+        /// materialized from a remote attachment. Preserved alongside
+        /// `data` so text-only drivers can reference the URL and
+        /// vision-capable drivers retain it for diagnostics.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_url: Option<String>,
     },
     /// A tool use request from the assistant.
     #[serde(rename = "tool_use")]
@@ -325,6 +331,7 @@ mod tests {
         let block = ContentBlock::Image {
             media_type: "image/png".to_string(),
             data: "base64data".to_string(),
+            source_url: None,
         };
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "image");
@@ -461,6 +468,7 @@ mod tests {
             ContentBlock::Image {
                 media_type: "image/jpeg".to_string(),
                 data: "base64data".to_string(),
+                source_url: None,
             },
         ];
         let msg = Message::user_with_blocks(blocks);

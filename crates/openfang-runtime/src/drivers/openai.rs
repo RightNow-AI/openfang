@@ -491,7 +491,7 @@ impl LlmDriver for OpenAIDriver {
                             ContentBlock::Text { text, .. } => {
                                 parts.push(OaiContentPart::Text { text: text.clone() });
                             }
-                            ContentBlock::Image { media_type, data } => {
+                            ContentBlock::Image { media_type, data, .. } => {
                                 parts.push(OaiContentPart::ImageUrl {
                                     image_url: OaiImageUrl {
                                         url: format!("data:{media_type};base64,{data}"),
