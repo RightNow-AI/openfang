@@ -400,8 +400,31 @@ fn build_conversation_text(messages: &[Message], config: &CompactionConfig) -> S
                             conversation_text
                                 .push_str(&format!("[Tool result ({status}): {preview}]\n\n"));
                         }
-                        ContentBlock::Image { media_type, .. } => {
-                            conversation_text.push_str(&format!("[Image: {media_type}]\n\n"));
+                        ContentBlock::Image {
+                            media_type,
+                            source_url,
+                            ..
+                        } => {
+                            // Preserve the original CDN URL across compaction so the
+                            // outbound Discord path (PR-C) can re-attach the image by
+                            // re-fetching it. Only http(s) URLs are exposed: local
+                            // `file://` tmpfile paths are an internal materialization
+                            // detail and shouldn't leak into compacted summaries that
+                            // may be persisted, logged, or sent across processes.
+                            match source_url.as_deref() {
+                                Some(url)
+                                    if url.starts_with("http://")
+                                        || url.starts_with("https://") =>
+                                {
+                                    conversation_text.push_str(&format!(
+                                        "[Image: {media_type} @ {url}]\n\n"
+                                    ));
+                                }
+                                _ => {
+                                    conversation_text
+                                        .push_str(&format!("[Image: {media_type}]\n\n"));
+                                }
+                            }
                         }
                         ContentBlock::Thinking { .. } => {}
                         ContentBlock::Unknown => {}
@@ -1277,6 +1300,75 @@ mod tests {
         assert!(text.contains("web_search"));
         assert!(text.contains("Tool result (OK)"));
         assert!(text.contains("[Image: image/png]"));
+    }
+
+    #[test]
+    fn test_build_conversation_text_image_source_url_https() {
+        // https:// CDN URL is exposed post-compaction so the outbound path
+        // can re-fetch the image.
+        let config = CompactionConfig::default();
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: "base64data".to_string(),
+                source_url: Some("https://cdn.discordapp.com/attachments/x/y.png".to_string()),
+            }]),
+        }];
+        let text = build_conversation_text(&messages, &config);
+        assert!(
+            text.contains("[Image: image/png @ https://cdn.discordapp.com/attachments/x/y.png]"),
+            "https source_url should be preserved, got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_build_conversation_text_image_source_url_http() {
+        // Plain http (rare but valid) is also exposed.
+        let config = CompactionConfig::default();
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::Image {
+                media_type: "image/jpeg".to_string(),
+                data: "base64data".to_string(),
+                source_url: Some("http://example.com/foo.jpg".to_string()),
+            }]),
+        }];
+        let text = build_conversation_text(&messages, &config);
+        assert!(
+            text.contains("[Image: image/jpeg @ http://example.com/foo.jpg]"),
+            "http source_url should be preserved, got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_build_conversation_text_image_source_url_file_falls_back() {
+        // file:// URLs (local tmpfile materialization) MUST NOT leak into
+        // compacted summaries — fall back to the legacy mime-only form.
+        let config = CompactionConfig::default();
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: "base64data".to_string(),
+                source_url: Some(
+                    "file:///Users/x/.openfang/tmp/images/abc.png".to_string(),
+                ),
+            }]),
+        }];
+        let text = build_conversation_text(&messages, &config);
+        assert!(
+            text.contains("[Image: image/png]"),
+            "file:// source_url should fall back to legacy form, got: {text}"
+        );
+        assert!(
+            !text.contains("file://"),
+            "file:// path must not leak post-compaction, got: {text}"
+        );
+        assert!(
+            !text.contains(".openfang"),
+            "local tmpfile path must not leak post-compaction, got: {text}"
+        );
     }
 
     #[test]
