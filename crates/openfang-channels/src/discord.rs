@@ -14,10 +14,10 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use url::Url;
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
+use url::Url;
 use zeroize::Zeroizing;
 
 const DISCORD_API_BASE: &str = "https://discord.com/api/v10";
@@ -49,8 +49,7 @@ const URL_FETCH_MAX_REDIRECTS: usize = 3;
 /// User-Agent we identify as on outbound URL fetches. Pinned so a future test
 /// can assert on it; remote operators looking at access logs see a single
 /// stable identifier instead of reqwest's default.
-const URL_FETCH_USER_AGENT: &str =
-    concat!("openfang-channels-discord/", env!("CARGO_PKG_VERSION"));
+const URL_FETCH_USER_AGENT: &str = concat!("openfang-channels-discord/", env!("CARGO_PKG_VERSION"));
 
 /// Discord Gateway opcodes.
 mod opcode {
@@ -197,6 +196,59 @@ fn check_url_scheme_and_literal_ip(u: &Url) -> Result<(), String> {
     Ok(())
 }
 
+/// Abstraction over "fetch a URL into memory" so production and tests share
+/// the same wire-level HTTP code while differing only in whether SSRF
+/// validation runs first.
+///
+/// - [`ProductionFetcher`] performs scheme + DNS-resolved IP checks via
+///   [`resolve_and_check_host`] before issuing the request.
+/// - [`PermissiveFetcher`] (test-only) skips the SSRF preflight so tests
+///   can hit `127.0.0.1` fixture servers via the same wire path.
+///
+/// Returns the body as `Bytes` plus the response's `Content-Type` with any
+/// MIME parameters (e.g. `; charset=utf-8`) stripped.
+#[async_trait]
+trait Fetcher: Send + Sync {
+    async fn fetch(
+        &self,
+        url: &str,
+    ) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>>;
+}
+
+/// Production fetcher: parses the URL, runs the SSRF preflight, then performs
+/// the HTTP fetch via [`do_http_fetch`].
+struct ProductionFetcher;
+
+#[async_trait]
+impl Fetcher for ProductionFetcher {
+    async fn fetch(
+        &self,
+        url: &str,
+    ) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>> {
+        let parsed = Url::parse(url).map_err(|e| format!("URL fetch refused: parse error: {e}"))?;
+        resolve_and_check_host(&parsed).await?;
+        do_http_fetch(&parsed).await
+    }
+}
+
+/// Test-only fetcher that performs the same wire fetch but skips the SSRF
+/// preflight, so tests can point `Image{url}` / `File{url}` blocks at local
+/// stub servers without bypassing the production code path.
+#[cfg(test)]
+struct PermissiveFetcher;
+
+#[cfg(test)]
+#[async_trait]
+impl Fetcher for PermissiveFetcher {
+    async fn fetch(
+        &self,
+        url: &str,
+    ) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>> {
+        let parsed = Url::parse(url).map_err(|e| format!("URL fetch refused: parse error: {e}"))?;
+        do_http_fetch(&parsed).await
+    }
+}
+
 /// Resolve the URL's host (DNS if hostname; identity if IP literal) and reject
 /// if any resolved address fails the SSRF check. Performs both the scheme
 /// check and the per-IP check.
@@ -206,7 +258,12 @@ async fn resolve_and_check_host(u: &Url) -> Result<(), String> {
         Some(url::Host::Domain(d)) => d.to_string(),
         // IP literals already passed the literal-IP check above; no DNS needed.
         Some(_) => return Ok(()),
-        None => return Err(format!("URL fetch refused: missing host for {}", redact_url(u))),
+        None => {
+            return Err(format!(
+                "URL fetch refused: missing host for {}",
+                redact_url(u)
+            ))
+        }
     };
     let port = u.port_or_known_default().unwrap_or(0);
     let hostport = format!("{host}:{port}");
@@ -245,10 +302,11 @@ pub struct DiscordAdapter {
     /// `DISCORD_API_BASE`). Set by tests that spin up a local stub server.
     #[cfg(test)]
     api_base_override: Option<String>,
-    /// When `true`, skip the SSRF guard in `download_url_to_bytes` so tests
-    /// can point `Image{url}` / `File{url}` at a local stub server.
-    #[cfg(test)]
-    ssrf_bypass: bool,
+    /// Resolver for outbound URL fetches (`Image{url}` / `File{url}`). In
+    /// production this is [`ProductionFetcher`] which runs the SSRF preflight;
+    /// tests can swap in [`PermissiveFetcher`] to point at local stubs without
+    /// bypassing the wire path.
+    fetcher: Arc<dyn Fetcher>,
 }
 
 impl DiscordAdapter {
@@ -274,8 +332,7 @@ impl DiscordAdapter {
             resume_gateway_url: Arc::new(RwLock::new(None)),
             #[cfg(test)]
             api_base_override: None,
-            #[cfg(test)]
-            ssrf_bypass: false,
+            fetcher: Arc::new(ProductionFetcher),
         }
     }
 
@@ -283,7 +340,9 @@ impl DiscordAdapter {
     /// present. In production this is always `DISCORD_API_BASE`.
     #[cfg(test)]
     fn api_base(&self) -> &str {
-        self.api_base_override.as_deref().unwrap_or(DISCORD_API_BASE)
+        self.api_base_override
+            .as_deref()
+            .unwrap_or(DISCORD_API_BASE)
     }
 
     #[cfg(not(test))]
@@ -389,8 +448,8 @@ impl DiscordAdapter {
             .collect();
 
         let build_form = || -> Result<reqwest::multipart::Form, Box<dyn std::error::Error>> {
-            let mut form = reqwest::multipart::Form::new()
-                .text("payload_json", payload_json.clone());
+            let mut form =
+                reqwest::multipart::Form::new().text("payload_json", payload_json.clone());
             for (i, (bytes, body_len, filename, mime_type)) in parts_meta.iter().enumerate() {
                 let body = reqwest::Body::from(bytes.clone());
                 let file_part = reqwest::multipart::Part::stream_with_length(body, *body_len)
@@ -446,18 +505,13 @@ impl DiscordAdapter {
                 warn!(
                     "Discord sendAttachments rate-limited; retrying after {retry_after_secs:.2}s"
                 );
-                tokio::time::sleep(Duration::from_millis(
-                    (retry_after_secs * 1000.0) as u64,
-                ))
-                .await;
+                tokio::time::sleep(Duration::from_millis((retry_after_secs * 1000.0) as u64)).await;
                 continue;
             }
 
             let body_text = resp.text().await.unwrap_or_default();
             warn!("Discord sendAttachments failed ({status}): {body_text}");
-            return Err(
-                format!("Discord sendAttachments failed ({status}): {body_text}").into(),
-            );
+            return Err(format!("Discord sendAttachments failed ({status}): {body_text}").into());
         }
     }
 
@@ -485,125 +539,7 @@ impl DiscordAdapter {
         &self,
         url: &str,
     ) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>> {
-        let parsed = Url::parse(url)
-            .map_err(|e| format!("URL fetch refused: parse error: {e}"))?;
-        #[cfg(test)]
-        if self.ssrf_bypass {
-            return self.download_url_to_bytes_inner(&parsed).await;
-        }
-        resolve_and_check_host(&parsed).await?;
-        self.download_url_to_bytes_inner(&parsed).await
-    }
-
-    /// SSRF-bypassed inner fetch. Performs the actual HTTP work but assumes
-    /// the URL has already passed [`resolve_and_check_host`]. Test-only entry
-    /// point for tests that legitimately need to talk to `127.0.0.1`.
-    async fn download_url_to_bytes_inner(
-        &self,
-        parsed: &Url,
-    ) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>> {
-        // Per-request client with a custom redirect policy. We cannot reuse
-        // `self.client` because its redirect policy is fixed at build time.
-        let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= URL_FETCH_MAX_REDIRECTS {
-                return attempt.error(format!(
-                    "redirect cap ({URL_FETCH_MAX_REDIRECTS}) exceeded"
-                ));
-            }
-            // Sync context: we can only do the literal-IP recheck here; DNS
-            // requires async. The original hostname was DNS-checked before
-            // the request started, so the only new bypass to close at this
-            // layer is a redirect to a literal private IP.
-            if let Err(e) = check_url_scheme_and_literal_ip(attempt.url()) {
-                return attempt.error(e);
-            }
-            attempt.follow()
-        });
-        let client = reqwest::Client::builder()
-            .redirect(redirect_policy)
-            .user_agent(URL_FETCH_USER_AGENT)
-            .timeout(URL_FETCH_TIMEOUT)
-            .build()?;
-
-        let resp = client.get(parsed.as_str()).send().await.map_err(|e| {
-            // reqwest's Display impl for Error includes the URL it was
-            // fetching (with query string). Replace it with the redacted
-            // form to keep CDN HMAC params out of error logs.
-            //
-            // For redirect-policy errors, reqwest's outer Display is the
-            // generic "error following redirect"; the actual cause (e.g.
-            // "URL fetch refused: blocked IPv4 host for ...") lives in the
-            // source chain. Walk it so the operator sees *why* we refused.
-            let stripped = e.without_url();
-            let mut msg = stripped.to_string();
-            let mut src: Option<&dyn std::error::Error> =
-                std::error::Error::source(&stripped);
-            while let Some(s) = src {
-                use std::fmt::Write as _;
-                let _ = write!(msg, ": {s}");
-                src = s.source();
-            }
-            format!("URL fetch failed for {}: {msg}", redact_url(parsed))
-        })?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            // Read up to 512B of the body for diagnostics; ignore errors.
-            let snippet: String = resp
-                .text()
-                .await
-                .unwrap_or_default()
-                .chars()
-                .take(512)
-                .collect();
-            return Err(format!(
-                "URL fetch failed ({status}) for {}: {snippet}",
-                redact_url(parsed)
-            )
-            .into());
-        }
-
-        // Pre-flight: trust Content-Length when present so we can fail fast
-        // without buffering 26 MiB before erroring.
-        let content_length = resp.content_length();
-        if let Some(len) = content_length {
-            if len as usize > URL_FETCH_MAX_BYTES {
-                return Err(format!(
-                    "URL fetch refused: Content-Length {len} exceeds cap {URL_FETCH_MAX_BYTES} for {}",
-                    redact_url(parsed)
-                )
-                .into());
-            }
-        }
-
-        let content_type = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(strip_mime_params)
-            .filter(|s| !s.is_empty());
-
-        // Pre-size the buffer: if we have a trustworthy Content-Length, use it
-        // (clamped to the cap); otherwise start at 64 KiB so the happy path
-        // doesn't pay ~24 doublings on a 25 MiB body.
-        let initial_cap = std::cmp::min(
-            content_length.unwrap_or(64 * 1024) as usize,
-            URL_FETCH_MAX_BYTES,
-        );
-        let mut buf = bytes::BytesMut::with_capacity(initial_cap);
-        let mut resp = resp;
-        while let Some(chunk) = resp.chunk().await? {
-            if buf.len() + chunk.len() > URL_FETCH_MAX_BYTES {
-                return Err(format!(
-                    "URL fetch refused: streamed body exceeds cap {URL_FETCH_MAX_BYTES} for {}",
-                    redact_url(parsed)
-                )
-                .into());
-            }
-            buf.extend_from_slice(&chunk);
-        }
-
-        Ok((buf.freeze(), content_type))
+        self.fetcher.fetch(url).await
     }
 
     /// Send typing indicator to a Discord channel.
@@ -617,6 +553,122 @@ impl DiscordAdapter {
             .await?;
         Ok(())
     }
+}
+
+/// Wire-level HTTP fetch shared by [`ProductionFetcher`] and
+/// [`PermissiveFetcher`]. Assumes the caller has already done any SSRF
+/// preflight on `parsed`. Performs:
+///
+///   1. Per-request reqwest client with a redirect policy that caps at
+///      [`URL_FETCH_MAX_REDIRECTS`] hops and re-applies the literal-IP SSRF
+///      check on every hop's URL.
+///   2. Two-stage size enforcement: Content-Length pre-flight, then streaming
+///      chunk accumulation that aborts mid-stream on overrun.
+///
+/// Errors are scrubbed via [`redact_url`] so Discord CDN HMAC params don't
+/// land in operator logs.
+async fn do_http_fetch(
+    parsed: &Url,
+) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>> {
+    // Per-request client with a custom redirect policy. We cannot reuse
+    // a shared client because its redirect policy is fixed at build time.
+    let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= URL_FETCH_MAX_REDIRECTS {
+            return attempt.error(format!("redirect cap ({URL_FETCH_MAX_REDIRECTS}) exceeded"));
+        }
+        // Sync context: we can only do the literal-IP recheck here; DNS
+        // requires async. The original hostname was DNS-checked before
+        // the request started, so the only new bypass to close at this
+        // layer is a redirect to a literal private IP.
+        if let Err(e) = check_url_scheme_and_literal_ip(attempt.url()) {
+            return attempt.error(e);
+        }
+        attempt.follow()
+    });
+    let client = reqwest::Client::builder()
+        .redirect(redirect_policy)
+        .user_agent(URL_FETCH_USER_AGENT)
+        .timeout(URL_FETCH_TIMEOUT)
+        .build()?;
+
+    let resp = client.get(parsed.as_str()).send().await.map_err(|e| {
+        // reqwest's Display impl for Error includes the URL it was
+        // fetching (with query string). Replace it with the redacted
+        // form to keep CDN HMAC params out of error logs.
+        //
+        // For redirect-policy errors, reqwest's outer Display is the
+        // generic "error following redirect"; the actual cause (e.g.
+        // "URL fetch refused: blocked IPv4 host for ...") lives in the
+        // source chain. Walk it so the operator sees *why* we refused.
+        let stripped = e.without_url();
+        let mut msg = stripped.to_string();
+        let mut src: Option<&dyn std::error::Error> = std::error::Error::source(&stripped);
+        while let Some(s) = src {
+            use std::fmt::Write as _;
+            let _ = write!(msg, ": {s}");
+            src = s.source();
+        }
+        format!("URL fetch failed for {}: {msg}", redact_url(parsed))
+    })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        // Read up to 512B of the body for diagnostics; ignore errors.
+        let snippet: String = resp
+            .text()
+            .await
+            .unwrap_or_default()
+            .chars()
+            .take(512)
+            .collect();
+        return Err(format!(
+            "URL fetch failed ({status}) for {}: {snippet}",
+            redact_url(parsed)
+        )
+        .into());
+    }
+
+    // Pre-flight: trust Content-Length when present so we can fail fast
+    // without buffering 26 MiB before erroring.
+    let content_length = resp.content_length();
+    if let Some(len) = content_length {
+        if len as usize > URL_FETCH_MAX_BYTES {
+            return Err(format!(
+                "URL fetch refused: Content-Length {len} exceeds cap {URL_FETCH_MAX_BYTES} for {}",
+                redact_url(parsed)
+            )
+            .into());
+        }
+    }
+
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(strip_mime_params)
+        .filter(|s| !s.is_empty());
+
+    // Pre-size the buffer: if we have a trustworthy Content-Length, use it
+    // (clamped to the cap); otherwise start at 64 KiB so the happy path
+    // doesn't pay ~24 doublings on a 25 MiB body.
+    let initial_cap = std::cmp::min(
+        content_length.unwrap_or(64 * 1024) as usize,
+        URL_FETCH_MAX_BYTES,
+    );
+    let mut buf = bytes::BytesMut::with_capacity(initial_cap);
+    let mut resp = resp;
+    while let Some(chunk) = resp.chunk().await? {
+        if buf.len() + chunk.len() > URL_FETCH_MAX_BYTES {
+            return Err(format!(
+                "URL fetch refused: streamed body exceeds cap {URL_FETCH_MAX_BYTES} for {}",
+                redact_url(parsed)
+            )
+            .into());
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    Ok((buf.freeze(), content_type))
 }
 
 #[async_trait]
@@ -1007,13 +1059,9 @@ impl ChannelAdapter for DiscordAdapter {
                 // Fetch then route through the existing multipart helper.
                 // `download_url_to_bytes` enforces 15s timeout and 25 MiB cap.
                 let (bytes, response_ct) = self.download_url_to_bytes(&url).await?;
-                let resolved_filename =
-                    resolve_file_filename(Some(filename.as_str()), &url);
-                let resolved_mime = resolve_file_mime(
-                    mime.as_deref(),
-                    response_ct.as_deref(),
-                    &resolved_filename,
-                );
+                let resolved_filename = resolve_file_filename(Some(filename.as_str()), &url);
+                let resolved_mime =
+                    resolve_file_mime(mime.as_deref(), response_ct.as_deref(), &resolved_filename);
                 // No caption on a bare File; captions travel via Multipart([Text, File]).
                 self.api_send_attachment(
                     channel_id,
@@ -1070,26 +1118,36 @@ impl ChannelAdapter for DiscordAdapter {
                 // Build the single caption string from all Text blocks.
                 let caption_str = caption_pieces.join("\n\n");
                 let caption_str = caption_str.trim();
-                let caption_opt: Option<&str> =
-                    if caption_str.is_empty() { None } else { Some(caption_str) };
+                let caption_opt: Option<&str> = if caption_str.is_empty() {
+                    None
+                } else {
+                    Some(caption_str)
+                };
 
                 // Resolve each non-Text block to (Bytes, filename, mime).
                 for part in &parts {
                     match part {
-                        ChannelContent::FileData { data, filename, mime_type } => {
+                        ChannelContent::FileData {
+                            data,
+                            filename,
+                            mime_type,
+                        } => {
                             attachments_resolved.push((
                                 bytes::Bytes::from(data.clone()),
                                 filename.clone(),
                                 mime_type.clone(),
                             ));
                         }
-                        ChannelContent::File { url, filename, mime, size: _ } => {
+                        ChannelContent::File {
+                            url,
+                            filename,
+                            mime,
+                            size: _,
+                        } => {
                             let (bytes, response_ct) = self
                                 .download_url_to_bytes(url)
                                 .await
-                                .map_err(|e| {
-                                    format!("Multipart fetch failed for {url}: {e}")
-                                })?;
+                                .map_err(|e| format!("Multipart fetch failed for {url}: {e}"))?;
                             let resolved_filename =
                                 resolve_file_filename(Some(filename.as_str()), url);
                             let resolved_mime = resolve_file_mime(
@@ -1097,8 +1155,7 @@ impl ChannelAdapter for DiscordAdapter {
                                 response_ct.as_deref(),
                                 &resolved_filename,
                             );
-                            attachments_resolved
-                                .push((bytes, resolved_filename, resolved_mime));
+                            attachments_resolved.push((bytes, resolved_filename, resolved_mime));
                         }
                         ChannelContent::Image { url, caption: _ } => {
                             // Per-Image inner captions are ignored inside Multipart;
@@ -1106,15 +1163,10 @@ impl ChannelAdapter for DiscordAdapter {
                             let (bytes, response_ct) = self
                                 .download_url_to_bytes(url)
                                 .await
-                                .map_err(|e| {
-                                    format!("Multipart fetch failed for {url}: {e}")
-                                })?;
-                            let resolved_mime =
-                                resolve_image_mime(response_ct.as_deref(), url);
-                            let resolved_filename =
-                                resolve_image_filename(url, &resolved_mime);
-                            attachments_resolved
-                                .push((bytes, resolved_filename, resolved_mime));
+                                .map_err(|e| format!("Multipart fetch failed for {url}: {e}"))?;
+                            let resolved_mime = resolve_image_mime(response_ct.as_deref(), url);
+                            let resolved_filename = resolve_image_filename(url, &resolved_mime);
+                            attachments_resolved.push((bytes, resolved_filename, resolved_mime));
                         }
                         _ => {}
                     }
@@ -1125,9 +1177,7 @@ impl ChannelAdapter for DiscordAdapter {
                     if let Some(cap) = caption_opt {
                         self.api_send_message(channel_id, cap).await?;
                     } else {
-                        warn!(
-                            "Discord Multipart: all blocks empty or unknown, nothing to send"
-                        );
+                        warn!("Discord Multipart: all blocks empty or unknown, nothing to send");
                     }
                     return Ok(());
                 }
@@ -1202,7 +1252,11 @@ fn build_attachment_payload_json(caption: Option<&str>) -> String {
 /// against canonical types like `image/png` work. Lower-cases and trims so
 /// `IMAGE/PNG ; charset=utf-8` and `image/png` both normalize to `image/png`.
 fn strip_mime_params(raw: &str) -> String {
-    raw.split(';').next().unwrap_or("").trim().to_ascii_lowercase()
+    raw.split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
 }
 
 /// Derive a filename from a URL path: take the segment after the last `/`,
@@ -1265,11 +1319,7 @@ fn resolve_file_filename(field: Option<&str>, url: &str) -> String {
 /// Pick a MIME for an outbound `File` arm. Preference order: explicit `mime`
 /// field → response Content-Type → extension lookup from filename →
 /// `application/octet-stream`.
-fn resolve_file_mime(
-    field: Option<&str>,
-    response_ct: Option<&str>,
-    filename: &str,
-) -> String {
+fn resolve_file_mime(field: Option<&str>, response_ct: Option<&str>, filename: &str) -> String {
     field
         .filter(|s| !s.is_empty())
         .map(str::to_string)
@@ -1542,6 +1592,78 @@ async fn parse_discord_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_attachment_payload_no_caption() {
+        // No caption → empty JSON object so Discord doesn't reject it.
+        assert_eq!(build_attachment_payload_json(None), "{}");
+        assert_eq!(build_attachment_payload_json(Some("")), "{}");
+    }
+
+    #[test]
+    fn test_attachment_payload_short_caption() {
+        let json = build_attachment_payload_json(Some("hello"));
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["content"], "hello");
+    }
+
+    #[test]
+    fn test_attachment_payload_truncates_long_caption() {
+        // 3000 chars → must truncate to DISCORD_MSG_LIMIT (2000) so Discord
+        // accepts the request instead of 400-ing on a too-long content field.
+        let long = "a".repeat(3000);
+        let json = build_attachment_payload_json(Some(&long));
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            v["content"].as_str().unwrap().chars().count(),
+            DISCORD_MSG_LIMIT
+        );
+    }
+
+    #[test]
+    fn test_attachment_payload_truncation_is_char_safe() {
+        // Multibyte chars must not be split mid-codepoint.
+        let s: String = "héllo ".repeat(500); // 6 chars per chunk → 3000 chars total
+        let json = build_attachment_payload_json(Some(&s));
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // Round-trip through serde guarantees we didn't produce invalid UTF-8.
+        assert_eq!(
+            v["content"].as_str().unwrap().chars().count(),
+            DISCORD_MSG_LIMIT
+        );
+    }
+
+    #[test]
+    fn test_attachment_field_name_pinned() {
+        // Discord rejects the upload silently if the multipart field isn't
+        // exactly `files[0]` (a `file[0]` typo would fail at runtime, per
+        // attachment, with no useful error). Pin the wire format here so a
+        // typo at the call site is impossible without also changing this test.
+        assert_eq!(ATTACHMENT_FIELD_NAME, "files[0]");
+    }
+
+    #[test]
+    fn test_multipart_part_accepts_common_mimes() {
+        // Validate that mime_str() doesn't reject the MIME types we map from
+        // tool_runner.rs::channel_send. If any of these started failing we'd
+        // surface as a runtime upload error per file.
+        for mime in [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "application/pdf",
+            "text/plain",
+            "application/json",
+            "application/octet-stream",
+            "video/mp4",
+        ] {
+            let part = reqwest::multipart::Part::bytes(b"x".to_vec())
+                .file_name("f.bin")
+                .mime_str(mime);
+            assert!(part.is_ok(), "mime_str rejected {mime}");
+        }
+    }
 
     #[tokio::test]
     async fn test_parse_discord_message_basic() {
@@ -2199,9 +2321,18 @@ mod tests {
             "picture.jpg"
         );
         // No URL tail → image + ext from MIME.
-        assert_eq!(resolve_image_filename("https://x/", "image/jpeg"), "image.jpg");
-        assert_eq!(resolve_image_filename("https://x/", "image/png"), "image.png");
-        assert_eq!(resolve_image_filename("https://x/", "image/webp"), "image.webp");
+        assert_eq!(
+            resolve_image_filename("https://x/", "image/jpeg"),
+            "image.jpg"
+        );
+        assert_eq!(
+            resolve_image_filename("https://x/", "image/png"),
+            "image.png"
+        );
+        assert_eq!(
+            resolve_image_filename("https://x/", "image/webp"),
+            "image.webp"
+        );
         // Unknown MIME → .png default.
         assert_eq!(
             resolve_image_filename("https://x/", "application/octet-stream"),
@@ -2217,10 +2348,7 @@ mod tests {
             "image/jpeg"
         );
         // No CT → URL extension.
-        assert_eq!(
-            resolve_image_mime(None, "https://x/y/foo.png"),
-            "image/png"
-        );
+        assert_eq!(resolve_image_mime(None, "https://x/y/foo.png"), "image/png");
         // No CT, no extension → default.
         assert_eq!(resolve_image_mime(None, "https://x/y/blob"), "image/png");
     }
@@ -2347,15 +2475,15 @@ mod tests {
         DiscordAdapter::new("test-token".into(), vec![], vec![], true, 0)
     }
 
-    /// Test-only helper: run the inner fetch by hand to bypass the SSRF guard
-    /// (which would otherwise refuse 127.0.0.1). Production callers always go
-    /// through `download_url_to_bytes` and inherit the guard.
+    /// Test-only helper: drive the wire-level fetch directly so tests against
+    /// 127.0.0.1 fixture servers don't trip the SSRF preflight. Production
+    /// callers always go through `Fetcher::fetch` and inherit the guard.
     async fn test_fetch(
-        adapter: &DiscordAdapter,
+        _adapter: &DiscordAdapter,
         url: &str,
     ) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>> {
         let parsed = Url::parse(url).unwrap();
-        adapter.download_url_to_bytes_inner(&parsed).await
+        do_http_fetch(&parsed).await
     }
 
     #[tokio::test]
@@ -2365,14 +2493,16 @@ mod tests {
         let oversized = (URL_FETCH_MAX_BYTES + 1).to_string();
         // Leak the string so we can hand &'static str to the spawn helper.
         let cl: &'static str = Box::leak(oversized.into_boxed_str());
-        let url =
-            spawn_raw_http_server("200 OK", Some(cl), bytes::Bytes::from_static(b"x")).await;
+        let url = spawn_raw_http_server("200 OK", Some(cl), bytes::Bytes::from_static(b"x")).await;
 
         let adapter = test_adapter();
         let res = test_fetch(&adapter, &url).await;
         assert!(res.is_err(), "expected Err on oversized Content-Length");
         let err = res.unwrap_err().to_string();
-        assert!(err.contains("Content-Length"), "err should mention CL: {err}");
+        assert!(
+            err.contains("Content-Length"),
+            "err should mention CL: {err}"
+        );
     }
 
     #[tokio::test]
@@ -2448,7 +2578,10 @@ mod tests {
     async fn assert_ssrf_blocked(url: &str) {
         let adapter = test_adapter();
         let res = adapter.download_url_to_bytes(url).await;
-        let err = res.err().unwrap_or_else(|| panic!("expected SSRF block for {url}")).to_string();
+        let err = res
+            .err()
+            .unwrap_or_else(|| panic!("expected SSRF block for {url}"))
+            .to_string();
         assert!(
             err.contains("refused") || err.contains("not allowed") || err.contains("blocked"),
             "expected SSRF refusal for {url}, got: {err}"
@@ -2478,8 +2611,10 @@ mod tests {
     #[tokio::test]
     async fn test_ssrf_blocks_link_local() {
         // Cloud metadata: explicit canary URL from the spec.
-        assert_ssrf_blocked("http://169.254.169.254/latest/meta-data/iam/security-credentials/role")
-            .await;
+        assert_ssrf_blocked(
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/role",
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -2546,7 +2681,7 @@ mod tests {
         assert!(is_blocked_v4(Ipv4Addr::new(172, 16, 0, 1)));
         assert!(is_blocked_v4(Ipv4Addr::new(0, 0, 0, 0)));
         assert!(is_blocked_v4(Ipv4Addr::new(100, 64, 0, 1))); // CGNAT
-        // Public addresses must pass.
+                                                              // Public addresses must pass.
         assert!(!is_blocked_v4(Ipv4Addr::new(1, 1, 1, 1)));
         assert!(!is_blocked_v4(Ipv4Addr::new(8, 8, 8, 8)));
     }
@@ -2588,15 +2723,8 @@ mod tests {
 
     /// Build an axum stub that captures one or more multipart POSTs to
     /// `/channels/test/messages` and records them into `captured`.
-    async fn spawn_discord_stub(
-        captured: Arc<TokioMutex<Vec<CapturedPost>>>,
-    ) -> String {
-        use axum::{
-            extract::Multipart,
-            http::StatusCode,
-            routing::post,
-            Extension, Router,
-        };
+    async fn spawn_discord_stub(captured: Arc<TokioMutex<Vec<CapturedPost>>>) -> String {
+        use axum::{extract::Multipart, http::StatusCode, routing::post, Extension, Router};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -2610,8 +2738,7 @@ mod tests {
                         while let Ok(Some(field)) = multipart.next_field().await {
                             let name = field.name().unwrap_or("").to_string();
                             if name == "payload_json" {
-                                post.payload_json =
-                                    field.text().await.unwrap_or_default();
+                                post.payload_json = field.text().await.unwrap_or_default();
                             } else {
                                 let filename = field.file_name().map(str::to_string);
                                 let content_type = field.content_type().map(str::to_string);
@@ -2652,12 +2779,13 @@ mod tests {
         a
     }
 
-    /// Like `test_adapter_with_base` but also enables the SSRF bypass so that
-    /// `Image{url}` / `File{url}` blocks pointing at localhost stub servers can
-    /// be fetched through the normal `download_url_to_bytes` production path.
+    /// Like `test_adapter_with_base` but installs [`PermissiveFetcher`] so
+    /// `Image{url}` / `File{url}` blocks pointing at localhost stub servers
+    /// can flow through the normal `Fetcher::fetch` path without tripping
+    /// the SSRF preflight.
     fn test_adapter_with_base_and_ssrf_bypass(base: String) -> DiscordAdapter {
         let mut a = test_adapter_with_base(base);
-        a.ssrf_bypass = true;
+        a.fetcher = Arc::new(PermissiveFetcher);
         a
     }
 
@@ -2665,8 +2793,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multipart_outbound_caption_concatenation() {
-        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
-            Arc::new(TokioMutex::new(Vec::new()));
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> = Arc::new(TokioMutex::new(Vec::new()));
         let base = spawn_discord_stub(captured.clone()).await;
         let adapter = test_adapter_with_base(base);
         let user = make_channel_user("test");
@@ -2701,8 +2828,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multipart_outbound_empty_caption_suppressed() {
-        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
-            Arc::new(TokioMutex::new(Vec::new()));
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> = Arc::new(TokioMutex::new(Vec::new()));
         let base = spawn_discord_stub(captured.clone()).await;
         let adapter = test_adapter_with_base(base);
         let user = make_channel_user("test");
@@ -2736,8 +2862,7 @@ mod tests {
         // First chunk: caption + files[0..10) (10 files)
         // Second chunk: no caption + files[0..10) (10 files)
         // Third chunk:  no caption + files[0..3)  (3 files)
-        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
-            Arc::new(TokioMutex::new(Vec::new()));
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> = Arc::new(TokioMutex::new(Vec::new()));
         let base = spawn_discord_stub(captured.clone()).await;
         let adapter = test_adapter_with_base(base);
         let user = make_channel_user("test");
@@ -2757,7 +2882,11 @@ mod tests {
             .unwrap();
 
         let posts = captured.lock().await;
-        assert_eq!(posts.len(), 3, "23 files should produce 3 POSTs (chunks of 10)");
+        assert_eq!(
+            posts.len(),
+            3,
+            "23 files should produce 3 POSTs (chunks of 10)"
+        );
 
         // First chunk carries the caption.
         let v0: serde_json::Value = serde_json::from_str(&posts[0].payload_json).unwrap();
@@ -2766,7 +2895,11 @@ mod tests {
             "cap",
             "first chunk must carry the caption"
         );
-        assert_eq!(posts[0].file_field_names.len(), 10, "first chunk must have 10 files");
+        assert_eq!(
+            posts[0].file_field_names.len(),
+            10,
+            "first chunk must have 10 files"
+        );
 
         // Second chunk has no caption.
         let v1: serde_json::Value = serde_json::from_str(&posts[1].payload_json).unwrap();
@@ -2774,12 +2907,23 @@ mod tests {
             v1.get("content").is_none(),
             "second chunk must not carry the caption"
         );
-        assert_eq!(posts[1].file_field_names.len(), 10, "second chunk must have 10 files");
+        assert_eq!(
+            posts[1].file_field_names.len(),
+            10,
+            "second chunk must have 10 files"
+        );
 
         // Third chunk has no caption and only 3 files.
         let v2: serde_json::Value = serde_json::from_str(&posts[2].payload_json).unwrap();
-        assert!(v2.get("content").is_none(), "third chunk must not carry the caption");
-        assert_eq!(posts[2].file_field_names.len(), 3, "third chunk must have 3 files");
+        assert!(
+            v2.get("content").is_none(),
+            "third chunk must not carry the caption"
+        );
+        assert_eq!(
+            posts[2].file_field_names.len(),
+            3,
+            "third chunk must have 3 files"
+        );
     }
 
     // ---- required test d: caption-only fallback --------------------------------
@@ -2791,36 +2935,32 @@ mod tests {
         // The Discord stub only handles `/channels/test/messages` POSTs.
         // api_send_message sends JSON (not multipart), so we use a simple
         // axum stub that accepts any POST and records the Content-Type.
-        use axum::{
-            extract::Request,
-            http::StatusCode,
-            routing::post,
-            Extension, Router,
-        };
+        use axum::{extract::Request, http::StatusCode, routing::post, Extension, Router};
 
         let calls: Arc<TokioMutex<Vec<String>>> = Arc::new(TokioMutex::new(Vec::new()));
         let calls_clone = calls.clone();
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let app = Router::new()
-            .route(
-                "/channels/test/messages",
-                post(
-                    |Extension(store): Extension<Arc<TokioMutex<Vec<String>>>>,
-                     req: Request| async move {
-                        let ct = req
-                            .headers()
-                            .get("content-type")
-                            .and_then(|v| v.to_str().ok())
-                            .unwrap_or("")
-                            .to_string();
-                        store.lock().await.push(ct);
-                        StatusCode::OK
-                    },
-                ),
-            )
-            .layer(Extension(calls_clone));
+        let app =
+            Router::new()
+                .route(
+                    "/channels/test/messages",
+                    post(
+                        |Extension(store): Extension<Arc<TokioMutex<Vec<String>>>>,
+                         req: Request| async move {
+                            let ct = req
+                                .headers()
+                                .get("content-type")
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("")
+                                .to_string();
+                            store.lock().await.push(ct);
+                            StatusCode::OK
+                        },
+                    ),
+                )
+                .layer(Extension(calls_clone));
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
@@ -2879,8 +3019,7 @@ mod tests {
         )
         .await;
 
-        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
-            Arc::new(TokioMutex::new(Vec::new()));
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> = Arc::new(TokioMutex::new(Vec::new()));
         let base = spawn_discord_stub(captured.clone()).await;
         let adapter = test_adapter_with_base_and_ssrf_bypass(base);
         let user = make_channel_user("test");
@@ -2902,7 +3041,11 @@ mod tests {
         adapter.send(&user, content).await.unwrap();
 
         let posts = captured.lock().await;
-        assert_eq!(posts.len(), 1, "expected exactly one POST for mixed Multipart");
+        assert_eq!(
+            posts.len(),
+            1,
+            "expected exactly one POST for mixed Multipart"
+        );
 
         // Caption preserved.
         let v: serde_json::Value = serde_json::from_str(&posts[0].payload_json).unwrap();
@@ -2959,8 +3102,7 @@ mod tests {
     #[tokio::test]
     async fn test_multipart_outbound_fetch_failure_returns_err() {
         // A File block with an SSRF-blocked URL should cause send() to return Err.
-        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
-            Arc::new(TokioMutex::new(Vec::new()));
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> = Arc::new(TokioMutex::new(Vec::new()));
         let base = spawn_discord_stub(captured.clone()).await;
         let adapter = test_adapter_with_base(base);
         let user = make_channel_user("test");
@@ -2991,18 +3133,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_multipart_outbound_empty_is_ok_no_posts() {
-        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
-            Arc::new(TokioMutex::new(Vec::new()));
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> = Arc::new(TokioMutex::new(Vec::new()));
         let base = spawn_discord_stub(captured.clone()).await;
         let adapter = test_adapter_with_base(base);
         let user = make_channel_user("test");
 
-        let result = adapter
-            .send(&user, ChannelContent::Multipart(vec![]))
-            .await;
+        let result = adapter.send(&user, ChannelContent::Multipart(vec![])).await;
         assert!(result.is_ok(), "empty Multipart should return Ok");
         let posts = captured.lock().await;
-        assert!(posts.is_empty(), "empty Multipart must not produce any POSTs");
+        assert!(
+            posts.is_empty(),
+            "empty Multipart must not produce any POSTs"
+        );
     }
 
     // ---- should-have: unknown nested variant is logged, not fatal --------------
@@ -3011,15 +3153,14 @@ mod tests {
     async fn test_multipart_outbound_unknown_nested_variant_skipped() {
         // A Multipart containing a nested Multipart (and a FileData) should
         // warn but still send the FileData.
-        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
-            Arc::new(TokioMutex::new(Vec::new()));
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> = Arc::new(TokioMutex::new(Vec::new()));
         let base = spawn_discord_stub(captured.clone()).await;
         let adapter = test_adapter_with_base(base);
         let user = make_channel_user("test");
 
         let content = ChannelContent::Multipart(vec![
             ChannelContent::Text("x".to_string()),
-            ChannelContent::Multipart(vec![]),  // unknown nesting
+            ChannelContent::Multipart(vec![]), // unknown nesting
             ChannelContent::FileData {
                 data: b"f".to_vec(),
                 filename: "f.txt".to_string(),
