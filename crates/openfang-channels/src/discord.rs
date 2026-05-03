@@ -46,6 +46,18 @@ const URL_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// 25 MiB; matching that here means we reject before paying for bytes Discord
 /// would refuse anyway.
 const URL_FETCH_MAX_BYTES: usize = 25 * 1024 * 1024;
+/// Maximum number of attachments per multipart POST. Discord's REST API caps
+/// `files[N]` at 10 per request; the multipart helper relies on the caller
+/// having pre-chunked.
+const ATTACHMENTS_PER_CHUNK: usize = 10;
+/// Aggregate byte cap on a single multipart POST's attachment payload.
+/// Discord caps non-Nitro requests at 25 MiB total (multipart envelope +
+/// payload_json + every `files[i]`); 24 MiB leaves ~1 MiB of headroom for the
+/// envelope so an over-budget attempt can't silently 413. Files larger than
+/// this cap end up in their own single-attachment chunk; Discord still
+/// rejects them, but the caller sees the same error they did before this
+/// cap landed.
+const CHUNK_TOTAL_CAP_BYTES: usize = 24 * 1024 * 1024;
 /// Cap on the number of HTTP redirects we'll follow on URL fetches. Each hop
 /// is independently SSRF-rechecked at the literal-IP level.
 const URL_FETCH_MAX_REDIRECTS: usize = 3;
@@ -1252,12 +1264,14 @@ impl ChannelAdapter for DiscordAdapter {
                     return Ok(());
                 }
 
-                // Chunk into groups of ≤ 10 and send one POST per chunk.
-                // Caption goes on the first chunk only.
-                let chunks: Vec<Vec<(bytes::Bytes, String, String)>> = attachments_resolved
-                    .chunks(10)
-                    .map(|c| c.to_vec())
-                    .collect();
+                // Chunk by both count (≤ ATTACHMENTS_PER_CHUNK) and aggregate
+                // bytes (≤ CHUNK_TOTAL_CAP_BYTES) so a 10×3 MiB Multipart
+                // doesn't 413 on Discord's per-request size limit. Order is
+                // preserved; oversized single attachments get their own
+                // chunk (they'll still be rejected by Discord, but with the
+                // same error path as before this cap existed).
+                let chunks: Vec<Vec<(bytes::Bytes, String, String)>> =
+                    chunk_attachments(attachments_resolved);
                 let total_chunks = chunks.len();
                 for (i, chunk) in chunks.into_iter().enumerate() {
                     let chunk_caption = if i == 0 { caption_opt } else { None };
@@ -1308,6 +1322,45 @@ const VISION_IMAGE_MAX_BYTES: u64 = 5 * 1024 * 1024;
 /// `payload_json` part containing the same JSON the JSON-only variant would
 /// take. Captions longer than `DISCORD_MSG_LIMIT` chars must be truncated
 /// explicitly; otherwise the API responds 400 and silently drops the upload.
+/// Greedy-pack attachments into chunks subject to two caps:
+///
+///   1. At most [`ATTACHMENTS_PER_CHUNK`] entries per chunk (Discord's
+///      `files[N]` limit).
+///   2. At most [`CHUNK_TOTAL_CAP_BYTES`] aggregate bytes per chunk (Discord's
+///      ~25 MiB request size limit, with headroom for multipart overhead).
+///
+/// Order of inputs is preserved across the output. If a single attachment
+/// alone exceeds the byte cap, it lands in its own chunk and is forwarded
+/// untouched — Discord will reject the request, but that mirrors the
+/// pre-existing behavior where the per-file cap was the only gate.
+fn chunk_attachments(
+    attachments: Vec<(bytes::Bytes, String, String)>,
+) -> Vec<Vec<(bytes::Bytes, String, String)>> {
+    let mut chunks: Vec<Vec<(bytes::Bytes, String, String)>> = Vec::new();
+    let mut current: Vec<(bytes::Bytes, String, String)> = Vec::new();
+    let mut current_bytes: usize = 0;
+
+    for item in attachments {
+        let item_len = item.0.len();
+        // Start a new chunk when adding this item would push us over the
+        // count or byte cap — but only if the current chunk isn't empty.
+        // (Empty + oversized item: keep going so we always make progress.)
+        let would_exceed_count = current.len() >= ATTACHMENTS_PER_CHUNK;
+        let would_exceed_bytes =
+            current_bytes.saturating_add(item_len) > CHUNK_TOTAL_CAP_BYTES;
+        if !current.is_empty() && (would_exceed_count || would_exceed_bytes) {
+            chunks.push(std::mem::take(&mut current));
+            current_bytes = 0;
+        }
+        current_bytes = current_bytes.saturating_add(item_len);
+        current.push(item);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
 fn build_attachment_payload_json(caption: Option<&str>) -> String {
     match caption {
         Some(c) if !c.is_empty() => {
@@ -2797,7 +2850,12 @@ mod tests {
     /// Build an axum stub that captures one or more multipart POSTs to
     /// `/channels/test/messages` and records them into `captured`.
     async fn spawn_discord_stub(captured: Arc<TokioMutex<Vec<CapturedPost>>>) -> String {
-        use axum::{extract::Multipart, http::StatusCode, routing::post, Extension, Router};
+        use axum::{
+            extract::{DefaultBodyLimit, Multipart},
+            http::StatusCode,
+            routing::post,
+            Extension, Router,
+        };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -2830,6 +2888,9 @@ mod tests {
                     },
                 ),
             )
+            // Default 2 MiB body limit would reject the byte-cap chunking
+            // test's ~20 MiB chunks; disable it on the stub.
+            .layer(DefaultBodyLimit::disable())
             .layer(Extension(captured));
 
         tokio::spawn(async move {
@@ -3245,5 +3306,106 @@ mod tests {
         assert!(result.is_ok(), "unknown nested variant must not be fatal");
         let posts = captured.lock().await;
         assert_eq!(posts.len(), 1, "FileData should still be sent");
+    }
+
+    // ---- aggregate per-chunk byte cap ------------------------------------------
+
+    /// Three 10 MiB FileData blocks must split into two chunks under the
+    /// 24 MiB per-chunk byte cap (20 MiB + 10 MiB). The caption rides only
+    /// on the first chunk; chunk-2 has no caption.
+    #[tokio::test]
+    async fn test_multipart_outbound_chunking_by_byte_cap() {
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> = Arc::new(TokioMutex::new(Vec::new()));
+        let base = spawn_discord_stub(captured.clone()).await;
+        let adapter = test_adapter_with_base(base);
+        let user = make_channel_user("test");
+
+        let big = vec![0u8; 10 * 1024 * 1024];
+        let parts = vec![
+            ChannelContent::Text("cap".to_string()),
+            ChannelContent::FileData {
+                data: big.clone(),
+                filename: "a.bin".to_string(),
+                mime_type: "application/octet-stream".to_string(),
+            },
+            ChannelContent::FileData {
+                data: big.clone(),
+                filename: "b.bin".to_string(),
+                mime_type: "application/octet-stream".to_string(),
+            },
+            ChannelContent::FileData {
+                data: big,
+                filename: "c.bin".to_string(),
+                mime_type: "application/octet-stream".to_string(),
+            },
+        ];
+
+        adapter
+            .send(&user, ChannelContent::Multipart(parts))
+            .await
+            .unwrap();
+
+        let posts = captured.lock().await;
+        assert_eq!(
+            posts.len(),
+            2,
+            "3×10 MiB attachments should split into 2 chunks under the 24 MiB cap"
+        );
+        // Chunk 1: caption + 2 files (a, b).
+        let v0: serde_json::Value = serde_json::from_str(&posts[0].payload_json).unwrap();
+        assert_eq!(v0["content"].as_str().unwrap_or(""), "cap");
+        assert_eq!(posts[0].files.len(), 2, "first chunk holds first 2 files");
+        // Chunk 2: no caption + 1 file (c).
+        let v1: serde_json::Value = serde_json::from_str(&posts[1].payload_json).unwrap();
+        assert!(
+            v1.get("content").is_none(),
+            "second chunk must not carry the caption"
+        );
+        assert_eq!(posts[1].files.len(), 1, "second chunk holds the 3rd file");
+    }
+
+    /// Direct unit test of the chunking helper: verifies count cap, byte cap,
+    /// and the oversize-single-attachment edge case (lands in its own chunk
+    /// instead of stalling progress).
+    #[test]
+    fn test_chunk_attachments_count_and_byte_caps() {
+        // 12 small files → 2 chunks of 10 + 2 (count cap dominates).
+        let small: Vec<_> = (0..12)
+            .map(|i| {
+                (
+                    bytes::Bytes::from(vec![0u8; 1024]),
+                    format!("f{i}.bin"),
+                    "application/octet-stream".to_string(),
+                )
+            })
+            .collect();
+        let chunks = chunk_attachments(small);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 10);
+        assert_eq!(chunks[1].len(), 2);
+
+        // Three 10 MiB items → 2 chunks (byte cap dominates: 20 + 10 ≤ 24).
+        let big_payload = bytes::Bytes::from(vec![0u8; 10 * 1024 * 1024]);
+        let big = vec![
+            (big_payload.clone(), "a".to_string(), "x".to_string()),
+            (big_payload.clone(), "b".to_string(), "x".to_string()),
+            (big_payload.clone(), "c".to_string(), "x".to_string()),
+        ];
+        let chunks = chunk_attachments(big);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 2);
+        assert_eq!(chunks[1].len(), 1);
+
+        // One oversized attachment by itself → single chunk holding it.
+        // (Discord rejects, but the helper mustn't loop forever or drop it.)
+        let oversized = bytes::Bytes::from(vec![0u8; CHUNK_TOTAL_CAP_BYTES + 1]);
+        let solo = vec![(oversized, "huge".to_string(), "x".to_string())];
+        let chunks = chunk_attachments(solo);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), 1);
+
+        // Empty input → no chunks.
+        let chunks = chunk_attachments(Vec::new());
+        assert!(chunks.is_empty());
     }
 }
