@@ -81,6 +81,17 @@ pub fn materialize_image(media_type: &str, data: &str, dir: &Path) -> Option<Pat
     let filename = format!("{hex}.{ext}", ext = ext_for_mime(media_type));
     let path = dir.join(filename);
     if path.exists() {
+        // Refresh mtime on cache hit so the TTL sweep (which gates on
+        // `meta.modified()`) does not GC a tmpfile still being actively
+        // referenced. Without this, a long-running conversation that
+        // outlives `IMAGE_TMP_TTL_SECS` would lose its image bytes
+        // mid-thread, even though the content block is still in scope.
+        // Best-effort: any failure is debug-logged and the cached path
+        // is returned anyway — the worst case is the legacy 24h-GC
+        // behavior we just had.
+        if let Err(e) = touch_mtime(&path) {
+            debug!(path = ?path, error = %e, "failed to refresh image tmpfile mtime");
+        }
         return Some(path);
     }
     if let Err(e) = std::fs::create_dir_all(dir) {
@@ -112,6 +123,16 @@ pub fn materialize_image(media_type: &str, data: &str, dir: &Path) -> Option<Pat
         return None;
     }
     Some(path)
+}
+
+/// Refresh the mtime of `path` to "now" so it survives the next TTL
+/// sweep. Uses `File::set_modified`, which on Unix calls `futimens(2)`.
+/// Opening read-only is sufficient — `futimens` does not require the fd
+/// to be writable, only that the caller own the file (which we do, since
+/// the daemon writes them).
+fn touch_mtime(path: &Path) -> std::io::Result<()> {
+    let f = std::fs::File::open(path)?;
+    f.set_modified(std::time::SystemTime::now())
 }
 
 /// Delete image tmpfiles older than [`IMAGE_TMP_TTL_SECS`]. Best-effort:
@@ -157,4 +178,88 @@ pub fn spawn_sweep_once() {
         let dir = image_tmp_dir();
         std::thread::spawn(move || sweep_old_image_tmpfiles(&dir));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use std::time::{Duration, SystemTime};
+
+    /// A 1×1 transparent PNG, base64-encoded. Tiny enough to keep tests fast.
+    const TINY_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
+    #[test]
+    fn materialize_image_refreshes_mtime_on_cache_hit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        // First call materializes.
+        let path = materialize_image("image/png", TINY_PNG_B64, dir)
+            .expect("first materialization should succeed");
+        assert!(path.exists());
+
+        // Backdate mtime to ~25 hours ago — past IMAGE_TMP_TTL_SECS.
+        let stale = SystemTime::now() - Duration::from_secs(IMAGE_TMP_TTL_SECS + 3600);
+        let f = std::fs::File::open(&path).unwrap();
+        f.set_modified(stale).unwrap();
+        drop(f);
+        let mtime_before = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        // Second call should hit cache AND refresh mtime.
+        let path2 = materialize_image("image/png", TINY_PNG_B64, dir)
+            .expect("cache hit should return Some");
+        assert_eq!(path, path2);
+        let mtime_after = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert!(
+            mtime_after > mtime_before,
+            "mtime should be refreshed on cache hit (before={mtime_before:?}, after={mtime_after:?})"
+        );
+
+        // And the now-touched file must NOT be GC'd by a sweep that
+        // would have caught the stale mtime.
+        sweep_old_image_tmpfiles(dir);
+        assert!(
+            path.exists(),
+            "refreshed tmpfile should survive the TTL sweep"
+        );
+    }
+
+    #[test]
+    fn sweep_removes_stale_tmpfiles() {
+        // Sanity check that the sweep actually GCs old files — pairs with
+        // the test above to prove the refresh is what saves the file.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let path = materialize_image("image/png", TINY_PNG_B64, dir).unwrap();
+
+        let stale = SystemTime::now() - Duration::from_secs(IMAGE_TMP_TTL_SECS + 3600);
+        let f = std::fs::File::open(&path).unwrap();
+        f.set_modified(stale).unwrap();
+        drop(f);
+
+        sweep_old_image_tmpfiles(dir);
+        assert!(!path.exists(), "stale tmpfile should have been swept");
+    }
+
+    #[test]
+    fn ext_for_mime_known_and_unknown() {
+        assert_eq!(ext_for_mime("image/png"), "png");
+        assert_eq!(ext_for_mime("IMAGE/JPEG"), "jpg");
+        assert_eq!(ext_for_mime("image/webp"), "webp");
+        assert_eq!(ext_for_mime("application/octet-stream"), "bin");
+    }
+
+    #[test]
+    fn materialize_image_rejects_invalid_base64() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(materialize_image("image/png", "!!!not-base64!!!", tmp.path()).is_none());
+    }
+
+    // Force-reference base64 engine to keep imports tidy in case someone
+    // refactors and the const is the only consumer.
+    #[allow(dead_code)]
+    fn _b64_compile_check() {
+        let _ = base64::engine::general_purpose::STANDARD.decode(TINY_PNG_B64);
+    }
 }
