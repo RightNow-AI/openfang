@@ -3308,6 +3308,128 @@ mod tests {
         assert_eq!(posts.len(), 1, "FileData should still be sent");
     }
 
+    // ---- multi-file 429 retry --------------------------------------------------
+
+    /// First POST returns 429 with `Retry-After: 0`; second POST succeeds.
+    /// Sending a 3-attachment Multipart must produce exactly 2 POSTs (one
+    /// retry of the same chunk), the second succeeds, and both attempts
+    /// carry `files[0..2]`. Locks in body-aware retry behavior on the
+    /// multi-file path so a future refactor that lifts retry handling out
+    /// of `api_send_attachments` can't silently regress it.
+    #[tokio::test]
+    async fn test_multipart_outbound_multifile_429_retries_once() {
+        use axum::{
+            extract::{DefaultBodyLimit, Multipart},
+            http::StatusCode,
+            response::IntoResponse,
+            routing::post,
+            Extension, Router,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> = Arc::new(TokioMutex::new(Vec::new()));
+        let attempt = Arc::new(AtomicUsize::new(0));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured_clone = captured.clone();
+        let attempt_clone = attempt.clone();
+        let app = Router::new()
+            .route(
+                "/channels/test/messages",
+                post(
+                    move |Extension(_): Extension<()>, mut multipart: Multipart| {
+                        let captured = captured_clone.clone();
+                        let attempt = attempt_clone.clone();
+                        async move {
+                            let n = attempt.fetch_add(1, Ordering::SeqCst);
+                            // Drain the multipart body either way so the
+                            // client sees a clean response.
+                            let mut post_rec = CapturedPost::default();
+                            while let Ok(Some(field)) = multipart.next_field().await {
+                                let name = field.name().unwrap_or("").to_string();
+                                if name == "payload_json" {
+                                    post_rec.payload_json =
+                                        field.text().await.unwrap_or_default();
+                                } else {
+                                    let filename = field.file_name().map(str::to_string);
+                                    let content_type = field.content_type().map(str::to_string);
+                                    let _ = field.bytes().await;
+                                    post_rec.files.push(CapturedFile {
+                                        field_name: name.clone(),
+                                        filename,
+                                        content_type,
+                                    });
+                                    post_rec.file_field_names.push(name);
+                                }
+                            }
+                            captured.lock().await.push(post_rec);
+                            if n == 0 {
+                                // 429 with body-encoded retry_after = 0; the
+                                // adapter clamps to RETRY_AFTER_FLOOR_SECS so
+                                // the retry fires almost immediately.
+                                (
+                                    StatusCode::TOO_MANY_REQUESTS,
+                                    [(axum::http::header::RETRY_AFTER, "0")],
+                                    r#"{"retry_after":0.0,"global":false}"#,
+                                )
+                                    .into_response()
+                            } else {
+                                StatusCode::OK.into_response()
+                            }
+                        }
+                    },
+                ),
+            )
+            .layer(DefaultBodyLimit::disable())
+            .layer(Extension(()));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let base = format!("http://{addr}");
+
+        let adapter = test_adapter_with_base(base);
+        let user = make_channel_user("test");
+        let content = ChannelContent::Multipart(vec![
+            ChannelContent::Text("cap".to_string()),
+            ChannelContent::FileData {
+                data: b"a".to_vec(),
+                filename: "a.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+            },
+            ChannelContent::FileData {
+                data: b"b".to_vec(),
+                filename: "b.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+            },
+            ChannelContent::FileData {
+                data: b"c".to_vec(),
+                filename: "c.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+            },
+        ]);
+
+        adapter.send(&user, content).await.unwrap();
+
+        let posts = captured.lock().await;
+        assert_eq!(
+            posts.len(),
+            2,
+            "expected 2 POSTs (one 429-rejected, one 200) for the same chunk"
+        );
+        // Both attempts must carry the full files[0..2] set — the retry
+        // path rebuilds the form rather than dropping attachments.
+        for (i, p) in posts.iter().enumerate() {
+            let names: Vec<&str> =
+                p.file_field_names.iter().map(String::as_str).collect();
+            assert_eq!(
+                names,
+                vec!["files[0]", "files[1]", "files[2]"],
+                "attempt {i} must include files[0..2]"
+            );
+        }
+    }
+
     // ---- aggregate per-chunk byte cap ------------------------------------------
 
     /// Three 10 MiB FileData blocks must split into two chunks under the
