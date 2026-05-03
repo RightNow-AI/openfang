@@ -118,8 +118,28 @@ fn materialize_image(media_type: &str, data: &str, dir: &Path) -> Option<PathBuf
         warn!(dir = ?dir, error = %e, "failed to create claude_code image tmp dir");
         return None;
     }
-    if let Err(e) = std::fs::write(&path, &bytes) {
-        warn!(path = ?path, error = %e, "failed to write claude_code image tmpfile");
+    // Atomic publish: write to a unique tmp sibling, then rename into place.
+    // Two concurrent renders of the same image each write their own tmpfile;
+    // the rename(2) is atomic on the same filesystem, so the Read tool never
+    // sees a torn or partially-written file. If the destination already exists
+    // by the time we rename (loser of a race), the rename still succeeds
+    // (POSIX replaces) — and the contents are identical anyway by construction.
+    let tmp_path = dir.join(format!(
+        "{hex}.{pid}.{nanos}.tmp",
+        pid = std::process::id(),
+        nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    ));
+    if let Err(e) = std::fs::write(&tmp_path, &bytes) {
+        warn!(path = ?tmp_path, error = %e, "failed to write claude_code image tmpfile");
+        return None;
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, &path) {
+        warn!(from = ?tmp_path, to = ?path, error = %e, "failed to rename claude_code image tmpfile into place");
+        // Best-effort cleanup of the orphan tmpfile.
+        let _ = std::fs::remove_file(&tmp_path);
         return None;
     }
     Some(path)
