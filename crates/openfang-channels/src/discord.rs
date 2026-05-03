@@ -245,6 +245,10 @@ pub struct DiscordAdapter {
     /// `DISCORD_API_BASE`). Set by tests that spin up a local stub server.
     #[cfg(test)]
     api_base_override: Option<String>,
+    /// When `true`, skip the SSRF guard in `download_url_to_bytes` so tests
+    /// can point `Image{url}` / `File{url}` at a local stub server.
+    #[cfg(test)]
+    ssrf_bypass: bool,
 }
 
 impl DiscordAdapter {
@@ -270,6 +274,8 @@ impl DiscordAdapter {
             resume_gateway_url: Arc::new(RwLock::new(None)),
             #[cfg(test)]
             api_base_override: None,
+            #[cfg(test)]
+            ssrf_bypass: false,
         }
     }
 
@@ -481,6 +487,10 @@ impl DiscordAdapter {
     ) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>> {
         let parsed = Url::parse(url)
             .map_err(|e| format!("URL fetch refused: parse error: {e}"))?;
+        #[cfg(test)]
+        if self.ssrf_bypass {
+            return self.download_url_to_bytes_inner(&parsed).await;
+        }
         resolve_and_check_host(&parsed).await?;
         self.download_url_to_bytes_inner(&parsed).await
     }
@@ -2254,6 +2264,37 @@ mod tests {
         format!("http://{addr}/file")
     }
 
+    /// Like `spawn_raw_http_server` but with a configurable Content-Type
+    /// header and a configurable path suffix in the returned URL. Used by
+    /// mixed-type Multipart tests where different URLs must carry different
+    /// content-types (e.g. `image/png` for the Image block, `application/pdf`
+    /// for the File block).
+    async fn spawn_fixture_server(
+        content_type: &'static str,
+        path: &'static str,
+        body: bytes::Bytes,
+    ) -> String {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            let mut buf = [0u8; 4096];
+            let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut buf).await;
+            let body_len = body.len();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n"
+            );
+            let _ = sock.write_all(header.as_bytes()).await;
+            let _ = sock.write_all(&body).await;
+            let _ = sock.shutdown().await;
+        });
+        format!("http://{addr}/{path}")
+    }
+
     /// Spawn a server that omits Content-Length (so the pre-flight CL check
     /// can't short-circuit) and streams `actual_len` bytes in 1 MiB chunks
     /// using HTTP/1.1 Connection: close framing. After each successful chunk
@@ -2530,9 +2571,19 @@ mod tests {
     use tokio::sync::Mutex as TokioMutex;
 
     #[derive(Debug, Default, Clone)]
+    struct CapturedFile {
+        field_name: String,
+        filename: Option<String>,
+        content_type: Option<String>,
+    }
+
+    #[derive(Debug, Default, Clone)]
     struct CapturedPost {
         payload_json: String,
+        /// Bare field names (legacy, kept so existing assertions continue to compile).
         file_field_names: Vec<String>,
+        /// Richer per-file metadata captured from each `files[*]` part.
+        files: Vec<CapturedFile>,
     }
 
     /// Build an axum stub that captures one or more multipart POSTs to
@@ -2562,8 +2613,15 @@ mod tests {
                                 post.payload_json =
                                     field.text().await.unwrap_or_default();
                             } else {
+                                let filename = field.file_name().map(str::to_string);
+                                let content_type = field.content_type().map(str::to_string);
                                 // Drain the file bytes so axum doesn't error.
                                 let _ = field.bytes().await;
+                                post.files.push(CapturedFile {
+                                    field_name: name.clone(),
+                                    filename,
+                                    content_type,
+                                });
                                 post.file_field_names.push(name);
                             }
                         }
@@ -2591,6 +2649,15 @@ mod tests {
     fn test_adapter_with_base(base: String) -> DiscordAdapter {
         let mut a = test_adapter();
         a.api_base_override = Some(base);
+        a
+    }
+
+    /// Like `test_adapter_with_base` but also enables the SSRF bypass so that
+    /// `Image{url}` / `File{url}` blocks pointing at localhost stub servers can
+    /// be fetched through the normal `download_url_to_bytes` production path.
+    fn test_adapter_with_base_and_ssrf_bypass(base: String) -> DiscordAdapter {
+        let mut a = test_adapter_with_base(base);
+        a.ssrf_bypass = true;
         a
     }
 
@@ -2775,55 +2842,115 @@ mod tests {
         );
     }
 
-    // ---- required test e: mixed Image+File (using FileData) --------------------
+    // ---- required test e: mixed Image{url}+File{url} resolver dispatch ----------
 
+    /// Verifies that a `Multipart([Text, Image{url}, File{url}])` block routes
+    /// each attachment through the correct resolver branch:
+    ///
+    /// - `Image{url}` → `resolve_image_mime` / `resolve_image_filename`:
+    ///   the response Content-Type is used as-is and the filename is derived
+    ///   from the URL path or inferred from the MIME (e.g. `image.png`).
+    ///
+    /// - `File{url, filename, mime}` → `resolve_file_mime` /
+    ///   `resolve_file_filename`: the explicitly supplied filename and MIME
+    ///   from the `File{}` block take precedence over the server's
+    ///   Content-Type.
+    ///
+    /// The test spins up two local HTTP fixture servers (bypassing the SSRF
+    /// guard via `ssrf_bypass`), one per URL, then asserts on the
+    /// per-part filename and Content-Type captured by the Discord stub.
     #[tokio::test]
     async fn test_multipart_outbound_mixed_types_single_post() {
-        // Use two FileData blocks (one acting as an "image", one as a "file")
-        // to verify both appear in the same POST with distinct field names and
-        // MIME types preserved.
+        // Spawn a fixture server for the Image block — serves image/png bytes.
+        let image_url = spawn_fixture_server(
+            "image/png",
+            "photo.png",
+            bytes::Bytes::from_static(b"\x89PNG\r\n\x1a\n"), // minimal PNG magic
+        )
+        .await;
+
+        // Spawn a fixture server for the File block — serves application/pdf
+        // bytes. The File block supplies an explicit filename and MIME so the
+        // resolver must prefer those over the server's Content-Type.
+        let file_url = spawn_fixture_server(
+            "application/octet-stream", // server sends generic; resolver should prefer field mime
+            "ignored-server-name.bin",
+            bytes::Bytes::from_static(b"%PDF-1.4"),
+        )
+        .await;
+
         let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
             Arc::new(TokioMutex::new(Vec::new()));
         let base = spawn_discord_stub(captured.clone()).await;
-        let adapter = test_adapter_with_base(base);
+        let adapter = test_adapter_with_base_and_ssrf_bypass(base);
         let user = make_channel_user("test");
 
         let content = ChannelContent::Multipart(vec![
             ChannelContent::Text("mixed".to_string()),
-            ChannelContent::FileData {
-                data: b"imgbytes".to_vec(),
-                filename: "photo.png".to_string(),
-                mime_type: "image/png".to_string(),
+            ChannelContent::Image {
+                url: image_url.clone(),
+                caption: None,
             },
-            ChannelContent::FileData {
-                data: b"docbytes".to_vec(),
-                filename: "doc.pdf".to_string(),
-                mime_type: "application/pdf".to_string(),
+            ChannelContent::File {
+                url: file_url.clone(),
+                filename: "report.pdf".to_string(),
+                mime: Some("application/pdf".to_string()),
+                size: None,
             },
         ]);
 
         adapter.send(&user, content).await.unwrap();
 
         let posts = captured.lock().await;
-        assert_eq!(posts.len(), 1, "expected exactly one POST for two-file Multipart");
+        assert_eq!(posts.len(), 1, "expected exactly one POST for mixed Multipart");
 
         // Caption preserved.
         let v: serde_json::Value = serde_json::from_str(&posts[0].payload_json).unwrap();
         assert_eq!(v["content"].as_str().unwrap_or(""), "mixed");
 
-        // Both files appeared in a single POST as files[0] and files[1].
+        // Both files appeared in a single POST.
         assert_eq!(
-            posts[0].file_field_names.len(),
+            posts[0].files.len(),
             2,
-            "expected two file fields in the POST"
+            "expected two file parts in the POST"
         );
-        assert!(
-            posts[0].file_field_names.contains(&"files[0]".to_string()),
-            "expected files[0] field"
+
+        // ---- Image block assertions ----
+        // resolve_image_mime: server sent image/png → resolved mime = "image/png"
+        // resolve_image_filename: URL path tail is "photo.png" → filename = "photo.png"
+        let img_part = posts[0]
+            .files
+            .iter()
+            .find(|f| f.field_name == "files[0]")
+            .expect("files[0] must be present");
+        assert_eq!(
+            img_part.content_type.as_deref(),
+            Some("image/png"),
+            "Image block must use resolve_image_mime (server Content-Type preserved)"
         );
-        assert!(
-            posts[0].file_field_names.contains(&"files[1]".to_string()),
-            "expected files[1] field"
+        assert_eq!(
+            img_part.filename.as_deref(),
+            Some("photo.png"),
+            "Image block must use resolve_image_filename (URL path tail)"
+        );
+
+        // ---- File block assertions ----
+        // resolve_file_filename: explicit filename "report.pdf" takes precedence over URL
+        // resolve_file_mime: explicit mime "application/pdf" takes precedence over server CT
+        let file_part = posts[0]
+            .files
+            .iter()
+            .find(|f| f.field_name == "files[1]")
+            .expect("files[1] must be present");
+        assert_eq!(
+            file_part.content_type.as_deref(),
+            Some("application/pdf"),
+            "File block must use resolve_file_mime (explicit mime from File{{}} block)"
+        );
+        assert_eq!(
+            file_part.filename.as_deref(),
+            Some("report.pdf"),
+            "File block must use resolve_file_filename (explicit filename from File{{}} block)"
         );
     }
 
