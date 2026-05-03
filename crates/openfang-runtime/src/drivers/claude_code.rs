@@ -474,6 +474,14 @@ impl LlmDriver for ClaudeCodeDriver {
             cmd.arg("--model").arg(model);
         }
 
+        // Grant the CLI's Read tool access to our image tmp dir, which lives
+        // outside the agent's workspace cwd. Without --add-dir the CLI would
+        // refuse Read on `$HOME/.openfang/tmp/images/*` (unless
+        // --dangerously-skip-permissions is set) and the materialization would
+        // be a dead-end. Cheap and idempotent — the dir is per-user and
+        // content-addressed.
+        cmd.arg("--add-dir").arg(image_tmp_dir());
+
         Self::apply_env_filter(&mut cmd);
 
         // Inject HOME so the CLI can find its credentials (~/.claude/) when
@@ -669,6 +677,9 @@ impl LlmDriver for ClaudeCodeDriver {
         if let Some(ref model) = model_flag {
             cmd.arg("--model").arg(model);
         }
+
+        // Same image-tmp-dir grant as the non-streaming path; see complete().
+        cmd.arg("--add-dir").arg(image_tmp_dir());
 
         Self::apply_env_filter(&mut cmd);
 
