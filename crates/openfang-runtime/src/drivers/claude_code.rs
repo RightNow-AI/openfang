@@ -8,16 +8,14 @@
 //! Tracks active subprocess PIDs and enforces message timeouts to prevent
 //! hung CLI processes from blocking agents indefinitely.
 
+use crate::image_cache::{image_tmp_dir, materialize_image, spawn_sweep_once};
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
-use base64::Engine;
 use dashmap::DashMap;
 use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
-use std::sync::Once;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tracing::{debug, info, warn};
 
@@ -56,129 +54,10 @@ const SENSITIVE_SUFFIXES: &[&str] = &["_SECRET", "_TOKEN", "_PASSWORD"];
 /// Default subprocess timeout in seconds (5 minutes).
 const DEFAULT_MESSAGE_TIMEOUT_SECS: u64 = 300;
 
-/// TTL for materialized image tmpfiles (24 hours). Files older than this
-/// are swept on driver init.
-const IMAGE_TMP_TTL_SECS: u64 = 24 * 60 * 60;
-
-/// One-shot guard so the TTL sweep only fires once per process.
-static IMAGE_TMP_SWEEP_ONCE: Once = Once::new();
-
-/// Resolve the directory used for materializing image attachments.
-///
-/// Lives under `$HOME/.openfang/tmp/images` so it travels with the OpenFang
-/// install. Falls back to the OS temp dir when `$HOME` isn't set (which
-/// shouldn't happen in our deployed daemon but is handled defensively).
-fn image_tmp_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push(".openfang");
-        p.push("tmp");
-        p.push("images");
-        p
-    } else {
-        let mut p = std::env::temp_dir();
-        p.push("openfang-images");
-        p
-    }
-}
-
-/// Map a MIME type to a sensible filename extension.
-fn ext_for_mime(media_type: &str) -> &'static str {
-    match media_type.to_ascii_lowercase().as_str() {
-        "image/png" => "png",
-        "image/jpeg" | "image/jpg" => "jpg",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        "image/heic" => "heic",
-        "image/heif" => "heif",
-        "image/bmp" => "bmp",
-        "image/svg+xml" => "svg",
-        _ => "bin",
-    }
-}
-
-/// Decode the base64 image and write it to a content-addressed file under
-/// `dir`. Idempotent: if a file with the same content hash already exists,
-/// the existing path is returned without rewriting. Returns `None` on
-/// decode or I/O failure (caller falls back to the textual placeholder).
-fn materialize_image(media_type: &str, data: &str, dir: &Path) -> Option<PathBuf> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data.as_bytes())
-        .ok()?;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let hash = hasher.finalize();
-    let hex: String = hash.iter().take(16).map(|b| format!("{:02x}", b)).collect();
-    let filename = format!("{hex}.{ext}", ext = ext_for_mime(media_type));
-    let path = dir.join(filename);
-    if path.exists() {
-        return Some(path);
-    }
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        warn!(dir = ?dir, error = %e, "failed to create claude_code image tmp dir");
-        return None;
-    }
-    // Atomic publish: write to a unique tmp sibling, then rename into place.
-    // Two concurrent renders of the same image each write their own tmpfile;
-    // the rename(2) is atomic on the same filesystem, so the Read tool never
-    // sees a torn or partially-written file. If the destination already exists
-    // by the time we rename (loser of a race), the rename still succeeds
-    // (POSIX replaces) — and the contents are identical anyway by construction.
-    let tmp_path = dir.join(format!(
-        "{hex}.{pid}.{nanos}.tmp",
-        pid = std::process::id(),
-        nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    ));
-    if let Err(e) = std::fs::write(&tmp_path, &bytes) {
-        warn!(path = ?tmp_path, error = %e, "failed to write claude_code image tmpfile");
-        return None;
-    }
-    if let Err(e) = std::fs::rename(&tmp_path, &path) {
-        warn!(from = ?tmp_path, to = ?path, error = %e, "failed to rename claude_code image tmpfile into place");
-        // Best-effort cleanup of the orphan tmpfile.
-        let _ = std::fs::remove_file(&tmp_path);
-        return None;
-    }
-    Some(path)
-}
-
-/// Delete image tmpfiles older than [`IMAGE_TMP_TTL_SECS`]. Best-effort:
-/// any error is logged at debug and the sweep moves on.
-fn sweep_old_image_tmpfiles(dir: &Path) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) => {
-            debug!(dir = ?dir, error = %e, "image tmp sweep: read_dir failed (likely missing dir, fine)");
-            return;
-        }
-    };
-    let now = std::time::SystemTime::now();
-    let ttl = std::time::Duration::from_secs(IMAGE_TMP_TTL_SECS);
-    let mut removed = 0u32;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(meta) = entry.metadata() else { continue };
-        if !meta.is_file() {
-            continue;
-        }
-        let Ok(modified) = meta.modified() else { continue };
-        if let Ok(age) = now.duration_since(modified) {
-            if age > ttl {
-                if let Err(e) = std::fs::remove_file(&path) {
-                    debug!(path = ?path, error = %e, "image tmp sweep: remove failed");
-                } else {
-                    removed += 1;
-                }
-            }
-        }
-    }
-    if removed > 0 {
-        info!(removed, "swept stale claude_code image tmpfiles");
-    }
-}
+// Image materialization helpers (image_tmp_dir, ext_for_mime,
+// materialize_image, sweep_old_image_tmpfiles, TTL constants, sweep guard)
+// live in crate::image_cache so the outbound file-sharing path can reuse
+// the same content-addressed cache without a circular dep on this driver.
 
 /// LLM driver that delegates to the Claude Code CLI.
 pub struct ClaudeCodeDriver {
@@ -207,10 +86,7 @@ impl ClaudeCodeDriver {
         }
 
         // Best-effort sweep of stale image tmpfiles, once per process.
-        IMAGE_TMP_SWEEP_ONCE.call_once(|| {
-            let dir = image_tmp_dir();
-            std::thread::spawn(move || sweep_old_image_tmpfiles(&dir));
-        });
+        spawn_sweep_once();
 
         Self {
             cli_path: cli_path
