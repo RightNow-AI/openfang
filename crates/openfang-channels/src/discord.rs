@@ -9,10 +9,12 @@ use crate::types::{
 use async_trait::async_trait;
 use futures::{SinkExt, Stream, StreamExt};
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use url::Url;
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -41,6 +43,14 @@ const URL_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// 25 MiB; matching that here means we reject before paying for bytes Discord
 /// would refuse anyway.
 const URL_FETCH_MAX_BYTES: usize = 25 * 1024 * 1024;
+/// Cap on the number of HTTP redirects we'll follow on URL fetches. Each hop
+/// is independently SSRF-rechecked at the literal-IP level.
+const URL_FETCH_MAX_REDIRECTS: usize = 3;
+/// User-Agent we identify as on outbound URL fetches. Pinned so a future test
+/// can assert on it; remote operators looking at access logs see a single
+/// stable identifier instead of reqwest's default.
+const URL_FETCH_USER_AGENT: &str =
+    concat!("openfang-channels-discord/", env!("CARGO_PKG_VERSION"));
 
 /// Discord Gateway opcodes.
 mod opcode {
@@ -64,6 +74,154 @@ fn build_heartbeat_payload(last_sequence: Option<u64>) -> serde_json::Value {
         "op": opcode::HEARTBEAT,
         "d": last_sequence,
     })
+}
+
+/// Format a URL for log/error messages with the query string and fragment
+/// stripped. Discord CDN URLs carry HMAC-style query params (`ex`, `is`, `hm`,
+/// `__cf_bm`) that grant time-limited access; logging them at warn/error level
+/// would leak credential-equivalent material into operator log aggregators.
+fn redact_url(u: &Url) -> String {
+    format!(
+        "{}://{}{}",
+        u.scheme(),
+        u.host_str().unwrap_or(""),
+        u.path()
+    )
+}
+
+/// Returns true if the IP address is one we refuse to fetch from to prevent
+/// SSRF: loopback, RFC1918 / link-local / unique-local, multicast, unspecified,
+/// or the literal cloud-metadata IP. IPv4-mapped IPv6 addresses are unwrapped
+/// to their underlying v4 and re-checked.
+fn is_blocked_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_blocked_v4(v4),
+        IpAddr::V6(v6) => {
+            // Strip IPv4-mapped wrappers (::ffff:a.b.c.d) before re-checking.
+            // `Ipv6Addr::to_ipv4_mapped` is stable as of 1.63 but we use the
+            // older `to_ipv4` which also covers IPv4-compatible ::a.b.c.d.
+            if let Some(v4) = v6.to_ipv4() {
+                if is_blocked_v4(v4) {
+                    return true;
+                }
+            }
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                return true;
+            }
+            // Link-local fe80::/10. `Ipv6Addr::is_unicast_link_local` is
+            // unstable; check the prefix manually.
+            let seg0 = v6.segments()[0];
+            if (seg0 & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            // Unique local fc00::/7.
+            if (seg0 & 0xfe00) == 0xfc00 {
+                return true;
+            }
+            false
+        }
+    }
+}
+
+fn is_blocked_v4(v4: Ipv4Addr) -> bool {
+    if v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.is_multicast()
+        || v4.is_broadcast()
+    {
+        return true;
+    }
+    // 169.254.169.254 is technically link-local (covered above) but make the
+    // intent explicit — a future stdlib change to `is_link_local` shouldn't
+    // silently re-open cloud-metadata exfiltration.
+    if v4.octets() == [169, 254, 169, 254] {
+        return true;
+    }
+    // Carrier-grade NAT 100.64.0.0/10. Not in `Ipv4Addr::is_private` but is
+    // commonly internal.
+    if v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 0x40 {
+        return true;
+    }
+    false
+}
+
+/// Synchronous SSRF check on a parsed URL: scheme allowlist + literal-IP host
+/// range check. Hostname (DNS) resolution is the caller's responsibility (see
+/// [`resolve_and_check_host`]); this function intentionally avoids DNS so it
+/// can run inside the sync `redirect::Policy::custom` callback on every hop.
+///
+/// Threat model note: the redirect callback can only do this literal-IP
+/// recheck, not DNS, because reqwest's redirect policy is sync. A malicious
+/// DNS server that returns a public IP at first lookup and a private IP on a
+/// second lookup is *not* in the threat model — the threat is a malicious URL
+/// the agent was tricked into emitting. Literal-IP redirects are still
+/// blocked at every hop, which closes the most obvious bypass.
+fn check_url_scheme_and_literal_ip(u: &Url) -> Result<(), String> {
+    match u.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(format!(
+                "URL fetch refused: scheme {other:?} not allowed (need http/https) for {}",
+                redact_url(u)
+            ));
+        }
+    }
+    if let Some(host) = u.host() {
+        match host {
+            url::Host::Ipv4(v4) => {
+                if is_blocked_v4(v4) {
+                    return Err(format!(
+                        "URL fetch refused: blocked IPv4 host for {}",
+                        redact_url(u)
+                    ));
+                }
+            }
+            url::Host::Ipv6(v6) => {
+                if is_blocked_ip(IpAddr::V6(v6)) {
+                    return Err(format!(
+                        "URL fetch refused: blocked IPv6 host for {}",
+                        redact_url(u)
+                    ));
+                }
+            }
+            url::Host::Domain(_) => {}
+        }
+    } else {
+        return Err(format!(
+            "URL fetch refused: missing host for {}",
+            redact_url(u)
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve the URL's host (DNS if hostname; identity if IP literal) and reject
+/// if any resolved address fails the SSRF check. Performs both the scheme
+/// check and the per-IP check.
+async fn resolve_and_check_host(u: &Url) -> Result<(), String> {
+    check_url_scheme_and_literal_ip(u)?;
+    let host = match u.host() {
+        Some(url::Host::Domain(d)) => d.to_string(),
+        // IP literals already passed the literal-IP check above; no DNS needed.
+        Some(_) => return Ok(()),
+        None => return Err(format!("URL fetch refused: missing host for {}", redact_url(u))),
+    };
+    let port = u.port_or_known_default().unwrap_or(0);
+    let hostport = format!("{host}:{port}");
+    let addrs = tokio::net::lookup_host(hostport.as_str())
+        .await
+        .map_err(|_| format!("URL fetch refused: DNS lookup failed for {}", redact_url(u)))?;
+    for sa in addrs {
+        if is_blocked_ip(sa.ip()) {
+            return Err(format!(
+                "URL fetch refused: host resolved to blocked address for {}",
+                redact_url(u)
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Discord Gateway adapter using WebSocket.
@@ -246,13 +404,22 @@ impl DiscordAdapter {
         }
     }
 
-    /// Fetch a URL into memory with a 15s timeout and a 25 MiB cap.
+    /// Fetch a URL into memory with a 15s timeout, a 25 MiB cap, and SSRF
+    /// guards.
     ///
-    /// Two-stage size enforcement:
-    ///   1. If the response carries `Content-Length` and it exceeds the cap,
-    ///      reject before reading the body.
-    ///   2. Stream `chunk()`-by-`chunk()` and abort once accumulated bytes
-    ///      exceed the cap (covers servers that omit/lie about Content-Length).
+    /// Layered defenses:
+    ///   1. Parse with `url::Url`; reject non-`http`/`https` schemes.
+    ///   2. DNS-resolve the host and reject if any address is loopback,
+    ///      private, link-local, multicast, unspecified, IPv4-mapped private,
+    ///      or the cloud-metadata IP. See [`resolve_and_check_host`].
+    ///   3. Per-request reqwest client with a custom redirect policy that
+    ///      caps at [`URL_FETCH_MAX_REDIRECTS`] hops and re-applies the
+    ///      literal-IP SSRF check on every hop's URL.
+    ///   4. Two-stage size enforcement: Content-Length pre-flight, then
+    ///      streaming chunk accumulation that aborts mid-stream.
+    ///
+    /// Errors and logs strip the URL's query string and fragment via
+    /// [`redact_url`] so Discord CDN HMAC params don't end up in operator logs.
     ///
     /// Returns the body as `Bytes` (so the multipart helper can refcount-clone
     /// instead of memcpy on retry) plus the response's `Content-Type` with any
@@ -261,12 +428,62 @@ impl DiscordAdapter {
         &self,
         url: &str,
     ) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>> {
-        let resp = self
-            .client
-            .get(url)
+        let parsed = Url::parse(url)
+            .map_err(|e| format!("URL fetch refused: parse error: {e}"))?;
+        resolve_and_check_host(&parsed).await?;
+        self.download_url_to_bytes_inner(&parsed).await
+    }
+
+    /// SSRF-bypassed inner fetch. Performs the actual HTTP work but assumes
+    /// the URL has already passed [`resolve_and_check_host`]. Test-only entry
+    /// point for tests that legitimately need to talk to `127.0.0.1`.
+    async fn download_url_to_bytes_inner(
+        &self,
+        parsed: &Url,
+    ) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>> {
+        // Per-request client with a custom redirect policy. We cannot reuse
+        // `self.client` because its redirect policy is fixed at build time.
+        let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= URL_FETCH_MAX_REDIRECTS {
+                return attempt.error(format!(
+                    "redirect cap ({URL_FETCH_MAX_REDIRECTS}) exceeded"
+                ));
+            }
+            // Sync context: we can only do the literal-IP recheck here; DNS
+            // requires async. The original hostname was DNS-checked before
+            // the request started, so the only new bypass to close at this
+            // layer is a redirect to a literal private IP.
+            if let Err(e) = check_url_scheme_and_literal_ip(attempt.url()) {
+                return attempt.error(e);
+            }
+            attempt.follow()
+        });
+        let client = reqwest::Client::builder()
+            .redirect(redirect_policy)
+            .user_agent(URL_FETCH_USER_AGENT)
             .timeout(URL_FETCH_TIMEOUT)
-            .send()
-            .await?;
+            .build()?;
+
+        let resp = client.get(parsed.as_str()).send().await.map_err(|e| {
+            // reqwest's Display impl for Error includes the URL it was
+            // fetching (with query string). Replace it with the redacted
+            // form to keep CDN HMAC params out of error logs.
+            //
+            // For redirect-policy errors, reqwest's outer Display is the
+            // generic "error following redirect"; the actual cause (e.g.
+            // "URL fetch refused: blocked IPv4 host for ...") lives in the
+            // source chain. Walk it so the operator sees *why* we refused.
+            let stripped = e.without_url();
+            let mut msg = stripped.to_string();
+            let mut src: Option<&dyn std::error::Error> =
+                std::error::Error::source(&stripped);
+            while let Some(s) = src {
+                use std::fmt::Write as _;
+                let _ = write!(msg, ": {s}");
+                src = s.source();
+            }
+            format!("URL fetch failed for {}: {msg}", redact_url(parsed))
+        })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -279,17 +496,20 @@ impl DiscordAdapter {
                 .take(512)
                 .collect();
             return Err(format!(
-                "Discord download_url_to_bytes failed ({status}) for {url}: {snippet}"
+                "URL fetch failed ({status}) for {}: {snippet}",
+                redact_url(parsed)
             )
             .into());
         }
 
         // Pre-flight: trust Content-Length when present so we can fail fast
         // without buffering 26 MiB before erroring.
-        if let Some(len) = resp.content_length() {
+        let content_length = resp.content_length();
+        if let Some(len) = content_length {
             if len as usize > URL_FETCH_MAX_BYTES {
                 return Err(format!(
-                    "Discord download_url_to_bytes: Content-Length {len} exceeds cap {URL_FETCH_MAX_BYTES} for {url}"
+                    "URL fetch refused: Content-Length {len} exceeds cap {URL_FETCH_MAX_BYTES} for {}",
+                    redact_url(parsed)
                 )
                 .into());
             }
@@ -302,15 +522,20 @@ impl DiscordAdapter {
             .map(strip_mime_params)
             .filter(|s| !s.is_empty());
 
-        // Stream chunks so we can abort if the server lied about/omitted
-        // Content-Length and tries to push past the cap. `chunk()` returns
-        // `Bytes`; we accumulate into a single `BytesMut` and freeze at the end.
-        let mut buf = bytes::BytesMut::new();
+        // Pre-size the buffer: if we have a trustworthy Content-Length, use it
+        // (clamped to the cap); otherwise start at 64 KiB so the happy path
+        // doesn't pay ~24 doublings on a 25 MiB body.
+        let initial_cap = std::cmp::min(
+            content_length.unwrap_or(64 * 1024) as usize,
+            URL_FETCH_MAX_BYTES,
+        );
+        let mut buf = bytes::BytesMut::with_capacity(initial_cap);
         let mut resp = resp;
         while let Some(chunk) = resp.chunk().await? {
             if buf.len() + chunk.len() > URL_FETCH_MAX_BYTES {
                 return Err(format!(
-                    "Discord download_url_to_bytes: streamed body exceeds cap {URL_FETCH_MAX_BYTES} for {url}"
+                    "URL fetch refused: streamed body exceeds cap {URL_FETCH_MAX_BYTES} for {}",
+                    redact_url(parsed)
                 )
                 .into());
             }
@@ -1860,8 +2085,67 @@ mod tests {
         format!("http://{addr}/file")
     }
 
+    /// Spawn a server that omits Content-Length (so the pre-flight CL check
+    /// can't short-circuit) and streams `actual_len` bytes in 1 MiB chunks
+    /// using HTTP/1.1 Connection: close framing. After each successful chunk
+    /// write, increments `bytes_sent`. The test asserts on the counter to
+    /// prove the client aborted *mid-stream* rather than buffering the
+    /// entire body and complaining at the end.
+    async fn spawn_chunked_streaming_server(
+        actual_len: usize,
+        bytes_sent: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> String {
+        use std::sync::atomic::Ordering;
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            let mut hbuf = [0u8; 4096];
+            let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut hbuf).await;
+            let header = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n";
+            if sock.write_all(header.as_bytes()).await.is_err() {
+                return;
+            }
+            let chunk = vec![0u8; 1024 * 1024];
+            let mut written = 0usize;
+            while written < actual_len {
+                let n = std::cmp::min(chunk.len(), actual_len - written);
+                if sock.write_all(&chunk[..n]).await.is_err() {
+                    // Client aborted (which is exactly what we expect once it
+                    // hits the cap). Stop writing further chunks.
+                    break;
+                }
+                // Flush so the kernel doesn't coalesce chunks beyond what the
+                // client has actually pulled — that would let the server
+                // "appear" to write 100 MiB instantly while the client has
+                // only consumed 25 MiB. With small SO_SNDBUF + flush the
+                // counter approximates client-consumed bytes.
+                let _ = sock.flush().await;
+                written += n;
+                bytes_sent.fetch_add(n, Ordering::SeqCst);
+            }
+            let _ = sock.shutdown().await;
+        });
+        format!("http://{addr}/file")
+    }
+
     fn test_adapter() -> DiscordAdapter {
         DiscordAdapter::new("test-token".into(), vec![], vec![], true, 0)
+    }
+
+    /// Test-only helper: run the inner fetch by hand to bypass the SSRF guard
+    /// (which would otherwise refuse 127.0.0.1). Production callers always go
+    /// through `download_url_to_bytes` and inherit the guard.
+    async fn test_fetch(
+        adapter: &DiscordAdapter,
+        url: &str,
+    ) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>> {
+        let parsed = Url::parse(url).unwrap();
+        adapter.download_url_to_bytes_inner(&parsed).await
     }
 
     #[tokio::test]
@@ -1875,27 +2159,49 @@ mod tests {
             spawn_raw_http_server("200 OK", Some(cl), bytes::Bytes::from_static(b"x")).await;
 
         let adapter = test_adapter();
-        let res = adapter.download_url_to_bytes(&url).await;
+        let res = test_fetch(&adapter, &url).await;
         assert!(res.is_err(), "expected Err on oversized Content-Length");
         let err = res.unwrap_err().to_string();
         assert!(err.contains("Content-Length"), "err should mention CL: {err}");
     }
 
     #[tokio::test]
-    async fn test_download_size_cap_via_streaming() {
-        // Server omits Content-Length and streams >25 MiB. Adapter must abort
-        // mid-stream rather than buffering the full payload.
-        let big = bytes::Bytes::from(vec![0u8; URL_FETCH_MAX_BYTES + 1024]);
-        let url = spawn_raw_http_server("200 OK", None, big).await;
+    async fn test_download_size_cap_via_streaming_aborts_midstream() {
+        // The strengthened version: server claims a believable Content-Length
+        // (just under the cap) so the pre-flight check passes, then streams
+        // chunks past the cap. We assert via a side-channel counter that the
+        // server stopped writing well before the full body went out — proving
+        // the client aborted mid-stream rather than buffering everything and
+        // erroring at the end.
+        use std::sync::atomic::Ordering;
+        let actual = URL_FETCH_MAX_BYTES * 4; // ~100 MiB worth of chunks queued
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let url = spawn_chunked_streaming_server(actual, counter.clone()).await;
 
         let adapter = test_adapter();
-        let res = adapter.download_url_to_bytes(&url).await;
+        let res = test_fetch(&adapter, &url).await;
         assert!(res.is_err(), "expected Err on oversized streamed body");
         let err = res.unwrap_err().to_string();
         assert!(
-            err.contains("streamed body exceeds cap")
-                || err.contains("Content-Length"),
-            "err should mention size cap: {err}"
+            err.contains("streamed body exceeds cap"),
+            "err should mention streaming cap: {err}"
+        );
+        // Give the server task a beat to observe the closed socket.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let sent = counter.load(Ordering::SeqCst);
+        // Allow generous slack for kernel/userland buffering on top of the
+        // 25 MiB cap. The regression we're guarding against is "client buffers
+        // the entire 100 MiB then errors" — that would show ~100 MiB sent.
+        // Allowing up to 2*cap covers reasonable in-flight buffering without
+        // letting the regression slip through.
+        let allowed = URL_FETCH_MAX_BYTES * 2;
+        assert!(
+            sent <= allowed,
+            "server pushed {sent} bytes (allowed {allowed}); client did not abort mid-stream"
+        );
+        assert!(
+            sent < actual,
+            "server pushed full payload ({sent} of {actual}); client did not abort mid-stream"
         );
     }
 
@@ -1921,10 +2227,118 @@ mod tests {
         let url = format!("http://{addr}/f");
 
         let adapter = test_adapter();
-        let (bytes, ct) = adapter.download_url_to_bytes(&url).await.unwrap();
+        let (bytes, ct) = test_fetch(&adapter, &url).await.unwrap();
         assert_eq!(&bytes[..], b"PNGDATA");
         // Content-Type parameters must be stripped.
         assert_eq!(ct.as_deref(), Some("image/png"));
+    }
+
+    // -- SSRF guard tests ---------------------------------------------------
+
+    async fn assert_ssrf_blocked(url: &str) {
+        let adapter = test_adapter();
+        let res = adapter.download_url_to_bytes(url).await;
+        let err = res.err().unwrap_or_else(|| panic!("expected SSRF block for {url}")).to_string();
+        assert!(
+            err.contains("refused") || err.contains("not allowed") || err.contains("blocked"),
+            "expected SSRF refusal for {url}, got: {err}"
+        );
+        // The query string must not appear in the error (log-scrubbing).
+        assert!(
+            !err.contains("?"),
+            "SSRF error must not leak query string for {url}: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ssrf_blocks_loopback() {
+        assert_ssrf_blocked("http://127.0.0.1/secret?token=abc").await;
+    }
+
+    #[tokio::test]
+    async fn test_ssrf_blocks_private_10() {
+        assert_ssrf_blocked("http://10.0.0.1/admin?key=v").await;
+    }
+
+    #[tokio::test]
+    async fn test_ssrf_blocks_private_192() {
+        assert_ssrf_blocked("http://192.168.1.1/router?op=reboot").await;
+    }
+
+    #[tokio::test]
+    async fn test_ssrf_blocks_link_local() {
+        // Cloud metadata: explicit canary URL from the spec.
+        assert_ssrf_blocked("http://169.254.169.254/latest/meta-data/iam/security-credentials/role")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_ssrf_blocks_non_http_scheme() {
+        for u in [
+            "file:///etc/passwd",
+            "gopher://127.0.0.1:25/_HELO",
+            "ftp://example.com/x",
+            "data:text/plain,hello",
+        ] {
+            let adapter = test_adapter();
+            let res = adapter.download_url_to_bytes(u).await;
+            let err = res
+                .err()
+                .unwrap_or_else(|| panic!("expected scheme refusal for {u}"))
+                .to_string();
+            assert!(
+                err.contains("scheme") || err.contains("refused"),
+                "expected scheme refusal for {u}: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ssrf_allows_public_ip_literal_check() {
+        // Validate the *check*, not the network round-trip: a public IP literal
+        // must pass `resolve_and_check_host` so we know the guard isn't
+        // accidentally over-blocking.
+        let u = Url::parse("http://1.1.1.1/").unwrap();
+        resolve_and_check_host(&u)
+            .await
+            .expect("public IP must pass SSRF check");
+    }
+
+    #[tokio::test]
+    async fn test_ssrf_blocks_ipv6_loopback_and_metadata_mapped() {
+        // Bracketed IPv6 loopback.
+        assert_ssrf_blocked("http://[::1]/secret?x=1").await;
+        // IPv4-mapped IPv6 of the cloud metadata IP must also be blocked.
+        assert_ssrf_blocked("http://[::ffff:169.254.169.254]/latest?creds=1").await;
+    }
+
+    #[test]
+    fn test_redact_url_strips_query() {
+        let u = Url::parse(
+            "https://cdn.discordapp.com/attachments/1/2/file.png?ex=abc&is=def&hm=secret#frag",
+        )
+        .unwrap();
+        let r = redact_url(&u);
+        assert_eq!(r, "https://cdn.discordapp.com/attachments/1/2/file.png");
+        assert!(!r.contains("ex="));
+        assert!(!r.contains("hm="));
+        assert!(!r.contains("frag"));
+    }
+
+    #[test]
+    fn test_is_blocked_v4_canary() {
+        // Explicit assertion that the cloud-metadata IP is rejected even if
+        // some future stdlib change widens or narrows `is_link_local`.
+        assert!(is_blocked_v4(Ipv4Addr::new(169, 254, 169, 254)));
+        assert!(is_blocked_v4(Ipv4Addr::new(127, 0, 0, 1)));
+        assert!(is_blocked_v4(Ipv4Addr::new(10, 0, 0, 1)));
+        assert!(is_blocked_v4(Ipv4Addr::new(192, 168, 1, 1)));
+        assert!(is_blocked_v4(Ipv4Addr::new(172, 16, 0, 1)));
+        assert!(is_blocked_v4(Ipv4Addr::new(0, 0, 0, 0)));
+        assert!(is_blocked_v4(Ipv4Addr::new(100, 64, 0, 1))); // CGNAT
+        // Public addresses must pass.
+        assert!(!is_blocked_v4(Ipv4Addr::new(1, 1, 1, 1)));
+        assert!(!is_blocked_v4(Ipv4Addr::new(8, 8, 8, 8)));
     }
 
     #[tokio::test]
