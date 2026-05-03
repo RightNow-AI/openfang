@@ -550,33 +550,6 @@ impl DiscordAdapter {
         }
     }
 
-    /// Fetch a URL into memory with a 15s timeout, a 25 MiB cap, and SSRF
-    /// guards.
-    ///
-    /// Layered defenses:
-    ///   1. Parse with `url::Url`; reject non-`http`/`https` schemes.
-    ///   2. DNS-resolve the host and reject if any address is loopback,
-    ///      private, link-local, multicast, unspecified, IPv4-mapped private,
-    ///      or the cloud-metadata IP. See [`resolve_and_check_host`].
-    ///   3. Per-request reqwest client with a custom redirect policy that
-    ///      caps at [`URL_FETCH_MAX_REDIRECTS`] hops and re-applies the
-    ///      literal-IP SSRF check on every hop's URL.
-    ///   4. Two-stage size enforcement: Content-Length pre-flight, then
-    ///      streaming chunk accumulation that aborts mid-stream.
-    ///
-    /// Errors and logs strip the URL's query string and fragment via
-    /// [`redact_url`] so Discord CDN HMAC params don't end up in operator logs.
-    ///
-    /// Returns the body as `Bytes` (so the multipart helper can refcount-clone
-    /// instead of memcpy on retry) plus the response's `Content-Type` with any
-    /// parameters (e.g. `; charset=utf-8`) stripped.
-    async fn download_url_to_bytes(
-        &self,
-        url: &str,
-    ) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>> {
-        self.fetcher.fetch(url).await
-    }
-
     /// Resolve a single [`AttachmentSource`] into the
     /// `(bytes, filename, mime)` tuple consumed by `api_send_attachments`.
     ///
@@ -600,10 +573,11 @@ impl DiscordAdapter {
                 mime,
             } => Ok((bytes, filename, mime)),
             AttachmentSource::UrlImage { url } => {
-                // `download_url_to_bytes` returns `Box<dyn Error>` (no Send);
+                // `Fetcher::fetch` returns `Box<dyn Error>` (no Send);
                 // stringify so the error becomes `Send + Sync` for `?`.
                 let (bytes, response_ct) = self
-                    .download_url_to_bytes(&url)
+                    .fetcher
+                    .fetch(&url)
                     .await
                     .map_err(|e| format!("Multipart fetch failed for {url}: {e}"))?;
                 let resolved_mime = resolve_image_mime(response_ct.as_deref(), &url);
@@ -616,7 +590,8 @@ impl DiscordAdapter {
                 mime,
             } => {
                 let (bytes, response_ct) = self
-                    .download_url_to_bytes(&url)
+                    .fetcher
+                    .fetch(&url)
                     .await
                     .map_err(|e| format!("Multipart fetch failed for {url}: {e}"))?;
                 let resolved_filename = resolve_file_filename(Some(filename.as_str()), &url);
@@ -1145,8 +1120,8 @@ impl ChannelAdapter for DiscordAdapter {
                 size: _,
             } => {
                 // Fetch then route through the existing multipart helper.
-                // `download_url_to_bytes` enforces 15s timeout and 25 MiB cap.
-                let (bytes, response_ct) = self.download_url_to_bytes(&url).await?;
+                // `Fetcher::fetch` enforces SSRF + 15s timeout + 25 MiB cap.
+                let (bytes, response_ct) = self.fetcher.fetch(&url).await?;
                 let resolved_filename = resolve_file_filename(Some(filename.as_str()), &url);
                 let resolved_mime =
                     resolve_file_mime(mime.as_deref(), response_ct.as_deref(), &resolved_filename);
@@ -1161,7 +1136,7 @@ impl ChannelAdapter for DiscordAdapter {
                 .await?;
             }
             ChannelContent::Image { url, caption } => {
-                let (bytes, response_ct) = self.download_url_to_bytes(&url).await?;
+                let (bytes, response_ct) = self.fetcher.fetch(&url).await?;
                 let resolved_mime = resolve_image_mime(response_ct.as_deref(), &url);
                 let resolved_filename = resolve_image_filename(&url, &resolved_mime);
                 let caption_ref = caption.as_deref().filter(|s| !s.is_empty());
@@ -1283,12 +1258,14 @@ impl ChannelAdapter for DiscordAdapter {
                             // Standalone WARN with structured fields so an
                             // operator grepping for "why are some files
                             // showing and some not?" can find this in one
-                            // search instead of parsing prose.
+                            // search instead of parsing prose. The failed
+                            // chunk index is recoverable as `chunks_sent`
+                            // (the count of chunks that succeeded before
+                            // this one).
                             warn!(
                                 event = "discord_multipart_partial_send",
                                 chunks_sent = i,
                                 chunks_total = total_chunks,
-                                failed_chunk_index = i,
                                 "discord multipart partial send: chunk {}/{} failed after {} chunk(s) already on the wire",
                                 i + 1,
                                 total_chunks,
@@ -2486,7 +2463,7 @@ mod tests {
         assert_eq!(resolve_image_mime(None, "https://x/y/blob"), "image/png");
     }
 
-    // -- download_url_to_bytes size-cap tests ------------------------------
+    // -- Fetcher::fetch / do_http_fetch size-cap tests ----------------------
 
     /// Spawn a hand-rolled HTTP server that replies with a fixed status,
     /// optional Content-Length header (lying or omitted), and a body produced
@@ -2504,7 +2481,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             // Accept exactly one connection — sufficient for a single
-            // download_url_to_bytes test invocation.
+            // do_http_fetch test invocation.
             let (mut sock, _) = match listener.accept().await {
                 Ok(p) => p,
                 Err(_) => return,
@@ -2710,7 +2687,7 @@ mod tests {
 
     async fn assert_ssrf_blocked(url: &str) {
         let adapter = test_adapter();
-        let res = adapter.download_url_to_bytes(url).await;
+        let res = adapter.fetcher.fetch(url).await;
         let err = res
             .err()
             .unwrap_or_else(|| panic!("expected SSRF block for {url}"))
@@ -2759,7 +2736,7 @@ mod tests {
             "data:text/plain,hello",
         ] {
             let adapter = test_adapter();
-            let res = adapter.download_url_to_bytes(u).await;
+            let res = adapter.fetcher.fetch(u).await;
             let err = res
                 .err()
                 .unwrap_or_else(|| panic!("expected scheme refusal for {u}"))
@@ -3433,6 +3410,111 @@ mod tests {
                 names,
                 vec!["files[0]", "files[1]", "files[2]"],
                 "attempt {i} must include files[0..2]"
+            );
+        }
+    }
+
+    /// Same shape as the body+header 429 test, but the 429 response carries
+    /// **only** the `Retry-After` HTTP header (no JSON body with
+    /// `retry_after`). The header-fallback path (`body_secs.or(header_secs)`)
+    /// must still trigger the retry. Pinned separately so a regression that
+    /// drops header parsing wouldn't be masked by the body-present test.
+    #[tokio::test]
+    async fn test_multipart_outbound_multifile_429_header_only_retries_once() {
+        use axum::{
+            extract::{DefaultBodyLimit, Multipart},
+            http::StatusCode,
+            response::IntoResponse,
+            routing::post,
+            Extension, Router,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> = Arc::new(TokioMutex::new(Vec::new()));
+        let attempt = Arc::new(AtomicUsize::new(0));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured_clone = captured.clone();
+        let attempt_clone = attempt.clone();
+        let app = Router::new()
+            .route(
+                "/channels/test/messages",
+                post(
+                    move |Extension(_): Extension<()>, mut multipart: Multipart| {
+                        let captured = captured_clone.clone();
+                        let attempt = attempt_clone.clone();
+                        async move {
+                            let n = attempt.fetch_add(1, Ordering::SeqCst);
+                            let mut post_rec = CapturedPost::default();
+                            while let Ok(Some(field)) = multipart.next_field().await {
+                                let name = field.name().unwrap_or("").to_string();
+                                if name == "payload_json" {
+                                    post_rec.payload_json =
+                                        field.text().await.unwrap_or_default();
+                                } else {
+                                    let filename = field.file_name().map(str::to_string);
+                                    let content_type = field.content_type().map(str::to_string);
+                                    let _ = field.bytes().await;
+                                    post_rec.files.push(CapturedFile {
+                                        field_name: name.clone(),
+                                        filename,
+                                        content_type,
+                                    });
+                                    post_rec.file_field_names.push(name);
+                                }
+                            }
+                            captured.lock().await.push(post_rec);
+                            if n == 0 {
+                                // Header only; empty body so the body-secs
+                                // path returns None and the header fallback
+                                // is the only signal driving the retry.
+                                (
+                                    StatusCode::TOO_MANY_REQUESTS,
+                                    [(axum::http::header::RETRY_AFTER, "0")],
+                                    "",
+                                )
+                                    .into_response()
+                            } else {
+                                StatusCode::OK.into_response()
+                            }
+                        }
+                    },
+                ),
+            )
+            .layer(DefaultBodyLimit::disable())
+            .layer(Extension(()));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let base = format!("http://{addr}");
+
+        let adapter = test_adapter_with_base(base);
+        let user = make_channel_user("test");
+        let content = ChannelContent::Multipart(vec![
+            ChannelContent::Text("cap".to_string()),
+            ChannelContent::FileData {
+                data: b"a".to_vec(),
+                filename: "a.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+            },
+            ChannelContent::FileData {
+                data: b"b".to_vec(),
+                filename: "b.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+            },
+        ]);
+
+        adapter.send(&user, content).await.unwrap();
+
+        let posts = captured.lock().await;
+        assert_eq!(posts.len(), 2, "header-only 429 must still trigger one retry");
+        for (i, p) in posts.iter().enumerate() {
+            let names: Vec<&str> = p.file_field_names.iter().map(String::as_str).collect();
+            assert_eq!(
+                names,
+                vec!["files[0]", "files[1]"],
+                "attempt {i} must include files[0..1]"
             );
         }
     }
