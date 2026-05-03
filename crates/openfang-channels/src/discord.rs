@@ -25,8 +25,11 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const DISCORD_MSG_LIMIT: usize = 2000;
 /// Multipart field name Discord requires for the first attachment payload.
-/// Centralized so a `file[0]` typo at the call site can't slip past review,
-/// and so the unit test below pins the exact wire format.
+/// Test-only fixture: the production call site uses `format!("files[{i}]")`
+/// directly; this constant pins the wire format in
+/// `test_attachment_field_name_pinned` so a `file[0]` typo or future
+/// refactor can't slip past review.
+#[cfg(test)]
 const ATTACHMENT_FIELD_NAME: &str = "files[0]";
 /// Floor on the rate-limit retry delay. Discord occasionally returns
 /// `retry_after: 0` (or a missing header), which would busy-loop the retry.
@@ -480,13 +483,9 @@ impl DiscordAdapter {
                     .file_name(filename.clone())
                     .mime_str(mime_type)?;
                 // Discord requires field names `files[0]`, `files[1]`, etc.
-                // Use the pinned constant for i==0 so the wire format is
-                // tested (see `test_attachment_field_name_pinned`).
-                let field_name = if i == 0 {
-                    ATTACHMENT_FIELD_NAME.to_string()
-                } else {
-                    format!("files[{i}]")
-                };
+                // The wire format is pinned by `test_attachment_field_name_pinned`
+                // (asserts `format!("files[{}]", 0) == ATTACHMENT_FIELD_NAME`).
+                let field_name = format!("files[{i}]");
                 form = form.part(field_name, file_part);
             }
             Ok(form)
@@ -1693,7 +1692,10 @@ mod tests {
         // exactly `files[0]` (a `file[0]` typo would fail at runtime, per
         // attachment, with no useful error). Pin the wire format here so a
         // typo at the call site is impossible without also changing this test.
+        // Both invariants matter: the constant's literal value AND the
+        // `format!("files[{i}]", i=0)` we now use at the call site must agree.
         assert_eq!(ATTACHMENT_FIELD_NAME, "files[0]");
+        assert_eq!(format!("files[{}]", 0), ATTACHMENT_FIELD_NAME);
     }
 
     #[test]
