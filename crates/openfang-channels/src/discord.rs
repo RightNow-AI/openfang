@@ -571,10 +571,16 @@ impl DiscordAdapter {
     /// `Resolved` returns immediately; URL variants delegate to `Fetcher` and
     /// then run their respective resolver chains. Errors are wrapped with the
     /// `"Multipart fetch failed for {url}: …"` prefix the existing tests pin.
+    ///
+    /// The error type is `Box<dyn Error + Send + Sync>` (not the looser
+    /// `Box<dyn Error>` used elsewhere) so the resulting future is `Send` —
+    /// required by `try_join_all` in the multipart resolve step. The
+    /// conversion to `Box<dyn Error>` happens implicitly at the call site
+    /// via `?`.
     async fn resolve_attachment_source(
         &self,
         source: AttachmentSource,
-    ) -> Result<(bytes::Bytes, String, String), Box<dyn std::error::Error>> {
+    ) -> Result<(bytes::Bytes, String, String), Box<dyn std::error::Error + Send + Sync>> {
         match source {
             AttachmentSource::Resolved {
                 bytes,
@@ -582,6 +588,8 @@ impl DiscordAdapter {
                 mime,
             } => Ok((bytes, filename, mime)),
             AttachmentSource::UrlImage { url } => {
+                // `download_url_to_bytes` returns `Box<dyn Error>` (no Send);
+                // stringify so the error becomes `Send + Sync` for `?`.
                 let (bytes, response_ct) = self
                     .download_url_to_bytes(&url)
                     .await
@@ -1214,16 +1222,25 @@ impl ChannelAdapter for DiscordAdapter {
                     Some(caption_str)
                 };
 
-                // Resolve sources in order, fetching URL-backed entries.
-                // Order is preserved so `files[i]` lines up with the source's
-                // original position. Step 4 of the cleanup will replace this
-                // serial loop with `try_join_all` for parallelism; the
-                // semantics (fail-fast, ordered output) are unchanged.
-                let mut attachments_resolved: Vec<(bytes::Bytes, String, String)> =
-                    Vec::with_capacity(sources.len());
-                for source in sources {
-                    attachments_resolved.push(self.resolve_attachment_source(source).await?);
-                }
+                // Resolve sources concurrently. `try_join_all` preserves
+                // input order in the output Vec (so `files[i]` still lines
+                // up with the source's original position) and fails fast on
+                // the first error, cancelling the rest — matching the spec
+                // and the previous serial behavior. For an N-URL Multipart
+                // this drops latency from sum-of-RTTs to max-of-RTT.
+                let attachments_resolved: Vec<(bytes::Bytes, String, String)> =
+                    futures::future::try_join_all(
+                        sources
+                            .into_iter()
+                            .map(|s| self.resolve_attachment_source(s)),
+                    )
+                    .await
+                    // Widen `Box<dyn Error + Send + Sync>` (needed so the
+                    // resolve future is `Send` for `try_join_all`) to the
+                    // looser `Box<dyn Error>` returned by `send`. Unsizing
+                    // a trait object by removing auto traits is allowed but
+                    // not exposed via `From`, so we coerce explicitly.
+                    .map_err(|e| -> Box<dyn std::error::Error> { e })?;
 
                 if attachments_resolved.is_empty() {
                     // Caption-only Multipart (all blocks were Text/unknown).
