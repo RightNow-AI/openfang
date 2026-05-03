@@ -1280,9 +1280,16 @@ impl ChannelAdapter for DiscordAdapter {
                         .await
                     {
                         if i > 0 {
+                            // Standalone WARN with structured fields so an
+                            // operator grepping for "why are some files
+                            // showing and some not?" can find this in one
+                            // search instead of parsing prose.
                             warn!(
-                                "Discord Multipart: chunk {}/{} failed after {} \
-                                 chunk(s) already sent on the wire; partial state possible",
+                                event = "discord_multipart_partial_send",
+                                chunks_sent = i,
+                                chunks_total = total_chunks,
+                                failed_chunk_index = i,
+                                "discord multipart partial send: chunk {}/{} failed after {} chunk(s) already on the wire",
                                 i + 1,
                                 total_chunks,
                                 i
