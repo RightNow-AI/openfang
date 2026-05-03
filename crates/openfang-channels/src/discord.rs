@@ -241,6 +241,10 @@ pub struct DiscordAdapter {
     session_id: Arc<RwLock<Option<String>>>,
     /// Resume gateway URL.
     resume_gateway_url: Arc<RwLock<Option<String>>>,
+    /// Override for the Discord REST API base URL. `None` in production (uses
+    /// `DISCORD_API_BASE`). Set by tests that spin up a local stub server.
+    #[cfg(test)]
+    api_base_override: Option<String>,
 }
 
 impl DiscordAdapter {
@@ -264,7 +268,22 @@ impl DiscordAdapter {
             bot_user_id: Arc::new(RwLock::new(None)),
             session_id: Arc::new(RwLock::new(None)),
             resume_gateway_url: Arc::new(RwLock::new(None)),
+            #[cfg(test)]
+            api_base_override: None,
         }
+    }
+
+    /// Returns the Discord REST API base URL, honouring the test override when
+    /// present. In production this is always `DISCORD_API_BASE`.
+    #[cfg(test)]
+    fn api_base(&self) -> &str {
+        self.api_base_override.as_deref().unwrap_or(DISCORD_API_BASE)
+    }
+
+    #[cfg(not(test))]
+    #[inline(always)]
+    fn api_base(&self) -> &str {
+        DISCORD_API_BASE
     }
 
     /// Get the WebSocket gateway URL from the Discord API.
@@ -292,7 +311,7 @@ impl DiscordAdapter {
         channel_id: &str,
         text: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let url = format!("{DISCORD_API_BASE}/channels/{channel_id}/messages");
+        let url = format!("{}/channels/{channel_id}/messages", self.api_base());
         let chunks = split_message(text, DISCORD_MSG_LIMIT);
 
         for chunk in chunks {
@@ -315,13 +334,8 @@ impl DiscordAdapter {
 
     /// Send a file attachment to a Discord channel via REST multipart upload.
     ///
-    /// Mirrors the proven `api_send_document_upload` pattern from the Telegram
-    /// adapter. Uses `multipart/form-data` with two fields: `payload_json` (the
-    /// usual message body) and `files[0]` (raw bytes). `reqwest` sets the
-    /// multipart `Content-Type` boundary; we only set `Authorization`.
-    ///
-    /// On HTTP 429 we honor `Retry-After` once before giving up. Higher-tier
-    /// rate-limit handling can land later if needed.
+    /// Thin wrapper around `api_send_attachments` for the common single-file
+    /// case. `Bytes::clone` is a refcount bump so passing through is free.
     async fn api_send_attachment(
         &self,
         channel_id: &str,
@@ -330,26 +344,63 @@ impl DiscordAdapter {
         mime_type: &str,
         caption: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let url = format!("{DISCORD_API_BASE}/channels/{channel_id}/messages");
+        self.api_send_attachments(
+            channel_id,
+            vec![(data.into(), filename.to_string(), mime_type.to_string())],
+            caption,
+        )
+        .await
+    }
+
+    /// Send one or more file attachments in a single multipart POST.
+    ///
+    /// Builds a `multipart/form-data` request with `payload_json` plus
+    /// `files[0]`…`files[N-1]` parts (N ≤ 10, per Discord's limit). The
+    /// caller is responsible for chunking larger batches.
+    ///
+    /// On HTTP 429 we honor `Retry-After` once before giving up. Higher-tier
+    /// rate-limit handling can land later if needed.
+    async fn api_send_attachments(
+        &self,
+        channel_id: &str,
+        attachments: Vec<(bytes::Bytes, String, String)>,
+        caption: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!("{}/channels/{channel_id}/messages", self.api_base());
 
         // Discord caps message content at DISCORD_MSG_LIMIT chars; truncate
         // explicitly so a long caption doesn't silently 400.
         let payload_json = build_attachment_payload_json(caption);
 
-        // Accept anything that becomes `Bytes` cheaply. `Bytes::clone` is a
-        // refcount bump, so retry-path form builds don't reallocate the
-        // payload. Callers passing `Vec<u8>` move ownership; callers passing
-        // a `Bytes` from `download_url_to_bytes` reuse the same allocation.
-        let bytes: bytes::Bytes = data.into();
-        let body_len = bytes.len() as u64;
+        // Pre-compute lengths. `Bytes::clone` is a refcount bump so the
+        // retry-path form rebuild is allocation-free for the file data.
+        let parts_meta: Vec<(bytes::Bytes, u64, String, String)> = attachments
+            .into_iter()
+            .map(|(b, name, mime)| {
+                let len = b.len() as u64;
+                (b, len, name, mime)
+            })
+            .collect();
+
         let build_form = || -> Result<reqwest::multipart::Form, Box<dyn std::error::Error>> {
-            let body = reqwest::Body::from(bytes.clone());
-            let file_part = reqwest::multipart::Part::stream_with_length(body, body_len)
-                .file_name(filename.to_string())
-                .mime_str(mime_type)?;
-            Ok(reqwest::multipart::Form::new()
-                .text("payload_json", payload_json.clone())
-                .part(ATTACHMENT_FIELD_NAME, file_part))
+            let mut form = reqwest::multipart::Form::new()
+                .text("payload_json", payload_json.clone());
+            for (i, (bytes, body_len, filename, mime_type)) in parts_meta.iter().enumerate() {
+                let body = reqwest::Body::from(bytes.clone());
+                let file_part = reqwest::multipart::Part::stream_with_length(body, *body_len)
+                    .file_name(filename.clone())
+                    .mime_str(mime_type)?;
+                // Discord requires field names `files[0]`, `files[1]`, etc.
+                // Use the pinned constant for i==0 so the wire format is
+                // tested (see `test_attachment_field_name_pinned`).
+                let field_name = if i == 0 {
+                    ATTACHMENT_FIELD_NAME.to_string()
+                } else {
+                    format!("files[{i}]")
+                };
+                form = form.part(field_name, file_part);
+            }
+            Ok(form)
         };
 
         let mut attempts = 0u8;
@@ -387,7 +438,7 @@ impl DiscordAdapter {
                     .unwrap_or(1.0)
                     .clamp(RETRY_AFTER_FLOOR_SECS, RETRY_AFTER_CEIL_SECS);
                 warn!(
-                    "Discord sendAttachment rate-limited; retrying after {retry_after_secs:.2}s"
+                    "Discord sendAttachments rate-limited; retrying after {retry_after_secs:.2}s"
                 );
                 tokio::time::sleep(Duration::from_millis(
                     (retry_after_secs * 1000.0) as u64,
@@ -397,9 +448,9 @@ impl DiscordAdapter {
             }
 
             let body_text = resp.text().await.unwrap_or_default();
-            warn!("Discord sendAttachment failed ({status}): {body_text}");
+            warn!("Discord sendAttachments failed ({status}): {body_text}");
             return Err(
-                format!("Discord sendAttachment failed ({status}): {body_text}").into(),
+                format!("Discord sendAttachments failed ({status}): {body_text}").into(),
             );
         }
     }
@@ -547,7 +598,7 @@ impl DiscordAdapter {
 
     /// Send typing indicator to a Discord channel.
     async fn api_send_typing(&self, channel_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let url = format!("{DISCORD_API_BASE}/channels/{channel_id}/typing");
+        let url = format!("{}/channels/{channel_id}/typing", self.api_base());
         let _ = self
             .client
             .post(&url)
@@ -953,9 +1004,7 @@ impl ChannelAdapter for DiscordAdapter {
                     response_ct.as_deref(),
                     &resolved_filename,
                 );
-                // `File` carries no caption field; the upstream router emits a
-                // Multipart([Text, File]) when there's a caption, which is
-                // handled by the parent recursion path (not this arm).
+                // No caption on a bare File; captions travel via Multipart([Text, File]).
                 self.api_send_attachment(
                     channel_id,
                     bytes,
@@ -978,6 +1027,126 @@ impl ChannelAdapter for DiscordAdapter {
                     caption_ref,
                 )
                 .await?;
+            }
+            ChannelContent::Multipart(parts) => {
+                // Partition blocks into caption pieces, attachments, and unknowns.
+                let mut caption_pieces: Vec<String> = Vec::new();
+                let mut attachments_resolved: Vec<(bytes::Bytes, String, String)> = Vec::new();
+                let mut unknown_names: Vec<&str> = Vec::new();
+
+                for part in &parts {
+                    match part {
+                        ChannelContent::Text(t) => caption_pieces.push(t.clone()),
+                        ChannelContent::FileData { .. }
+                        | ChannelContent::File { .. }
+                        | ChannelContent::Image { .. } => {
+                            // Resolved below — collect the reference first so
+                            // we can fail-fast on fetch errors before sending.
+                        }
+                        ChannelContent::Voice { .. } => unknown_names.push("Voice"),
+                        ChannelContent::Location { .. } => unknown_names.push("Location"),
+                        ChannelContent::Command { .. } => unknown_names.push("Command"),
+                        ChannelContent::Multipart(_) => unknown_names.push("Multipart"),
+                    }
+                }
+
+                if !unknown_names.is_empty() {
+                    warn!(
+                        "Discord Multipart: skipping unknown/unsupported nested variant(s): {:?}",
+                        unknown_names
+                    );
+                }
+
+                // Build the single caption string from all Text blocks.
+                let caption_str = caption_pieces.join("\n\n");
+                let caption_str = caption_str.trim();
+                let caption_opt: Option<&str> =
+                    if caption_str.is_empty() { None } else { Some(caption_str) };
+
+                // Resolve each non-Text block to (Bytes, filename, mime).
+                for part in &parts {
+                    match part {
+                        ChannelContent::FileData { data, filename, mime_type } => {
+                            attachments_resolved.push((
+                                bytes::Bytes::from(data.clone()),
+                                filename.clone(),
+                                mime_type.clone(),
+                            ));
+                        }
+                        ChannelContent::File { url, filename, mime, size: _ } => {
+                            let (bytes, response_ct) = self
+                                .download_url_to_bytes(url)
+                                .await
+                                .map_err(|e| {
+                                    format!("Multipart fetch failed for {url}: {e}")
+                                })?;
+                            let resolved_filename =
+                                resolve_file_filename(Some(filename.as_str()), url);
+                            let resolved_mime = resolve_file_mime(
+                                mime.as_deref(),
+                                response_ct.as_deref(),
+                                &resolved_filename,
+                            );
+                            attachments_resolved
+                                .push((bytes, resolved_filename, resolved_mime));
+                        }
+                        ChannelContent::Image { url, caption: _ } => {
+                            // Per-Image inner captions are ignored inside Multipart;
+                            // the outer caption_pieces form the single caption.
+                            let (bytes, response_ct) = self
+                                .download_url_to_bytes(url)
+                                .await
+                                .map_err(|e| {
+                                    format!("Multipart fetch failed for {url}: {e}")
+                                })?;
+                            let resolved_mime =
+                                resolve_image_mime(response_ct.as_deref(), url);
+                            let resolved_filename =
+                                resolve_image_filename(url, &resolved_mime);
+                            attachments_resolved
+                                .push((bytes, resolved_filename, resolved_mime));
+                        }
+                        _ => {}
+                    }
+                }
+
+                if attachments_resolved.is_empty() {
+                    // Caption-only Multipart (all blocks were Text/unknown).
+                    if let Some(cap) = caption_opt {
+                        self.api_send_message(channel_id, cap).await?;
+                    } else {
+                        warn!(
+                            "Discord Multipart: all blocks empty or unknown, nothing to send"
+                        );
+                    }
+                    return Ok(());
+                }
+
+                // Chunk into groups of ≤ 10 and send one POST per chunk.
+                // Caption goes on the first chunk only.
+                let chunks: Vec<Vec<(bytes::Bytes, String, String)>> = attachments_resolved
+                    .chunks(10)
+                    .map(|c| c.to_vec())
+                    .collect();
+                let total_chunks = chunks.len();
+                for (i, chunk) in chunks.into_iter().enumerate() {
+                    let chunk_caption = if i == 0 { caption_opt } else { None };
+                    if let Err(e) = self
+                        .api_send_attachments(channel_id, chunk, chunk_caption)
+                        .await
+                    {
+                        if i > 0 {
+                            warn!(
+                                "Discord Multipart: chunk {}/{} failed after {} \
+                                 chunk(s) already sent on the wire; partial state possible",
+                                i + 1,
+                                total_chunks,
+                                i
+                            );
+                        }
+                        return Err(e);
+                    }
+                }
             }
             _ => {
                 self.api_send_message(channel_id, "(Unsupported content type)")
@@ -2347,5 +2516,393 @@ mod tests {
         let d = payload_with("", vec![]);
         let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await;
         assert!(msg.is_none());
+    }
+
+    // ==========================================================================
+    // Outbound Multipart send() tests
+    // ==========================================================================
+    //
+    // Test helpers: spin up an axum stub that accepts multipart POSTs to
+    // `/channels/:id/messages`, captures the `payload_json` field text and
+    // the number of file parts, and stores them in a shared Arc<Mutex<_>>.
+    // We point the adapter at the stub via `api_base_override`.
+
+    use tokio::sync::Mutex as TokioMutex;
+
+    #[derive(Debug, Default, Clone)]
+    struct CapturedPost {
+        payload_json: String,
+        file_field_names: Vec<String>,
+    }
+
+    /// Build an axum stub that captures one or more multipart POSTs to
+    /// `/channels/test/messages` and records them into `captured`.
+    async fn spawn_discord_stub(
+        captured: Arc<TokioMutex<Vec<CapturedPost>>>,
+    ) -> String {
+        use axum::{
+            extract::Multipart,
+            http::StatusCode,
+            routing::post,
+            Extension, Router,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let app = Router::new()
+            .route(
+                "/channels/test/messages",
+                post(
+                    |Extension(store): Extension<Arc<TokioMutex<Vec<CapturedPost>>>>,
+                     mut multipart: Multipart| async move {
+                        let mut post = CapturedPost::default();
+                        while let Ok(Some(field)) = multipart.next_field().await {
+                            let name = field.name().unwrap_or("").to_string();
+                            if name == "payload_json" {
+                                post.payload_json =
+                                    field.text().await.unwrap_or_default();
+                            } else {
+                                // Drain the file bytes so axum doesn't error.
+                                let _ = field.bytes().await;
+                                post.file_field_names.push(name);
+                            }
+                        }
+                        store.lock().await.push(post);
+                        StatusCode::OK
+                    },
+                ),
+            )
+            .layer(Extension(captured));
+
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    fn make_channel_user(channel_id: &str) -> ChannelUser {
+        ChannelUser {
+            platform_id: channel_id.to_string(),
+            display_name: "test-user".to_string(),
+            openfang_user: None,
+        }
+    }
+
+    fn test_adapter_with_base(base: String) -> DiscordAdapter {
+        let mut a = test_adapter();
+        a.api_base_override = Some(base);
+        a
+    }
+
+    // ---- required test a: caption concatenation --------------------------------
+
+    #[tokio::test]
+    async fn test_multipart_outbound_caption_concatenation() {
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
+            Arc::new(TokioMutex::new(Vec::new()));
+        let base = spawn_discord_stub(captured.clone()).await;
+        let adapter = test_adapter_with_base(base);
+        let user = make_channel_user("test");
+
+        let content = ChannelContent::Multipart(vec![
+            ChannelContent::Text("hello".to_string()),
+            ChannelContent::Text("world".to_string()),
+            ChannelContent::FileData {
+                data: b"payload".to_vec(),
+                filename: "file.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+            },
+        ]);
+
+        adapter.send(&user, content).await.unwrap();
+
+        let posts = captured.lock().await;
+        assert_eq!(posts.len(), 1, "expected exactly one POST");
+        let v: serde_json::Value = serde_json::from_str(&posts[0].payload_json).unwrap();
+        assert_eq!(
+            v["content"].as_str().unwrap_or(""),
+            "hello\n\nworld",
+            "caption should be the two Text blocks joined by \\n\\n"
+        );
+    }
+
+    // ---- required test b: empty/whitespace caption suppressed ------------------
+    //
+    // Image URL fetches go through the SSRF guard which blocks 127.0.0.1, so
+    // this test uses FileData to avoid the network requirement while still
+    // exercising the caption-suppression logic path.
+
+    #[tokio::test]
+    async fn test_multipart_outbound_empty_caption_suppressed() {
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
+            Arc::new(TokioMutex::new(Vec::new()));
+        let base = spawn_discord_stub(captured.clone()).await;
+        let adapter = test_adapter_with_base(base);
+        let user = make_channel_user("test");
+
+        let content = ChannelContent::Multipart(vec![
+            ChannelContent::Text("".to_string()),
+            ChannelContent::Text("   ".to_string()),
+            ChannelContent::FileData {
+                data: b"bytes".to_vec(),
+                filename: "f.bin".to_string(),
+                mime_type: "application/octet-stream".to_string(),
+            },
+        ]);
+        adapter.send(&user, content).await.unwrap();
+
+        let posts = captured.lock().await;
+        assert_eq!(posts.len(), 1, "expected one POST");
+        let v: serde_json::Value = serde_json::from_str(&posts[0].payload_json).unwrap();
+        assert!(
+            v.get("content").is_none(),
+            "empty/whitespace caption must produce payload_json without 'content' field; got: {}",
+            posts[0].payload_json
+        );
+    }
+
+    // ---- required test c: chunking >10 ----------------------------------------
+
+    #[tokio::test]
+    async fn test_multipart_outbound_chunking_gt10() {
+        // 23 FileData blocks should produce ceil(23/10) = 3 POSTs.
+        // First chunk: caption + files[0..10) (10 files)
+        // Second chunk: no caption + files[0..10) (10 files)
+        // Third chunk:  no caption + files[0..3)  (3 files)
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
+            Arc::new(TokioMutex::new(Vec::new()));
+        let base = spawn_discord_stub(captured.clone()).await;
+        let adapter = test_adapter_with_base(base);
+        let user = make_channel_user("test");
+
+        let mut parts = vec![ChannelContent::Text("cap".to_string())];
+        for i in 0..23u32 {
+            parts.push(ChannelContent::FileData {
+                data: format!("data{i}").into_bytes(),
+                filename: format!("f{i}.txt"),
+                mime_type: "text/plain".to_string(),
+            });
+        }
+
+        adapter
+            .send(&user, ChannelContent::Multipart(parts))
+            .await
+            .unwrap();
+
+        let posts = captured.lock().await;
+        assert_eq!(posts.len(), 3, "23 files should produce 3 POSTs (chunks of 10)");
+
+        // First chunk carries the caption.
+        let v0: serde_json::Value = serde_json::from_str(&posts[0].payload_json).unwrap();
+        assert_eq!(
+            v0["content"].as_str().unwrap_or(""),
+            "cap",
+            "first chunk must carry the caption"
+        );
+        assert_eq!(posts[0].file_field_names.len(), 10, "first chunk must have 10 files");
+
+        // Second chunk has no caption.
+        let v1: serde_json::Value = serde_json::from_str(&posts[1].payload_json).unwrap();
+        assert!(
+            v1.get("content").is_none(),
+            "second chunk must not carry the caption"
+        );
+        assert_eq!(posts[1].file_field_names.len(), 10, "second chunk must have 10 files");
+
+        // Third chunk has no caption and only 3 files.
+        let v2: serde_json::Value = serde_json::from_str(&posts[2].payload_json).unwrap();
+        assert!(v2.get("content").is_none(), "third chunk must not carry the caption");
+        assert_eq!(posts[2].file_field_names.len(), 3, "third chunk must have 3 files");
+    }
+
+    // ---- required test d: caption-only fallback --------------------------------
+
+    /// Checks that a Multipart with only Text blocks sends exactly one plain
+    /// text message (no multipart POST) via the `api_send_message` path.
+    #[tokio::test]
+    async fn test_multipart_outbound_caption_only_fallback() {
+        // The Discord stub only handles `/channels/test/messages` POSTs.
+        // api_send_message sends JSON (not multipart), so we use a simple
+        // axum stub that accepts any POST and records the Content-Type.
+        use axum::{
+            extract::Request,
+            http::StatusCode,
+            routing::post,
+            Extension, Router,
+        };
+
+        let calls: Arc<TokioMutex<Vec<String>>> = Arc::new(TokioMutex::new(Vec::new()));
+        let calls_clone = calls.clone();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route(
+                "/channels/test/messages",
+                post(
+                    |Extension(store): Extension<Arc<TokioMutex<Vec<String>>>>,
+                     req: Request| async move {
+                        let ct = req
+                            .headers()
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
+                        store.lock().await.push(ct);
+                        StatusCode::OK
+                    },
+                ),
+            )
+            .layer(Extension(calls_clone));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let adapter = test_adapter_with_base(format!("http://{addr}"));
+        let user = make_channel_user("test");
+
+        let content =
+            ChannelContent::Multipart(vec![ChannelContent::Text("only text".to_string())]);
+        adapter.send(&user, content).await.unwrap();
+
+        let cts = calls.lock().await;
+        assert_eq!(cts.len(), 1, "expected exactly one POST for caption-only");
+        // Plain message (JSON), not multipart.
+        assert!(
+            cts[0].contains("application/json"),
+            "caption-only should send JSON, not multipart; content-type was: {}",
+            cts[0]
+        );
+    }
+
+    // ---- required test e: mixed Image+File (using FileData) --------------------
+
+    #[tokio::test]
+    async fn test_multipart_outbound_mixed_types_single_post() {
+        // Use two FileData blocks (one acting as an "image", one as a "file")
+        // to verify both appear in the same POST with distinct field names and
+        // MIME types preserved.
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
+            Arc::new(TokioMutex::new(Vec::new()));
+        let base = spawn_discord_stub(captured.clone()).await;
+        let adapter = test_adapter_with_base(base);
+        let user = make_channel_user("test");
+
+        let content = ChannelContent::Multipart(vec![
+            ChannelContent::Text("mixed".to_string()),
+            ChannelContent::FileData {
+                data: b"imgbytes".to_vec(),
+                filename: "photo.png".to_string(),
+                mime_type: "image/png".to_string(),
+            },
+            ChannelContent::FileData {
+                data: b"docbytes".to_vec(),
+                filename: "doc.pdf".to_string(),
+                mime_type: "application/pdf".to_string(),
+            },
+        ]);
+
+        adapter.send(&user, content).await.unwrap();
+
+        let posts = captured.lock().await;
+        assert_eq!(posts.len(), 1, "expected exactly one POST for two-file Multipart");
+
+        // Caption preserved.
+        let v: serde_json::Value = serde_json::from_str(&posts[0].payload_json).unwrap();
+        assert_eq!(v["content"].as_str().unwrap_or(""), "mixed");
+
+        // Both files appeared in a single POST as files[0] and files[1].
+        assert_eq!(
+            posts[0].file_field_names.len(),
+            2,
+            "expected two file fields in the POST"
+        );
+        assert!(
+            posts[0].file_field_names.contains(&"files[0]".to_string()),
+            "expected files[0] field"
+        );
+        assert!(
+            posts[0].file_field_names.contains(&"files[1]".to_string()),
+            "expected files[1] field"
+        );
+    }
+
+    // ---- should-have: mid-batch fetch failure ----------------------------------
+
+    #[tokio::test]
+    async fn test_multipart_outbound_fetch_failure_returns_err() {
+        // A File block with an SSRF-blocked URL should cause send() to return Err.
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
+            Arc::new(TokioMutex::new(Vec::new()));
+        let base = spawn_discord_stub(captured.clone()).await;
+        let adapter = test_adapter_with_base(base);
+        let user = make_channel_user("test");
+
+        let content = ChannelContent::Multipart(vec![
+            ChannelContent::Text("cap".to_string()),
+            ChannelContent::File {
+                url: "http://127.0.0.1/secret".to_string(),
+                filename: "s.txt".to_string(),
+                mime: None,
+                size: None,
+            },
+        ]);
+
+        let result = adapter.send(&user, content).await;
+        assert!(result.is_err(), "expected Err on fetch failure");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Multipart fetch failed") || err.contains("refused"),
+            "error should mention failing fetch; got: {err}"
+        );
+        // No POST should have been made (fetch failed before send).
+        let posts = captured.lock().await;
+        assert!(posts.is_empty(), "no POST should occur if fetch fails");
+    }
+
+    // ---- should-have: empty Multipart ------------------------------------------
+
+    #[tokio::test]
+    async fn test_multipart_outbound_empty_is_ok_no_posts() {
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
+            Arc::new(TokioMutex::new(Vec::new()));
+        let base = spawn_discord_stub(captured.clone()).await;
+        let adapter = test_adapter_with_base(base);
+        let user = make_channel_user("test");
+
+        let result = adapter
+            .send(&user, ChannelContent::Multipart(vec![]))
+            .await;
+        assert!(result.is_ok(), "empty Multipart should return Ok");
+        let posts = captured.lock().await;
+        assert!(posts.is_empty(), "empty Multipart must not produce any POSTs");
+    }
+
+    // ---- should-have: unknown nested variant is logged, not fatal --------------
+
+    #[tokio::test]
+    async fn test_multipart_outbound_unknown_nested_variant_skipped() {
+        // A Multipart containing a nested Multipart (and a FileData) should
+        // warn but still send the FileData.
+        let captured: Arc<TokioMutex<Vec<CapturedPost>>> =
+            Arc::new(TokioMutex::new(Vec::new()));
+        let base = spawn_discord_stub(captured.clone()).await;
+        let adapter = test_adapter_with_base(base);
+        let user = make_channel_user("test");
+
+        let content = ChannelContent::Multipart(vec![
+            ChannelContent::Text("x".to_string()),
+            ChannelContent::Multipart(vec![]),  // unknown nesting
+            ChannelContent::FileData {
+                data: b"f".to_vec(),
+                filename: "f.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+            },
+        ]);
+
+        let result = adapter.send(&user, content).await;
+        assert!(result.is_ok(), "unknown nested variant must not be fatal");
+        let posts = captured.lock().await;
+        assert_eq!(posts.len(), 1, "FileData should still be sent");
     }
 }
