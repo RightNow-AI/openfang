@@ -196,6 +196,30 @@ fn check_url_scheme_and_literal_ip(u: &Url) -> Result<(), String> {
     Ok(())
 }
 
+/// Typed intermediate produced by the single classification pass over a
+/// `ChannelContent::Multipart`'s blocks. Carrying enough information per
+/// variant lets the subsequent resolve step operate on this enum alone
+/// without a second walk over the original `Vec<ChannelContent>`.
+enum AttachmentSource {
+    /// Already fully-resolved attachment (came from a `FileData` block).
+    Resolved {
+        bytes: bytes::Bytes,
+        filename: String,
+        mime: String,
+    },
+    /// URL-backed image; `Fetcher` resolves the bytes, then
+    /// `resolve_image_mime` / `resolve_image_filename` derive the metadata.
+    UrlImage { url: String },
+    /// URL-backed file with caller-supplied filename/mime hints; `Fetcher`
+    /// resolves the bytes, then `resolve_file_mime` / `resolve_file_filename`
+    /// reconcile against the response Content-Type.
+    UrlFile {
+        url: String,
+        filename: String,
+        mime: Option<String>,
+    },
+}
+
 /// Abstraction over "fetch a URL into memory" so production and tests share
 /// the same wire-level HTTP code while differing only in whether SSRF
 /// validation runs first.
@@ -540,6 +564,51 @@ impl DiscordAdapter {
         url: &str,
     ) -> Result<(bytes::Bytes, Option<String>), Box<dyn std::error::Error>> {
         self.fetcher.fetch(url).await
+    }
+
+    /// Resolve a single [`AttachmentSource`] into the
+    /// `(bytes, filename, mime)` tuple consumed by `api_send_attachments`.
+    ///
+    /// `Resolved` returns immediately; URL variants delegate to `Fetcher` and
+    /// then run their respective resolver chains. Errors are wrapped with the
+    /// `"Multipart fetch failed for {url}: …"` prefix the existing tests pin.
+    async fn resolve_attachment_source(
+        &self,
+        source: AttachmentSource,
+    ) -> Result<(bytes::Bytes, String, String), Box<dyn std::error::Error>> {
+        match source {
+            AttachmentSource::Resolved {
+                bytes,
+                filename,
+                mime,
+            } => Ok((bytes, filename, mime)),
+            AttachmentSource::UrlImage { url } => {
+                let (bytes, response_ct) = self
+                    .download_url_to_bytes(&url)
+                    .await
+                    .map_err(|e| format!("Multipart fetch failed for {url}: {e}"))?;
+                let resolved_mime = resolve_image_mime(response_ct.as_deref(), &url);
+                let resolved_filename = resolve_image_filename(&url, &resolved_mime);
+                Ok((bytes, resolved_filename, resolved_mime))
+            }
+            AttachmentSource::UrlFile {
+                url,
+                filename,
+                mime,
+            } => {
+                let (bytes, response_ct) = self
+                    .download_url_to_bytes(&url)
+                    .await
+                    .map_err(|e| format!("Multipart fetch failed for {url}: {e}"))?;
+                let resolved_filename = resolve_file_filename(Some(filename.as_str()), &url);
+                let resolved_mime = resolve_file_mime(
+                    mime.as_deref(),
+                    response_ct.as_deref(),
+                    &resolved_filename,
+                );
+                Ok((bytes, resolved_filename, resolved_mime))
+            }
+        }
     }
 
     /// Send typing indicator to a Discord channel.
@@ -1087,20 +1156,42 @@ impl ChannelAdapter for DiscordAdapter {
                 .await?;
             }
             ChannelContent::Multipart(parts) => {
-                // Partition blocks into caption pieces, attachments, and unknowns.
+                // Single pass over `parts`: bucket each block into caption
+                // pieces, an `AttachmentSource` for later resolution, or a
+                // logged-unknown name. The two-pass classify/resolve split is
+                // collapsed by carrying enough info on `AttachmentSource` for
+                // the resolve step to operate on the typed intermediate alone.
                 let mut caption_pieces: Vec<String> = Vec::new();
-                let mut attachments_resolved: Vec<(bytes::Bytes, String, String)> = Vec::new();
+                let mut sources: Vec<AttachmentSource> = Vec::with_capacity(parts.len());
                 let mut unknown_names: Vec<&str> = Vec::new();
 
-                for part in &parts {
+                for part in parts {
                     match part {
-                        ChannelContent::Text(t) => caption_pieces.push(t.clone()),
-                        ChannelContent::FileData { .. }
-                        | ChannelContent::File { .. }
-                        | ChannelContent::Image { .. } => {
-                            // Resolved below — collect the reference first so
-                            // we can fail-fast on fetch errors before sending.
+                        ChannelContent::Text(t) => caption_pieces.push(t),
+                        ChannelContent::FileData {
+                            data,
+                            filename,
+                            mime_type,
+                        } => sources.push(AttachmentSource::Resolved {
+                            bytes: bytes::Bytes::from(data),
+                            filename,
+                            mime: mime_type,
+                        }),
+                        // Per-Image inner captions are ignored inside Multipart;
+                        // the outer caption_pieces form the single caption.
+                        ChannelContent::Image { url, caption: _ } => {
+                            sources.push(AttachmentSource::UrlImage { url })
                         }
+                        ChannelContent::File {
+                            url,
+                            filename,
+                            mime,
+                            size: _,
+                        } => sources.push(AttachmentSource::UrlFile {
+                            url,
+                            filename,
+                            mime,
+                        }),
                         ChannelContent::Voice { .. } => unknown_names.push("Voice"),
                         ChannelContent::Location { .. } => unknown_names.push("Location"),
                         ChannelContent::Command { .. } => unknown_names.push("Command"),
@@ -1124,52 +1215,15 @@ impl ChannelAdapter for DiscordAdapter {
                     Some(caption_str)
                 };
 
-                // Resolve each non-Text block to (Bytes, filename, mime).
-                for part in &parts {
-                    match part {
-                        ChannelContent::FileData {
-                            data,
-                            filename,
-                            mime_type,
-                        } => {
-                            attachments_resolved.push((
-                                bytes::Bytes::from(data.clone()),
-                                filename.clone(),
-                                mime_type.clone(),
-                            ));
-                        }
-                        ChannelContent::File {
-                            url,
-                            filename,
-                            mime,
-                            size: _,
-                        } => {
-                            let (bytes, response_ct) = self
-                                .download_url_to_bytes(url)
-                                .await
-                                .map_err(|e| format!("Multipart fetch failed for {url}: {e}"))?;
-                            let resolved_filename =
-                                resolve_file_filename(Some(filename.as_str()), url);
-                            let resolved_mime = resolve_file_mime(
-                                mime.as_deref(),
-                                response_ct.as_deref(),
-                                &resolved_filename,
-                            );
-                            attachments_resolved.push((bytes, resolved_filename, resolved_mime));
-                        }
-                        ChannelContent::Image { url, caption: _ } => {
-                            // Per-Image inner captions are ignored inside Multipart;
-                            // the outer caption_pieces form the single caption.
-                            let (bytes, response_ct) = self
-                                .download_url_to_bytes(url)
-                                .await
-                                .map_err(|e| format!("Multipart fetch failed for {url}: {e}"))?;
-                            let resolved_mime = resolve_image_mime(response_ct.as_deref(), url);
-                            let resolved_filename = resolve_image_filename(url, &resolved_mime);
-                            attachments_resolved.push((bytes, resolved_filename, resolved_mime));
-                        }
-                        _ => {}
-                    }
+                // Resolve sources in order, fetching URL-backed entries.
+                // Order is preserved so `files[i]` lines up with the source's
+                // original position. Step 4 of the cleanup will replace this
+                // serial loop with `try_join_all` for parallelism; the
+                // semantics (fail-fast, ordered output) are unchanged.
+                let mut attachments_resolved: Vec<(bytes::Bytes, String, String)> =
+                    Vec::with_capacity(sources.len());
+                for source in sources {
+                    attachments_resolved.push(self.resolve_attachment_source(source).await?);
                 }
 
                 if attachments_resolved.is_empty() {
