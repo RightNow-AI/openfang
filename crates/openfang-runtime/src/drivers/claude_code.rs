@@ -196,7 +196,19 @@ impl ClaudeCodeDriver {
                             None => String::new(),
                         };
                         if let Some(dir) = image_dir {
-                            if let Some(path) = materialize_image(media_type, data, dir) {
+                            // Best-effort filename hint: peel the last path
+                            // segment off the source URL (works for Discord
+                            // CDN, Telegram file API, S3, etc.). Materialize
+                            // appends a sanitized suffix so a human browsing
+                            // ~/.openfang/tmp/images/ can grep for the
+                            // original attachment name. Falls back to a
+                            // pure-hash filename when no URL or no segment.
+                            let name_hint = source_url
+                                .as_deref()
+                                .and_then(filename_hint_from_url);
+                            if let Some(path) =
+                                materialize_image(media_type, data, dir, name_hint.as_deref())
+                            {
                                 return Some(format!(
                                     "[attachment: {media_type} image, ~{approx_kb} KB — view with the Read tool at {path}{url_suffix}]",
                                     path = path.display()
@@ -217,6 +229,8 @@ impl ClaudeCodeDriver {
                 .join("\n"),
         }
     }
+
+    // (helper `filename_hint_from_url` lives at module scope below.)
 
     /// Map a model ID like "claude-code/opus" to CLI --model flag value.
     fn model_flag(model: &str) -> Option<String> {
@@ -742,6 +756,52 @@ impl LlmDriver for ClaudeCodeDriver {
             tool_calls: Vec::new(),
             usage: final_usage,
         })
+    }
+}
+
+/// Best-effort: extract a filename hint from a URL's last path segment so
+/// the materialized tmpfile carries a human-readable suffix. Drops query
+/// and fragment, percent-decodes lossily, and bails on values that don't
+/// look like filenames (no `.`, or only path-ish junk). Total — bad input
+/// just yields `None` and the caller falls back to a pure-hash filename.
+fn filename_hint_from_url(url: &str) -> Option<String> {
+    // Strip scheme://host. Same shape as the discord adapter's helper but
+    // duplicated here to avoid pulling the channels crate into runtime.
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let path = after_scheme.split_once('/').map(|(_, r)| r).unwrap_or("");
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    let last = path.rsplit('/').next().unwrap_or("");
+    if last.is_empty() {
+        return None;
+    }
+    // file:// URLs already point at our own tmpfile (the inbox materializer
+    // uses them) — those names are already content-addressed and a name
+    // hint there would just double-suffix. Skip.
+    if url.starts_with("file://") {
+        return None;
+    }
+    // Lossy percent-decode for things like `photo%20final.png`.
+    let mut out = Vec::with_capacity(last.len());
+    let bytes = last.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    let decoded = String::from_utf8_lossy(&out).into_owned();
+    if decoded.is_empty() {
+        None
+    } else {
+        Some(decoded)
     }
 }
 
