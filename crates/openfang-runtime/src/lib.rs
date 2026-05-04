@@ -33,6 +33,7 @@ pub mod llm_errors;
 pub mod loop_guard;
 pub mod mcp;
 pub mod mcp_server;
+pub mod oauth_providers;
 pub mod media_understanding;
 pub mod model_catalog;
 pub mod process_manager;
