@@ -196,7 +196,7 @@ impl ClaudeCodeDriver {
                             None => String::new(),
                         };
                         if let Some(dir) = image_dir {
-                            if let Some(path) = materialize_image(&media_type, &data, dir) {
+                            if let Some(path) = materialize_image(media_type, data, dir) {
                                 return Some(format!(
                                     "[attachment: {media_type} image, ~{approx_kb} KB — view with the Read tool at {path}{url_suffix}]",
                                     path = path.display()
