@@ -1524,7 +1524,25 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
                 }
             }
         } else {
-            let client = reqwest::Client::new();
+            // Build the client with transparent decompression DISABLED. Discord's
+            // CDN edges occasionally advertise `content-encoding: gzip` (or br)
+            // on PNG/JPEG passthroughs while the body is the raw, uncompressed
+            // image bytes. With the default reqwest client (gzip/deflate/brotli
+            // features enabled at the workspace level), this causes the
+            // decompression layer to choke on the image header and reqwest
+            // returns "error decoding response body" only on `bytes().await`,
+            // not on `send()`. Forcing identity encoding sidesteps the whole
+            // class of CDN content-encoding-flapping bugs. We also set a UA
+            // (some CDNs 403 clients without one) and a 30s timeout aligned
+            // with the upstream 5 MB cap.
+            let client = reqwest::Client::builder()
+                .no_gzip()
+                .no_deflate()
+                .no_brotli()
+                .user_agent("openfang/0.1 (+https://openfang.ai)")
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
             let resp = match client.get(url).send().await {
                 Ok(r) => r,
                 Err(e) => {
