@@ -858,6 +858,93 @@ async fn dispatch_message(
         return;
     }
 
+    // Multipart: flatten children into LLM content blocks. If any image
+    // succeeds, dispatch as multimodal; otherwise fall through to the text
+    // path (Multipart arm in the match below builds the combined descriptor).
+    if let ChannelContent::Multipart(parts) = &message.content {
+        let mut blocks: Vec<ContentBlock> = Vec::new();
+        for part in parts {
+            debug_assert!(
+                !matches!(part, ChannelContent::Multipart(_)),
+                "nested Multipart in ChannelContent — adapters should produce flat lists"
+            );
+            match part {
+                ChannelContent::Text(t) => blocks.push(ContentBlock::Text {
+                    text: t.clone(),
+                    provider_metadata: None,
+                }),
+                ChannelContent::Image { url, caption } => {
+                    let mut img = download_image_to_blocks(url, caption.as_deref()).await;
+                    blocks.append(&mut img);
+                }
+                ChannelContent::File { url, filename, .. } => {
+                    blocks.push(ContentBlock::Text {
+                        text: format!("[User sent a file ({filename}): {url}]"),
+                        provider_metadata: None,
+                    });
+                }
+                ChannelContent::Voice {
+                    url,
+                    duration_seconds,
+                } => {
+                    blocks.push(ContentBlock::Text {
+                        text: format!("[User sent a voice message ({duration_seconds}s): {url}]"),
+                        provider_metadata: None,
+                    });
+                }
+                ChannelContent::Location { lat, lon } => {
+                    blocks.push(ContentBlock::Text {
+                        text: format!("[User shared location: {lat}, {lon}]"),
+                        provider_metadata: None,
+                    });
+                }
+                ChannelContent::FileData { filename, .. } => {
+                    blocks.push(ContentBlock::Text {
+                        text: format!("[User sent a local file: {filename}]"),
+                        provider_metadata: None,
+                    });
+                }
+                // Commands aren't expected inside Multipart, but render as
+                // text rather than drop the message if one slips through.
+                ChannelContent::Command { name, args } => {
+                    blocks.push(ContentBlock::Text {
+                        text: format!("/{name} {}", args.join(" ")),
+                        provider_metadata: None,
+                    });
+                }
+                // Defensive: debug_assert above catches this in dev; ignore
+                // gracefully in release.
+                ChannelContent::Multipart(_) => {}
+            }
+        }
+
+        if blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. }))
+        {
+            let prefix_style = overrides
+                .as_ref()
+                .map(|o| o.prefix_agent_name)
+                .unwrap_or(PrefixStyle::Off);
+            dispatch_with_blocks(
+                blocks,
+                message,
+                handle,
+                router,
+                adapter,
+                adapter_arc,
+                ct_str,
+                thread_id,
+                output_format,
+                lifecycle_reactions,
+                prefix_style,
+            )
+            .await;
+            return;
+        }
+        // No image blocks — fall through to text path below.
+    }
+
     // For images: download, base64 encode, and send as multimodal content blocks
     if let ChannelContent::Image {
         ref url,
@@ -909,6 +996,7 @@ async fn dispatch_message(
         ChannelContent::File {
             ref url,
             ref filename,
+            ..
         } => {
             format!("[User sent a file ({filename}): {url}]")
         }
@@ -924,6 +1012,37 @@ async fn dispatch_message(
         ChannelContent::FileData { ref filename, .. } => {
             format!("[User sent a local file: {filename}]")
         }
+        ChannelContent::Multipart(parts) => parts
+            .iter()
+            .map(|p| match p {
+                ChannelContent::Text(t) => t.clone(),
+                ChannelContent::Image { url, caption } => match caption {
+                    Some(c) => format!("[User sent a photo: {url}]\nCaption: {c}"),
+                    None => format!("[User sent a photo: {url}]"),
+                },
+                ChannelContent::File { url, filename, .. } => {
+                    format!("[User sent a file ({filename}): {url}]")
+                }
+                ChannelContent::Voice {
+                    url,
+                    duration_seconds,
+                } => format!("[User sent a voice message ({duration_seconds}s): {url}]"),
+                ChannelContent::Location { lat, lon } => {
+                    format!("[User shared location: {lat}, {lon}]")
+                }
+                ChannelContent::FileData { filename, .. } => {
+                    format!("[User sent a local file: {filename}]")
+                }
+                ChannelContent::Command { name, args } => {
+                    format!("/{name} {}", args.join(" "))
+                }
+                // Nesting is rejected by adapters; emit empty so the join
+                // doesn't insert spurious separators.
+                ChannelContent::Multipart(_) => String::new(),
+            })
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
     };
 
     // Check if it's a slash command embedded in text (e.g. "/agents")
@@ -1372,6 +1491,10 @@ fn media_type_from_url(url: &str) -> String {
 
 /// Download an image from a URL and build content blocks for multimodal LLM input.
 ///
+/// Accepts both `http(s)://` URLs (fetched via reqwest) and `file://` URLs
+/// (read from local disk — used by the channel inbox materialization path so
+/// agents see a stable local path even after a Discord CDN URL has expired).
+///
 /// Returns a `Vec<ContentBlock>` containing an image block (base64-encoded) and
 /// optionally a text block for the caption. If the download fails, returns a
 /// text-only block describing the failure.
@@ -1381,38 +1504,79 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
     // 5 MB limit to prevent memory abuse from oversized images
     const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
-    let client = reqwest::Client::new();
-    let resp = match client.get(url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("Failed to download image from channel: {e}");
-            return vec![ContentBlock::Text {
-                text: format!("[Image download failed: {e}]"),
-                provider_metadata: None,
-            }];
-        }
-    };
+    // Branch on URL scheme: file:// reads from local disk, everything else
+    // goes through HTTP. We unify both paths into (bytes, header_type) before
+    // the size/magic-byte logic below.
+    let (bytes, header_type): (Vec<u8>, Option<String>) =
+        if let Some(path) = url.strip_prefix("file://") {
+            // file:// — local read. No content-type header to honor; magic-byte
+            // sniffing and URL extension fallback do all the work. We don't
+            // percent-decode: the inbox writer controls filenames and avoids
+            // characters that would need encoding.
+            match tokio::fs::read(path).await {
+                Ok(b) => (b, None),
+                Err(e) => {
+                    warn!("Failed to read image from local path {path}: {e}");
+                    return vec![ContentBlock::Text {
+                        text: format!("[Image read failed: {e}]"),
+                        provider_metadata: None,
+                    }];
+                }
+            }
+        } else {
+            // Build the client with transparent decompression DISABLED. Discord's
+            // CDN edges occasionally advertise `content-encoding: gzip` (or br)
+            // on PNG/JPEG passthroughs while the body is the raw, uncompressed
+            // image bytes. With the default reqwest client (gzip/deflate/brotli
+            // features enabled at the workspace level), this causes the
+            // decompression layer to choke on the image header and reqwest
+            // returns "error decoding response body" only on `bytes().await`,
+            // not on `send()`. Forcing identity encoding sidesteps the whole
+            // class of CDN content-encoding-flapping bugs. We also set a UA
+            // (some CDNs 403 clients without one) and a 30s timeout aligned
+            // with the upstream 5 MB cap.
+            let client = reqwest::Client::builder()
+                .no_gzip()
+                .no_deflate()
+                .no_brotli()
+                .user_agent("openfang/0.1 (+https://openfang.ai)")
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
+            let resp = match client.get(url).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("Failed to download image from channel: {e}");
+                    return vec![ContentBlock::Text {
+                        text: format!("[Image download failed: {e}]"),
+                        provider_metadata: None,
+                    }];
+                }
+            };
 
-    // Detect media type from Content-Type header — but only trust it if it's
-    // actually an image/* type. Many APIs (Telegram, S3 pre-signed URLs) return
-    // `application/octet-stream` for all files, which breaks vision.
-    let header_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|ct| ct.split(';').next().unwrap_or(ct).trim().to_string())
-        .filter(|ct| ct.starts_with("image/"));
+            // Detect media type from Content-Type header — but only trust it if
+            // it's actually an image/* type. Many APIs (Telegram, S3 pre-signed
+            // URLs) return `application/octet-stream` for all files, which
+            // breaks vision.
+            let header_type = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .map(|ct| ct.split(';').next().unwrap_or(ct).trim().to_string())
+                .filter(|ct| ct.starts_with("image/"));
 
-    let bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!("Failed to read image bytes: {e}");
-            return vec![ContentBlock::Text {
-                text: format!("[Image read failed: {e}]"),
-                provider_metadata: None,
-            }];
-        }
-    };
+            let bytes = match resp.bytes().await {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("Failed to read image bytes: {e}");
+                    return vec![ContentBlock::Text {
+                        text: format!("[Image read failed: {e}]"),
+                        provider_metadata: None,
+                    }];
+                }
+            };
+            (bytes.to_vec(), header_type)
+        };
 
     // Three-tier media type detection:
     // 1. Trusted Content-Type header (only if image/*)
