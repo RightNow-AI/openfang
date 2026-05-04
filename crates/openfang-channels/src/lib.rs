@@ -8,6 +8,7 @@ pub mod discord;
 pub mod email;
 pub mod formatter;
 pub mod google_chat;
+pub mod outbound_attach;
 pub mod irc;
 pub mod matrix;
 pub mod mattermost;

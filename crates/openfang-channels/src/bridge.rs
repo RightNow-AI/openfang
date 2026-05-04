@@ -601,12 +601,38 @@ async fn send_response(
     thread_id: Option<&str>,
     output_format: OutputFormat,
 ) {
+    // Parse `<openfang:attach .../>` markers BEFORE formatting — channel
+    // formatters (telegram HTML, slack mrkdwn) escape `<` and would break
+    // marker detection downstream.
+    let (text_to_format, attachment_blocks): (String, Vec<ChannelContent>) =
+        match crate::outbound_attach::parse(&text, None).await {
+            crate::outbound_attach::Parsed::NoMarkers => (text, Vec::new()),
+            crate::outbound_attach::Parsed::WithAttachments {
+                stripped_text,
+                files,
+            } => (stripped_text, files),
+        };
+
     let formatted = if adapter.name() == "wecom" {
-        formatter::format_for_wecom(&text, output_format)
+        formatter::format_for_wecom(&text_to_format, output_format)
     } else {
-        formatter::format_for_channel(&text, output_format)
+        formatter::format_for_channel(&text_to_format, output_format)
     };
-    let content = ChannelContent::Text(formatted);
+
+    let content = if attachment_blocks.is_empty() {
+        ChannelContent::Text(formatted)
+    } else {
+        let mut blocks = Vec::with_capacity(attachment_blocks.len() + 1);
+        if !formatted.trim().is_empty() {
+            blocks.push(ChannelContent::Text(formatted));
+        }
+        blocks.extend(attachment_blocks);
+        if blocks.len() == 1 {
+            blocks.remove(0)
+        } else {
+            ChannelContent::Multipart(blocks)
+        }
+    };
 
     let result = if let Some(tid) = thread_id {
         adapter.send_in_thread(user, content, tid).await
