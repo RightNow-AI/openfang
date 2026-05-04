@@ -216,7 +216,11 @@ fn convert_messages(oai_messages: &[OaiMessage]) -> Vec<Message> {
                                             .unwrap_or(parts[0])
                                             .to_string();
                                         let data = parts[1].to_string();
-                                        Some(ContentBlock::Image { media_type, data })
+                                        Some(ContentBlock::Image {
+                                            media_type,
+                                            data,
+                                            source_url: None,
+                                        })
                                     } else {
                                         None
                                     }
