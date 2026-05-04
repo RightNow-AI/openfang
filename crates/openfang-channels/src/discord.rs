@@ -3294,14 +3294,17 @@ mod tests {
 
     // ---- multi-file 429 retry --------------------------------------------------
 
-    /// First POST returns 429 with `Retry-After: 0`; second POST succeeds.
-    /// Sending a 3-attachment Multipart must produce exactly 2 POSTs (one
-    /// retry of the same chunk), the second succeeds, and both attempts
-    /// carry `files[0..2]`. Locks in body-aware retry behavior on the
-    /// multi-file path so a future refactor that lifts retry handling out
-    /// of `api_send_attachments` can't silently regress it.
-    #[tokio::test]
-    async fn test_multipart_outbound_multifile_429_retries_once() {
+    /// Spawn a stub at `/channels/test/messages` that returns
+    /// `first_response` on attempt 0 and 200 OK on every subsequent attempt.
+    /// Captures every POST's parsed multipart fields into the returned
+    /// `Arc<...Vec<CapturedPost>>` for assertions. Used by the 429 retry
+    /// tests to vary only the 429 response shape (body+header vs header-only)
+    /// while sharing the rest of the scaffolding.
+    async fn spawn_429_then_ok_stub(
+        first_response: Arc<
+            dyn Fn() -> axum::response::Response + Send + Sync + 'static,
+        >,
+    ) -> (String, Arc<TokioMutex<Vec<CapturedPost>>>) {
         use axum::{
             extract::{DefaultBodyLimit, Multipart},
             http::StatusCode,
@@ -3313,9 +3316,9 @@ mod tests {
 
         let captured: Arc<TokioMutex<Vec<CapturedPost>>> = Arc::new(TokioMutex::new(Vec::new()));
         let attempt = Arc::new(AtomicUsize::new(0));
-
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+
         let captured_clone = captured.clone();
         let attempt_clone = attempt.clone();
         let app = Router::new()
@@ -3325,10 +3328,9 @@ mod tests {
                     move |Extension(_): Extension<()>, mut multipart: Multipart| {
                         let captured = captured_clone.clone();
                         let attempt = attempt_clone.clone();
+                        let first_response = first_response.clone();
                         async move {
                             let n = attempt.fetch_add(1, Ordering::SeqCst);
-                            // Drain the multipart body either way so the
-                            // client sees a clean response.
                             let mut post_rec = CapturedPost::default();
                             while let Ok(Some(field)) = multipart.next_field().await {
                                 let name = field.name().unwrap_or("").to_string();
@@ -3349,15 +3351,7 @@ mod tests {
                             }
                             captured.lock().await.push(post_rec);
                             if n == 0 {
-                                // 429 with body-encoded retry_after = 0; the
-                                // adapter clamps to RETRY_AFTER_FLOOR_SECS so
-                                // the retry fires almost immediately.
-                                (
-                                    StatusCode::TOO_MANY_REQUESTS,
-                                    [(axum::http::header::RETRY_AFTER, "0")],
-                                    r#"{"retry_after":0.0,"global":false}"#,
-                                )
-                                    .into_response()
+                                first_response()
                             } else {
                                 StatusCode::OK.into_response()
                             }
@@ -3370,153 +3364,105 @@ mod tests {
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        let base = format!("http://{addr}");
+        (format!("http://{addr}"), captured)
+    }
 
-        let adapter = test_adapter_with_base(base);
-        let user = make_channel_user("test");
-        let content = ChannelContent::Multipart(vec![
-            ChannelContent::Text("cap".to_string()),
-            ChannelContent::FileData {
-                data: b"a".to_vec(),
-                filename: "a.txt".to_string(),
+    /// Build a `ChannelContent::Multipart` with `n` `FileData` blocks named
+    /// `a.txt`, `b.txt`, … (for tests that only care about field-name
+    /// ordering, not content). `n` must be ≤ 26.
+    fn caption_plus_n_files(caption: &str, n: usize) -> ChannelContent {
+        assert!(n <= 26, "caption_plus_n_files: n must fit in a-z");
+        let mut parts = vec![ChannelContent::Text(caption.to_string())];
+        for i in 0..n {
+            let ch = (b'a' + i as u8) as char;
+            parts.push(ChannelContent::FileData {
+                data: vec![ch as u8],
+                filename: format!("{ch}.txt"),
                 mime_type: "text/plain".to_string(),
-            },
-            ChannelContent::FileData {
-                data: b"b".to_vec(),
-                filename: "b.txt".to_string(),
-                mime_type: "text/plain".to_string(),
-            },
-            ChannelContent::FileData {
-                data: b"c".to_vec(),
-                filename: "c.txt".to_string(),
-                mime_type: "text/plain".to_string(),
-            },
-        ]);
+            });
+        }
+        ChannelContent::Multipart(parts)
+    }
 
-        adapter.send(&user, content).await.unwrap();
-
+    /// Assert every captured POST's multipart fields are exactly
+    /// `["files[0]", "files[1]", …, "files[n-1]"]`.
+    async fn assert_all_attempts_carry_files(
+        captured: &Arc<TokioMutex<Vec<CapturedPost>>>,
+        n: usize,
+    ) {
+        let expected: Vec<String> = (0..n).map(|i| format!("files[{i}]")).collect();
         let posts = captured.lock().await;
-        assert_eq!(
-            posts.len(),
-            2,
-            "expected 2 POSTs (one 429-rejected, one 200) for the same chunk"
-        );
-        // Both attempts must carry the full files[0..2] set — the retry
-        // path rebuilds the form rather than dropping attachments.
         for (i, p) in posts.iter().enumerate() {
-            let names: Vec<&str> =
-                p.file_field_names.iter().map(String::as_str).collect();
             assert_eq!(
-                names,
-                vec!["files[0]", "files[1]", "files[2]"],
-                "attempt {i} must include files[0..2]"
+                p.file_field_names, expected,
+                "attempt {i} must include files[0..{n})"
             );
         }
     }
 
-    /// Same shape as the body+header 429 test, but the 429 response carries
-    /// **only** the `Retry-After` HTTP header (no JSON body with
-    /// `retry_after`). The header-fallback path (`body_secs.or(header_secs)`)
-    /// must still trigger the retry. Pinned separately so a regression that
-    /// drops header parsing wouldn't be masked by the body-present test.
+    /// 429 response with both `Retry-After: 0` header and a JSON body
+    /// containing `retry_after: 0.0`. Sending a 3-attachment Multipart
+    /// must produce exactly 2 POSTs and both must carry the full file set.
+    /// Locks in the body-aware retry path (body wins over header per the
+    /// adapter's `body_secs.or(header_secs)`).
     #[tokio::test]
-    async fn test_multipart_outbound_multifile_429_header_only_retries_once() {
-        use axum::{
-            extract::{DefaultBodyLimit, Multipart},
-            http::StatusCode,
-            response::IntoResponse,
-            routing::post,
-            Extension, Router,
-        };
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let captured: Arc<TokioMutex<Vec<CapturedPost>>> = Arc::new(TokioMutex::new(Vec::new()));
-        let attempt = Arc::new(AtomicUsize::new(0));
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let captured_clone = captured.clone();
-        let attempt_clone = attempt.clone();
-        let app = Router::new()
-            .route(
-                "/channels/test/messages",
-                post(
-                    move |Extension(_): Extension<()>, mut multipart: Multipart| {
-                        let captured = captured_clone.clone();
-                        let attempt = attempt_clone.clone();
-                        async move {
-                            let n = attempt.fetch_add(1, Ordering::SeqCst);
-                            let mut post_rec = CapturedPost::default();
-                            while let Ok(Some(field)) = multipart.next_field().await {
-                                let name = field.name().unwrap_or("").to_string();
-                                if name == "payload_json" {
-                                    post_rec.payload_json =
-                                        field.text().await.unwrap_or_default();
-                                } else {
-                                    let filename = field.file_name().map(str::to_string);
-                                    let content_type = field.content_type().map(str::to_string);
-                                    let _ = field.bytes().await;
-                                    post_rec.files.push(CapturedFile {
-                                        field_name: name.clone(),
-                                        filename,
-                                        content_type,
-                                    });
-                                    post_rec.file_field_names.push(name);
-                                }
-                            }
-                            captured.lock().await.push(post_rec);
-                            if n == 0 {
-                                // Header only; empty body so the body-secs
-                                // path returns None and the header fallback
-                                // is the only signal driving the retry.
-                                (
-                                    StatusCode::TOO_MANY_REQUESTS,
-                                    [(axum::http::header::RETRY_AFTER, "0")],
-                                    "",
-                                )
-                                    .into_response()
-                            } else {
-                                StatusCode::OK.into_response()
-                            }
-                        }
-                    },
-                ),
+    async fn test_multipart_outbound_multifile_429_retries_once() {
+        use axum::{http::StatusCode, response::IntoResponse};
+        let first: Arc<dyn Fn() -> axum::response::Response + Send + Sync> = Arc::new(|| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, "0")],
+                r#"{"retry_after":0.0,"global":false}"#,
             )
-            .layer(DefaultBodyLimit::disable())
-            .layer(Extension(()));
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
+                .into_response()
         });
-        let base = format!("http://{addr}");
-
+        let (base, captured) = spawn_429_then_ok_stub(first).await;
         let adapter = test_adapter_with_base(base);
         let user = make_channel_user("test");
-        let content = ChannelContent::Multipart(vec![
-            ChannelContent::Text("cap".to_string()),
-            ChannelContent::FileData {
-                data: b"a".to_vec(),
-                filename: "a.txt".to_string(),
-                mime_type: "text/plain".to_string(),
-            },
-            ChannelContent::FileData {
-                data: b"b".to_vec(),
-                filename: "b.txt".to_string(),
-                mime_type: "text/plain".to_string(),
-            },
-        ]);
 
-        adapter.send(&user, content).await.unwrap();
+        adapter
+            .send(&user, caption_plus_n_files("cap", 3))
+            .await
+            .unwrap();
 
-        let posts = captured.lock().await;
-        assert_eq!(posts.len(), 2, "header-only 429 must still trigger one retry");
-        for (i, p) in posts.iter().enumerate() {
-            let names: Vec<&str> = p.file_field_names.iter().map(String::as_str).collect();
-            assert_eq!(
-                names,
-                vec!["files[0]", "files[1]"],
-                "attempt {i} must include files[0..1]"
-            );
-        }
+        assert_eq!(
+            captured.lock().await.len(),
+            2,
+            "expected 2 POSTs (one 429-rejected, one 200) for the same chunk"
+        );
+        assert_all_attempts_carry_files(&captured, 3).await;
+    }
+
+    /// 429 response with **only** the `Retry-After` header (empty body).
+    /// The header-fallback path (`body_secs.or(header_secs)`) must still
+    /// trigger the retry, so a regression that drops header parsing fails
+    /// here independently of the body-present test.
+    #[tokio::test]
+    async fn test_multipart_outbound_multifile_429_header_only_retries_once() {
+        use axum::{http::StatusCode, response::IntoResponse};
+        let first: Arc<dyn Fn() -> axum::response::Response + Send + Sync> = Arc::new(|| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, "0")],
+                "",
+            )
+                .into_response()
+        });
+        let (base, captured) = spawn_429_then_ok_stub(first).await;
+        let adapter = test_adapter_with_base(base);
+        let user = make_channel_user("test");
+
+        adapter
+            .send(&user, caption_plus_n_files("cap", 2))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            captured.lock().await.len(),
+            2,
+            "header-only 429 must still trigger one retry"
+        );
+        assert_all_attempts_carry_files(&captured, 2).await;
     }
 
     // ---- aggregate per-chunk byte cap ------------------------------------------
