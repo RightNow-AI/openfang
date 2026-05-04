@@ -53,10 +53,16 @@ impl ConsolidationEngine {
     }
 }
 
+impl crate::backends::ConsolidationBackend for ConsolidationEngine {
+    fn consolidate(&self) -> OpenFangResult<openfang_types::memory::ConsolidationReport> {
+        ConsolidationEngine::consolidate(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::migration::run_migrations;
+    use crate::sqlite::migration::run_migrations;
 
     fn setup() -> ConsolidationEngine {
         let conn = Connection::open_in_memory().unwrap();

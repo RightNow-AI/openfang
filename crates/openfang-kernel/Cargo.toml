@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "Core kernel for the OpenFang Agent OS"
 
+[features]
+default = []
+postgres = ["openfang-memory/postgres"]
+qdrant = ["openfang-memory/qdrant"]
+
 [dependencies]
 openfang-types = { path = "../openfang-types" }
 openfang-memory = { path = "../openfang-memory" }

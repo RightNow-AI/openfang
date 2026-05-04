@@ -1,16 +1,14 @@
-//! Knowledge graph backed by SQLite.
+//! SQLite backend for the knowledge graph.
 //!
 //! Stores entities and relations with support for graph pattern queries.
 
+use crate::helpers;
 use chrono::Utc;
 use openfang_types::error::{OpenFangError, OpenFangResult};
-use openfang_types::memory::{
-    Entity, EntityType, GraphMatch, GraphPattern, Relation, RelationType,
-};
+use openfang_types::memory::{Entity, GraphMatch, GraphPattern, Relation};
+use openfang_types::storage::KnowledgeBackend;
 use rusqlite::Connection;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use uuid::Uuid;
 
 /// Knowledge graph store backed by SQLite.
 #[derive(Clone)]
@@ -30,15 +28,9 @@ impl KnowledgeStore {
             .conn
             .lock()
             .map_err(|e| OpenFangError::Internal(e.to_string()))?;
-        let id = if entity.id.is_empty() {
-            Uuid::new_v4().to_string()
-        } else {
-            entity.id.clone()
-        };
-        let entity_type_str = serde_json::to_string(&entity.entity_type)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
-        let props_str = serde_json::to_string(&entity.properties)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+        let id = helpers::entity_id_or_generate(&entity.id);
+        let entity_type_str = helpers::serialize_entity_type(&entity.entity_type)?;
+        let props_str = helpers::serialize_properties(&entity.properties)?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO entities (id, entity_type, name, properties, created_at, updated_at)
@@ -56,11 +48,9 @@ impl KnowledgeStore {
             .conn
             .lock()
             .map_err(|e| OpenFangError::Internal(e.to_string()))?;
-        let id = Uuid::new_v4().to_string();
-        let rel_type_str = serde_json::to_string(&relation.relation)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
-        let props_str = serde_json::to_string(&relation.properties)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+        let id = helpers::new_relation_id();
+        let rel_type_str = helpers::serialize_relation_type(&relation.relation)?;
+        let props_str = helpers::serialize_properties(&relation.properties)?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO relations (id, source_entity, relation_type, target_entity, properties, confidence, created_at)
@@ -89,7 +79,7 @@ impl KnowledgeStore {
         let mut sql = String::from(
             "SELECT
                 s.id, s.entity_type, s.name, s.properties, s.created_at, s.updated_at,
-                r.id, r.source_entity, r.relation_type, r.target_entity, r.properties, r.confidence, r.created_at,
+                r.source_entity, r.relation_type, r.target_entity, r.properties, r.confidence, r.created_at,
                 t.id, t.entity_type, t.name, t.properties, t.created_at, t.updated_at
              FROM relations r
              JOIN entities s ON r.source_entity = s.id
@@ -106,8 +96,7 @@ impl KnowledgeStore {
             idx += 2;
         }
         if let Some(ref relation) = pattern.relation {
-            let rel_str = serde_json::to_string(relation)
-                .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+            let rel_str = helpers::serialize_relation_type(relation)?;
             sql.push_str(&format!(" AND r.relation_type = ?{idx}"));
             params.push(Box::new(rel_str));
             idx += 1;
@@ -137,19 +126,18 @@ impl KnowledgeStore {
                     s_props: row.get(3)?,
                     s_created: row.get(4)?,
                     s_updated: row.get(5)?,
-                    r_id: row.get(6)?,
-                    r_source: row.get(7)?,
-                    r_type: row.get(8)?,
-                    r_target: row.get(9)?,
-                    r_props: row.get(10)?,
-                    r_confidence: row.get(11)?,
-                    r_created: row.get(12)?,
-                    t_id: row.get(13)?,
-                    t_type: row.get(14)?,
-                    t_name: row.get(15)?,
-                    t_props: row.get(16)?,
-                    t_created: row.get(17)?,
-                    t_updated: row.get(18)?,
+                    r_source: row.get(6)?,
+                    r_type: row.get(7)?,
+                    r_target: row.get(8)?,
+                    r_props: row.get(9)?,
+                    r_confidence: row.get(10)?,
+                    r_created: row.get(11)?,
+                    t_id: row.get(12)?,
+                    t_type: row.get(13)?,
+                    t_name: row.get(14)?,
+                    t_props: row.get(15)?,
+                    t_created: row.get(16)?,
+                    t_updated: row.get(17)?,
                 })
             })
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
@@ -158,7 +146,7 @@ impl KnowledgeStore {
         for row_result in rows {
             let r = row_result.map_err(|e| OpenFangError::Memory(e.to_string()))?;
             matches.push(GraphMatch {
-                source: parse_entity(
+                source: helpers::build_entity(
                     &r.s_id,
                     &r.s_type,
                     &r.s_name,
@@ -166,7 +154,7 @@ impl KnowledgeStore {
                     &r.s_created,
                     &r.s_updated,
                 ),
-                relation: parse_relation(
+                relation: helpers::build_relation(
                     &r.r_source,
                     &r.r_type,
                     &r.r_target,
@@ -174,7 +162,7 @@ impl KnowledgeStore {
                     r.r_confidence,
                     &r.r_created,
                 ),
-                target: parse_entity(
+                target: helpers::build_entity(
                     &r.t_id,
                     &r.t_type,
                     &r.t_name,
@@ -188,6 +176,18 @@ impl KnowledgeStore {
     }
 }
 
+impl KnowledgeBackend for KnowledgeStore {
+    fn add_entity(&self, entity: Entity) -> OpenFangResult<String> {
+        KnowledgeStore::add_entity(self, entity)
+    }
+    fn add_relation(&self, relation: Relation) -> OpenFangResult<String> {
+        KnowledgeStore::add_relation(self, relation)
+    }
+    fn query_graph(&self, pattern: GraphPattern) -> OpenFangResult<Vec<GraphMatch>> {
+        KnowledgeStore::query_graph(self, pattern)
+    }
+}
+
 /// Raw row from a graph query.
 struct RawGraphRow {
     s_id: String,
@@ -196,7 +196,6 @@ struct RawGraphRow {
     s_props: String,
     s_created: String,
     s_updated: String,
-    r_id: String,
     r_source: String,
     r_type: String,
     r_target: String,
@@ -211,70 +210,12 @@ struct RawGraphRow {
     t_updated: String,
 }
 
-// Suppress the unused field warning — r_id is part of the schema
-impl RawGraphRow {
-    #[allow(dead_code)]
-    fn relation_id(&self) -> &str {
-        &self.r_id
-    }
-}
-
-fn parse_entity(
-    id: &str,
-    etype: &str,
-    name: &str,
-    props: &str,
-    created: &str,
-    updated: &str,
-) -> Entity {
-    let entity_type: EntityType =
-        serde_json::from_str(etype).unwrap_or(EntityType::Custom("unknown".to_string()));
-    let properties: HashMap<String, serde_json::Value> =
-        serde_json::from_str(props).unwrap_or_default();
-    let created_at = chrono::DateTime::parse_from_rfc3339(created)
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now());
-    let updated_at = chrono::DateTime::parse_from_rfc3339(updated)
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now());
-    Entity {
-        id: id.to_string(),
-        entity_type,
-        name: name.to_string(),
-        properties,
-        created_at,
-        updated_at,
-    }
-}
-
-fn parse_relation(
-    source: &str,
-    rtype: &str,
-    target: &str,
-    props: &str,
-    confidence: f64,
-    created: &str,
-) -> Relation {
-    let relation: RelationType = serde_json::from_str(rtype).unwrap_or(RelationType::RelatedTo);
-    let properties: HashMap<String, serde_json::Value> =
-        serde_json::from_str(props).unwrap_or_default();
-    let created_at = chrono::DateTime::parse_from_rfc3339(created)
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now());
-    Relation {
-        source: source.to_string(),
-        relation,
-        target: target.to_string(),
-        properties,
-        confidence: confidence as f32,
-        created_at,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::migration::run_migrations;
+    use crate::sqlite::migration::run_migrations;
+    use openfang_types::memory::{EntityType, RelationType};
+    use std::collections::HashMap;
 
     fn setup() -> KnowledgeStore {
         let conn = Connection::open_in_memory().unwrap();

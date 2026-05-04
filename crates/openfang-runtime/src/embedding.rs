@@ -1,8 +1,8 @@
 //! Embedding driver for vector-based semantic memory.
 //!
-//! Provides an `EmbeddingDriver` trait and an OpenAI-compatible implementation
-//! that works with any provider offering a `/v1/embeddings` endpoint (OpenAI,
-//! Groq, Together, Fireworks, Ollama, etc.).
+//! The `EmbeddingDriver` trait and `EmbeddingError` are defined in `openfang-types`
+//! and re-exported here for backward compatibility. This module provides the
+//! OpenAI-compatible implementation and helper functions.
 
 use async_trait::async_trait;
 use openfang_types::model_catalog::{
@@ -13,18 +13,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
 
-/// Error type for embedding operations.
-#[derive(Debug, thiserror::Error)]
-pub enum EmbeddingError {
-    #[error("HTTP error: {0}")]
-    Http(String),
-    #[error("API error (status {status}): {message}")]
-    Api { status: u16, message: String },
-    #[error("Parse error: {0}")]
-    Parse(String),
-    #[error("Missing API key: {0}")]
-    MissingApiKey(String),
-}
+// Re-export trait and error from openfang-types for backward compatibility.
+pub use openfang_types::embedding::{EmbeddingDriver, EmbeddingError};
 
 /// Configuration for creating an embedding driver.
 #[derive(Debug, Clone)]
@@ -37,25 +27,6 @@ pub struct EmbeddingConfig {
     pub api_key: String,
     /// Base URL for the API.
     pub base_url: String,
-}
-
-/// Trait for computing text embeddings.
-#[async_trait]
-pub trait EmbeddingDriver: Send + Sync {
-    /// Compute embedding vectors for a batch of texts.
-    async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError>;
-
-    /// Compute embedding for a single text.
-    async fn embed_one(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        let results = self.embed(&[text]).await?;
-        results
-            .into_iter()
-            .next()
-            .ok_or_else(|| EmbeddingError::Parse("Empty embedding response".to_string()))
-    }
-
-    /// Return the dimensionality of embeddings produced by this driver.
-    fn dimensions(&self) -> usize;
 }
 
 /// OpenAI-compatible embedding driver.

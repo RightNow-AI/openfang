@@ -1,19 +1,20 @@
 //! Metering engine — tracks LLM cost and enforces spending quotas.
 
-use openfang_memory::usage::{ModelUsage, UsageRecord, UsageStore, UsageSummary};
+use openfang_memory::backends::UsageBackend;
+use openfang_memory::usage::{ModelUsage, UsageRecord, UsageSummary};
 use openfang_types::agent::{AgentId, ResourceQuota};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use std::sync::Arc;
 
 /// The metering engine tracks usage cost and enforces quota limits.
 pub struct MeteringEngine {
-    /// Persistent usage store (SQLite-backed).
-    store: Arc<UsageStore>,
+    /// Persistent usage store.
+    store: Arc<dyn UsageBackend>,
 }
 
 impl MeteringEngine {
     /// Create a new metering engine with the given usage store.
-    pub fn new(store: Arc<UsageStore>) -> Self {
+    pub fn new(store: Arc<dyn UsageBackend>) -> Self {
         Self { store }
     }
 
@@ -518,8 +519,7 @@ mod tests {
 
     fn setup() -> MeteringEngine {
         let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
-        let store = Arc::new(UsageStore::new(substrate.usage_conn()));
-        MeteringEngine::new(store)
+        MeteringEngine::new(substrate.usage_arc())
     }
 
     #[test]

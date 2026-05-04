@@ -9,6 +9,11 @@ description = "CLI tool for the OpenFang Agent OS"
 name = "openfang"
 path = "src/main.rs"
 
+[features]
+default = []
+postgres = ["openfang-kernel/postgres"]
+qdrant = ["openfang-kernel/qdrant"]
+
 [dependencies]
 openfang-types = { path = "../openfang-types" }
 openfang-kernel = { path = "../openfang-kernel" }
