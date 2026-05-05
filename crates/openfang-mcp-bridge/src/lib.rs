@@ -29,6 +29,8 @@
 //! Real tool surface mapping lands in ANAI-30. Identity threading lands in
 //! ANAI-31. See ANAI-22 for the umbrella tracker.
 
+pub mod protocol;
+
 use std::sync::Arc;
 
 use rmcp::{

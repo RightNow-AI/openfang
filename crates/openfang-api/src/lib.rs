@@ -32,6 +32,7 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+pub mod bridge_ipc;
 pub mod channel_bridge;
 pub mod middleware;
 pub mod openai_compat;
