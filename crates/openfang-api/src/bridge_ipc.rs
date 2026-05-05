@@ -17,31 +17,50 @@
 //! over a unix-domain socket back here, where we dispatch into
 //! `openfang_runtime::tool_runner::execute_tool` and ship the result back.
 //!
-//! ## Status — ANAI-30 step 1
+//! ## Status — ANAI-30 step 2
 //!
 //! This module currently:
 //! - Listens on `<home_dir>/run/bridge.sock`.
 //! - Accepts the protocol [`Hello`](openfang_mcp_bridge::protocol::Hello)
 //!   handshake (any non-empty token; real auth in ANAI-31).
 //! - Decodes [`CallRequest`](openfang_mcp_bridge::protocol::CallRequest)
-//!   frames and returns a stub `Error { message: "dispatch not yet wired" }`
-//!   response. **Step 2** of the ANAI-30 plan replaces this with a real
-//!   call into `tool_runner::execute_tool`, scoped to the four tools
-//!   `file_read`, `file_list`, `agent_list`, `channel_send`.
+//!   frames, enforces the four-tool allowlist
+//!   ([`ALLOWED_TOOLS`]: `file_read`, `file_list`, `agent_list`,
+//!   `channel_send`), and dispatches into
+//!   [`openfang_runtime::tool_runner::execute_tool`] with the kernel-bound
+//!   context bundle. The shape mirrors the HTTP `/mcp` endpoint in
+//!   `routes.rs` so the two execution paths stay in lockstep.
 //!
-//! Keeping step 1 a clean stub makes the wire shape independently testable
-//! before we tangle in execute_tool's 17-argument context bundle.
+//! Identity (`caller_agent_id`) is currently taken at face value from the
+//! [`CallRequest::agent_id`] field. ANAI-31 replaces this with
+//! token-derived identity bound at daemon-spawn time. Per-agent
+//! capability gating (replacing the static [`ALLOWED_TOOLS`] allowlist
+//! with `agent.toml` lookups) lands in the same ticket.
 
 use openfang_kernel::OpenFangKernel;
 use openfang_mcp_bridge::protocol::{
-    CallResponse, CallResult, Frame, Hello, HelloAck, PROTOCOL_VERSION, SOCKET_RELATIVE_PATH,
-    codec,
+    CallRequest, CallResponse, CallResult, Frame, Hello, HelloAck, PROTOCOL_VERSION,
+    SOCKET_RELATIVE_PATH, codec,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
+
+/// Tools the bridge IPC server is willing to dispatch in the ANAI-30
+/// validation slice. Anything outside this set is rejected at the
+/// protocol layer (i.e. it never reaches `execute_tool`). ANAI-31 will
+/// replace this static allowlist with per-agent capability lookups
+/// driven by `agent.toml`.
+///
+/// The chosen four exercise the full diversity of tool dependencies:
+/// - `file_read` / `file_list` — workspace-scoped, no kernel needed
+/// - `agent_list` — requires [`KernelHandle::list_agents`]
+/// - `channel_send` — requires [`KernelHandle::send_channel_message`],
+///   one of the OpenFang-only capabilities a CC subprocess wouldn't
+///   otherwise have
+pub const ALLOWED_TOOLS: &[&str] = &["file_read", "file_list", "agent_list", "channel_send"];
 
 /// Daemon-version string sent in [`HelloAck::Ok`].
 fn daemon_version() -> String {
@@ -150,7 +169,7 @@ impl Drop for BridgeIpcServer {
 /// of CallRequest → CallResponse frames until the peer closes.
 async fn handle_connection(
     mut stream: UnixStream,
-    _kernel: Arc<OpenFangKernel>,
+    kernel: Arc<OpenFangKernel>,
 ) -> std::io::Result<()> {
     let (read_half, mut write_half) = stream.split();
     let mut read_half = tokio::io::BufReader::new(read_half);
@@ -205,22 +224,98 @@ async fn handle_connection(
             request_id = call.request_id,
             tool = %call.tool_name,
             agent = %call.agent_id,
-            "bridge IPC: received call (step-1 stub will not dispatch)"
+            "bridge IPC: dispatching call"
         );
 
-        // ANAI-30 step 1: handler is stubbed. Step 2 wires this to
-        // openfang_runtime::tool_runner::execute_tool with the four-tool
-        // allowlist (file_read, file_list, agent_list, channel_send).
+        let result = dispatch_call(&call, &kernel).await;
         let response = Frame::Response(CallResponse {
             request_id: call.request_id,
-            result: CallResult::Error {
-                message: format!(
-                    "tool dispatch not yet wired in daemon (ANAI-30 step 1 stub); requested tool='{}'",
-                    call.tool_name
-                ),
-            },
+            result,
         });
         codec::write_frame(&mut write_half, &response).await?;
+    }
+}
+
+/// Dispatch a single bridge tool call to the runtime.
+///
+/// Enforces the [`ALLOWED_TOOLS`] allowlist before invoking
+/// [`openfang_runtime::tool_runner::execute_tool`]. The argument bundle
+/// mirrors the HTTP `/mcp` endpoint in `routes.rs` — keep them in sync;
+/// they share semantics intentionally.
+///
+/// Returns:
+/// - [`CallResult::Error`] for protocol-layer rejections (unknown tool,
+///   not on the allowlist).
+/// - [`CallResult::Ok`] for anything `execute_tool` returned, with
+///   `is_error` propagated. A tool that ran but returned an error to
+///   the model is `Ok { is_error: true }`, **not** `Error` — the latter
+///   means the bridge couldn't even attempt dispatch.
+async fn dispatch_call(call: &CallRequest, kernel: &Arc<OpenFangKernel>) -> CallResult {
+    if !ALLOWED_TOOLS.iter().any(|t| *t == call.tool_name) {
+        return CallResult::Error {
+            message: format!(
+                "tool '{}' not in bridge allowlist (permitted: {:?})",
+                call.tool_name, ALLOWED_TOOLS
+            ),
+        };
+    }
+
+    // Snapshot the skill registry before crossing the await — its read
+    // guard is !Send and execute_tool spans `.await` points internally.
+    let skill_snapshot = kernel
+        .skill_registry
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .snapshot();
+
+    // Build the kernel handle. Cloning the Arc is cheap; the cast to
+    // `dyn KernelHandle` is the same upcast the HTTP /mcp endpoint
+    // performs.
+    let kernel_handle: Arc<dyn openfang_runtime::kernel_handle::KernelHandle> =
+        kernel.clone() as Arc<dyn openfang_runtime::kernel_handle::KernelHandle>;
+
+    // execute_tool also enforces an allowlist via its `allowed_tools`
+    // parameter; passing our four-tool set makes the runtime's check
+    // belt-and-suspenders with ours. If the two ever drift, the runtime's
+    // is authoritative — it sits closer to the actual tool implementations.
+    let allowed_tools_owned: Vec<String> =
+        ALLOWED_TOOLS.iter().map(|s| (*s).to_string()).collect();
+
+    let result = openfang_runtime::tool_runner::execute_tool(
+        &format!("bridge-{}", call.request_id),
+        &call.tool_name,
+        &call.args,
+        Some(&kernel_handle),
+        Some(&allowed_tools_owned),
+        // Identity stub for ANAI-30: trust the bridge's claimed agent_id.
+        // ANAI-31 replaces this with token-derived identity bound at
+        // daemon-spawn time.
+        Some(call.agent_id.as_str()),
+        Some(&skill_snapshot),
+        Some(&kernel.mcp_connections),
+        Some(&kernel.web_ctx),
+        Some(&kernel.browser_ctx),
+        None, // allowed_env_vars — unused by the four allowlisted tools
+        None, // workspace_root — file_read/file_list use input-relative paths
+        Some(&kernel.media_engine),
+        None, // exec_policy — shell tools not in allowlist
+        if kernel.config.tts.enabled {
+            Some(&kernel.tts_engine)
+        } else {
+            None
+        },
+        if kernel.config.docker.enabled {
+            Some(&kernel.config.docker)
+        } else {
+            None
+        },
+        Some(&*kernel.process_manager),
+    )
+    .await;
+
+    CallResult::Ok {
+        content: result.content,
+        is_error: result.is_error,
     }
 }
 
@@ -248,74 +343,112 @@ mod tests {
     use tokio::io::BufReader;
     use tokio::net::UnixStream as ClientStream;
 
-    /// End-to-end round trip test: bind a listener at a tempfile path,
-    /// connect, do the handshake, send a CallRequest, expect the step-1
-    /// stub error response.
+    /// End-to-end wire-shape test: bind a listener at a tempfile path,
+    /// connect, do the handshake, send two CallRequests:
+    ///   1. A non-allowlisted tool — expect `CallResult::Error` from the
+    ///      step-2 allowlist check.
+    ///   2. An allowlisted tool — expect a canned `CallResult::Ok` from
+    ///      the test twin (the real handler would dispatch into
+    ///      `execute_tool`; we can't synthesize an `OpenFangKernel` here).
     ///
-    /// We don't go through `BridgeIpcServer::start` here because that needs
-    /// a full `OpenFangKernel`. Instead we exercise `handle_connection`
-    /// directly by spawning the accept loop manually.
+    /// What this test guarantees:
+    /// - The Hello/HelloAck handshake stays correct.
+    /// - The allowlist gate fires *before* dispatch (no kernel touched).
+    /// - The wire framing for `CallResponse::Ok` and `CallResponse::Error`
+    ///   round-trips cleanly.
+    ///
+    /// What this test does NOT cover (intentionally — needs a real kernel):
+    /// - That `execute_tool` is invoked with the right argument bundle.
+    /// - That tool results are correctly mapped to `CallResult::Ok`.
+    /// Those land as integration tests once the daemon side spawns the
+    /// bridge for real (ANAI-31).
     #[tokio::test]
-    async fn ipc_handshake_and_stub_dispatch() {
+    async fn ipc_handshake_and_allowlist_gate() {
         let tmp = tempfile::tempdir().unwrap();
         let sock = tmp.path().join("bridge.sock");
         let listener = UnixListener::bind(&sock).unwrap();
 
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            // We can't synthesize a real OpenFangKernel here; the connection
-            // handler doesn't actually dereference it in step 1 (kernel use
-            // lands in step 2 alongside execute_tool wiring). Build a minimal
-            // proxy by inlining the relevant logic.
-            handle_connection_no_kernel(stream).await.unwrap();
+            handle_connection_test_twin(stream).await.unwrap();
         });
 
         let mut client = ClientStream::connect(&sock).await.unwrap();
         let (cr, mut cw) = client.split();
         let mut cr = BufReader::new(cr);
 
-        // Send Hello
+        // Handshake.
         let hello = Frame::Hello(Hello {
             protocol_version: PROTOCOL_VERSION,
             token: "stub-token".into(),
             bridge_version: "test".into(),
         });
         codec::write_frame(&mut cw, &hello).await.unwrap();
-
-        // Receive HelloAck
         match codec::read_frame(&mut cr).await.unwrap() {
             Frame::HelloAck(HelloAck::Ok { .. }) => {}
             other => panic!("expected HelloAck::Ok, got {other:?}"),
         }
 
-        // Send a Call
-        let call = Frame::Call(CallRequest {
-            request_id: 1,
-            agent_id: "test-agent".into(),
-            tool_name: "file_read".into(),
-            args: serde_json::json!({"path": "x"}),
-        });
-        codec::write_frame(&mut cw, &call).await.unwrap();
-
-        // Receive stub Response
+        // 1. Non-allowlisted tool → allowlist Error.
+        codec::write_frame(
+            &mut cw,
+            &Frame::Call(CallRequest {
+                request_id: 1,
+                agent_id: "test-agent".into(),
+                tool_name: "shell_exec".into(), // deliberately not on the list
+                args: serde_json::json!({"cmd": "rm -rf /"}),
+            }),
+        )
+        .await
+        .unwrap();
         match codec::read_frame(&mut cr).await.unwrap() {
             Frame::Response(CallResponse {
                 request_id: 1,
                 result: CallResult::Error { message },
             }) => {
-                assert!(message.contains("not yet wired"));
+                assert!(
+                    message.contains("not in bridge allowlist"),
+                    "expected allowlist rejection, got: {message}"
+                );
             }
-            other => panic!("unexpected response: {other:?}"),
+            other => panic!("unexpected response to disallowed tool: {other:?}"),
+        }
+
+        // 2. Allowlisted tool → twin returns canned Ok.
+        codec::write_frame(
+            &mut cw,
+            &Frame::Call(CallRequest {
+                request_id: 2,
+                agent_id: "test-agent".into(),
+                tool_name: "file_read".into(),
+                args: serde_json::json!({"path": "x"}),
+            }),
+        )
+        .await
+        .unwrap();
+        match codec::read_frame(&mut cr).await.unwrap() {
+            Frame::Response(CallResponse {
+                request_id: 2,
+                result: CallResult::Ok { is_error, .. },
+            }) => {
+                // Twin canned response is a non-error Ok; the real handler
+                // would set `is_error` from `execute_tool`'s ToolResult.
+                assert!(!is_error);
+            }
+            other => panic!("unexpected response to allowed tool: {other:?}"),
         }
 
         drop(client);
         server.await.unwrap();
     }
 
-    /// Test-only twin of [`handle_connection`] that doesn't take a kernel.
-    /// Kept in lockstep with the real handler's wire behavior; if the
-    /// production handler diverges, update this too.
-    async fn handle_connection_no_kernel(mut stream: UnixStream) -> std::io::Result<()> {
+    /// Test-only twin of [`handle_connection`].
+    ///
+    /// Mirrors the production handler's *wire* behavior (handshake +
+    /// request loop + allowlist gate) but stubs the runtime dispatch
+    /// because we can't synthesize an `OpenFangKernel` in unit tests.
+    /// If the production handler's wire shape diverges, update this twin.
+    async fn handle_connection_test_twin(mut stream: UnixStream) -> std::io::Result<()> {
         let (read_half, mut write_half) = stream.split();
         let mut read_half = BufReader::new(read_half);
 
@@ -349,16 +482,32 @@ mod tests {
                 Frame::Call(c) => c,
                 _ => continue,
             };
-            let response = Frame::Response(CallResponse {
-                request_id: call.request_id,
-                result: CallResult::Error {
+
+            // Mirror production allowlist logic.
+            let result = if !ALLOWED_TOOLS.iter().any(|t| *t == call.tool_name) {
+                CallResult::Error {
                     message: format!(
-                        "tool dispatch not yet wired in daemon (ANAI-30 step 1 stub); requested tool='{}'",
-                        call.tool_name
+                        "tool '{}' not in bridge allowlist (permitted: {:?})",
+                        call.tool_name, ALLOWED_TOOLS
                     ),
-                },
-            });
-            codec::write_frame(&mut write_half, &response).await?;
+                }
+            } else {
+                // Canned Ok stand-in for `execute_tool` — kernel-free tests
+                // can't exercise the real dispatch path.
+                CallResult::Ok {
+                    content: format!("[test-twin canned ok for {}]", call.tool_name),
+                    is_error: false,
+                }
+            };
+
+            codec::write_frame(
+                &mut write_half,
+                &Frame::Response(CallResponse {
+                    request_id: call.request_id,
+                    result,
+                }),
+            )
+            .await?;
         }
     }
 
