@@ -466,8 +466,15 @@ impl LlmDriver for ClaudeCodeDriver {
                 // config that might otherwise merge in — we want exactly
                 // the OpenFang bridge for this invocation, nothing else.
                 cmd.arg("--strict-mcp-config");
+                // ANAI-30 diagnostic: surface MCP server spawn errors on CC's
+                // stderr. Without `--debug`, CC silently swallows MCP launch
+                // failures, which made it impossible to tell whether CC was
+                // spawning the bridge subprocess at all. Safe to keep on for
+                // bridge-wired spawns — output is bounded and we log a tail.
+                cmd.arg("--debug");
                 cfg
             });
+        let bridge_wired = _bridge_cfg.is_some();
 
         Self::apply_env_filter(&mut cmd);
 
@@ -481,7 +488,7 @@ impl LlmDriver for ClaudeCodeDriver {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, "Spawning Claude Code CLI");
+        debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, bridge_wired, "Spawning Claude Code CLI");
 
         // Spawn child process instead of cmd.output() so we can track PID and timeout
         let mut child = cmd.spawn().map_err(|e| {
@@ -598,6 +605,26 @@ impl LlmDriver for ClaudeCodeDriver {
 
         info!(model = %pid_label, "Claude Code CLI subprocess completed successfully");
 
+        // ANAI-30 diagnostic: when the bridge is wired, always log a tail of
+        // CC's stderr (with --debug it contains MCP launch/handshake info).
+        // Bounded to 4KB so we don't blow up logs.
+        if bridge_wired {
+            let stderr_text = String::from_utf8_lossy(&stderr_bytes);
+            let tail: String = stderr_text
+                .chars()
+                .rev()
+                .take(4096)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            info!(
+                model = %pid_label,
+                stderr_tail = %tail.trim(),
+                "CC stderr tail (bridge wired, --debug)"
+            );
+        }
+
         let stdout = String::from_utf8_lossy(&stdout_bytes);
 
         // Try JSON parse first
@@ -672,8 +699,11 @@ impl LlmDriver for ClaudeCodeDriver {
             try_build_bridge_mcp_config(request.caller_agent_id.as_deref()).map(|cfg| {
                 cmd.arg("--mcp-config").arg(cfg.path());
                 cmd.arg("--strict-mcp-config");
+                // ANAI-30 diagnostic: see complete() for rationale.
+                cmd.arg("--debug");
                 cfg
             });
+        let bridge_wired = _bridge_cfg.is_some();
 
         Self::apply_env_filter(&mut cmd);
 
@@ -685,7 +715,7 @@ impl LlmDriver for ClaudeCodeDriver {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        debug!(cli = %self.cli_path, "Spawning Claude Code CLI (streaming)");
+        debug!(cli = %self.cli_path, bridge_wired, "Spawning Claude Code CLI (streaming)");
 
         let mut child = cmd.spawn().map_err(|e| {
             LlmError::Http(format!(
@@ -706,6 +736,19 @@ impl LlmDriver for ClaudeCodeDriver {
             self.active_pids.remove(&pid_label);
             LlmError::Http("No stdout from claude CLI".to_string())
         })?;
+
+        // ANAI-30 diagnostic: drain stderr concurrently with stdout so we
+        // can log a tail on success, not just on subprocess failure. Without
+        // concurrent drain, a chatty `--debug` CC could deadlock on its
+        // stderr pipe once the OS buffer fills (~64 KB).
+        let child_stderr = child.stderr.take();
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            if let Some(mut err) = child_stderr {
+                let _ = err.read_to_end(&mut buf).await;
+            }
+            buf
+        });
 
         let reader = tokio::io::BufReader::new(stdout);
         let mut lines = reader.lines();
@@ -815,16 +858,12 @@ impl LlmDriver for ClaudeCodeDriver {
             .await
             .map_err(|e| LlmError::Http(format!("Claude CLI wait failed: {e}")))?;
 
+        // Stderr was being drained concurrently — collect it now.
+        let stderr_bytes = stderr_task.await.unwrap_or_default();
+        let stderr_text = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+
         if !status.success() {
             let code = status.code().unwrap_or(1);
-            // Read stderr for diagnostic info
-            let stderr_text = if let Some(mut err) = child.stderr.take() {
-                let mut buf = Vec::new();
-                let _ = err.read_to_end(&mut buf).await;
-                String::from_utf8_lossy(&buf).trim().to_string()
-            } else {
-                String::new()
-            };
             warn!(
                 exit_code = code,
                 model = %pid_label,
@@ -842,6 +881,23 @@ impl LlmDriver for ClaudeCodeDriver {
                     }
                 ),
             });
+        }
+
+        // ANAI-30 diagnostic: log CC stderr tail on success when bridge wired.
+        if bridge_wired {
+            let tail: String = stderr_text
+                .chars()
+                .rev()
+                .take(4096)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            info!(
+                model = %pid_label,
+                stderr_tail = %tail,
+                "CC stderr tail (streaming, bridge wired, --debug)"
+            );
         }
 
         let _ = tx
