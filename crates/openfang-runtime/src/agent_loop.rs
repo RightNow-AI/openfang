@@ -500,6 +500,7 @@ pub async fn run_agent_loop(
             temperature: manifest.model.temperature,
             system: Some(system_prompt.clone()),
             thinking: None,
+            caller_agent_id: Some(agent_id_str.clone()),
         };
 
         // Notify phase: Thinking
@@ -1719,6 +1720,7 @@ pub async fn run_agent_loop_streaming(
             temperature: manifest.model.temperature,
             system: Some(system_prompt.clone()),
             thinking: None,
+            caller_agent_id: Some(agent_id_str.clone()),
         };
 
         // Notify phase: on first iteration emit Streaming; on subsequent

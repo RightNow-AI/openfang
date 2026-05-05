@@ -150,6 +150,14 @@ impl BridgeIpcServer {
         })
     }
 
+    /// Path to the unix socket the bridge listens on. Used by the daemon
+    /// to publish `OPENFANG_BRIDGE_SOCKET` for subprocess drivers (Claude
+    /// Code, etc.) so they can wire CC's `--mcp-config` to point bridges
+    /// back here.
+    pub fn socket_path(&self) -> &std::path::Path {
+        &self.socket_path
+    }
+
     /// Signal the accept loop to stop and remove the socket file.
     pub fn shutdown(&self) {
         self.shutdown.notify_waiters();

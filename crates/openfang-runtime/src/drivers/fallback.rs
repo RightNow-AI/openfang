@@ -161,6 +161,7 @@ mod tests {
             temperature: 0.0,
             system: None,
             thinking: None,
+            caller_agent_id: None,
         }
     }
 

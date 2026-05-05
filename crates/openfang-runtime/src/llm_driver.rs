@@ -65,6 +65,17 @@ pub struct CompletionRequest {
     pub system: Option<String>,
     /// Extended thinking configuration (if supported by the model).
     pub thinking: Option<openfang_types::config::ThinkingConfig>,
+    /// Identity of the OpenFang agent issuing this request, if any.
+    ///
+    /// Plumbed through so subprocess-style drivers (Claude Code, Qwen Code,
+    /// future Codex-style) can bind the OpenFang→bridge IPC connection to a
+    /// caller. Currently consumed by [`crate::drivers::claude_code`] to set
+    /// `OPENFANG_BRIDGE_AGENT_ID` on the bridge child it spawns via
+    /// `--mcp-config`. Other drivers ignore it. ANAI-31 will replace the
+    /// in-band agent_id with a server-derived identity bound to the
+    /// per-spawn token, but the field stays in place as the integration
+    /// point.
+    pub caller_agent_id: Option<String>,
 }
 
 /// A response from an LLM completion.
@@ -327,6 +338,7 @@ mod tests {
             temperature: 0.0,
             system: None,
             thinking: None,
+            caller_agent_id: None,
         };
 
         let response = driver.stream(request, tx).await.unwrap();

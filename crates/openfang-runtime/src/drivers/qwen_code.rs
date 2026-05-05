@@ -463,6 +463,7 @@ mod tests {
             temperature: 0.7,
             system: Some("You are helpful.".to_string()),
             thinking: None,
+            caller_agent_id: None,
         };
 
         let prompt = QwenCodeDriver::build_prompt(&request);
