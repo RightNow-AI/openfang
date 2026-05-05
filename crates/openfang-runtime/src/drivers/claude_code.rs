@@ -30,6 +30,26 @@ const BRIDGE_BIN_ENV: &str = "OPENFANG_BRIDGE_BIN";
 const BRIDGE_TOKEN_ENV: &str = "OPENFANG_BRIDGE_TOKEN";
 const BRIDGE_AGENT_ID_ENV: &str = "OPENFANG_BRIDGE_AGENT_ID";
 
+/// Master kill-switch for the OpenFang MCP bridge. Default off. When unset
+/// or not in {`1`, `true`}, `try_build_bridge_mcp_config` returns `None` and
+/// CC is spawned exactly as it was before ANAI-30 step 4 — no `--mcp-config`,
+/// no temp file, no bridge child. Flip via `launchctl setenv
+/// OPENFANG_BRIDGE_ENABLED 1` (in the daemon's launchd plist for persistence)
+/// then bounce the daemon. Lets us deploy the bridge code path without
+/// putting it inline with every CC invocation, so a regression doesn't take
+/// down model completions until the gate is removed once the bridge is
+/// validated end-to-end.
+const BRIDGE_ENABLED_ENV: &str = "OPENFANG_BRIDGE_ENABLED";
+
+/// Returns `true` iff the bridge gate env var is set to a recognized truthy
+/// value. Anything else — unset, empty, `0`, `false`, garbage — is `false`.
+fn bridge_enabled() -> bool {
+    match std::env::var(BRIDGE_ENABLED_ENV) {
+        Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        Err(_) => false,
+    }
+}
+
 /// MCP server name advertised inside the per-spawn `--mcp-config`. CC will
 /// namespace each tool as `mcp__<this>__<toolname>`.
 const BRIDGE_MCP_SERVER_NAME: &str = "openfang";
@@ -296,6 +316,11 @@ fn generate_bridge_token() -> String {
 /// step 4. Logs at `info` level on first wire and `debug` per-spawn so
 /// operators can see whether a given run was bridge-enabled.
 fn try_build_bridge_mcp_config(caller_agent_id: Option<&str>) -> Option<BridgeMcpConfig> {
+    // Gate first — cheapest check, and when off we want zero side effects:
+    // no temp file, no token generation, no log line beyond trace level.
+    if !bridge_enabled() {
+        return None;
+    }
     let agent_id = caller_agent_id?;
     let socket = std::env::var(BRIDGE_SOCKET_ENV).ok()?;
     let bridge_bin = std::env::var(BRIDGE_BIN_ENV).ok()?;
@@ -1043,6 +1068,47 @@ mod tests {
         }
 
         assert!(!path.exists(), "file must be removed when guard drops");
+    }
+
+    #[test]
+    fn test_bridge_enabled_gate() {
+        // Single test exercises the whole truth table for the gate, in
+        // sequence, because `OPENFANG_BRIDGE_ENABLED` is process-global.
+        // No other test reads or writes this var, so we don't need
+        // serial_test infrastructure — just be a good citizen and
+        // restore the original value on exit.
+        let original = std::env::var(BRIDGE_ENABLED_ENV).ok();
+
+        // Unset → off.
+        std::env::remove_var(BRIDGE_ENABLED_ENV);
+        assert!(!bridge_enabled(), "unset must read as off");
+
+        // Truthy values.
+        for v in ["1", "true", "TRUE", "True"] {
+            std::env::set_var(BRIDGE_ENABLED_ENV, v);
+            assert!(bridge_enabled(), "{v} must read as on");
+        }
+
+        // Anything else is off — including `2`, empty, garbage.
+        for v in ["0", "false", "False", "", "yes", "on", "garbage"] {
+            std::env::set_var(BRIDGE_ENABLED_ENV, v);
+            assert!(!bridge_enabled(), "{v:?} must read as off");
+        }
+
+        // Even with full bridge wiring published, the gate alone suppresses
+        // config generation. We don't assert positive-path here because
+        // setting BRIDGE_SOCKET_ENV/BRIDGE_BIN_ENV process-globally would
+        // race with apply_env_filter tests; the shape test covers the
+        // construction path. This test owns the gate behavior only.
+        std::env::remove_var(BRIDGE_ENABLED_ENV);
+        let cfg = try_build_bridge_mcp_config(Some("agent-x"));
+        assert!(cfg.is_none(), "gate off → None regardless of other env");
+
+        // Restore.
+        match original {
+            Some(v) => std::env::set_var(BRIDGE_ENABLED_ENV, v),
+            None => std::env::remove_var(BRIDGE_ENABLED_ENV),
+        }
     }
 
     #[test]
