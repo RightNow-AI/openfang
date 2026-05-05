@@ -126,6 +126,7 @@ impl BridgeIpcServer {
                     res = listener.accept() => {
                         match res {
                             Ok((stream, _addr)) => {
+                                info!("bridge IPC: accepted connection");
                                 let conn_kernel = _accept_kernel.clone();
                                 tokio::spawn(async move {
                                     if let Err(e) = handle_connection(stream, conn_kernel).await {
@@ -204,7 +205,7 @@ async fn handle_connection(
         daemon_version: daemon_version(),
     });
     codec::write_frame(&mut write_half, &ack).await?;
-    debug!(
+    info!(
         bridge_version = %hello.bridge_version,
         "bridge IPC: handshake complete"
     );
@@ -228,7 +229,7 @@ async fn handle_connection(
             }
         };
 
-        debug!(
+        info!(
             request_id = call.request_id,
             tool = %call.tool_name,
             agent = %call.agent_id,
@@ -236,6 +237,17 @@ async fn handle_connection(
         );
 
         let result = dispatch_call(&call, &kernel).await;
+        let result_kind = match &result {
+            CallResult::Ok { is_error: false, .. } => "ok",
+            CallResult::Ok { is_error: true, .. } => "tool_error",
+            CallResult::Error { .. } => "dispatch_error",
+        };
+        info!(
+            request_id = call.request_id,
+            tool = %call.tool_name,
+            outcome = result_kind,
+            "bridge IPC: call complete"
+        );
         let response = Frame::Response(CallResponse {
             request_id: call.request_id,
             result,
