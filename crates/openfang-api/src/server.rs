@@ -15,7 +15,7 @@ use std::time::Instant;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -828,6 +828,18 @@ pub async fn run_daemon(
     }
 
     let (app, state) = build_router(kernel.clone(), addr).await;
+
+    // Start the MCP bridge IPC listener (ANAI-30). Failure here is
+    // non-fatal — the daemon can still serve HTTP without bridge support;
+    // we just log and skip. The handle is held for the lifetime of the
+    // daemon and dropped on shutdown to remove the socket.
+    let _bridge_ipc = match crate::bridge_ipc::BridgeIpcServer::start(kernel.clone()).await {
+        Ok(h) => Some(h),
+        Err(e) => {
+            warn!(error = %e, "bridge IPC listener failed to start; MCP bridge unavailable");
+            None
+        }
+    };
 
     // Write daemon info file
     if let Some(info_path) = daemon_info_path {

@@ -36,3 +36,10 @@ rmcp = { version = "1", features = ["server", "transport-io"] }
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+[features]
+default = ["ipc-codec"]
+# Enables async length-prefixed framing helpers in `protocol::codec`. Pulled
+# in by both the daemon-side IPC server and the bridge binary; consumers that
+# only need the protocol type definitions can disable it.
+ipc-codec = []

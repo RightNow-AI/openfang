@@ -3975,6 +3975,7 @@ dependencies = [
  "openfang-extensions",
  "openfang-hands",
  "openfang-kernel",
+ "openfang-mcp-bridge",
  "openfang-memory",
  "openfang-migrate",
  "openfang-runtime",
