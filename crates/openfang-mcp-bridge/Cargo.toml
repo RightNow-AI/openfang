@@ -36,6 +36,7 @@ rmcp = { version = "1", features = ["server", "transport-io"] }
 
 [dev-dependencies]
 tokio = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
 default = ["ipc-codec"]
