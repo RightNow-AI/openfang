@@ -1340,6 +1340,7 @@ mod tests {
             temperature: 0.7,
             system: None,
             thinking: None,
+            caller_agent_id: None,
         };
 
         let tools = convert_tools(&request);
@@ -1358,6 +1359,7 @@ mod tests {
             temperature: 0.7,
             system: None,
             thinking: None,
+            caller_agent_id: None,
         };
 
         let tools = convert_tools(&request);

@@ -13,9 +13,26 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tracing::{debug, info, warn};
+
+/// Env var names published by the daemon for bridge-wiring discovery.
+/// Kept as string literals (not imported from `openfang_mcp_bridge`)
+/// because the runtime crate intentionally does not depend on the bridge
+/// crate — the bridge depends on the runtime's protocol surface, not the
+/// other way around. The values must match
+/// `openfang_mcp_bridge::protocol::SOCKET_ENV_VAR` and the daemon-side
+/// fallback in `openfang-api::server::run_daemon`.
+const BRIDGE_SOCKET_ENV: &str = "OPENFANG_BRIDGE_SOCKET";
+const BRIDGE_BIN_ENV: &str = "OPENFANG_BRIDGE_BIN";
+const BRIDGE_TOKEN_ENV: &str = "OPENFANG_BRIDGE_TOKEN";
+const BRIDGE_AGENT_ID_ENV: &str = "OPENFANG_BRIDGE_AGENT_ID";
+
+/// MCP server name advertised inside the per-spawn `--mcp-config`. CC will
+/// namespace each tool as `mcp__<this>__<toolname>`.
+const BRIDGE_MCP_SERVER_NAME: &str = "openfang";
 
 /// Environment variable names (and suffixes) to strip from the subprocess
 /// to prevent leaking API keys from other providers. We keep the full env
@@ -214,6 +231,16 @@ impl ClaudeCodeDriver {
         for key in SENSITIVE_ENV_EXACT {
             cmd.env_remove(key);
         }
+        // Strip bridge discovery env from CC's child env. The bridge gets
+        // these via the per-spawn `--mcp-config` `env` map (set explicitly
+        // when `try_build_bridge_mcp_config` writes the config); CC itself
+        // has no use for them and inheriting them would risk a stray bridge
+        // process picking up the daemon socket without a fresh per-spawn
+        // token.
+        cmd.env_remove(BRIDGE_SOCKET_ENV);
+        cmd.env_remove(BRIDGE_BIN_ENV);
+        cmd.env_remove(BRIDGE_TOKEN_ENV);
+        cmd.env_remove(BRIDGE_AGENT_ID_ENV);
         // Remove any env var with a sensitive suffix, unless it's CLAUDE_*
         for (key, _) in std::env::vars() {
             if key.starts_with("CLAUDE_") {
@@ -228,6 +255,129 @@ impl ClaudeCodeDriver {
             }
         }
     }
+}
+
+/// Per-spawn MCP config handle. Holds the path to a JSON file that CC
+/// reads via `--mcp-config <path>` to discover the OpenFang bridge.
+///
+/// The file lives next to the daemon's bridge socket (under `<home>/run/`)
+/// for the duration of a single CC invocation and is removed on drop.
+/// Per-spawn so each `claude` subprocess gets a fresh auth token; CC's
+/// lifetime bounds the file's lifetime, which bounds the token's lifetime.
+struct BridgeMcpConfig {
+    config_path: PathBuf,
+}
+
+impl BridgeMcpConfig {
+    fn path(&self) -> &std::path::Path {
+        &self.config_path
+    }
+}
+
+impl Drop for BridgeMcpConfig {
+    fn drop(&mut self) {
+        // Best-effort: if removal fails (e.g. socket dir already gone on
+        // shutdown) we don't propagate. The file is per-invocation and
+        // contains only a token + paths; staleness is harmless.
+        let _ = std::fs::remove_file(&self.config_path);
+    }
+}
+
+/// Build the `--mcp-config` JSON document from already-resolved inputs.
+/// Pure — no env reads, no filesystem writes — so it's tractable to test.
+/// The wire shape mirrors what `claude --mcp-config` accepts: a top-level
+/// `mcpServers` object keyed by server name, each value carrying `command`,
+/// `args`, and `env`.
+fn build_bridge_mcp_config_value(
+    socket: &str,
+    bridge_bin: &str,
+    agent_id: &str,
+    token: &str,
+) -> serde_json::Value {
+    let mut env_map = serde_json::Map::new();
+    env_map.insert(
+        BRIDGE_SOCKET_ENV.into(),
+        serde_json::Value::String(socket.to_string()),
+    );
+    env_map.insert(
+        BRIDGE_TOKEN_ENV.into(),
+        serde_json::Value::String(token.to_string()),
+    );
+    env_map.insert(
+        BRIDGE_AGENT_ID_ENV.into(),
+        serde_json::Value::String(agent_id.to_string()),
+    );
+
+    let mut server_entry = serde_json::Map::new();
+    server_entry.insert(
+        "command".into(),
+        serde_json::Value::String(bridge_bin.to_string()),
+    );
+    server_entry.insert("args".into(), serde_json::Value::Array(vec![]));
+    server_entry.insert("env".into(), serde_json::Value::Object(env_map));
+
+    let mut servers = serde_json::Map::new();
+    servers.insert(
+        BRIDGE_MCP_SERVER_NAME.into(),
+        serde_json::Value::Object(server_entry),
+    );
+
+    let mut root = serde_json::Map::new();
+    root.insert("mcpServers".into(), serde_json::Value::Object(servers));
+    serde_json::Value::Object(root)
+}
+
+/// Generate a per-spawn random token. ANAI-30 uses a random UUID; the
+/// daemon currently treats any non-empty token as authenticated. ANAI-31
+/// will replace this with a daemon-issued token tied to the caller's
+/// identity in an in-memory table.
+fn generate_bridge_token() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// Build the per-spawn `--mcp-config` JSON for a CC invocation, if the
+/// daemon has published bridge wiring discovery and the request carries
+/// a caller identity. Returns `None` when bridge wiring is unavailable —
+/// CC is then spawned without an OpenFang MCP server, exactly as before
+/// step 4. Logs at `info` level on first wire and `debug` per-spawn so
+/// operators can see whether a given run was bridge-enabled.
+fn try_build_bridge_mcp_config(caller_agent_id: Option<&str>) -> Option<BridgeMcpConfig> {
+    let agent_id = caller_agent_id?;
+    let socket = std::env::var(BRIDGE_SOCKET_ENV).ok()?;
+    let bridge_bin = std::env::var(BRIDGE_BIN_ENV).ok()?;
+    let token = generate_bridge_token();
+
+    let cfg = build_bridge_mcp_config_value(&socket, &bridge_bin, agent_id, &token);
+
+    // Place the config next to the socket so cleanup is colocated and the
+    // bridge socket dir already exists with the right permissions.
+    let socket_dir = std::path::Path::new(&socket).parent()?.to_path_buf();
+    let path = socket_dir.join(format!("cc-mcp-{}.json", uuid::Uuid::new_v4()));
+
+    let serialized = serde_json::to_string(&cfg).ok()?;
+    if let Err(e) = std::fs::write(&path, serialized) {
+        warn!(error = %e, path = %path.display(), "failed to write CC mcp-config");
+        return None;
+    }
+
+    // 0600 — file contains a per-spawn auth token. No other uid should read it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o600);
+            let _ = std::fs::set_permissions(&path, perms);
+        }
+    }
+
+    debug!(
+        agent_id = %agent_id,
+        config = %path.display(),
+        "wired CC --mcp-config for OpenFang bridge"
+    );
+
+    Some(BridgeMcpConfig { config_path: path })
 }
 
 /// JSON output from `claude -p --output-format json`.
@@ -325,6 +475,20 @@ impl LlmDriver for ClaudeCodeDriver {
         if let Some(ref model) = model_flag {
             cmd.arg("--model").arg(model);
         }
+
+        // Wire the OpenFang MCP bridge if the daemon has published discovery
+        // env vars (`OPENFANG_BRIDGE_SOCKET` + `OPENFANG_BRIDGE_BIN`) and
+        // the request carries a caller identity. The guard lives for the
+        // remainder of the call; on drop it removes the temp config file.
+        let _bridge_cfg =
+            try_build_bridge_mcp_config(request.caller_agent_id.as_deref()).map(|cfg| {
+                cmd.arg("--mcp-config").arg(cfg.path());
+                // `--strict-mcp-config` makes CC ignore any user/global MCP
+                // config that might otherwise merge in — we want exactly
+                // the OpenFang bridge for this invocation, nothing else.
+                cmd.arg("--strict-mcp-config");
+                cfg
+            });
 
         Self::apply_env_filter(&mut cmd);
 
@@ -521,6 +685,16 @@ impl LlmDriver for ClaudeCodeDriver {
         if let Some(ref model) = model_flag {
             cmd.arg("--model").arg(model);
         }
+
+        // Bridge wiring (see `complete()` for full rationale). Guard kept
+        // alive for the rest of the streaming function so the per-spawn
+        // config file outlives the CC subprocess.
+        let _bridge_cfg =
+            try_build_bridge_mcp_config(request.caller_agent_id.as_deref()).map(|cfg| {
+                cmd.arg("--mcp-config").arg(cfg.path());
+                cmd.arg("--strict-mcp-config");
+                cfg
+            });
 
         Self::apply_env_filter(&mut cmd);
 
@@ -764,6 +938,7 @@ mod tests {
             temperature: 0.7,
             system: Some("You are helpful.".to_string()),
             thinking: None,
+            caller_agent_id: None,
         };
 
         let prompt = ClaudeCodeDriver::build_prompt(&request);
@@ -900,6 +1075,94 @@ mod tests {
         map.insert("test-agent".to_string(), 12345);
         assert_eq!(driver.active_pids().len(), 1);
         assert_eq!(driver.active_pids()[0], ("test-agent".to_string(), 12345));
+    }
+
+    #[test]
+    fn test_apply_env_filter_strips_bridge_discovery_vars() {
+        // Verifies the filter removes the four bridge-discovery vars so a
+        // CC subprocess can't accidentally inherit them. The bridge gets
+        // these via `--mcp-config`'s `env` map only.
+        let mut cmd = tokio::process::Command::new("/bin/true");
+        cmd.env(BRIDGE_SOCKET_ENV, "/tmp/should-not-survive.sock");
+        cmd.env(BRIDGE_BIN_ENV, "/usr/local/bin/should-not-survive");
+        cmd.env(BRIDGE_TOKEN_ENV, "should-not-survive");
+        cmd.env(BRIDGE_AGENT_ID_ENV, "should-not-survive");
+
+        ClaudeCodeDriver::apply_env_filter(&mut cmd);
+
+        // tokio's Command exposes its env via std::process::Command::get_envs()
+        // through deref. Walk it; any of the four bridge vars present means
+        // the filter is broken.
+        let std_cmd = cmd.as_std();
+        for (key, value) in std_cmd.get_envs() {
+            // None means "remove this env var on spawn"; any of our keys
+            // showing up with Some means the filter missed them.
+            let key_str = key.to_string_lossy();
+            if matches!(
+                key_str.as_ref(),
+                BRIDGE_SOCKET_ENV | BRIDGE_BIN_ENV | BRIDGE_TOKEN_ENV | BRIDGE_AGENT_ID_ENV
+            ) {
+                assert!(
+                    value.is_none(),
+                    "bridge env var {key_str} survived apply_env_filter as {value:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_build_bridge_mcp_config_shape() {
+        let cfg = build_bridge_mcp_config_value(
+            "/home/user/.openfang/run/bridge.sock",
+            "/usr/local/bin/openfang-mcp-bridge",
+            "agent-uuid-1234",
+            "tok-abc",
+        );
+
+        // mcpServers.openfang.{command,args,env} all present with the
+        // shape claude --mcp-config expects.
+        let server = cfg
+            .pointer("/mcpServers/openfang")
+            .expect("openfang server entry missing");
+        assert_eq!(
+            server.pointer("/command").and_then(|v| v.as_str()),
+            Some("/usr/local/bin/openfang-mcp-bridge")
+        );
+        assert!(
+            server.pointer("/args").map(|v| v.is_array()).unwrap_or(false),
+            "args must be a JSON array"
+        );
+
+        // env carries exactly the three discovery vars. No more, no less —
+        // any extras would leak unintended state into the bridge process.
+        let env = server
+            .pointer("/env")
+            .and_then(|v| v.as_object())
+            .expect("env object missing");
+        assert_eq!(env.len(), 3, "env must contain exactly socket/token/agent_id");
+        assert_eq!(env.get(BRIDGE_SOCKET_ENV).and_then(|v| v.as_str()), Some("/home/user/.openfang/run/bridge.sock"));
+        assert_eq!(env.get(BRIDGE_TOKEN_ENV).and_then(|v| v.as_str()), Some("tok-abc"));
+        assert_eq!(env.get(BRIDGE_AGENT_ID_ENV).and_then(|v| v.as_str()), Some("agent-uuid-1234"));
+    }
+
+    #[test]
+    fn test_bridge_mcp_config_drop_removes_file() {
+        // BridgeMcpConfig is a per-spawn token holder; on drop, the file
+        // must vanish so a stale token can't be reused by anything that
+        // happens to glob `<home>/run/cc-mcp-*.json`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cc-mcp-test.json");
+        std::fs::write(&path, "{}").expect("seed file");
+        assert!(path.exists());
+
+        {
+            let _guard = BridgeMcpConfig {
+                config_path: path.clone(),
+            };
+            assert!(path.exists(), "file present while guard held");
+        }
+
+        assert!(!path.exists(), "file must be removed when guard drops");
     }
 
     #[test]
