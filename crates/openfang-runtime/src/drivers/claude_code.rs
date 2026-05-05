@@ -50,6 +50,23 @@ fn bridge_enabled() -> bool {
     }
 }
 
+/// Opt-in diagnostic flag for bridge-wired CC spawns. When set, the driver
+/// adds `--debug` to claude (which dumps MCP launch + handshake details into
+/// `~/.claude/debug/<uuid>.txt`) and logs a 4 KB tail of CC's stderr at INFO
+/// after the subprocess exits. Off by default — `--debug` is noisy and
+/// produces a debug file per spawn. Use only when actively debugging the
+/// bridge handshake or MCP wiring; the daemon-side `bridge_ipc` INFO logs
+/// (`accepted connection`, `handshake complete`, `dispatching call`) cover
+/// the normal observability needs.
+const BRIDGE_DEBUG_ENV: &str = "OPENFANG_BRIDGE_DEBUG";
+
+fn bridge_debug_enabled() -> bool {
+    match std::env::var(BRIDGE_DEBUG_ENV) {
+        Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        Err(_) => false,
+    }
+}
+
 /// MCP server name advertised inside the per-spawn `--mcp-config`. CC will
 /// namespace each tool as `mcp__<this>__<toolname>`.
 const BRIDGE_MCP_SERVER_NAME: &str = "openfang";
@@ -466,15 +483,17 @@ impl LlmDriver for ClaudeCodeDriver {
                 // config that might otherwise merge in — we want exactly
                 // the OpenFang bridge for this invocation, nothing else.
                 cmd.arg("--strict-mcp-config");
-                // ANAI-30 diagnostic: surface MCP server spawn errors on CC's
-                // stderr. Without `--debug`, CC silently swallows MCP launch
-                // failures, which made it impossible to tell whether CC was
-                // spawning the bridge subprocess at all. Safe to keep on for
-                // bridge-wired spawns — output is bounded and we log a tail.
-                cmd.arg("--debug");
+                // Optional diagnostic: with `OPENFANG_BRIDGE_DEBUG=1` we add
+                // `--debug` so CC writes MCP launch + handshake details into
+                // `~/.claude/debug/<uuid>.txt`. Off by default — daemon-side
+                // bridge_ipc INFO logs are the supported observability path.
+                if bridge_debug_enabled() {
+                    cmd.arg("--debug");
+                }
                 cfg
             });
         let bridge_wired = _bridge_cfg.is_some();
+        let bridge_debug = bridge_wired && bridge_debug_enabled();
 
         Self::apply_env_filter(&mut cmd);
 
@@ -605,10 +624,11 @@ impl LlmDriver for ClaudeCodeDriver {
 
         info!(model = %pid_label, "Claude Code CLI subprocess completed successfully");
 
-        // ANAI-30 diagnostic: when the bridge is wired, always log a tail of
+        // Optional diagnostic: when bridge debug is enabled, log a tail of
         // CC's stderr (with --debug it contains MCP launch/handshake info).
-        // Bounded to 4KB so we don't blow up logs.
-        if bridge_wired {
+        // Bounded to 4KB so we don't blow up logs. Off by default — see
+        // `bridge_debug_enabled()`.
+        if bridge_debug {
             let stderr_text = String::from_utf8_lossy(&stderr_bytes);
             let tail: String = stderr_text
                 .chars()
@@ -699,11 +719,14 @@ impl LlmDriver for ClaudeCodeDriver {
             try_build_bridge_mcp_config(request.caller_agent_id.as_deref()).map(|cfg| {
                 cmd.arg("--mcp-config").arg(cfg.path());
                 cmd.arg("--strict-mcp-config");
-                // ANAI-30 diagnostic: see complete() for rationale.
-                cmd.arg("--debug");
+                // Optional --debug — see complete() for rationale.
+                if bridge_debug_enabled() {
+                    cmd.arg("--debug");
+                }
                 cfg
             });
         let bridge_wired = _bridge_cfg.is_some();
+        let bridge_debug = bridge_wired && bridge_debug_enabled();
 
         Self::apply_env_filter(&mut cmd);
 
@@ -737,10 +760,10 @@ impl LlmDriver for ClaudeCodeDriver {
             LlmError::Http("No stdout from claude CLI".to_string())
         })?;
 
-        // ANAI-30 diagnostic: drain stderr concurrently with stdout so we
-        // can log a tail on success, not just on subprocess failure. Without
-        // concurrent drain, a chatty `--debug` CC could deadlock on its
-        // stderr pipe once the OS buffer fills (~64 KB).
+        // Drain stderr concurrently with stdout. Required whenever `--debug`
+        // is on (chatty CC can otherwise deadlock on a full stderr pipe once
+        // the OS buffer fills, ~64 KB). Cheap when --debug is off, so we
+        // unconditionally drain — keeps the streaming path uniform.
         let child_stderr = child.stderr.take();
         let stderr_task = tokio::spawn(async move {
             let mut buf = Vec::new();
@@ -883,8 +906,8 @@ impl LlmDriver for ClaudeCodeDriver {
             });
         }
 
-        // ANAI-30 diagnostic: log CC stderr tail on success when bridge wired.
-        if bridge_wired {
+        // Optional diagnostic: log CC stderr tail when bridge debug is on.
+        if bridge_debug {
             let tail: String = stderr_text
                 .chars()
                 .rev()

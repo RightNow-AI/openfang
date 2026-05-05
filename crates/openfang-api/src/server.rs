@@ -858,19 +858,40 @@ pub async fn run_daemon(
             // OPENFANG_BRIDGE_BIN explicitly (e.g. for non-standard installs
             // or development cargo builds where the binary lives elsewhere).
             const BRIDGE_BIN_ENV: &str = "OPENFANG_BRIDGE_BIN";
-            if std::env::var_os(BRIDGE_BIN_ENV).is_none() {
-                if let Ok(exe) = std::env::current_exe() {
-                    if let Some(dir) = exe.parent() {
-                        let candidate = dir.join("openfang-mcp-bridge");
-                        if candidate.exists() {
-                            // SAFETY: see above.
-                            unsafe { std::env::set_var(BRIDGE_BIN_ENV, candidate); }
-                        } else {
-                            warn!(
-                                expected = %candidate.display(),
-                                "bridge binary not found next to daemon; \
-                                 set OPENFANG_BRIDGE_BIN to enable CC bridge wiring"
-                            );
+            match std::env::var_os(BRIDGE_BIN_ENV) {
+                Some(path) => {
+                    let p = std::path::PathBuf::from(&path);
+                    if p.exists() {
+                        info!(
+                            bridge_bin = %p.display(),
+                            "bridge binary resolved via OPENFANG_BRIDGE_BIN override"
+                        );
+                    } else {
+                        warn!(
+                            bridge_bin = %p.display(),
+                            "OPENFANG_BRIDGE_BIN points at a non-existent path; \
+                             CC bridge wiring will fail until the binary is installed"
+                        );
+                    }
+                }
+                None => {
+                    if let Ok(exe) = std::env::current_exe() {
+                        if let Some(dir) = exe.parent() {
+                            let candidate = dir.join("openfang-mcp-bridge");
+                            if candidate.exists() {
+                                // SAFETY: see above.
+                                unsafe { std::env::set_var(BRIDGE_BIN_ENV, &candidate); }
+                                info!(
+                                    bridge_bin = %candidate.display(),
+                                    "bridge binary resolved via boot probe"
+                                );
+                            } else {
+                                warn!(
+                                    expected = %candidate.display(),
+                                    "bridge binary not found next to daemon; \
+                                     set OPENFANG_BRIDGE_BIN to enable CC bridge wiring"
+                                );
+                            }
                         }
                     }
                 }
