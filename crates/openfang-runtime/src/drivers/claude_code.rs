@@ -8,11 +8,13 @@
 //! Tracks active subprocess PIDs and enforces message timeouts to prevent
 //! hung CLI processes from blocking agents indefinitely.
 
+use crate::image_cache::{image_tmp_dir, materialize_image, spawn_sweep_once};
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use openfang_types::message::{ContentBlock, Role, StopReason, TokenUsage};
+use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
 use serde::Deserialize;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tracing::{debug, info, warn};
@@ -52,6 +54,11 @@ const SENSITIVE_SUFFIXES: &[&str] = &["_SECRET", "_TOKEN", "_PASSWORD"];
 /// Default subprocess timeout in seconds (5 minutes).
 const DEFAULT_MESSAGE_TIMEOUT_SECS: u64 = 300;
 
+// Image materialization helpers (image_tmp_dir, ext_for_mime,
+// materialize_image, sweep_old_image_tmpfiles, TTL constants, sweep guard)
+// live in crate::image_cache so the outbound file-sharing path can reuse
+// the same content-addressed cache without a circular dep on this driver.
+
 /// LLM driver that delegates to the Claude Code CLI.
 pub struct ClaudeCodeDriver {
     cli_path: String,
@@ -77,6 +84,9 @@ impl ClaudeCodeDriver {
                  OpenFang's own capability/RBAC system enforces access control."
             );
         }
+
+        // Best-effort sweep of stale image tmpfiles, once per process.
+        spawn_sweep_once();
 
         Self {
             cli_path: cli_path
@@ -131,6 +141,7 @@ impl ClaudeCodeDriver {
 
     /// Build a text prompt from the completion request messages.
     fn build_prompt(request: &CompletionRequest) -> String {
+        let tmp_dir = image_tmp_dir();
         let mut parts = Vec::new();
 
         for msg in &request.messages {
@@ -139,14 +150,87 @@ impl ClaudeCodeDriver {
                 Role::Assistant => "Assistant",
                 Role::System => "System",
             };
-            let text = msg.content.text_content();
-            if !text.is_empty() {
-                parts.push(format!("[{role_label}]\n{text}"));
+            let rendered = Self::render_content(&msg.content, Some(&tmp_dir));
+            if !rendered.is_empty() {
+                parts.push(format!("[{role_label}]\n{rendered}"));
             }
         }
 
         parts.join("\n\n")
     }
+
+    /// Render message content for the text-only CLI prompt.
+    ///
+    /// Text blocks pass through verbatim. Image blocks are materialized to
+    /// an on-disk tmpfile (when `image_dir` is provided) so the model can
+    /// view them via the CLI's `Read` tool — Claude Code is multimodal and
+    /// will load the file as native image content. We render a directive
+    /// telling the model exactly which path to read, plus the original
+    /// `source_url` (e.g. Discord CDN) when known. If materialization
+    /// fails or `image_dir` is `None` (test path), we fall back to the
+    /// legacy textual placeholder so the model at least knows an
+    /// attachment arrived. ToolUse/ToolResult/Thinking are omitted —
+    /// the CLI manages its own tool loop.
+    fn render_content(content: &MessageContent, image_dir: Option<&Path>) -> String {
+        match content {
+            MessageContent::Text(s) => s.clone(),
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text, .. } => {
+                        if text.is_empty() {
+                            None
+                        } else {
+                            Some(text.clone())
+                        }
+                    }
+                    ContentBlock::Image {
+                        media_type,
+                        data,
+                        source_url,
+                    } => {
+                        // base64 → ~3/4 the length in decoded bytes.
+                        let approx_kb = (data.len().saturating_mul(3) / 4) / 1024;
+                        let url_suffix = match source_url {
+                            Some(u) => format!(" (original: {u})"),
+                            None => String::new(),
+                        };
+                        if let Some(dir) = image_dir {
+                            // Best-effort filename hint: peel the last path
+                            // segment off the source URL (works for Discord
+                            // CDN, Telegram file API, S3, etc.). Materialize
+                            // appends a sanitized suffix so a human browsing
+                            // ~/.openfang/tmp/images/ can grep for the
+                            // original attachment name. Falls back to a
+                            // pure-hash filename when no URL or no segment.
+                            let name_hint = source_url
+                                .as_deref()
+                                .and_then(filename_hint_from_url);
+                            if let Some(path) =
+                                materialize_image(media_type, data, dir, name_hint.as_deref())
+                            {
+                                return Some(format!(
+                                    "[attachment: {media_type} image, ~{approx_kb} KB — view with the Read tool at {path}{url_suffix}]",
+                                    path = path.display()
+                                ));
+                            }
+                        }
+                        // Fallback: at least surface the URL if we have one.
+                        Some(format!(
+                            "[attachment: {media_type} image, ~{approx_kb} KB — not viewable on this provider{url_suffix}]"
+                        ))
+                    }
+                    ContentBlock::ToolUse { .. }
+                    | ContentBlock::ToolResult { .. }
+                    | ContentBlock::Thinking { .. }
+                    | ContentBlock::Unknown => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+
+    // (helper `filename_hint_from_url` lives at module scope below.)
 
     /// Map a model ID like "claude-code/opus" to CLI --model flag value.
     fn model_flag(model: &str) -> Option<String> {
@@ -279,6 +363,14 @@ impl LlmDriver for ClaudeCodeDriver {
         if let Some(ref model) = model_flag {
             cmd.arg("--model").arg(model);
         }
+
+        // Grant the CLI's Read tool access to our image tmp dir, which lives
+        // outside the agent's workspace cwd. Without --add-dir the CLI would
+        // refuse Read on `$HOME/.openfang/tmp/images/*` (unless
+        // --dangerously-skip-permissions is set) and the materialization would
+        // be a dead-end. Cheap and idempotent — the dir is per-user and
+        // content-addressed.
+        cmd.arg("--add-dir").arg(image_tmp_dir());
 
         Self::apply_env_filter(&mut cmd);
 
@@ -476,6 +568,9 @@ impl LlmDriver for ClaudeCodeDriver {
             cmd.arg("--model").arg(model);
         }
 
+        // Same image-tmp-dir grant as the non-streaming path; see complete().
+        cmd.arg("--add-dir").arg(image_tmp_dir());
+
         Self::apply_env_filter(&mut cmd);
 
         // Same HOME and stdin hygiene as the non-streaming path.
@@ -664,6 +759,52 @@ impl LlmDriver for ClaudeCodeDriver {
     }
 }
 
+/// Best-effort: extract a filename hint from a URL's last path segment so
+/// the materialized tmpfile carries a human-readable suffix. Drops query
+/// and fragment, percent-decodes lossily, and bails on values that don't
+/// look like filenames (no `.`, or only path-ish junk). Total — bad input
+/// just yields `None` and the caller falls back to a pure-hash filename.
+fn filename_hint_from_url(url: &str) -> Option<String> {
+    // Strip scheme://host. Same shape as the discord adapter's helper but
+    // duplicated here to avoid pulling the channels crate into runtime.
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let path = after_scheme.split_once('/').map(|(_, r)| r).unwrap_or("");
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    let last = path.rsplit('/').next().unwrap_or("");
+    if last.is_empty() {
+        return None;
+    }
+    // file:// URLs already point at our own tmpfile (the inbox materializer
+    // uses them) — those names are already content-addressed and a name
+    // hint there would just double-suffix. Skip.
+    if url.starts_with("file://") {
+        return None;
+    }
+    // Lossy percent-decode for things like `photo%20final.png`.
+    let mut out = Vec::with_capacity(last.len());
+    let bytes = last.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    let decoded = String::from_utf8_lossy(&out).into_owned();
+    if decoded.is_empty() {
+        None
+    } else {
+        Some(decoded)
+    }
+}
+
 /// Check if the Claude Code CLI is available.
 pub fn claude_code_available() -> bool {
     ClaudeCodeDriver::detect().is_some() || claude_credentials_exist()
@@ -724,6 +865,83 @@ mod tests {
         assert!(!prompt.contains("You are helpful."));
         assert!(prompt.contains("[User]"));
         assert!(prompt.contains("Hello"));
+    }
+
+    #[test]
+    fn test_build_prompt_renders_image_attachment_marker() {
+        use openfang_types::message::{ContentBlock, Message, MessageContent};
+
+        // ~12 KB of base64 — decoded ~9 KB.
+        let fake_b64 = "A".repeat(12 * 1024);
+        let request = CompletionRequest {
+            model: "claude-code/sonnet".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::Text {
+                        text: "what's in this?".to_string(),
+                        provider_metadata: None,
+                    },
+                    ContentBlock::Image {
+                        media_type: "image/png".to_string(),
+                        data: fake_b64,
+                        source_url: None,
+                    },
+                ]),
+            }],
+            tools: vec![],
+            max_tokens: 1024,
+            temperature: 0.7,
+            system: None,
+            thinking: None,
+        };
+
+        let prompt = ClaudeCodeDriver::build_prompt(&request);
+        assert!(prompt.contains("what's in this?"), "text preserved");
+        assert!(
+            prompt.contains("[attachment: image/png image"),
+            "image rendered as synthetic attachment marker, got: {prompt}"
+        );
+        // Either materialized to a tmpfile (preferred) or fell back to
+        // the legacy "not viewable" placeholder. Both are acceptable
+        // outcomes for this test; we just need the marker to be emitted.
+        assert!(
+            prompt.contains("view with the Read tool at")
+                || prompt.contains("not viewable on this provider"),
+            "marker either points at a tmpfile or explains the limitation, got: {prompt}"
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_image_only_still_emits_marker() {
+        use openfang_types::message::{ContentBlock, Message, MessageContent};
+
+        let request = CompletionRequest {
+            model: "claude-code/sonnet".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::Image {
+                    media_type: "image/jpeg".to_string(),
+                    data: "Zm9v".to_string(),
+                    source_url: Some("https://cdn.example/foo.jpg".to_string()),
+                }]),
+            }],
+            tools: vec![],
+            max_tokens: 1024,
+            temperature: 0.7,
+            system: None,
+            thinking: None,
+        };
+
+        let prompt = ClaudeCodeDriver::build_prompt(&request);
+        assert!(
+            prompt.contains("[User]"),
+            "user role label emitted even with image-only content, got: {prompt}"
+        );
+        assert!(
+            prompt.contains("[attachment: image/jpeg image"),
+            "bare image renders marker, got: {prompt}"
+        );
     }
 
     #[test]

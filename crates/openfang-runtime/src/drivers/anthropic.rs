@@ -664,7 +664,7 @@ fn convert_message(msg: &Message) -> ApiMessage {
                     ContentBlock::Text { text, .. } => {
                         Some(ApiContentBlock::Text { text: text.clone() })
                     }
-                    ContentBlock::Image { media_type, data } => Some(ApiContentBlock::Image {
+                    ContentBlock::Image { media_type, data, .. } => Some(ApiContentBlock::Image {
                         source: ApiImageSource {
                             source_type: "base64".to_string(),
                             media_type: media_type.clone(),

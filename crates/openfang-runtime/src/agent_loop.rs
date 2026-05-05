@@ -3327,6 +3327,7 @@ mod tests {
         ContentBlock::Image {
             media_type: "image/png".to_string(),
             data: "aGVsbG8=".to_string(),
+            source_url: None,
         }
     }
 

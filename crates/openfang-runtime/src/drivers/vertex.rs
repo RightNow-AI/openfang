@@ -356,7 +356,7 @@ fn convert_messages(
                                 },
                             });
                         }
-                        ContentBlock::Image { media_type, data } => {
+                        ContentBlock::Image { media_type, data, .. } => {
                             parts.push(VertexPart::InlineData {
                                 inline_data: VertexInlineData {
                                     mime_type: media_type.clone(),
