@@ -143,6 +143,29 @@ function chatPage() {
       // Fetch dynamic commands from server
       this.fetchCommands();
 
+      // Observe DOM for new messages and render LaTeX
+      this._latexObserver = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+          mutation.addedNodes.forEach(function(node) {
+            if (node.nodeType === Node.ELEMENT_NODE) {
+              var bubbles = node.querySelector ? node.querySelectorAll('.message-bubble') : [];
+              if (node.classList && node.classList.contains('message-bubble')) {
+                bubbles = [node];
+              }
+              bubbles.forEach(function(bubble) {
+                if (bubble.textContent && hasLatexDelimiters(bubble.textContent)) {
+                  renderLatex(bubble);
+                }
+              });
+            }
+          });
+        });
+      });
+      this._latexObserver.observe(document.getElementById('messages') || document.body, {
+        childList: true,
+        subtree: true
+      });
+
       // Ctrl+/ keyboard shortcut
       document.addEventListener('keydown', function(e) {
         if ((e.ctrlKey || e.metaKey) && e.key === '/') {
