@@ -4184,6 +4184,7 @@ version = "0.6.4"
 dependencies = [
  "anyhow",
  "async-trait",
+ "openfang-types",
  "rmcp",
  "serde",
  "serde_json",

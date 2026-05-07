@@ -1341,6 +1341,7 @@ mod tests {
             system: None,
             thinking: None,
             caller_agent_id: None,
+            caller_allowed_tools: None,
         };
 
         let tools = convert_tools(&request);
@@ -1360,6 +1361,7 @@ mod tests {
             system: None,
             thinking: None,
             caller_agent_id: None,
+            caller_allowed_tools: None,
         };
 
         let tools = convert_tools(&request);

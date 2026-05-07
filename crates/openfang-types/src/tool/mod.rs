@@ -1,5 +1,7 @@
 //! Tool definition and result types.
 
+pub mod registry;
+
 use serde::{Deserialize, Serialize};
 
 /// Definition of a tool that an agent can use.

@@ -1299,6 +1299,23 @@ impl OpenFangKernel {
                         }
                     }
 
+                    // ANAI-32: validate manifest tool names against the
+                    // runtime's known builtin set. Unknown names don't
+                    // block boot — the bridge dispatcher rejects calls
+                    // for them anyway — but logging them at boot turns a
+                    // silent typo into an obvious operator signal.
+                    let unknown = openfang_runtime::tool_runner::unknown_builtin_tools(
+                        entry.manifest.capabilities.tools.iter(),
+                    );
+                    if !unknown.is_empty() {
+                        warn!(
+                            agent = %name,
+                            unknown_tools = ?unknown,
+                            "agent.toml capabilities.tools contains unknown tool names; \
+                             these will be rejected at dispatch time. Check spelling."
+                        );
+                    }
+
                     // Re-grant capabilities
                     let caps = manifest_to_capabilities(&entry.manifest);
                     kernel.capabilities.grant(agent_id, caps);
@@ -1550,6 +1567,21 @@ impl OpenFangKernel {
             generate_identity_files(&workspace_dir, &manifest);
         }
         manifest.workspace = Some(workspace_dir);
+
+        // ANAI-32: validate manifest tool names against the runtime's
+        // known builtin set. See the boot-time twin for rationale; same
+        // log-and-continue policy at spawn time.
+        let unknown = openfang_runtime::tool_runner::unknown_builtin_tools(
+            manifest.capabilities.tools.iter(),
+        );
+        if !unknown.is_empty() {
+            warn!(
+                agent = %name,
+                unknown_tools = ?unknown,
+                "agent.toml capabilities.tools contains unknown tool names; \
+                 these will be rejected at dispatch time. Check spelling."
+            );
+        }
 
         // Register capabilities
         let caps = manifest_to_capabilities(&manifest);
@@ -2708,6 +2740,7 @@ impl OpenFangKernel {
                 system: Some(manifest.model.system_prompt.clone()),
                 thinking: None,
                 caller_agent_id: None,
+                caller_allowed_tools: None,
             };
             let (complexity, routed_model) = router.select_model(&probe);
             info!(

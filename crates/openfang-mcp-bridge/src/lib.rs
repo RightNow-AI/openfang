@@ -15,25 +15,32 @@
 //!   `openfang-memory` directly. The bridge consumes a narrow
 //!   [`ToolDispatcher`] trait that the runtime exposes; the runtime owns
 //!   identity, the kernel owns dispatch, the memory subsystem stays untouched.
-//! - It does NOT define OpenFang's tool surface beyond a small built-in slice
-//!   (see [`built_in_tools`]). The schemas declared here mirror
-//!   `openfang_runtime::tool_runner::builtin_tool_definitions()` for the
-//!   four ANAI-30 allowlisted tools — kept in lockstep deliberately.
+//! - It does NOT define OpenFang's tool surface. As of ANAI-32 the bridge
+//!   pulls schemas directly from
+//!   `openfang_types::tool::registry::builtin_tool_definitions()` — the
+//!   single source of truth shared with `openfang-runtime`. The bridge layers
+//!   a small *policy* on top via [`BRIDGE_DENY`]: a curated list of kernel
+//!   tools the bridge refuses to advertise to MCP clients regardless of the
+//!   per-agent manifest (e.g. substrate-specific things we don't want CC to
+//!   touch). Per-agent allowlists still apply on top of that.
 //!
 //! ## Project status
 //!
-//! ANAI-30 step 3. The bridge now:
+//! ANAI-32 (capability enforcement). The bridge now:
 //! - Defines the [`ToolDispatcher`] seam trait — the runtime (or, in the real
 //!   topology, the daemon-bound IPC client) implements it.
-//! - Registers the four-tool ANAI-30 surface (`file_read`, `file_list`,
-//!   `agent_list`, `channel_send`) and translates `tools/call` into
-//!   [`ToolDispatcher::call`].
+//! - Advertises the full kernel built-in surface, sourced from
+//!   `openfang_types::tool::registry::builtin_tool_definitions()` — the same
+//!   registry the runtime uses for its LLM-driver tool list. CC sees what an
+//!   API model would see (modulo per-agent allowlist + [`BRIDGE_DENY`]).
 //! - Filters its advertised tool list against [`ToolDispatcher::allowed_tools`]
-//!   so an agent never sees tools its capabilities don't permit.
+//!   (derived from `agent.toml`) so an agent never sees tools its capabilities
+//!   don't permit, and against [`BRIDGE_DENY`] for substrate-level overrides.
 //!
-//! Identity is bound at construction time. The IPC client implementation
-//! lives in `main.rs`. ANAI-31 will replace the in-band-agent-id stub with
-//! token-derived identity.
+//! Identity is bound at construction time, but is still face-value from the
+//! caller-supplied `agent_id` in the IPC handshake. The IPC client
+//! implementation lives in `main.rs`. ANAI-31 will replace the in-band
+//! agent-id stub with token-derived identity.
 
 pub mod protocol;
 
@@ -66,8 +73,8 @@ pub trait ToolDispatcher: Send + Sync {
     /// `agent.toml` capabilities. The bridge filters its advertised tool list
     /// against this set.
     ///
-    /// For ANAI-30 this is the static four-tool slice; ANAI-31+ will derive
-    /// it from `agent.toml`.
+    /// As of ANAI-32 this is sourced from the manifest's
+    /// `capabilities.tools` (plumbed via `OPENFANG_BRIDGE_ALLOWED`).
     fn allowed_tools(&self) -> Vec<String>;
 
     /// Invoke a tool by name with a JSON argument blob. The dispatcher is
@@ -107,82 +114,55 @@ pub enum ToolDispatchError {
     Execution(#[from] anyhow::Error),
 }
 
-/// Built-in tool definitions advertised by the bridge in `tools/list`.
+/// Substrate-level denylist. Tools in this list are NEVER advertised by the
+/// bridge regardless of the per-agent manifest. Use sparingly — the right
+/// place to gate per-agent capabilities is `agent.toml`. This list exists for
+/// kernel tools that don't make sense to expose to MCP clients at all (e.g.
+/// substrate-specific or driver-internal plumbing), or as a safety hatch when
+/// CC's native surface evolves and we need to pre-empt a clash before
+/// updating the kernel registry.
 ///
-/// **These schemas mirror the equivalent entries in
-/// `openfang_runtime::tool_runner::builtin_tool_definitions()`.** They are
-/// duplicated here rather than imported because the bridge crate is
-/// runtime-free by design (see crate-level docs). If the runtime's schemas
-/// drift, update both sides.
-///
-/// The set is intentionally limited to the ANAI-30 validation slice:
-/// - `file_read`, `file_list` — workspace-scoped, no kernel dependency
-/// - `agent_list` — exercises `KernelHandle::list_agents`
-/// - `channel_send` — exercises `KernelHandle::send_channel_message`,
-///   one of the OpenFang-only capabilities a bare CC subprocess lacks
-pub fn built_in_tools() -> Vec<Tool> {
-    use serde_json::json;
+/// Treat additions to this list like a security review: every entry needs a
+/// reason in the comment.
+pub const BRIDGE_DENY: &[&str] = &[
+    // (Empty for now. CC sees the full kernel surface, gated per-agent by
+    // `agent.toml` and per-call by the dispatcher.)
+];
 
-    fn obj(v: serde_json::Value) -> std::sync::Arc<serde_json::Map<String, serde_json::Value>> {
-        match v {
-            serde_json::Value::Object(m) => std::sync::Arc::new(m),
-            _ => std::sync::Arc::new(serde_json::Map::new()),
-        }
-    }
-
-    vec![
-        Tool::new(
-            "file_read",
-            "Read the contents of a file. Paths are relative to the agent workspace.",
-            obj(json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "The file path to read" }
-                },
-                "required": ["path"]
-            })),
-        ),
-        Tool::new(
-            "file_list",
-            "List files in a directory. Paths are relative to the agent workspace.",
-            obj(json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "The directory path to list" }
-                },
-                "required": ["path"]
-            })),
-        ),
-        Tool::new(
-            "agent_list",
-            "List all currently running agents with their IDs, names, states, and models.",
-            obj(json!({
-                "type": "object",
-                "properties": {}
-            })),
-        ),
-        Tool::new(
-            "channel_send",
-            "Send a message to a user on a configured channel (email, telegram, slack, \
-             discord, etc). For email: recipient is the email address; optionally set \
-             subject. Use thread_id to reply in a specific thread/topic.",
-            obj(json!({
-                "type": "object",
-                "properties": {
-                    "channel": { "type": "string", "description": "Channel adapter name (e.g., 'email', 'telegram', 'slack', 'discord')" },
-                    "recipient": { "type": "string", "description": "Platform-specific recipient identifier (email address, user ID, etc.)" },
-                    "subject": { "type": "string", "description": "Optional subject line (used for email; ignored for other channels)" },
-                    "message": { "type": "string", "description": "The message body to send" },
-                    "thread_id": { "type": "string", "description": "Thread/topic ID to reply in" }
-                },
-                "required": ["channel", "recipient"]
-            })),
-        ),
-    ]
+/// Adapter from the canonical `ToolDefinition` (in `openfang-types`) into
+/// rmcp's `Tool` shape. Pure, infallible — `input_schema` is already a JSON
+/// object in the registry by construction.
+fn to_rmcp_tool(def: &openfang_types::tool::ToolDefinition) -> Tool {
+    let schema = match &def.input_schema {
+        serde_json::Value::Object(m) => std::sync::Arc::new(m.clone()),
+        _ => std::sync::Arc::new(serde_json::Map::new()),
+    };
+    Tool::new(def.name.clone(), def.description.clone(), schema)
 }
 
+/// Built-in tool definitions advertised by the bridge in `tools/list`.
+///
+/// Pulls from the kernel's canonical registry
+/// (`openfang_types::tool::registry::builtin_tool_definitions`) and applies
+/// the substrate-level [`BRIDGE_DENY`] policy. Per-agent capability filtering
+/// happens later in [`Bridge::permitted_tools`] using the manifest allowlist.
+///
+/// Design note: we deliberately do NOT carve out `web_fetch` / `web_search`
+/// or any other tool here just because CC has a native equivalent. Claude
+/// Code is treated as if it were an API-only model — the kernel's tools go
+/// through OpenFang, period. Locking down the corresponding CC natives is
+/// ANAI-37's job (CC `disallowedTools` emission), not the bridge surface's.
+pub fn built_in_tools() -> Vec<Tool> {
+    openfang_types::tool::registry::builtin_tool_definitions()
+        .iter()
+        .filter(|d| !BRIDGE_DENY.contains(&d.name.as_str()))
+        .map(to_rmcp_tool)
+        .collect()
+}
+
+
 /// The MCP server handler — wraps a [`ToolDispatcher`] and serves the
-/// four-tool ANAI-30 surface over MCP.
+/// ANAI-32 tool surface over MCP.
 ///
 /// Filtering: `tools/list` advertises only tools that appear in *both*
 /// [`built_in_tools`] *and* [`ToolDispatcher::allowed_tools`]. `tools/call`
@@ -217,7 +197,9 @@ impl ServerHandler for Bridge {
             .with_instructions(
                 "OpenFang MCP bridge. Exposes OpenFang's tool surface to MCP clients, \
                  scoped to a single parent agent's identity and capabilities. \
-                 ANAI-30 surface: file_read, file_list, agent_list, channel_send."
+                 ANAI-32 surface: file_read, file_write, file_list, shell_exec, \
+                 agent_send, agent_list, memory_store, memory_recall, channel_send. \
+                 Advertised set is intersected with the agent's manifest allowlist."
                     .to_string(),
             )
     }
@@ -305,22 +287,73 @@ mod tests {
     }
 
     #[test]
-    fn built_in_tools_has_anai30_slice() {
-        let tools = built_in_tools();
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
-        assert_eq!(
-            names,
-            vec!["file_read", "file_list", "agent_list", "channel_send"]
-        );
+    fn built_in_tools_advertises_full_kernel_surface() {
+        // Bridge advertises every kernel built-in (minus BRIDGE_DENY).
+        // Treat CC as if it were an API model — same surface as the runtime.
+        use std::collections::HashSet;
+        let bridge_names: HashSet<String> = built_in_tools()
+            .into_iter()
+            .map(|t| t.name.into_owned())
+            .collect();
+        let kernel_names: HashSet<String> =
+            openfang_types::tool::registry::builtin_tool_definitions()
+                .into_iter()
+                .map(|d| d.name)
+                .collect();
+        let denied: HashSet<String> = BRIDGE_DENY.iter().map(|s| s.to_string()).collect();
+        let expected: HashSet<String> = kernel_names.difference(&denied).cloned().collect();
+        assert_eq!(bridge_names, expected);
+    }
+
+    #[test]
+    fn anai32_canonical_surface_is_present() {
+        // Concrete sanity: the nine ANAI-32 tools must round-trip through
+        // bridge advertisement. If anything in this list ever drops out, the
+        // bridge can no longer serve the original capability-enforcement
+        // surface and someone needs to know.
+        let names: std::collections::HashSet<String> = built_in_tools()
+            .into_iter()
+            .map(|t| t.name.into_owned())
+            .collect();
+        for required in [
+            "file_read", "file_write", "file_list",
+            "shell_exec",
+            "agent_send", "agent_list",
+            "memory_store", "memory_recall",
+            "channel_send",
+        ] {
+            assert!(names.contains(required), "missing {required}");
+        }
+    }
+
+    #[test]
+    fn bridge_deny_entries_must_exist_in_kernel_registry() {
+        // Drift sentinel: every name in BRIDGE_DENY must be a real kernel
+        // tool. A stale entry (e.g. a tool that was renamed in the kernel)
+        // would silently fail open. Catch it at test time instead.
+        let kernel_names: std::collections::HashSet<String> =
+            openfang_types::tool::registry::builtin_tool_definitions()
+                .into_iter()
+                .map(|d| d.name)
+                .collect();
+        for denied in BRIDGE_DENY {
+            assert!(
+                kernel_names.contains(*denied),
+                "BRIDGE_DENY entry '{denied}' is not in the kernel registry — \
+                 either the tool was renamed/removed (update BRIDGE_DENY) or \
+                 the entry was a typo from the start"
+            );
+        }
     }
 
     #[test]
     fn permitted_tools_intersects_with_dispatcher_allowed() {
         let bridge = Bridge::new(Arc::new(StubDispatcher {
             agent: "a".into(),
-            // Dispatcher permits only file_read of the built-in slice;
-            // agent_send is unknown to the bridge and must be ignored.
-            allowed: vec!["file_read".into(), "agent_send".into()],
+            // Dispatcher permits file_read (in the built-in set) and
+            // a name that does not exist in the kernel registry (must be
+            // ignored by the bridge advertisement).
+            allowed: vec!["file_read".into(), "nonexistent_tool_xyz".into()],
             canned: DispatchOk {
                 content: String::new(),
                 is_error: false,
@@ -332,5 +365,47 @@ mod tests {
             .map(|t| t.name.into_owned())
             .collect();
         assert_eq!(names, vec!["file_read".to_string()]);
+    }
+
+    #[test]
+    fn permitted_tools_filters_to_manifest_subset() {
+        // Realistic case: a coder agent with the full ANAI-32 manifest
+        // surface (minus web_fetch, which is CC-native) should see all
+        // bridge-advertised tools except channel_send.
+        let bridge = Bridge::new(Arc::new(StubDispatcher {
+            agent: "coder".into(),
+            allowed: vec![
+                "file_read".into(),
+                "file_write".into(),
+                "file_list".into(),
+                "shell_exec".into(),
+                "agent_send".into(),
+                "agent_list".into(),
+                "memory_store".into(),
+                "memory_recall".into(),
+            ],
+            canned: DispatchOk {
+                content: String::new(),
+                is_error: false,
+            },
+        }));
+        let names: Vec<String> = bridge
+            .permitted_tools()
+            .into_iter()
+            .map(|t| t.name.into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "file_read".to_string(),
+                "file_write".to_string(),
+                "file_list".to_string(),
+                "shell_exec".to_string(),
+                "agent_send".to_string(),
+                "agent_list".to_string(),
+                "memory_store".to_string(),
+                "memory_recall".to_string(),
+            ]
+        );
     }
 }

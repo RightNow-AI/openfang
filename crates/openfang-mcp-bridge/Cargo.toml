@@ -25,7 +25,7 @@ async-trait = { workspace = true }
 # (server, transport-io, macros) we actually need.
 rmcp = { version = "1", features = ["server", "transport-io"] }
 
-# OpenFang internals — none yet.
+# OpenFang internals — types crate only.
 #
 # The bridge consumes a narrow `ToolDispatcher` trait, defined locally in this
 # crate (see lib.rs). The runtime will implement that trait and pass an
@@ -33,6 +33,12 @@ rmcp = { version = "1", features = ["server", "transport-io"] }
 # `openfang-runtime` / `openfang-kernel` / `openfang-memory` here — the seam
 # is one-way (runtime depends on bridge, not vice versa) so the bridge stays
 # testable in isolation and out of the kernel/compactor blast radius.
+#
+# `openfang-types` is the cross-crate type bus (zero behavior, no runtime/kernel
+# deps), so depending on it preserves the runtime-free invariant. The bridge
+# uses it for the canonical built-in tool registry — see ANAI-32: bridge and
+# runtime advertise the same kernel surface from a single SOT.
+openfang-types = { path = "../openfang-types" }
 
 [dev-dependencies]
 tokio = { workspace = true }

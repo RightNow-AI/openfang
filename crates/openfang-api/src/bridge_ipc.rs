@@ -17,25 +17,30 @@
 //! over a unix-domain socket back here, where we dispatch into
 //! `openfang_runtime::tool_runner::execute_tool` and ship the result back.
 //!
-//! ## Status — ANAI-30 step 2
+//! ## Status — ANAI-32
 //!
 //! This module currently:
 //! - Listens on `<home_dir>/run/bridge.sock`.
 //! - Accepts the protocol [`Hello`](openfang_mcp_bridge::protocol::Hello)
-//!   handshake (any non-empty token; real auth in ANAI-31).
+//!   handshake (any non-empty token; real auth still pending future ticket).
 //! - Decodes [`CallRequest`](openfang_mcp_bridge::protocol::CallRequest)
-//!   frames, enforces the four-tool allowlist
-//!   ([`ALLOWED_TOOLS`]: `file_read`, `file_list`, `agent_list`,
-//!   `channel_send`), and dispatches into
+//!   frames, resolves the caller's agent in
+//!   [`OpenFangKernel::registry`], and enforces the per-agent capability
+//!   allowlist from `manifest.capabilities.tools` (the same set declared
+//!   in `agent.toml`). Dispatched into
 //!   [`openfang_runtime::tool_runner::execute_tool`] with the kernel-bound
-//!   context bundle. The shape mirrors the HTTP `/mcp` endpoint in
-//!   `routes.rs` so the two execution paths stay in lockstep.
+//!   context bundle, the agent's workspace root, and its exec policy —
+//!   same surface an API-direct caller would see. The shape mirrors the
+//!   HTTP `/mcp` endpoint in `routes.rs` (which is currently still
+//!   stateless w.r.t. caller identity) but adds full per-agent capability
+//!   resolution.
 //!
-//! Identity (`caller_agent_id`) is currently taken at face value from the
-//! [`CallRequest::agent_id`] field. ANAI-31 replaces this with
-//! token-derived identity bound at daemon-spawn time. Per-agent
-//! capability gating (replacing the static [`ALLOWED_TOOLS`] allowlist
-//! with `agent.toml` lookups) lands in the same ticket.
+//! Identity (`caller_agent_id`) is still taken at face value from the
+//! [`CallRequest::agent_id`] field; a future ticket will replace this
+//! with a daemon-issued token table populated at CC spawn time. Until
+//! then, anyone able to reach the bridge socket *and* present a
+//! plausible UUID can claim that identity — bridge IPC auth (token +
+//! socket perms) is the load-bearing perimeter.
 
 use openfang_kernel::OpenFangKernel;
 use openfang_mcp_bridge::protocol::{
@@ -48,19 +53,13 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
-/// Tools the bridge IPC server is willing to dispatch in the ANAI-30
-/// validation slice. Anything outside this set is rejected at the
-/// protocol layer (i.e. it never reaches `execute_tool`). ANAI-31 will
-/// replace this static allowlist with per-agent capability lookups
-/// driven by `agent.toml`.
-///
-/// The chosen four exercise the full diversity of tool dependencies:
-/// - `file_read` / `file_list` — workspace-scoped, no kernel needed
-/// - `agent_list` — requires [`KernelHandle::list_agents`]
-/// - `channel_send` — requires [`KernelHandle::send_channel_message`],
-///   one of the OpenFang-only capabilities a CC subprocess wouldn't
-///   otherwise have
-pub const ALLOWED_TOOLS: &[&str] = &["file_read", "file_list", "agent_list", "channel_send"];
+/// Legacy ANAI-30 four-tool allowlist. Retained only as a fallback for
+/// the test twin (which has no kernel to consult) and as the hard-coded
+/// default in the bridge process when [`OPENFANG_BRIDGE_ALLOWED`] is
+/// unset. Production dispatch (see [`dispatch_call`]) ignores this and
+/// resolves capabilities from `manifest.capabilities.tools` per ANAI-32.
+pub const LEGACY_DEFAULT_ALLOWED_TOOLS: &[&str] =
+    &["file_read", "file_list", "agent_list", "channel_send"];
 
 /// Daemon-version string sent in [`HelloAck::Ok`].
 fn daemon_version() -> String {
@@ -258,24 +257,47 @@ async fn handle_connection(
 
 /// Dispatch a single bridge tool call to the runtime.
 ///
-/// Enforces the [`ALLOWED_TOOLS`] allowlist before invoking
+/// Enforces the per-agent capability allowlist from
+/// `manifest.capabilities.tools` (ANAI-32) before invoking
 /// [`openfang_runtime::tool_runner::execute_tool`]. The argument bundle
-/// mirrors the HTTP `/mcp` endpoint in `routes.rs` — keep them in sync;
-/// they share semantics intentionally.
+/// mirrors `agent_loop`'s call site — workspace root and exec policy
+/// are threaded from the agent's manifest so a bridge-routed call has
+/// the same surface an API-direct call would.
 ///
 /// Returns:
-/// - [`CallResult::Error`] for protocol-layer rejections (unknown tool,
-///   not on the allowlist).
+/// - [`CallResult::Error`] for protocol-layer rejections (malformed
+///   `agent_id`, unknown agent, tool not in the agent's manifest).
 /// - [`CallResult::Ok`] for anything `execute_tool` returned, with
 ///   `is_error` propagated. A tool that ran but returned an error to
 ///   the model is `Ok { is_error: true }`, **not** `Error` — the latter
 ///   means the bridge couldn't even attempt dispatch.
 async fn dispatch_call(call: &CallRequest, kernel: &Arc<OpenFangKernel>) -> CallResult {
-    if !ALLOWED_TOOLS.iter().any(|t| *t == call.tool_name) {
+    // --- Resolve caller identity to an in-memory agent entry. ---
+    let agent_id = match call.agent_id.parse::<openfang_types::agent::AgentId>() {
+        Ok(id) => id,
+        Err(e) => {
+            return CallResult::Error {
+                message: format!("invalid agent_id '{}': {e}", call.agent_id),
+            };
+        }
+    };
+    let entry = match kernel.registry.get(agent_id) {
+        Some(e) => e,
+        None => {
+            return CallResult::Error {
+                message: format!("unknown agent_id '{}'", call.agent_id),
+            };
+        }
+    };
+    let manifest = &entry.manifest;
+
+    // --- Per-agent capability gate (manifest is authoritative). ---
+    let allowed_tools: Vec<String> = manifest.capabilities.tools.clone();
+    if !allowed_tools.iter().any(|t| t == &call.tool_name) {
         return CallResult::Error {
             message: format!(
-                "tool '{}' not in bridge allowlist (permitted: {:?})",
-                call.tool_name, ALLOWED_TOOLS
+                "tool '{}' not in agent '{}' manifest capabilities",
+                call.tool_name, entry.name
             ),
         };
     }
@@ -294,31 +316,24 @@ async fn dispatch_call(call: &CallRequest, kernel: &Arc<OpenFangKernel>) -> Call
     let kernel_handle: Arc<dyn openfang_runtime::kernel_handle::KernelHandle> =
         kernel.clone() as Arc<dyn openfang_runtime::kernel_handle::KernelHandle>;
 
-    // execute_tool also enforces an allowlist via its `allowed_tools`
-    // parameter; passing our four-tool set makes the runtime's check
-    // belt-and-suspenders with ours. If the two ever drift, the runtime's
-    // is authoritative — it sits closer to the actual tool implementations.
-    let allowed_tools_owned: Vec<String> =
-        ALLOWED_TOOLS.iter().map(|s| (*s).to_string()).collect();
+    let workspace_root = manifest.workspace.as_deref();
+    let exec_policy = manifest.exec_policy.as_ref();
 
     let result = openfang_runtime::tool_runner::execute_tool(
         &format!("bridge-{}", call.request_id),
         &call.tool_name,
         &call.args,
         Some(&kernel_handle),
-        Some(&allowed_tools_owned),
-        // Identity stub for ANAI-30: trust the bridge's claimed agent_id.
-        // ANAI-31 replaces this with token-derived identity bound at
-        // daemon-spawn time.
+        Some(&allowed_tools),
         Some(call.agent_id.as_str()),
         Some(&skill_snapshot),
         Some(&kernel.mcp_connections),
         Some(&kernel.web_ctx),
         Some(&kernel.browser_ctx),
-        None, // allowed_env_vars — unused by the four allowlisted tools
-        None, // workspace_root — file_read/file_list use input-relative paths
+        None, // allowed_env_vars — bridge surface doesn't carry per-call env hints
+        workspace_root,
         Some(&kernel.media_engine),
-        None, // exec_policy — shell tools not in allowlist
+        exec_policy,
         if kernel.config.tts.enabled {
             Some(&kernel.tts_engine)
         } else {
@@ -504,11 +519,11 @@ mod tests {
             };
 
             // Mirror production allowlist logic.
-            let result = if !ALLOWED_TOOLS.iter().any(|t| *t == call.tool_name) {
+            let result = if !LEGACY_DEFAULT_ALLOWED_TOOLS.iter().any(|t| *t == call.tool_name) {
                 CallResult::Error {
                     message: format!(
                         "tool '{}' not in bridge allowlist (permitted: {:?})",
-                        call.tool_name, ALLOWED_TOOLS
+                        call.tool_name, LEGACY_DEFAULT_ALLOWED_TOOLS
                     ),
                 }
             } else {

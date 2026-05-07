@@ -76,6 +76,17 @@ pub struct CompletionRequest {
     /// per-spawn token, but the field stays in place as the integration
     /// point.
     pub caller_agent_id: Option<String>,
+    /// Caller's effective tool allowlist (typically from
+    /// `manifest.capabilities.tools`). Plumbed through so subprocess-style
+    /// drivers (Claude Code) can publish the per-agent allowlist to their
+    /// bridge child via `OPENFANG_BRIDGE_ALLOWED`. The daemon-side bridge
+    /// dispatcher *also* re-checks this against the manifest at call time —
+    /// this field exists purely so the bridge can advertise the right
+    /// `tools/list` to its CC parent (otherwise CC would only see the
+    /// hardcoded four-tool default and refuse to attempt the rest).
+    /// `None` falls back to the bridge's own default — for ANAI-32 callers
+    /// it should always be `Some` when `caller_agent_id` is set.
+    pub caller_allowed_tools: Option<Vec<String>>,
 }
 
 /// A response from an LLM completion.
@@ -339,6 +350,7 @@ mod tests {
             system: None,
             thinking: None,
             caller_agent_id: None,
+            caller_allowed_tools: None,
         };
 
         let response = driver.stream(request, tx).await.unwrap();

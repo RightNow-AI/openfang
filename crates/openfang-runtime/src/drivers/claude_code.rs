@@ -29,6 +29,12 @@ const BRIDGE_SOCKET_ENV: &str = "OPENFANG_BRIDGE_SOCKET";
 const BRIDGE_BIN_ENV: &str = "OPENFANG_BRIDGE_BIN";
 const BRIDGE_TOKEN_ENV: &str = "OPENFANG_BRIDGE_TOKEN";
 const BRIDGE_AGENT_ID_ENV: &str = "OPENFANG_BRIDGE_AGENT_ID";
+/// Comma-separated tool allowlist published into the bridge child's env.
+/// The bridge advertises this list via MCP `tools/list` to its CC parent
+/// so CC sees the full per-agent surface declared in `agent.toml`. The
+/// daemon-side `bridge_ipc::dispatch_call` re-validates against the
+/// manifest at call time — this env var is purely the surface advertisement.
+const BRIDGE_ALLOWED_ENV: &str = "OPENFANG_BRIDGE_ALLOWED";
 
 /// Master kill-switch for the OpenFang MCP bridge. Default off. When unset
 /// or not in {`1`, `true`}, `try_build_bridge_mcp_config` returns `None` and
@@ -284,6 +290,7 @@ fn build_bridge_mcp_config_value(
     bridge_bin: &str,
     agent_id: &str,
     token: &str,
+    allowed_tools: Option<&[String]>,
 ) -> serde_json::Value {
     let mut env_map = serde_json::Map::new();
     env_map.insert(
@@ -298,6 +305,15 @@ fn build_bridge_mcp_config_value(
         BRIDGE_AGENT_ID_ENV.into(),
         serde_json::Value::String(agent_id.to_string()),
     );
+    if let Some(tools) = allowed_tools {
+        // Empty list would degenerate into the bridge's hardcoded default,
+        // which is the wrong behavior — an empty manifest means "no tools."
+        // Emit the env var even if empty so the bridge advertises nothing.
+        env_map.insert(
+            BRIDGE_ALLOWED_ENV.into(),
+            serde_json::Value::String(tools.join(",")),
+        );
+    }
 
     let mut server_entry = serde_json::Map::new();
     server_entry.insert(
@@ -332,7 +348,10 @@ fn generate_bridge_token() -> String {
 /// CC is then spawned without an OpenFang MCP server, exactly as before
 /// step 4. Logs at `info` level on first wire and `debug` per-spawn so
 /// operators can see whether a given run was bridge-enabled.
-fn try_build_bridge_mcp_config(caller_agent_id: Option<&str>) -> Option<BridgeMcpConfig> {
+fn try_build_bridge_mcp_config(
+    caller_agent_id: Option<&str>,
+    caller_allowed_tools: Option<&[String]>,
+) -> Option<BridgeMcpConfig> {
     // Gate first — cheapest check, and when off we want zero side effects:
     // no temp file, no token generation, no log line beyond trace level.
     if !bridge_enabled() {
@@ -343,7 +362,13 @@ fn try_build_bridge_mcp_config(caller_agent_id: Option<&str>) -> Option<BridgeMc
     let bridge_bin = std::env::var(BRIDGE_BIN_ENV).ok()?;
     let token = generate_bridge_token();
 
-    let cfg = build_bridge_mcp_config_value(&socket, &bridge_bin, agent_id, &token);
+    let cfg = build_bridge_mcp_config_value(
+        &socket,
+        &bridge_bin,
+        agent_id,
+        &token,
+        caller_allowed_tools,
+    );
 
     // Place the config next to the socket so cleanup is colocated and the
     // bridge socket dir already exists with the right permissions.
@@ -477,7 +502,7 @@ impl LlmDriver for ClaudeCodeDriver {
         // the request carries a caller identity. The guard lives for the
         // remainder of the call; on drop it removes the temp config file.
         let _bridge_cfg =
-            try_build_bridge_mcp_config(request.caller_agent_id.as_deref()).map(|cfg| {
+            try_build_bridge_mcp_config(request.caller_agent_id.as_deref(), request.caller_allowed_tools.as_deref()).map(|cfg| {
                 cmd.arg("--mcp-config").arg(cfg.path());
                 // `--strict-mcp-config` makes CC ignore any user/global MCP
                 // config that might otherwise merge in — we want exactly
@@ -716,7 +741,7 @@ impl LlmDriver for ClaudeCodeDriver {
         // alive for the rest of the streaming function so the per-spawn
         // config file outlives the CC subprocess.
         let _bridge_cfg =
-            try_build_bridge_mcp_config(request.caller_agent_id.as_deref()).map(|cfg| {
+            try_build_bridge_mcp_config(request.caller_agent_id.as_deref(), request.caller_allowed_tools.as_deref()).map(|cfg| {
                 cmd.arg("--mcp-config").arg(cfg.path());
                 cmd.arg("--strict-mcp-config");
                 // Optional --debug — see complete() for rationale.
@@ -996,6 +1021,7 @@ mod tests {
             system: Some("You are helpful.".to_string()),
             thinking: None,
             caller_agent_id: None,
+            caller_allowed_tools: None,
         };
 
         let prompt = ClaudeCodeDriver::build_prompt(&request);
@@ -1101,6 +1127,7 @@ mod tests {
             "/usr/local/bin/openfang-mcp-bridge",
             "agent-uuid-1234",
             "tok-abc",
+            None,
         );
 
         // mcpServers.openfang.{command,args,env} all present with the
@@ -1123,10 +1150,57 @@ mod tests {
             .pointer("/env")
             .and_then(|v| v.as_object())
             .expect("env object missing");
-        assert_eq!(env.len(), 3, "env must contain exactly socket/token/agent_id");
+        assert_eq!(env.len(), 3, "env must contain exactly socket/token/agent_id when allowed=None");
         assert_eq!(env.get(BRIDGE_SOCKET_ENV).and_then(|v| v.as_str()), Some("/home/user/.openfang/run/bridge.sock"));
         assert_eq!(env.get(BRIDGE_TOKEN_ENV).and_then(|v| v.as_str()), Some("tok-abc"));
         assert_eq!(env.get(BRIDGE_AGENT_ID_ENV).and_then(|v| v.as_str()), Some("agent-uuid-1234"));
+        assert!(
+            env.get(BRIDGE_ALLOWED_ENV).is_none(),
+            "ALLOWED env must be omitted when caller_allowed_tools=None"
+        );
+    }
+
+    /// ANAI-32: when an allowlist is supplied, it lands in
+    /// `OPENFANG_BRIDGE_ALLOWED` as a comma-joined string. The bridge
+    /// process parses this back into its `tools/list` advertisement.
+    #[test]
+    fn test_build_bridge_mcp_config_allowed_tools_join() {
+        let tools: Vec<String> = ["file_read", "shell_exec", "channel_send"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let cfg = build_bridge_mcp_config_value(
+            "/sock", "/bin", "agent", "tok", Some(&tools),
+        );
+        let env = cfg
+            .pointer("/mcpServers/openfang/env")
+            .and_then(|v| v.as_object())
+            .expect("env object");
+        assert_eq!(
+            env.get(BRIDGE_ALLOWED_ENV).and_then(|v| v.as_str()),
+            Some("file_read,shell_exec,channel_send"),
+        );
+    }
+
+    /// ANAI-32: an explicit empty allowlist still sets the env var (to
+    /// the empty string). The bridge interprets that as "no tools" —
+    /// without the var set it would fall back to its hardcoded default,
+    /// which would silently grant tools the manifest never authorized.
+    #[test]
+    fn test_build_bridge_mcp_config_empty_allowed_tools_emits_empty_env() {
+        let tools: Vec<String> = vec![];
+        let cfg = build_bridge_mcp_config_value(
+            "/sock", "/bin", "agent", "tok", Some(&tools),
+        );
+        let env = cfg
+            .pointer("/mcpServers/openfang/env")
+            .and_then(|v| v.as_object())
+            .expect("env object");
+        assert_eq!(
+            env.get(BRIDGE_ALLOWED_ENV).and_then(|v| v.as_str()),
+            Some(""),
+            "empty manifest must publish empty allowlist, not fall through to default"
+        );
     }
 
     #[test]
@@ -1180,7 +1254,7 @@ mod tests {
         // race with apply_env_filter tests; the shape test covers the
         // construction path. This test owns the gate behavior only.
         std::env::remove_var(BRIDGE_ENABLED_ENV);
-        let cfg = try_build_bridge_mcp_config(Some("agent-x"));
+        let cfg = try_build_bridge_mcp_config(Some("agent-x"), None);
         assert!(cfg.is_none(), "gate off → None regardless of other env");
 
         // Restore.
