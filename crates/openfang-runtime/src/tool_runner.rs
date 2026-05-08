@@ -143,6 +143,51 @@ pub async fn execute_tool(
         }
     }
 
+    // Shell pre-gate: run purely-syntactic shell validators BEFORE the approval gate.
+    //
+    // Without this, a command like `echo foo; whoami` would be sent to the human for
+    // approval, approved, and only then rejected by the metacharacter denylist inside
+    // the per-tool match arm below. That wastes the operator's attention on commands
+    // that are guaranteed to be denied. Lift the pure-syntactic checks here so denial
+    // happens before any approval surfacer push.
+    //
+    // Scoped to "shell_exec" specifically (not all is_shell_tool() entries) because
+    // process_start has a different input shape and its own validators; widening this
+    // gate is a separate change.
+    //
+    // The same checks remain inside the "shell_exec" arm as defense-in-depth against
+    // future refactors that might bypass this pre-gate.
+    if tool_name == "shell_exec" {
+        let command = input["command"].as_str().unwrap_or("");
+
+        if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
+            return ToolResult {
+                tool_use_id: tool_use_id.to_string(),
+                content: format!(
+                    "shell_exec blocked: command contains {reason}. \
+                     Shell metacharacters are never allowed."
+                ),
+                is_error: true,
+            };
+        }
+
+        if let Some(policy) = exec_policy {
+            if let Err(reason) =
+                crate::subprocess_sandbox::validate_command_allowlist(command, policy)
+            {
+                return ToolResult {
+                    tool_use_id: tool_use_id.to_string(),
+                    content: format!(
+                        "shell_exec blocked: {reason}. Current exec_policy.mode = '{:?}'. \
+                         To allow shell commands, set exec_policy.mode = 'full' in the agent manifest or config.toml.",
+                        policy.mode
+                    ),
+                    is_error: true,
+                };
+            }
+        }
+    }
+
     // Approval gate: check if this tool requires human approval before execution.
     //
     // When exec_policy.mode = "full" (or allowlist with allowed_commands = ["*"]),
