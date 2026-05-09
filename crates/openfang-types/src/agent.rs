@@ -487,7 +487,7 @@ pub struct AgentManifest {
     pub exec_policy: Option<crate::config::ExecPolicy>,
     /// Per-agent file policy override (ANAI-40). If None, uses global file_policy.
     /// Field-by-field merge over the global policy (see
-    /// [`crate::file_policy::FilePolicy::merged_over`]).
+    /// [`crate::file_policy::FilePolicy::layered_over`]).
     #[serde(default)]
     pub file_policy: Option<crate::file_policy::FilePolicy>,
     /// Tool allowlist — only these tools are available (empty = all tools).

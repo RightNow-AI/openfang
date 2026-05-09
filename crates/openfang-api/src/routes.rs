@@ -6876,6 +6876,7 @@ pub async fn mcp_http(
                 None
             },
             Some(&*state.kernel.process_manager),
+            None, // file_policy — HTTP MCP endpoint has no per-agent manifest binding (ANAI-40)
         )
         .await;
 

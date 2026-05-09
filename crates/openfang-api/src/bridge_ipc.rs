@@ -319,6 +319,20 @@ async fn dispatch_call(call: &CallRequest, kernel: &Arc<OpenFangKernel>) -> Call
     let workspace_root = manifest.workspace.as_deref();
     let exec_policy = manifest.exec_policy.as_ref();
 
+    // ANAI-40: compile per-agent file_policy if both the policy and a
+    // workspace are present. Compilation failures fall back to the legacy
+    // workspace sandbox (None).
+    let compiled_file_policy = match (manifest.file_policy.as_ref(), workspace_root) {
+        (Some(fp), Some(ws)) => match fp.compile(ws.to_path_buf()) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to compile file_policy; falling back to workspace sandbox");
+                None
+            }
+        },
+        _ => None,
+    };
+
     let result = openfang_runtime::tool_runner::execute_tool(
         &format!("bridge-{}", call.request_id),
         &call.tool_name,
@@ -345,6 +359,7 @@ async fn dispatch_call(call: &CallRequest, kernel: &Arc<OpenFangKernel>) -> Call
             None
         },
         Some(&*kernel.process_manager),
+        compiled_file_policy.as_ref(),
     )
     .await;
 

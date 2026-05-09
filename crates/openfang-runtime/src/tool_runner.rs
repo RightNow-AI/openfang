@@ -7,6 +7,7 @@ use crate::kernel_handle::KernelHandle;
 use crate::mcp;
 use crate::web_search::{parse_ddg_results, WebToolsContext};
 use openfang_skills::registry::SkillRegistry;
+use openfang_types::file_policy::{CompiledFilePolicy, FileDecision, FileOp};
 use openfang_types::taint::{TaintLabel, TaintSink, TaintedValue};
 use openfang_types::tool::ToolResult;
 use openfang_types::tool_compat::normalize_tool_name;
@@ -124,6 +125,7 @@ pub async fn execute_tool(
     tts_engine: Option<&crate::tts::TtsEngine>,
     docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
+    file_policy: Option<&CompiledFilePolicy>,
 ) -> ToolResult {
     // Normalize the tool name through compat mappings so LLM-hallucinated aliases
     // (e.g. "fs-write" → "file_write") resolve to the canonical OpenFang name.
@@ -247,9 +249,9 @@ pub async fn execute_tool(
     debug!(tool_name, "Executing tool");
     let result = match tool_name {
         // Filesystem tools
-        "file_read" => tool_file_read(input, workspace_root).await,
-        "file_write" => tool_file_write(input, workspace_root).await,
-        "file_list" => tool_file_list(input, workspace_root).await,
+        "file_read" => tool_file_read(input, workspace_root, file_policy).await,
+        "file_write" => tool_file_write(input, workspace_root, file_policy).await,
+        "file_list" => tool_file_list(input, workspace_root, file_policy).await,
         "apply_patch" => tool_apply_patch(input, workspace_root).await,
 
         // Web tools (upgraded: multi-provider search, SSRF-protected fetch)
@@ -379,7 +381,7 @@ pub async fn execute_tool(
 
         // TTS/STT tools
         "text_to_speech" => tool_text_to_speech(input, tts_engine, workspace_root).await,
-        "speech_to_text" => tool_speech_to_text(input, media_engine, workspace_root).await,
+        "speech_to_text" => tool_speech_to_text(input, media_engine, workspace_root, file_policy).await,
 
         // Docker sandbox tool
         "docker_exec" => {
@@ -398,7 +400,7 @@ pub async fn execute_tool(
         "cron_cancel" => tool_cron_cancel(input, kernel).await,
 
         // Channel send tool (proactive outbound messaging)
-        "channel_send" => tool_channel_send(input, kernel, workspace_root).await,
+        "channel_send" => tool_channel_send(input, kernel, workspace_root, file_policy).await,
 
         // Persistent process tools
         "process_start" => {
@@ -651,8 +653,30 @@ fn validate_path(path: &str) -> Result<&str, String> {
     Ok(path)
 }
 
-/// Resolve a file path through the workspace sandbox (if available) or legacy validation.
-fn resolve_file_path(raw_path: &str, workspace_root: Option<&Path>) -> Result<PathBuf, String> {
+/// Resolve a file path for one of the MCP file tools.
+///
+/// Two modes:
+///
+/// - **`file_policy = Some(_)`** (ANAI-40): the policy is the authoritative
+///   gate. The path is canonicalized (or its parent canonicalized for new
+///   files), then passed to [`CompiledFilePolicy::evaluate`] with `op`. The
+///   workspace hard-lock is no longer applied — workspace remains an
+///   *implicit* allow tier inside the evaluator, so behavior is a strict
+///   superset of the legacy lock.
+/// - **`file_policy = None`**: legacy behavior — workspace sandbox if a
+///   workspace root is available, naive `..`-rejecting validation otherwise.
+///
+/// `..` components are rejected outright in both modes as defense-in-depth;
+/// canonicalization handles target traversal but not author intent.
+fn resolve_file_path(
+    raw_path: &str,
+    workspace_root: Option<&Path>,
+    file_policy: Option<&CompiledFilePolicy>,
+    op: FileOp,
+) -> Result<PathBuf, String> {
+    if let Some(policy) = file_policy {
+        return resolve_with_policy(raw_path, workspace_root, policy, op);
+    }
     if let Some(root) = workspace_root {
         crate::workspace_sandbox::resolve_sandbox_path(raw_path, root)
     } else {
@@ -661,12 +685,79 @@ fn resolve_file_path(raw_path: &str, workspace_root: Option<&Path>) -> Result<Pa
     }
 }
 
+/// ANAI-40 policy-gated path resolution. Canonicalizes the path (or its
+/// parent for new files), then evaluates against `policy`.
+fn resolve_with_policy(
+    raw_path: &str,
+    workspace_root: Option<&Path>,
+    policy: &CompiledFilePolicy,
+    op: FileOp,
+) -> Result<PathBuf, String> {
+    let path = Path::new(raw_path);
+
+    // Reject `..` outright (defense-in-depth — canonicalize collapses these,
+    // but we want clear error messages, not silent escapes via canonicalize
+    // failures on non-existent middles).
+    for component in path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err("Path traversal denied: '..' components are forbidden".to_string());
+        }
+    }
+
+    // Resolve relative paths against the workspace (when present). Without a
+    // workspace, relative paths are ambiguous — reject explicitly rather than
+    // silently picking the process CWD.
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(root) = workspace_root {
+        root.join(path)
+    } else {
+        return Err(format!(
+            "Cannot resolve relative path '{raw_path}' without a workspace root"
+        ));
+    };
+
+    // Canonicalize so symlinks are evaluated by their target. For new files
+    // (no node yet), canonicalize the parent directory and append the
+    // filename — same shape as `workspace_sandbox::resolve_sandbox_path`.
+    let canon = if candidate.exists() {
+        candidate
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve path: {e}"))?
+    } else {
+        let parent = candidate
+            .parent()
+            .ok_or_else(|| "Invalid path: no parent directory".to_string())?;
+        let filename = candidate
+            .file_name()
+            .ok_or_else(|| "Invalid path: no filename".to_string())?;
+        let canon_parent = parent
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve parent directory: {e}"))?;
+        canon_parent.join(filename)
+    };
+
+    match policy.evaluate(&canon, op) {
+        FileDecision::Allow => Ok(canon),
+        FileDecision::Deny { reason } => {
+            Err(format!("Access denied by file_policy: {reason}"))
+        }
+        FileDecision::Prompt { reason } => Err(format!(
+            "Access requires approval (file_policy prompt path): {reason}. \
+             Per-path approval surfacing is not yet wired (ANAI-40 step 5); \
+             until then, promote this path to write_paths/read_paths or \
+             remove it from prompt_paths to proceed."
+        )),
+    }
+}
+
 async fn tool_file_read(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    file_policy: Option<&CompiledFilePolicy>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root)?;
+    let resolved = resolve_file_path(raw_path, workspace_root, file_policy, FileOp::Read)?;
     tokio::fs::read_to_string(&resolved)
         .await
         .map_err(|e| format!("Failed to read file: {e}"))
@@ -675,9 +766,10 @@ async fn tool_file_read(
 async fn tool_file_write(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    file_policy: Option<&CompiledFilePolicy>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root)?;
+    let resolved = resolve_file_path(raw_path, workspace_root, file_policy, FileOp::Write)?;
     let content = input["content"]
         .as_str()
         .ok_or("Missing 'content' parameter")?;
@@ -699,9 +791,10 @@ async fn tool_file_write(
 async fn tool_file_list(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    file_policy: Option<&CompiledFilePolicy>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root)?;
+    let resolved = resolve_file_path(raw_path, workspace_root, file_policy, FileOp::Read)?;
     let mut entries = tokio::fs::read_dir(&resolved)
         .await
         .map_err(|e| format!("Failed to list directory: {e}"))?;
@@ -1648,6 +1741,7 @@ async fn tool_channel_send(
     input: &serde_json::Value,
     kernel: Option<&Arc<dyn KernelHandle>>,
     workspace_root: Option<&Path>,
+    file_policy: Option<&CompiledFilePolicy>,
 ) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
 
@@ -1704,7 +1798,7 @@ async fn tool_channel_send(
 
     // Local file attachment: read from disk and send as FileData
     if let Some(raw_path) = file_path {
-        let resolved = resolve_file_path(raw_path, workspace_root)?;
+        let resolved = resolve_file_path(raw_path, workspace_root, file_policy, FileOp::Read)?;
         let data = tokio::fs::read(&resolved)
             .await
             .map_err(|e| format!("Failed to read file '{}': {e}", resolved.display()))?;
@@ -2398,12 +2492,13 @@ async fn tool_speech_to_text(
     input: &serde_json::Value,
     media_engine: Option<&crate::media_understanding::MediaEngine>,
     workspace_root: Option<&Path>,
+    file_policy: Option<&CompiledFilePolicy>,
 ) -> Result<String, String> {
     let engine = media_engine.ok_or("Media engine not available for speech-to-text")?;
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
     let _language = input["language"].as_str();
 
-    let resolved = resolve_file_path(raw_path, workspace_root)?;
+    let resolved = resolve_file_path(raw_path, workspace_root, file_policy, FileOp::Read)?;
 
     // Read the audio file
     let data = tokio::fs::read(&resolved)
@@ -2917,6 +3012,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         assert!(
@@ -2946,6 +3042,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         assert!(result.is_error);
@@ -2972,6 +3069,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         assert!(result.is_error);
@@ -2998,6 +3096,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         assert!(result.is_error);
@@ -3024,6 +3123,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         // web_search now attempts a real fetch; may succeed or fail depending on network
@@ -3050,6 +3150,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         assert!(result.is_error);
@@ -3076,6 +3177,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         assert!(result.is_error);
@@ -3103,6 +3205,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         assert!(result.is_error);
@@ -3134,6 +3237,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         // Should fail for file-not-found, NOT for permission denied
@@ -3179,6 +3283,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         // Should NOT be the capability-enforcement "Permission denied" — it should
@@ -3214,6 +3319,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         assert!(result.is_error);
@@ -3383,6 +3489,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         assert!(result.is_error);
@@ -3428,6 +3535,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // file_policy
         )
         .await;
         assert!(result.is_error);
@@ -3910,5 +4018,155 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_lowercase().contains("kernel"));
+    }
+
+    // -----------------------------------------------------------------
+    // ANAI-40: file_policy gating of MCP file tools
+    //
+    // Verifies that when a CompiledFilePolicy is supplied, the workspace
+    // hard-lock is replaced by policy evaluation: paths outside the
+    // workspace become reachable when explicitly allowed by the policy,
+    // and remain blocked otherwise. Also pins the "Prompt deferred"
+    // behavior — until ANAI-40 step 5 wires per-path approval, prompt
+    // matches must fail closed rather than silently allow.
+    // -----------------------------------------------------------------
+
+    fn build_compiled_policy(
+        workspace: &std::path::Path,
+        read_paths: Vec<String>,
+        write_paths: Vec<String>,
+        prompt_paths: Vec<String>,
+        deny_paths: Vec<String>,
+    ) -> openfang_types::file_policy::CompiledFilePolicy {
+        openfang_types::file_policy::FilePolicy {
+            read_paths,
+            write_paths,
+            prompt_paths,
+            deny_paths,
+            default: Some(openfang_types::file_policy::DefaultTier::Deny),
+        }
+        .compile(workspace.to_path_buf())
+        .expect("test policy must compile")
+    }
+
+    #[tokio::test]
+    async fn test_file_read_policy_allows_path_outside_workspace() {
+        // Outside-workspace path is normally workspace-locked; with an
+        // explicit `read_paths` entry the policy seam must let it through.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("notes.txt");
+        std::fs::write(&target, "hello from outside").unwrap();
+
+        // Canonicalize the outside dir so the glob matches the resolved path.
+        let outside_canon = outside.path().canonicalize().unwrap();
+        let pattern = format!("{}/**", outside_canon.display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![pattern],
+            vec![],
+            vec![],
+            vec![],
+        );
+
+        let result = tool_file_read(
+            &serde_json::json!({"path": target.to_str().unwrap()}),
+            Some(workspace.path()),
+            Some(&policy),
+        )
+        .await
+        .expect("read must succeed under file_policy");
+        assert_eq!(result, "hello from outside");
+    }
+
+    #[tokio::test]
+    async fn test_file_write_policy_denies_read_only_path() {
+        // A path matching `read_paths` must reject writes — the must-fix
+        // landed in ea9896d's fixup, re-pinned at the tool surface.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("ro.txt");
+
+        let outside_canon = outside.path().canonicalize().unwrap();
+        let pattern = format!("{}/**", outside_canon.display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![pattern],
+            vec![],
+            vec![],
+            vec![],
+        );
+
+        let result = tool_file_write(
+            &serde_json::json!({"path": target.to_str().unwrap(), "content": "nope"}),
+            Some(workspace.path()),
+            Some(&policy),
+        )
+        .await;
+        let err = result.expect_err("write must be denied for read_paths target");
+        assert!(
+            err.contains("Access denied by file_policy"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_read_policy_prompt_path_fails_closed() {
+        // Until ANAI-40 step 5 wires per-path approval, a `prompt_paths`
+        // hit must surface as an error explaining the gap — not silently
+        // allow the access.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("secret");
+        std::fs::write(&target, "tbd").unwrap();
+
+        let outside_canon = outside.path().canonicalize().unwrap();
+        let pattern = format!("{}/**", outside_canon.display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![pattern],
+            vec![],
+        );
+
+        let err = tool_file_read(
+            &serde_json::json!({"path": target.to_str().unwrap()}),
+            Some(workspace.path()),
+            Some(&policy),
+        )
+        .await
+        .expect_err("prompt path must fail closed pre-step-5");
+        assert!(
+            err.contains("requires approval"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_read_policy_allows_workspace_implicit() {
+        // A policy with no rules at all still grants workspace read+write
+        // via the implicit-allow tier — preserves today's behavior for
+        // agents that ship a [file_policy] block but don't extend it.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let target = workspace.path().join("hello.txt");
+        std::fs::write(&target, "wsp").unwrap();
+
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+
+        let result = tool_file_read(
+            &serde_json::json!({"path": target.to_str().unwrap()}),
+            Some(workspace.path()),
+            Some(&policy),
+        )
+        .await
+        .expect("workspace read must succeed under empty policy");
+        assert_eq!(result, "wsp");
     }
 }

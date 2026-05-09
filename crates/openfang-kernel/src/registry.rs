@@ -393,6 +393,7 @@ mod tests {
                 workspace: None,
                 generate_identity_files: true,
                 exec_policy: None,
+                file_policy: None,
                 tool_allowlist: vec![],
                 tool_blocklist: vec![],
                 cache_context: false,

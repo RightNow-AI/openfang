@@ -888,6 +888,23 @@ pub async fn run_agent_loop(
                     // Resolve effective exec policy (per-agent override or global)
                     let effective_exec_policy = manifest.exec_policy.as_ref();
 
+                    // ANAI-40: compile the agent's file_policy (if any) against the
+                    // workspace root. We need a workspace to compile because the
+                    // policy binds `workspace` at compile time (the implicit-allow
+                    // tier in `evaluate`). Compilation is cheap (glob-count small);
+                    // any compile error is logged and falls back to the legacy
+                    // workspace hard-lock — failing closed against unsafe configs.
+                    let compiled_file_policy = match (manifest.file_policy.as_ref(), workspace_root) {
+                        (Some(fp), Some(ws)) => match fp.compile(ws.to_path_buf()) {
+                            Ok(c) => Some(c),
+                            Err(e) => {
+                                warn!(error = %e, "Failed to compile file_policy; falling back to workspace sandbox");
+                                None
+                            }
+                        },
+                        _ => None,
+                    };
+
                     // Timeout-wrapped execution
                     let timeout = tool_timeout_for(&tool_call.name);
                     let timeout_secs = timeout.as_secs();
@@ -915,6 +932,7 @@ pub async fn run_agent_loop(
                             tts_engine,
                             docker_config,
                             process_manager,
+                            compiled_file_policy.as_ref(),
                         ),
                     )
                     .await
@@ -2081,6 +2099,23 @@ pub async fn run_agent_loop_streaming(
                     // Resolve effective exec policy (per-agent override or global)
                     let effective_exec_policy = manifest.exec_policy.as_ref();
 
+                    // ANAI-40: compile the agent's file_policy (if any) against the
+                    // workspace root. We need a workspace to compile because the
+                    // policy binds `workspace` at compile time (the implicit-allow
+                    // tier in `evaluate`). Compilation is cheap (glob-count small);
+                    // any compile error is logged and falls back to the legacy
+                    // workspace hard-lock — failing closed against unsafe configs.
+                    let compiled_file_policy = match (manifest.file_policy.as_ref(), workspace_root) {
+                        (Some(fp), Some(ws)) => match fp.compile(ws.to_path_buf()) {
+                            Ok(c) => Some(c),
+                            Err(e) => {
+                                warn!(error = %e, "Failed to compile file_policy; falling back to workspace sandbox");
+                                None
+                            }
+                        },
+                        _ => None,
+                    };
+
                     // Timeout-wrapped execution
                     let timeout = tool_timeout_for(&tool_call.name);
                     let timeout_secs = timeout.as_secs();
@@ -2108,6 +2143,7 @@ pub async fn run_agent_loop_streaming(
                             tts_engine,
                             docker_config,
                             process_manager,
+                            compiled_file_policy.as_ref(),
                         ),
                     )
                     .await
