@@ -40,11 +40,21 @@
 //! task exits and the bridge process terminates. CC will be torn down by the
 //! daemon shortly after, which also signals our death.
 
+// The MCP bridge IPC is unix-domain-socket-only. On non-unix platforms this
+// crate ships as a no-op stub binary (see the `#[cfg(not(unix))] fn main`
+// at the bottom of this file). Proper Windows transport (named pipes / TCP
+// loopback) is a follow-up.
+
+#[cfg(unix)]
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(unix)]
 use anyhow::{Context, Result, anyhow, bail};
+#[cfg(unix)]
 use openfang_mcp_bridge::{
     Bridge, DispatchOk, ToolDispatchError, ToolDispatcher,
     protocol::{
@@ -52,24 +62,31 @@ use openfang_mcp_bridge::{
         TOKEN_ENV_VAR, codec,
     },
 };
+#[cfg(unix)]
 use rmcp::{ServiceExt, transport::stdio};
 use tokio::io::BufReader;
+#[cfg(unix)]
 use tokio::net::UnixStream;
+#[cfg(unix)]
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing_subscriber::EnvFilter;
 
 /// Env var carrying the parent agent id. Stub for ANAI-30; ANAI-31 derives
 /// identity from the token so this becomes redundant.
+#[cfg(unix)]
 const AGENT_ID_ENV_VAR: &str = "OPENFANG_BRIDGE_AGENT_ID";
 
 /// Env var with an optional comma-separated tool allowlist override. Default
 /// is the ANAI-30 four-tool slice.
+#[cfg(unix)]
 const ALLOWED_ENV_VAR: &str = "OPENFANG_BRIDGE_ALLOWED";
 
 /// Default tool allowlist when [`ALLOWED_ENV_VAR`] is unset. Mirrors the
 /// daemon's `bridge_ipc::ALLOWED_TOOLS`.
+#[cfg(unix)]
 const DEFAULT_ALLOWED: &[&str] = &["file_read", "file_list", "agent_list", "channel_send"];
 
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<()> {
     // Tracing → stderr. Stdout is the MCP transport; do not pollute it.
@@ -126,6 +143,7 @@ async fn main() -> Result<()> {
 }
 
 /// Send Hello, await HelloAck. Errors on rejection or wire issues.
+#[cfg(unix)]
 async fn handshake(stream: &mut UnixStream, token: &str) -> Result<()> {
     let (read_half, mut write_half) = stream.split();
     let mut read_half = BufReader::new(read_half);
@@ -153,10 +171,12 @@ async fn handshake(stream: &mut UnixStream, token: &str) -> Result<()> {
 
 /// One pending request: the slot the actor will fill when its response frame
 /// arrives over the wire.
+#[cfg(unix)]
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<CallResult>>>>;
 
 /// Message dispatcher → actor: a tool call to put on the wire, plus a
 /// oneshot to fill with the response.
+#[cfg(unix)]
 struct IpcRequest {
     call: CallRequest,
     reply: oneshot::Sender<CallResult>,
@@ -164,6 +184,7 @@ struct IpcRequest {
 
 /// Bridge-side `ToolDispatcher` impl. Forwards each call to the actor task
 /// over an mpsc and awaits the correlated response.
+#[cfg(unix)]
 pub struct IpcDispatcher {
     agent_id: String,
     allowed: Vec<String>,
@@ -171,6 +192,7 @@ pub struct IpcDispatcher {
     next_id: AtomicU64,
 }
 
+#[cfg(unix)]
 #[async_trait::async_trait]
 impl ToolDispatcher for IpcDispatcher {
     fn agent_id(&self) -> &str {
@@ -228,6 +250,7 @@ impl ToolDispatcher for IpcDispatcher {
 ///
 /// Either side exiting causes the other to wind down — the channel closes
 /// on drop and the stream closes on EOF.
+#[cfg(unix)]
 pub fn spawn_ipc_actor(
     stream: UnixStream,
     agent_id: String,
@@ -324,7 +347,22 @@ pub fn spawn_ipc_actor(
     }
 }
 
-#[cfg(test)]
+/// Stub entrypoint for non-unix platforms. The bridge requires unix-domain
+/// sockets to talk to the daemon; on Windows it ships as this no-op binary
+/// so the workspace builds cleanly and operators get a clear runtime error
+/// rather than a compile failure.
+#[cfg(not(unix))]
+fn main() {
+    eprintln!(
+        "openfang-mcp-bridge requires unix-domain sockets and is not supported \
+         on this platform. Daemon will run without bridge IPC; CC subprocesses \
+         spawn without --mcp-config. Track the upstream follow-up issue for \
+         Windows transport (named pipes / TCP loopback)."
+    );
+    std::process::exit(1);
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use openfang_mcp_bridge::protocol::{CallResponse, Hello, HelloAck};

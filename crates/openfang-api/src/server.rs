@@ -848,6 +848,20 @@ pub async fn run_daemon(
     // non-fatal — the daemon can still serve HTTP without bridge support;
     // we just log and skip. The handle is held for the lifetime of the
     // daemon and dropped on shutdown to remove the socket.
+    //
+    // The bridge IPC is unix-domain-socket-only. On Windows the daemon runs
+    // without bridge support and CC subprocesses spawn without `--mcp-config`
+    // (the CC driver's gate detects the missing OPENFANG_BRIDGE_SOCKET env
+    // var and falls through to the bridge-disabled path). Proper Windows
+    // transport (named pipes / TCP loopback) is a follow-up.
+    #[cfg(not(unix))]
+    {
+        info!(
+            "MCP bridge: unix-domain-socket-only; not started on this platform. \
+             Daemon will run without bridge IPC; CC subprocesses spawn without --mcp-config."
+        );
+    }
+    #[cfg(unix)]
     let _bridge_ipc = match crate::bridge_ipc::BridgeIpcServer::start(kernel.clone()).await {
         Ok(h) => {
             // Publish discovery env vars so subprocess drivers (Claude Code,
