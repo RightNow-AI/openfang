@@ -193,10 +193,10 @@ fn extract_cp_mv(argv: &[String]) -> Vec<(PathBuf, FileOp)> {
 ///   - Is `-i` (in-place) set? → input files become Write.
 ///   - Otherwise, input files are Read.
 ///
-/// We don't reliably know which positional is the script vs a file (depends
-/// on whether `-e`/`-f` was used), so we evaluate all positionals at the
-/// chosen op. False positives on a script-string are harmless: the policy
-/// won't match it as a path.
+/// We don't reliably know which positional is the script vs a file
+/// (depends on whether `-e`/`-f` was used), so we evaluate all
+/// positionals at the chosen op. False positives on a script-string
+/// are harmless: the policy won't match it as a path.
 fn extract_sed(argv: &[String]) -> Vec<(PathBuf, FileOp)> {
     let in_place = argv.iter().any(|t| {
         // GNU/BSD: `-i`, `-i.bak`, `-i ''`, `--in-place`, `--in-place=.bak`
