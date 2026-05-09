@@ -11,9 +11,12 @@
 //! Per the ANAI-40 brief, v1 covers:
 //!
 //! - **Read-only:** `cat`, `rg`, `grep`, `head`, `tail`, `less`, `wc`, `ls`,
-//!   `find` (root arg).
+//!   `find` (root arg, when no destructive primary).
 //! - **Write:** `cp` (dst), `mv` (dst), `rm`, `mkdir`, `tee` (target file),
-//!   plus `cp` / `mv` source paths as Read.
+//!   `touch`, `sed -i` (in-place input files), `dd of=`, `find -delete` /
+//!   `find -fprint*` / `find -fls` (the find roots become Write; the
+//!   explicit `-fprint{,0,f} TARGET` and `-fls TARGET` files become Write).
+//!   `cp` / `mv` source paths are tagged Read.
 //!
 //! Shell metacharacters (`>`, `>>`, `|`, `<`, `&`, `;`, `$()`, backticks,
 //! brace expansion, newlines, etc.) are already rejected upstream by
@@ -23,6 +26,18 @@
 //! Anything not in the table → we return `Unknown`. The caller decides what
 //! to do (current policy: fall through to `exec_policy`; `file_policy` does
 //! not gate unrecognized commands).
+//!
+//! ## Prerequisite: `exec_policy = Allowlist`
+//!
+//! `file_policy` enforcement on the shell vector is only meaningful when
+//! `exec_policy.mode = "allowlist"`. In `Full` mode, an agent can rename or
+//! shadow binaries (`alias mycat=cat`, copy `/bin/cat` to `mycat`, write a
+//! tiny script named `myrm`, etc.) and the extractor — which keys off
+//! `argv[0]` basename — will fall through to `Unknown`. Treat the shell-vector
+//! gate as **best-effort** under `Full`; the MCP `file_*` tools remain fully
+//! gated regardless of `exec_policy`. For strong enforcement on the shell
+//! vector, agents should run with `exec_policy.mode = "allowlist"` and a
+//! curated `allowed_commands` list.
 //!
 //! ## Design notes
 //!
@@ -83,8 +98,8 @@ pub fn extract(argv: &[String]) -> Extraction {
             Extraction::Known(positional_paths(rest, FileOp::Read))
         }
 
-        // Write: rm/mkdir touch every positional path destructively.
-        "rm" | "mkdir" => Extraction::Known(positional_paths(rest, FileOp::Write)),
+        // Write: rm/mkdir/touch touch every positional path destructively.
+        "rm" | "mkdir" | "touch" => Extraction::Known(positional_paths(rest, FileOp::Write)),
 
         // cp / mv: positionals are [src.., dst]. Sources Read, dst Write.
         "cp" | "mv" => Extraction::Known(extract_cp_mv(rest)),
@@ -93,8 +108,20 @@ pub fn extract(argv: &[String]) -> Extraction {
         // `tee -a FILE` still writes.
         "tee" => Extraction::Known(positional_paths(rest, FileOp::Write)),
 
-        // find: first positional (or args until first primary `-name`/`-type`/...)
-        // is the root being read.
+        // sed: `sed [-i[SUFFIX]] SCRIPT FILE...`. With `-i` (in-place edit),
+        // the input files are Write targets; without, they're Read. The first
+        // positional is normally the script, not a file — but flagging it as
+        // Read/Write is harmless if it's not a real path (it won't match
+        // any policy rule that targets actual files).
+        "sed" => Extraction::Known(extract_sed(rest)),
+
+        // dd: `dd if=SRC of=DST [bs=...] [count=...]`. Key=value form, not
+        // positional. `if=` is Read, `of=` is Write.
+        "dd" => Extraction::Known(extract_dd(rest)),
+
+        // find: roots up to first primary; some primaries are destructive
+        // (`-delete`) or have file-output sinks (`-fprint`, `-fprint0`,
+        // `-fprintf`, `-fls`).
         "find" => Extraction::Known(extract_find(rest)),
 
         _ => Extraction::Unknown,
@@ -125,10 +152,12 @@ fn positional_paths(argv: &[String], op: FileOp) -> Vec<(PathBuf, FileOp)> {
             if is_flag(tok) {
                 continue;
             }
-        }
-        // `-` as a bare token = stdin/stdout, not a path. Skip.
-        if tok == "-" {
-            continue;
+            // `-` as a bare token = stdin/stdout, not a path. Skip — but
+            // only while options are still being parsed. Post-`--`, `-` is
+            // a literal filename per POSIX.
+            if tok == "-" {
+                continue;
+            }
         }
         out.push((PathBuf::from(tok), op));
     }
@@ -158,13 +187,57 @@ fn extract_cp_mv(argv: &[String]) -> Vec<(PathBuf, FileOp)> {
     out
 }
 
+/// `sed [-i[SUFFIX]] [-n] [-e SCRIPT|-f FILE] [SCRIPT] FILE...`.
+///
+/// We only need to know two things:
+///   - Is `-i` (in-place) set? → input files become Write.
+///   - Otherwise, input files are Read.
+/// We don't reliably know which positional is the script vs a file (depends
+/// on whether `-e`/`-f` was used), so we evaluate all positionals at the
+/// chosen op. False positives on a script-string are harmless: the policy
+/// won't match it as a path.
+fn extract_sed(argv: &[String]) -> Vec<(PathBuf, FileOp)> {
+    let in_place = argv.iter().any(|t| {
+        // GNU/BSD: `-i`, `-i.bak`, `-i ''`, `--in-place`, `--in-place=.bak`
+        t == "-i"
+            || t.starts_with("-i") && t.len() > 1 && !t.starts_with("--")
+            || t == "--in-place"
+            || t.starts_with("--in-place=")
+    });
+    let op = if in_place { FileOp::Write } else { FileOp::Read };
+    positional_paths(argv, op)
+}
+
+/// `dd if=SRC of=DST [other=...]`. Key=value form; `if=` is Read, `of=` is Write.
+/// Anything else is ignored.
+fn extract_dd(argv: &[String]) -> Vec<(PathBuf, FileOp)> {
+    let mut out = Vec::new();
+    for tok in argv {
+        if let Some(rest) = tok.strip_prefix("if=") {
+            if !rest.is_empty() {
+                out.push((PathBuf::from(rest), FileOp::Read));
+            }
+        } else if let Some(rest) = tok.strip_prefix("of=") {
+            if !rest.is_empty() {
+                out.push((PathBuf::from(rest), FileOp::Write));
+            }
+        }
+    }
+    out
+}
+
 /// `find [PATH...] [PRIMARY...]`.
 ///
-/// Paths are the positionals up to the first primary (any token starting
-/// with `-`). Default path is `.` if none given. We do not descend into
-/// `-name`/`-path` patterns — those are matchers, not roots.
+/// Roots are the positionals up to the first primary (any token starting
+/// with `-`). Default path is `.` if none given. Then we scan the entire
+/// argv for destructive / file-output primaries:
+///
+///   - `-delete` → mark every root as Write.
+///   - `-fprint TARGET`, `-fprint0 TARGET`, `-fprintf TARGET FMT`, `-fls TARGET`
+///     → emit (TARGET, Write). The next token is the file argument.
 fn extract_find(argv: &[String]) -> Vec<(PathBuf, FileOp)> {
-    let mut roots = Vec::new();
+    // 1. Collect roots.
+    let mut roots: Vec<PathBuf> = Vec::new();
     for tok in argv {
         if tok.starts_with('-') {
             break;
@@ -174,17 +247,54 @@ fn extract_find(argv: &[String]) -> Vec<(PathBuf, FileOp)> {
     if roots.is_empty() {
         roots.push(PathBuf::from("."));
     }
-    roots.into_iter().map(|p| (p, FileOp::Read)).collect()
+
+    // 2. Scan for destructive / sink primaries.
+    let mut roots_are_writes = false;
+    let mut sinks: Vec<PathBuf> = Vec::new();
+    let mut i = 0;
+    while i < argv.len() {
+        let tok = &argv[i];
+        match tok.as_str() {
+            "-delete" => {
+                roots_are_writes = true;
+            }
+            "-fprint" | "-fprint0" | "-fls" => {
+                if let Some(target) = argv.get(i + 1) {
+                    sinks.push(PathBuf::from(target));
+                    i += 1;
+                }
+            }
+            "-fprintf" => {
+                // `-fprintf FILE FORMAT`: the FILE is the first arg.
+                if let Some(target) = argv.get(i + 1) {
+                    sinks.push(PathBuf::from(target));
+                    i += 2; // skip FILE and FORMAT
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let root_op = if roots_are_writes {
+        FileOp::Write
+    } else {
+        FileOp::Read
+    };
+    let mut out: Vec<(PathBuf, FileOp)> = roots.into_iter().map(|p| (p, root_op)).collect();
+    out.extend(sinks.into_iter().map(|p| (p, FileOp::Write)));
+    out
 }
 
 // ---------------------------------------------------------------------------
 // Token classification
 // ---------------------------------------------------------------------------
 
-/// True if `tok` looks like a flag: starts with `-` and is not the bare `-`
-/// (which conventionally means stdin/stdout).
+/// True if `tok` looks like a flag: starts with `-`, is at least two chars,
+/// and is not the bare `--` end-of-options marker. (`--` is structurally
+/// distinct from a flag and callers handle it explicitly.)
 fn is_flag(tok: &str) -> bool {
-    tok.len() > 1 && tok.starts_with('-')
+    tok != "--" && tok.len() > 1 && tok.starts_with('-')
 }
 
 /// Iterator over positionals only, honoring `--` end-of-options.
@@ -192,7 +302,8 @@ fn strip_flags(argv: &[String]) -> impl Iterator<Item = &String> {
     let mut end = false;
     argv.iter().filter(move |tok| {
         if end {
-            return tok.as_str() != "-"; // `-` is stdin, not a path.
+            // Post-`--`, every token is a positional, including `-`.
+            return true;
         }
         if *tok == "--" {
             end = true;
@@ -266,10 +377,17 @@ mod tests {
     }
 
     #[test]
-    fn bare_dash_is_not_a_path() {
+    fn bare_dash_is_not_a_path_pre_double_dash() {
         // `cat -` reads stdin; not a filesystem path.
         let got = paths(extract(&argv(&["cat", "-", "/etc/hosts"])));
         assert_eq!(got, vec![(PathBuf::from("/etc/hosts"), FileOp::Read)]);
+    }
+
+    #[test]
+    fn bare_dash_is_filename_post_double_dash() {
+        // POSIX: `cat -- -` treats `-` as a literal filename.
+        let got = paths(extract(&argv(&["cat", "--", "-"])));
+        assert_eq!(got, vec![(PathBuf::from("-"), FileOp::Read)]);
     }
 
     #[test]
@@ -304,6 +422,12 @@ mod tests {
     fn mkdir_is_write() {
         let got = paths(extract(&argv(&["mkdir", "-p", "/tmp/new/dir"])));
         assert_eq!(got, vec![(PathBuf::from("/tmp/new/dir"), FileOp::Write)]);
+    }
+
+    #[test]
+    fn touch_is_write() {
+        let got = paths(extract(&argv(&["touch", "/tmp/marker"])));
+        assert_eq!(got, vec![(PathBuf::from("/tmp/marker"), FileOp::Write)]);
     }
 
     #[test]
@@ -342,6 +466,78 @@ mod tests {
     }
 
     #[test]
+    fn sed_default_is_read() {
+        let got = paths(extract(&argv(&["sed", "s/a/b/", "/etc/hosts"])));
+        assert_eq!(
+            got,
+            vec![
+                (PathBuf::from("s/a/b/"), FileOp::Read),
+                (PathBuf::from("/etc/hosts"), FileOp::Read),
+            ]
+        );
+    }
+
+    #[test]
+    fn sed_in_place_short_flag_is_write() {
+        let got = paths(extract(&argv(&["sed", "-i", "s/a/b/", "/etc/hosts"])));
+        assert_eq!(
+            got,
+            vec![
+                (PathBuf::from("s/a/b/"), FileOp::Write),
+                (PathBuf::from("/etc/hosts"), FileOp::Write),
+            ]
+        );
+    }
+
+    #[test]
+    fn sed_in_place_with_suffix_is_write() {
+        // BSD form: `-i.bak` (suffix glued to the flag).
+        let got = paths(extract(&argv(&["sed", "-i.bak", "s/a/b/", "/etc/hosts"])));
+        assert_eq!(
+            got,
+            vec![
+                (PathBuf::from("s/a/b/"), FileOp::Write),
+                (PathBuf::from("/etc/hosts"), FileOp::Write),
+            ]
+        );
+    }
+
+    #[test]
+    fn sed_in_place_long_flag_is_write() {
+        let got = paths(extract(&argv(&[
+            "sed",
+            "--in-place=.bak",
+            "s/a/b/",
+            "/etc/hosts",
+        ])));
+        assert_eq!(
+            got,
+            vec![
+                (PathBuf::from("s/a/b/"), FileOp::Write),
+                (PathBuf::from("/etc/hosts"), FileOp::Write),
+            ]
+        );
+    }
+
+    #[test]
+    fn dd_if_is_read_of_is_write() {
+        let got = paths(extract(&argv(&[
+            "dd",
+            "if=/dev/zero",
+            "of=/tmp/zeros",
+            "bs=1M",
+            "count=10",
+        ])));
+        assert_eq!(
+            got,
+            vec![
+                (PathBuf::from("/dev/zero"), FileOp::Read),
+                (PathBuf::from("/tmp/zeros"), FileOp::Write),
+            ]
+        );
+    }
+
+    #[test]
     fn find_uses_first_positional_as_root() {
         let got = paths(extract(&argv(&[
             "find", "/etc", "-name", "*.conf", "-type", "f",
@@ -368,6 +564,53 @@ mod tests {
     }
 
     #[test]
+    fn find_delete_promotes_roots_to_write() {
+        let got = paths(extract(&argv(&[
+            "find", "/etc", "-name", "*.bak", "-delete",
+        ])));
+        assert_eq!(got, vec![(PathBuf::from("/etc"), FileOp::Write)]);
+    }
+
+    #[test]
+    fn find_fprint_emits_target_as_write() {
+        let got = paths(extract(&argv(&[
+            "find",
+            "/etc",
+            "-name",
+            "*.conf",
+            "-fprint",
+            "/tmp/out.list",
+        ])));
+        assert_eq!(
+            got,
+            vec![
+                (PathBuf::from("/etc"), FileOp::Read),
+                (PathBuf::from("/tmp/out.list"), FileOp::Write),
+            ]
+        );
+    }
+
+    #[test]
+    fn find_fprintf_skips_format_arg() {
+        // `-fprintf FILE FORMAT` — FILE is the sink; FORMAT must not be
+        // mis-treated as a `-fprint`-style arg.
+        let got = paths(extract(&argv(&[
+            "find",
+            "/etc",
+            "-fprintf",
+            "/tmp/out.list",
+            "%p\\n",
+        ])));
+        assert_eq!(
+            got,
+            vec![
+                (PathBuf::from("/etc"), FileOp::Read),
+                (PathBuf::from("/tmp/out.list"), FileOp::Write),
+            ]
+        );
+    }
+
+    #[test]
     fn ls_with_only_flags_yields_no_paths() {
         // `ls -la` lists CWD; the extractor returns no explicit paths and
         // the caller can decide whether to evaluate CWD itself.
@@ -380,5 +623,16 @@ mod tests {
         // `/usr/bin/cat` should be treated identically to `cat`.
         let got = paths(extract(&argv(&["/usr/bin/cat", "/etc/hosts"])));
         assert_eq!(got, vec![(PathBuf::from("/etc/hosts"), FileOp::Read)]);
+    }
+
+    #[test]
+    fn is_flag_rejects_double_dash_structurally() {
+        // Reviewer-mandated: `is_flag("--")` must return false on its own,
+        // not merely be saved by an earlier `tok == "--"` short-circuit.
+        assert!(!is_flag("--"));
+        assert!(is_flag("-rf"));
+        assert!(is_flag("--long"));
+        assert!(!is_flag("-"));
+        assert!(!is_flag("file"));
     }
 }

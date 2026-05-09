@@ -960,6 +960,12 @@ fn resolve_shell_path(raw: &Path, workspace_root: Option<&Path>) -> PathBuf {
 }
 
 /// Lexically collapse `.` and `..` components. Does not touch the filesystem.
+///
+/// POSIX semantics: `/..` is `/`. When the last accumulated component is a
+/// root or Windows prefix, a `ParentDir` token is dropped on the floor — it
+/// must never escape the root. (Pre-fixup, this leaked `..` past the root
+/// and produced paths like `/../etc/passwd` that bypassed `deny_paths` glob
+/// matching. See ANAI-40 code-review fixup.)
 fn lexically_normalize(p: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
@@ -967,15 +973,18 @@ fn lexically_normalize(p: &Path) -> PathBuf {
         match comp {
             Component::CurDir => {}
             Component::ParentDir => {
-                // Pop only if the last pushed component is a regular Normal
-                // directory; otherwise (root, prefix, or empty) leave as-is.
-                let popped = out.components().next_back().is_some_and(|c| {
-                    matches!(c, Component::Normal(_))
-                });
-                if popped {
-                    out.pop();
-                } else {
-                    out.push("..");
+                match out.components().next_back() {
+                    // Pop a regular directory.
+                    Some(Component::Normal(_)) => {
+                        out.pop();
+                    }
+                    // POSIX: `/..` is `/`. Same for Windows root + prefix.
+                    // Dropping the ParentDir is correct — never escape root.
+                    Some(Component::RootDir)
+                    | Some(Component::Prefix(_)) => {}
+                    // Empty out, or trailing `..`/`.` already in a relative
+                    // path — preserve the `..` for the caller.
+                    _ => out.push(".."),
                 }
             }
             other => out.push(other.as_os_str()),
@@ -998,6 +1007,7 @@ fn gate_shell_argv_against_file_policy(
     argv: &[String],
     workspace_root: Option<&Path>,
     file_policy: Option<&CompiledFilePolicy>,
+    tool_label: &str,
 ) -> Result<(), String> {
     let Some(policy) = file_policy else {
         return Ok(());
@@ -1009,21 +1019,29 @@ fn gate_shell_argv_against_file_policy(
     };
     for (raw, op) in pairs {
         let resolved = resolve_shell_path(&raw, workspace_root);
-        // The evaluator `debug_assert!`s on absolute paths. If we couldn't
-        // anchor (no workspace, relative path), skip — exec_policy still gates.
+        // The evaluator `debug_assert!`s on absolute paths. If we can't
+        // anchor a relative path (no workspace_root provided), fail closed
+        // when a policy is configured: a future caller forgetting to thread
+        // the anchor must not silently bypass the gate.
         if !resolved.is_absolute() {
-            continue;
+            return Err(format!(
+                "{tool_label} blocked by file_policy: cannot anchor relative path \
+                 {raw:?} (workspace_root not provided to the gate, op = {op:?}). \
+                 This is a fail-closed safeguard."
+            ));
         }
         match policy.evaluate(&resolved, op) {
             FileDecision::Allow => {}
             FileDecision::Deny { reason } => {
                 return Err(format!(
-                    "shell_exec blocked by file_policy: {reason} (op = {op:?})"
+                    "{tool_label} blocked by file_policy: {reason} \
+                     (op = {op:?}, raw = {raw:?}, resolved = {resolved:?})"
                 ));
             }
             FileDecision::Prompt { reason } => {
                 return Err(format!(
-                    "shell_exec requires approval (file_policy prompt path): {reason}. \
+                    "{tool_label} requires approval (file_policy prompt path): {reason} \
+                     (op = {op:?}, raw = {raw:?}, resolved = {resolved:?}). \
                      Per-path approval surfacing is not yet wired (ANAI-40 step 5); \
                      until then, prompt-tier paths are rejected from the shell vector."
                 ));
@@ -1065,7 +1083,12 @@ async fn tool_shell_exec(
     // Applied to both Allowlist and Full modes — file_policy is orthogonal
     // to exec_policy and must hold even when shell access is unrestricted.
     if let Some(parsed_argv) = shlex::split(command) {
-        gate_shell_argv_against_file_policy(&parsed_argv, workspace_root, file_policy)?;
+        gate_shell_argv_against_file_policy(
+            &parsed_argv,
+            workspace_root,
+            file_policy,
+            "shell_exec",
+        )?;
     }
 
     let mut cmd = if use_direct_exec {
@@ -2788,8 +2811,12 @@ async fn tool_process_start(
         let mut argv = Vec::with_capacity(args.len() + 1);
         argv.push(command.to_string());
         argv.extend(args.iter().cloned());
-        gate_shell_argv_against_file_policy(&argv, workspace_root, file_policy)
-            .map_err(|e| e.replace("shell_exec", "process_start"))?;
+        gate_shell_argv_against_file_policy(
+            &argv,
+            workspace_root,
+            file_policy,
+            "process_start",
+        )?;
     }
 
     let proc_id = pm.start(agent_id, command, &args).await?;
@@ -4294,6 +4321,7 @@ mod tests {
             &argv,
             Some(workspace.path()),
             Some(&policy),
+            "shell_exec",
         );
         assert!(res.is_ok(), "unknown commands must pass the gate");
     }
@@ -4313,6 +4341,7 @@ mod tests {
             &argv,
             Some(workspace.path()),
             Some(&policy),
+            "shell_exec",
         )
         .expect_err("denied read path must trip the gate");
         assert!(err.contains("blocked by file_policy"), "got: {err}");
@@ -4334,6 +4363,7 @@ mod tests {
             &argv,
             Some(workspace.path()),
             Some(&policy),
+            "shell_exec",
         )
         .expect_err("default-deny write must trip the gate");
         assert!(err.contains("blocked by file_policy"), "got: {err}");
@@ -4353,7 +4383,7 @@ mod tests {
             src.to_string_lossy().into_owned(),
             dst.to_string_lossy().into_owned(),
         ];
-        let res = gate_shell_argv_against_file_policy(&argv, Some(&ws), Some(&policy));
+        let res = gate_shell_argv_against_file_policy(&argv, Some(&ws), Some(&policy), "shell_exec");
         assert!(res.is_ok(), "workspace-internal cp must pass: {res:?}");
     }
 
@@ -4365,7 +4395,7 @@ mod tests {
         let ws = workspace.path().canonicalize().unwrap();
         let policy = build_compiled_policy(&ws, vec![], vec![], vec![], vec![]);
         let argv = vec!["cat".to_string(), "notes.txt".to_string()];
-        let res = gate_shell_argv_against_file_policy(&argv, Some(&ws), Some(&policy));
+        let res = gate_shell_argv_against_file_policy(&argv, Some(&ws), Some(&policy), "shell_exec");
         // Resolves to <ws>/notes.txt → workspace implicit allow → ok.
         assert!(res.is_ok(), "relative path inside workspace must pass: {res:?}");
     }
@@ -4384,7 +4414,7 @@ mod tests {
             vec![],
         );
         let argv = vec!["tee".to_string(), "/var/log/app.log".to_string()];
-        let err = gate_shell_argv_against_file_policy(&argv, Some(&ws), Some(&policy))
+        let err = gate_shell_argv_against_file_policy(&argv, Some(&ws), Some(&policy), "shell_exec")
             .expect_err("prompt path must fail closed pre-step-5");
         assert!(err.contains("requires approval"), "got: {err}");
     }
@@ -4394,7 +4424,7 @@ mod tests {
         // Without a policy, the gate must not block anything — preserves
         // pre-ANAI-40 behavior for agents that ship no [file_policy] block.
         let argv = vec!["rm".to_string(), "/etc/hosts".to_string()];
-        let res = gate_shell_argv_against_file_policy(&argv, None, None);
+        let res = gate_shell_argv_against_file_policy(&argv, None, None, "shell_exec");
         assert!(res.is_ok(), "no-policy gate must be a no-op");
     }
 
@@ -4403,6 +4433,103 @@ mod tests {
         let p = std::path::PathBuf::from("/ws/sub/../other/./file.txt");
         let norm = lexically_normalize(&p);
         assert_eq!(norm, std::path::PathBuf::from("/ws/other/file.txt"));
+    }
+
+    #[test]
+    fn test_lexically_normalize_does_not_escape_root() {
+        // Regression: pre-fixup, /ws/sub/../../../etc/passwd collapsed to
+        // /../etc/passwd (literal `..` pushed when last component was
+        // RootDir), which then string-bypassed `deny_paths = ["/etc/**"]`
+        // glob matching. Now `/..` is a no-op and we get /etc/passwd —
+        // which DOES match the deny rule.
+        assert_eq!(
+            lexically_normalize(&std::path::PathBuf::from("/..")),
+            std::path::PathBuf::from("/")
+        );
+        assert_eq!(
+            lexically_normalize(&std::path::PathBuf::from("/../../etc/passwd")),
+            std::path::PathBuf::from("/etc/passwd")
+        );
+        assert_eq!(
+            lexically_normalize(&std::path::PathBuf::from(
+                "/ws/sub/../../../etc/passwd"
+            )),
+            std::path::PathBuf::from("/etc/passwd")
+        );
+    }
+
+    #[test]
+    fn test_shell_gate_blocks_dot_dot_escape_to_denied_path() {
+        // End-to-end regression for the must-fix: argv with `..` traversal
+        // past root must still be caught by `deny_paths` after lexical
+        // normalization.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec!["/etc/**".to_string()],
+        );
+        let argv = vec![
+            "cat".to_string(),
+            "/ws/sub/../../../etc/passwd".to_string(),
+        ];
+        let err = gate_shell_argv_against_file_policy(
+            &argv,
+            Some(workspace.path()),
+            Some(&policy),
+            "shell_exec",
+        )
+        .expect_err("dot-dot escape must hit deny_paths");
+        assert!(err.contains("blocked by file_policy"), "got: {err}");
+    }
+
+    #[test]
+    fn test_shell_gate_fails_closed_without_workspace_anchor() {
+        // Fail-closed: relative path + policy configured + no workspace_root
+        // must Err, not silently pass. (Pre-fixup, this was a `continue`.)
+        let workspace = tempfile::TempDir::new().unwrap();
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let argv = vec!["cat".to_string(), "notes.txt".to_string()];
+        let err = gate_shell_argv_against_file_policy(&argv, None, Some(&policy), "shell_exec")
+            .expect_err("missing workspace_root with active policy must fail closed");
+        assert!(
+            err.contains("cannot anchor relative path"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_shell_gate_uses_tool_label_in_error() {
+        // process_start vs shell_exec: the error must reflect the calling
+        // tool, not be patched up via string replace.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec!["/etc/**".to_string()],
+        );
+        let argv = vec!["cat".to_string(), "/etc/passwd".to_string()];
+        let err = gate_shell_argv_against_file_policy(
+            &argv,
+            Some(workspace.path()),
+            Some(&policy),
+            "process_start",
+        )
+        .expect_err("denied path");
+        assert!(
+            err.starts_with("process_start blocked by file_policy"),
+            "label must lead the error: {err}"
+        );
     }
 
     #[tokio::test]
