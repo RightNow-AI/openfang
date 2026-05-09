@@ -192,6 +192,7 @@ fn extract_cp_mv(argv: &[String]) -> Vec<(PathBuf, FileOp)> {
 /// We only need to know two things:
 ///   - Is `-i` (in-place) set? → input files become Write.
 ///   - Otherwise, input files are Read.
+///
 /// We don't reliably know which positional is the script vs a file (depends
 /// on whether `-e`/`-f` was used), so we evaluate all positionals at the
 /// chosen op. False positives on a script-string are harmless: the policy
@@ -204,7 +205,11 @@ fn extract_sed(argv: &[String]) -> Vec<(PathBuf, FileOp)> {
             || t == "--in-place"
             || t.starts_with("--in-place=")
     });
-    let op = if in_place { FileOp::Write } else { FileOp::Read };
+    let op = if in_place {
+        FileOp::Write
+    } else {
+        FileOp::Read
+    };
     positional_paths(argv, op)
 }
 
@@ -370,10 +375,7 @@ mod tests {
     fn double_dash_ends_options() {
         // After `--`, even `-foo` is a path.
         let got = paths(extract(&argv(&["cat", "--", "-weird-filename"])));
-        assert_eq!(
-            got,
-            vec![(PathBuf::from("-weird-filename"), FileOp::Read)]
-        );
+        assert_eq!(got, vec![(PathBuf::from("-weird-filename"), FileOp::Read)]);
     }
 
     #[test]
