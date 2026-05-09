@@ -32,6 +32,11 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+// MCP bridge IPC is unix-domain-socket-only. On Windows the daemon runs
+// without bridge support; the openfang-mcp-bridge binary itself ships as a
+// no-op stub. Proper Windows transport (named pipes / TCP loopback) is
+// tracked as a follow-up — see the upstream issue filed alongside this fix.
+#[cfg(unix)]
 pub mod bridge_ipc;
 pub mod channel_bridge;
 pub mod middleware;
