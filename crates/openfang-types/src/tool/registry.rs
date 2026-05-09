@@ -746,7 +746,11 @@ mod tests {
     #[test]
     fn registry_is_non_empty_and_unique() {
         let defs = builtin_tool_definitions();
-        assert!(defs.len() >= 40, "expected at least 40 built-in tools, got {}", defs.len());
+        assert!(
+            defs.len() >= 40,
+            "expected at least 40 built-in tools, got {}",
+            defs.len()
+        );
         let names: HashSet<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names.len(), defs.len(), "duplicate tool names in registry");
     }
@@ -756,13 +760,20 @@ mod tests {
         let defs = builtin_tool_definitions();
         let names: HashSet<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         for required in [
-            "file_read", "file_write", "file_list",
+            "file_read",
+            "file_write",
+            "file_list",
             "shell_exec",
-            "agent_send", "agent_list",
-            "memory_store", "memory_recall",
+            "agent_send",
+            "agent_list",
+            "memory_store",
+            "memory_recall",
             "channel_send",
         ] {
-            assert!(names.contains(required), "missing canonical tool: {required}");
+            assert!(
+                names.contains(required),
+                "missing canonical tool: {required}"
+            );
         }
     }
 }

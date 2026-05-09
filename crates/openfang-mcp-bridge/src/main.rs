@@ -41,21 +41,21 @@
 //! daemon shortly after, which also signals our death.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use openfang_mcp_bridge::{
-    Bridge, DispatchOk, ToolDispatchError, ToolDispatcher,
     protocol::{
-        CallRequest, CallResult, Frame, Hello, HelloAck, PROTOCOL_VERSION, SOCKET_ENV_VAR,
-        TOKEN_ENV_VAR, codec,
+        codec, CallRequest, CallResult, Frame, Hello, HelloAck, PROTOCOL_VERSION, SOCKET_ENV_VAR,
+        TOKEN_ENV_VAR,
     },
+    Bridge, DispatchOk, ToolDispatchError, ToolDispatcher,
 };
-use rmcp::{ServiceExt, transport::stdio};
+use rmcp::{transport::stdio, ServiceExt};
 use tokio::io::BufReader;
 use tokio::net::UnixStream;
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing_subscriber::EnvFilter;
 
 /// Env var carrying the parent agent id. Stub for ANAI-30; ANAI-31 derives
@@ -139,7 +139,10 @@ async fn handshake(stream: &mut UnixStream, token: &str) -> Result<()> {
         .await
         .context("write Hello")?;
 
-    match codec::read_frame(&mut read_half).await.context("read HelloAck")? {
+    match codec::read_frame(&mut read_half)
+        .await
+        .context("read HelloAck")?
+    {
         Frame::HelloAck(HelloAck::Ok { daemon_version }) => {
             tracing::info!(daemon_version, "bridge IPC handshake ok");
             Ok(())
@@ -203,9 +206,10 @@ impl ToolDispatcher for IpcDispatcher {
             reply: reply_tx,
         };
 
-        self.tx.send(req).await.map_err(|_| {
-            ToolDispatchError::Execution(anyhow!("bridge IPC actor has shut down"))
-        })?;
+        self.tx
+            .send(req)
+            .await
+            .map_err(|_| ToolDispatchError::Execution(anyhow!("bridge IPC actor has shut down")))?;
 
         let result = reply_rx
             .await

@@ -46,11 +46,7 @@ pub mod protocol;
 
 use std::sync::Arc;
 
-use rmcp::{
-    ErrorData as McpError, ServerHandler,
-    model::*,
-    service::RequestContext,
-};
+use rmcp::{model::*, service::RequestContext, ErrorData as McpError, ServerHandler};
 
 /// Narrow seam between the bridge and the OpenFang runtime.
 ///
@@ -160,7 +156,6 @@ pub fn built_in_tools() -> Vec<Tool> {
         .collect()
 }
 
-
 /// The MCP server handler — wraps a [`ToolDispatcher`] and serves the
 /// ANAI-32 tool surface over MCP.
 ///
@@ -241,17 +236,19 @@ impl ServerHandler for Bridge {
                     CallToolResult::success(blocks)
                 })
             }
-            Err(ToolDispatchError::UnknownTool(name)) => Ok(CallToolResult::error(vec![
-                Content::text(format!("unknown tool: {name}")),
-            ])),
-            Err(ToolDispatchError::NotPermitted(name)) => Ok(CallToolResult::error(vec![
-                Content::text(format!("not permitted: {name}")),
-            ])),
-            Err(ToolDispatchError::InvalidArgs { tool, reason }) => {
+            Err(ToolDispatchError::UnknownTool(name)) => {
                 Ok(CallToolResult::error(vec![Content::text(format!(
-                    "invalid args for {tool}: {reason}"
+                    "unknown tool: {name}"
                 ))]))
             }
+            Err(ToolDispatchError::NotPermitted(name)) => {
+                Ok(CallToolResult::error(vec![Content::text(format!(
+                    "not permitted: {name}"
+                ))]))
+            }
+            Err(ToolDispatchError::InvalidArgs { tool, reason }) => Ok(CallToolResult::error(
+                vec![Content::text(format!("invalid args for {tool}: {reason}"))],
+            )),
             Err(ToolDispatchError::Execution(e)) => Ok(CallToolResult::error(vec![Content::text(
                 format!("tool execution failed: {e}"),
             )])),
@@ -316,10 +313,14 @@ mod tests {
             .map(|t| t.name.into_owned())
             .collect();
         for required in [
-            "file_read", "file_write", "file_list",
+            "file_read",
+            "file_write",
+            "file_list",
             "shell_exec",
-            "agent_send", "agent_list",
-            "memory_store", "memory_recall",
+            "agent_send",
+            "agent_list",
+            "memory_store",
+            "memory_recall",
             "channel_send",
         ] {
             assert!(names.contains(required), "missing {required}");

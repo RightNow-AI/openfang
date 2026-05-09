@@ -362,13 +362,8 @@ fn try_build_bridge_mcp_config(
     let bridge_bin = std::env::var(BRIDGE_BIN_ENV).ok()?;
     let token = generate_bridge_token();
 
-    let cfg = build_bridge_mcp_config_value(
-        &socket,
-        &bridge_bin,
-        agent_id,
-        &token,
-        caller_allowed_tools,
-    );
+    let cfg =
+        build_bridge_mcp_config_value(&socket, &bridge_bin, agent_id, &token, caller_allowed_tools);
 
     // Place the config next to the socket so cleanup is colocated and the
     // bridge socket dir already exists with the right permissions.
@@ -501,22 +496,24 @@ impl LlmDriver for ClaudeCodeDriver {
         // env vars (`OPENFANG_BRIDGE_SOCKET` + `OPENFANG_BRIDGE_BIN`) and
         // the request carries a caller identity. The guard lives for the
         // remainder of the call; on drop it removes the temp config file.
-        let _bridge_cfg =
-            try_build_bridge_mcp_config(request.caller_agent_id.as_deref(), request.caller_allowed_tools.as_deref()).map(|cfg| {
-                cmd.arg("--mcp-config").arg(cfg.path());
-                // `--strict-mcp-config` makes CC ignore any user/global MCP
-                // config that might otherwise merge in — we want exactly
-                // the OpenFang bridge for this invocation, nothing else.
-                cmd.arg("--strict-mcp-config");
-                // Optional diagnostic: with `OPENFANG_BRIDGE_DEBUG=1` we add
-                // `--debug` so CC writes MCP launch + handshake details into
-                // `~/.claude/debug/<uuid>.txt`. Off by default — daemon-side
-                // bridge_ipc INFO logs are the supported observability path.
-                if bridge_debug_enabled() {
-                    cmd.arg("--debug");
-                }
-                cfg
-            });
+        let _bridge_cfg = try_build_bridge_mcp_config(
+            request.caller_agent_id.as_deref(),
+            request.caller_allowed_tools.as_deref(),
+        )
+        .inspect(|cfg| {
+            cmd.arg("--mcp-config").arg(cfg.path());
+            // `--strict-mcp-config` makes CC ignore any user/global MCP
+            // config that might otherwise merge in — we want exactly
+            // the OpenFang bridge for this invocation, nothing else.
+            cmd.arg("--strict-mcp-config");
+            // Optional diagnostic: with `OPENFANG_BRIDGE_DEBUG=1` we add
+            // `--debug` so CC writes MCP launch + handshake details into
+            // `~/.claude/debug/<uuid>.txt`. Off by default — daemon-side
+            // bridge_ipc INFO logs are the supported observability path.
+            if bridge_debug_enabled() {
+                cmd.arg("--debug");
+            }
+        });
         let bridge_wired = _bridge_cfg.is_some();
         let bridge_debug = bridge_wired && bridge_debug_enabled();
 
@@ -740,16 +737,18 @@ impl LlmDriver for ClaudeCodeDriver {
         // Bridge wiring (see `complete()` for full rationale). Guard kept
         // alive for the rest of the streaming function so the per-spawn
         // config file outlives the CC subprocess.
-        let _bridge_cfg =
-            try_build_bridge_mcp_config(request.caller_agent_id.as_deref(), request.caller_allowed_tools.as_deref()).map(|cfg| {
-                cmd.arg("--mcp-config").arg(cfg.path());
-                cmd.arg("--strict-mcp-config");
-                // Optional --debug — see complete() for rationale.
-                if bridge_debug_enabled() {
-                    cmd.arg("--debug");
-                }
-                cfg
-            });
+        let _bridge_cfg = try_build_bridge_mcp_config(
+            request.caller_agent_id.as_deref(),
+            request.caller_allowed_tools.as_deref(),
+        )
+        .inspect(|cfg| {
+            cmd.arg("--mcp-config").arg(cfg.path());
+            cmd.arg("--strict-mcp-config");
+            // Optional --debug — see complete() for rationale.
+            if bridge_debug_enabled() {
+                cmd.arg("--debug");
+            }
+        });
         let bridge_wired = _bridge_cfg.is_some();
         let bridge_debug = bridge_wired && bridge_debug_enabled();
 
@@ -1140,7 +1139,10 @@ mod tests {
             Some("/usr/local/bin/openfang-mcp-bridge")
         );
         assert!(
-            server.pointer("/args").map(|v| v.is_array()).unwrap_or(false),
+            server
+                .pointer("/args")
+                .map(|v| v.is_array())
+                .unwrap_or(false),
             "args must be a JSON array"
         );
 
@@ -1150,10 +1152,23 @@ mod tests {
             .pointer("/env")
             .and_then(|v| v.as_object())
             .expect("env object missing");
-        assert_eq!(env.len(), 3, "env must contain exactly socket/token/agent_id when allowed=None");
-        assert_eq!(env.get(BRIDGE_SOCKET_ENV).and_then(|v| v.as_str()), Some("/home/user/.openfang/run/bridge.sock"));
-        assert_eq!(env.get(BRIDGE_TOKEN_ENV).and_then(|v| v.as_str()), Some("tok-abc"));
-        assert_eq!(env.get(BRIDGE_AGENT_ID_ENV).and_then(|v| v.as_str()), Some("agent-uuid-1234"));
+        assert_eq!(
+            env.len(),
+            3,
+            "env must contain exactly socket/token/agent_id when allowed=None"
+        );
+        assert_eq!(
+            env.get(BRIDGE_SOCKET_ENV).and_then(|v| v.as_str()),
+            Some("/home/user/.openfang/run/bridge.sock")
+        );
+        assert_eq!(
+            env.get(BRIDGE_TOKEN_ENV).and_then(|v| v.as_str()),
+            Some("tok-abc")
+        );
+        assert_eq!(
+            env.get(BRIDGE_AGENT_ID_ENV).and_then(|v| v.as_str()),
+            Some("agent-uuid-1234")
+        );
         assert!(
             env.get(BRIDGE_ALLOWED_ENV).is_none(),
             "ALLOWED env must be omitted when caller_allowed_tools=None"
@@ -1169,9 +1184,7 @@ mod tests {
             .iter()
             .map(|s| (*s).to_string())
             .collect();
-        let cfg = build_bridge_mcp_config_value(
-            "/sock", "/bin", "agent", "tok", Some(&tools),
-        );
+        let cfg = build_bridge_mcp_config_value("/sock", "/bin", "agent", "tok", Some(&tools));
         let env = cfg
             .pointer("/mcpServers/openfang/env")
             .and_then(|v| v.as_object())
@@ -1189,9 +1202,7 @@ mod tests {
     #[test]
     fn test_build_bridge_mcp_config_empty_allowed_tools_emits_empty_env() {
         let tools: Vec<String> = vec![];
-        let cfg = build_bridge_mcp_config_value(
-            "/sock", "/bin", "agent", "tok", Some(&tools),
-        );
+        let cfg = build_bridge_mcp_config_value("/sock", "/bin", "agent", "tok", Some(&tools));
         let env = cfg
             .pointer("/mcpServers/openfang/env")
             .and_then(|v| v.as_object())

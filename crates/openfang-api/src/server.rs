@@ -880,7 +880,9 @@ pub async fn run_daemon(
                             let candidate = dir.join("openfang-mcp-bridge");
                             if candidate.exists() {
                                 // SAFETY: see above.
-                                unsafe { std::env::set_var(BRIDGE_BIN_ENV, &candidate); }
+                                unsafe {
+                                    std::env::set_var(BRIDGE_BIN_ENV, &candidate);
+                                }
                                 info!(
                                     bridge_bin = %candidate.display(),
                                     "bridge binary resolved via boot probe"

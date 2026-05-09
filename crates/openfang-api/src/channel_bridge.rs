@@ -2051,15 +2051,9 @@ async fn surface_followup(
         .as_deref()
         .ok_or_else(|| "binding missing channel_id".to_string())?;
 
-    <OpenFangKernel as KernelHandle>::send_channel_message(
-        kernel,
-        channel,
-        channel_id,
-        body,
-        None,
-    )
-    .await
-    .map(|_| ())
+    <OpenFangKernel as KernelHandle>::send_channel_message(kernel, channel, channel_id, body, None)
+        .await
+        .map(|_| ())
 }
 
 fn short_id(id: &str) -> String {
