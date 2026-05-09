@@ -409,7 +409,16 @@ pub async fn execute_tool(
         "knowledge_query" => tool_knowledge_query(input, kernel).await,
 
         // Image analysis tool
-        "image_analyze" => tool_image_analyze(input).await,
+        "image_analyze" => {
+            tool_image_analyze(
+                input,
+                workspace_root,
+                file_policy,
+                kernel,
+                caller_agent_id,
+            )
+            .await
+        }
 
         // Media understanding tools
         "media_describe" => {
@@ -2543,13 +2552,35 @@ async fn tool_a2a_send(
 // Image analysis tool
 // ---------------------------------------------------------------------------
 
-async fn tool_image_analyze(input: &serde_json::Value) -> Result<String, String> {
-    let path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
+async fn tool_image_analyze(
+    input: &serde_json::Value,
+    workspace_root: Option<&Path>,
+    file_policy: Option<&CompiledFilePolicy>,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
+) -> Result<String, String> {
+    let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
     let prompt = input["prompt"].as_str().unwrap_or("");
 
-    let data = tokio::fs::read(path)
+    // ANAI-40 fixup (review 7, must-fix #1): gate through file_policy before
+    // touching disk. Sibling tools `media_describe`/`media_transcribe` were
+    // wired in the review-6 fixup; `image_analyze` was missed because it had
+    // no `validate_path` call to grep for — the bypass was total.
+    let resolved = resolve_file_path(
+        raw_path,
+        workspace_root,
+        file_policy,
+        FileOp::Read,
+        kernel,
+        caller_agent_id,
+        "image_analyze",
+    )
+    .await?;
+
+    let data = tokio::fs::read(&resolved)
         .await
-        .map_err(|e| format!("Failed to read image '{path}': {e}"))?;
+        .map_err(|e| format!("Failed to read image '{raw_path}': {e}"))?;
+    let path = raw_path;
 
     let file_size = data.len();
 
@@ -5845,6 +5876,52 @@ mod tests {
         assert!(
             err.contains("denied by file_policy"),
             "error must surface as a file_policy denial, not an engine error: {err}"
+        );
+        assert_eq!(
+            stub.call_count(),
+            0,
+            "deny must short-circuit before approval surfacer fires"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_image_analyze_deny_path_blocks_before_read() {
+        // Review-7 fixup #1: image_analyze previously called `tokio::fs::read`
+        // with no policy gate (and no `validate_path` either — the bypass was
+        // total). A `deny_paths` glob outside the workspace was silently
+        // bypassed. Pin that the gate now fires before the file is read.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("img.png");
+        // Real PNG magic so a successful read would otherwise format-detect
+        // and produce a non-empty result. The deny must short-circuit before.
+        std::fs::write(&target, b"\x89PNG\r\n\x1a\n").unwrap();
+
+        let outside_canon = outside.path().canonicalize().unwrap();
+        let deny_pattern = format!("{}/**", outside_canon.display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec![deny_pattern],
+        );
+
+        let stub = Arc::new(ApprovalStubKernel::new(true));
+        let kh: Arc<dyn KernelHandle> = stub.clone();
+
+        let err = tool_image_analyze(
+            &serde_json::json!({"path": target.to_str().unwrap()}),
+            Some(workspace.path()),
+            Some(&policy),
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await
+        .expect_err("deny path must block image_analyze");
+        assert!(
+            err.contains("denied by file_policy"),
+            "error must surface as a file_policy denial, not a read error: {err}"
         );
         assert_eq!(
             stub.call_count(),
