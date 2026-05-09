@@ -279,7 +279,16 @@ pub async fn execute_tool(
             )
             .await
         }
-        "apply_patch" => tool_apply_patch(input, workspace_root).await,
+        "apply_patch" => {
+            tool_apply_patch(
+                input,
+                workspace_root,
+                file_policy,
+                kernel,
+                caller_agent_id,
+            )
+            .await
+        }
 
         // Web tools (upgraded: multi-provider search, SSRF-protected fetch)
         "web_fetch" => {
@@ -403,8 +412,28 @@ pub async fn execute_tool(
         "image_analyze" => tool_image_analyze(input).await,
 
         // Media understanding tools
-        "media_describe" => tool_media_describe(input, media_engine).await,
-        "media_transcribe" => tool_media_transcribe(input, media_engine).await,
+        "media_describe" => {
+            tool_media_describe(
+                input,
+                media_engine,
+                workspace_root,
+                file_policy,
+                kernel,
+                caller_agent_id,
+            )
+            .await
+        }
+        "media_transcribe" => {
+            tool_media_transcribe(
+                input,
+                media_engine,
+                workspace_root,
+                file_policy,
+                kernel,
+                caller_agent_id,
+            )
+            .await
+        }
 
         // Image generation tool
         "image_generate" => tool_image_generate(input, workspace_root).await,
@@ -766,49 +795,8 @@ async fn resolve_with_policy(
     caller_agent_id: Option<&str>,
     tool_label: &str,
 ) -> Result<PathBuf, String> {
-    let path = Path::new(raw_path);
-
-    // Reject `..` outright (defense-in-depth — canonicalize collapses these,
-    // but we want clear error messages, not silent escapes via canonicalize
-    // failures on non-existent middles).
-    for component in path.components() {
-        if matches!(component, std::path::Component::ParentDir) {
-            return Err("Path traversal denied: '..' components are forbidden".to_string());
-        }
-    }
-
-    // Resolve relative paths against the workspace (when present). Without a
-    // workspace, relative paths are ambiguous — reject explicitly rather than
-    // silently picking the process CWD.
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else if let Some(root) = workspace_root {
-        root.join(path)
-    } else {
-        return Err(format!(
-            "Cannot resolve relative path '{raw_path}' without a workspace root"
-        ));
-    };
-
-    // Canonicalize so symlinks are evaluated by their target. For new files
-    // (no node yet), canonicalize the parent directory and append the
-    // filename — same shape as `workspace_sandbox::resolve_sandbox_path`.
-    let canon = if candidate.exists() {
-        candidate
-            .canonicalize()
-            .map_err(|e| format!("Failed to resolve path: {e}"))?
-    } else {
-        let parent = candidate
-            .parent()
-            .ok_or_else(|| "Invalid path: no parent directory".to_string())?;
-        let filename = candidate
-            .file_name()
-            .ok_or_else(|| "Invalid path: no filename".to_string())?;
-        let canon_parent = parent
-            .canonicalize()
-            .map_err(|e| format!("Failed to resolve parent directory: {e}"))?;
-        canon_parent.join(filename)
-    };
+    // Shared with the apply_patch gate so the two vectors don't drift.
+    let canon = canonicalize_for_policy(raw_path, workspace_root)?;
 
     match policy.evaluate(&canon, op) {
         FileDecision::Allow => Ok(canon),
@@ -1035,10 +1023,35 @@ async fn tool_file_list(
 async fn tool_apply_patch(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    file_policy: Option<&CompiledFilePolicy>,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
 ) -> Result<String, String> {
     let patch_str = input["patch"].as_str().ok_or("Missing 'patch' parameter")?;
     let root = workspace_root.ok_or("apply_patch requires a workspace root")?;
     let ops = crate::apply_patch::parse_patch(patch_str)?;
+
+    // ANAI-40 fixup (review 6, must-fix #2): gate every touched path against
+    // file_policy BEFORE handing the parsed ops to apply_patch. This is the
+    // highest-fidelity write tool in the surface — leaving it ungated meant
+    // `prompt_paths`/`deny_paths` carve-outs were silently bypassed.
+    //
+    // Two-pass like the shell gate:
+    //   1. Resolve+canonicalize each path, classify into Allow/Deny/Prompt.
+    //   2. Hard-Deny short-circuits *before* surfacing any approval.
+    //   3. All Prompt-tier paths go through one batched approval call so a
+    //      multi-file patch costs one prompt, not N.
+    if let Some(policy) = file_policy {
+        gate_apply_patch_against_file_policy(
+            &ops,
+            root,
+            policy,
+            kernel,
+            caller_agent_id,
+        )
+        .await?;
+    }
+
     let result = crate::apply_patch::apply_patch(&ops, root).await;
     if result.is_ok() {
         Ok(result.summary())
@@ -1048,6 +1061,123 @@ async fn tool_apply_patch(
             result.summary(),
             result.errors.join("; ")
         ))
+    }
+}
+
+/// ANAI-40 fixup: enumerate every path touched by a parsed patch and gate
+/// each through `file_policy`. AddFile, UpdateFile (incl. `move_to`
+/// destination), and DeleteFile all count as `FileOp::Write`.
+///
+/// Mirrors `gate_shell_argv_against_file_policy`: scan first, deny shorts
+/// before any approval is surfaced, and a single batched approval covers
+/// all Prompt-tier paths.
+async fn gate_apply_patch_against_file_policy(
+    ops: &[crate::apply_patch::PatchOp],
+    workspace_root: &Path,
+    policy: &CompiledFilePolicy,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
+) -> Result<(), String> {
+    let mut targets: Vec<&str> = Vec::new();
+    for op in ops {
+        match op {
+            crate::apply_patch::PatchOp::AddFile { path, .. } => targets.push(path),
+            crate::apply_patch::PatchOp::UpdateFile { path, move_to, .. } => {
+                targets.push(path);
+                if let Some(dest) = move_to.as_deref() {
+                    targets.push(dest);
+                }
+            }
+            crate::apply_patch::PatchOp::DeleteFile { path } => targets.push(path),
+        }
+    }
+
+    // (raw, resolved, reason) for every Prompt-tier hit, kept across the
+    // approval await. Owned so borrows into FilePolicyPromptItem live long
+    // enough.
+    struct PendingPrompt {
+        raw: String,
+        resolved: PathBuf,
+        reason: String,
+    }
+    let mut prompts: Vec<PendingPrompt> = Vec::new();
+
+    for raw in targets {
+        let canon = canonicalize_for_policy(raw, Some(workspace_root))?;
+        match policy.evaluate(&canon, FileOp::Write) {
+            FileDecision::Allow => {}
+            FileDecision::Deny { reason } => {
+                return Err(format!(
+                    "apply_patch blocked by file_policy: {} (raw {:?})",
+                    reason, raw
+                ));
+            }
+            FileDecision::Prompt { reason } => {
+                prompts.push(PendingPrompt {
+                    raw: raw.to_string(),
+                    resolved: canon,
+                    reason,
+                });
+            }
+        }
+    }
+
+    if prompts.is_empty() {
+        return Ok(());
+    }
+    let items: Vec<FilePolicyPromptItem> = prompts
+        .iter()
+        .map(|p| FilePolicyPromptItem {
+            op: FileOp::Write,
+            raw: &p.raw,
+            resolved: &p.resolved,
+            reason: &p.reason,
+        })
+        .collect();
+    request_file_policy_approval(kernel, caller_agent_id, "apply_patch", &items).await
+}
+
+/// Resolve a raw path string to its canonical absolute form for policy
+/// evaluation. Rejects `..` components defensively, joins relative paths
+/// against the workspace root, and canonicalizes the parent for non-existent
+/// targets (so newly-created files still get a real-disk-rooted path).
+///
+/// Shared by `resolve_with_policy` (MCP file tools) and the apply_patch
+/// gate so the two don't drift.
+fn canonicalize_for_policy(
+    raw_path: &str,
+    workspace_root: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let path = Path::new(raw_path);
+    for component in path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err("Path traversal denied: '..' components are forbidden".to_string());
+        }
+    }
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(root) = workspace_root {
+        root.join(path)
+    } else {
+        return Err(format!(
+            "Cannot resolve relative path '{raw_path}' without a workspace root"
+        ));
+    };
+    if candidate.exists() {
+        candidate
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve path: {e}"))
+    } else {
+        let parent = candidate
+            .parent()
+            .ok_or_else(|| "Invalid path: no parent directory".to_string())?;
+        let filename = candidate
+            .file_name()
+            .ok_or_else(|| "Invalid path: no filename".to_string())?;
+        let canon_parent = parent
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve parent directory: {e}"))?;
+        Ok(canon_parent.join(filename))
     }
 }
 
@@ -2641,22 +2771,45 @@ fn tool_system_time() -> String {
 // ---------------------------------------------------------------------------
 
 /// Describe an image using a vision-capable LLM provider.
+#[allow(clippy::too_many_arguments)]
 async fn tool_media_describe(
     input: &serde_json::Value,
     media_engine: Option<&crate::media_understanding::MediaEngine>,
+    workspace_root: Option<&Path>,
+    file_policy: Option<&CompiledFilePolicy>,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
 ) -> Result<String, String> {
     use base64::Engine;
+    let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
+
+    // ANAI-40 fixup (review 6, must-fix #3): gate through file_policy before
+    // touching disk. Sibling tool `speech_to_text` was wired in step 3;
+    // describe/transcribe were missed and silently bypassed prompt/deny
+    // policies via the `validate_path`-only path.
+    //
+    // Gate runs *before* the engine availability check so a deny path is
+    // surfaced as a policy error, not a "media engine not available" error.
+    let resolved = resolve_file_path(
+        raw_path,
+        workspace_root,
+        file_policy,
+        FileOp::Read,
+        kernel,
+        caller_agent_id,
+        "media_describe",
+    )
+    .await?;
+
     let engine = media_engine.ok_or("Media engine not available. Check media configuration.")?;
-    let path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let _ = validate_path(path)?;
 
     // Read image file
-    let data = tokio::fs::read(path)
+    let data = tokio::fs::read(&resolved)
         .await
         .map_err(|e| format!("Failed to read image file: {e}"))?;
 
     // Detect MIME type from extension
-    let ext = std::path::Path::new(path)
+    let ext = resolved
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
@@ -2686,22 +2839,39 @@ async fn tool_media_describe(
 }
 
 /// Transcribe audio to text using speech-to-text.
+#[allow(clippy::too_many_arguments)]
 async fn tool_media_transcribe(
     input: &serde_json::Value,
     media_engine: Option<&crate::media_understanding::MediaEngine>,
+    workspace_root: Option<&Path>,
+    file_policy: Option<&CompiledFilePolicy>,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
 ) -> Result<String, String> {
     use base64::Engine;
+    let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
+
+    // ANAI-40 fixup (review 6, must-fix #3): see tool_media_describe.
+    let resolved = resolve_file_path(
+        raw_path,
+        workspace_root,
+        file_policy,
+        FileOp::Read,
+        kernel,
+        caller_agent_id,
+        "media_transcribe",
+    )
+    .await?;
+
     let engine = media_engine.ok_or("Media engine not available. Check media configuration.")?;
-    let path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let _ = validate_path(path)?;
 
     // Read audio file
-    let data = tokio::fs::read(path)
+    let data = tokio::fs::read(&resolved)
         .await
         .map_err(|e| format!("Failed to read audio file: {e}"))?;
 
     // Detect MIME type from extension
-    let ext = std::path::Path::new(path)
+    let ext = resolved
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
@@ -5427,5 +5597,297 @@ mod tests {
             assert_eq!(call.0, "agent-combined", "agent_id must propagate to both gates");
             assert_eq!(call.1, "file_read");
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Review-6 fixup tests: cross-component bypasses.
+    //
+    //   #1 KernelConfig.file_policy was dead code (covered by
+    //      compile_effective_file_policy unit tests in agent_loop).
+    //   #2 tool_apply_patch was unhooked from file_policy.
+    //   #3 tool_media_describe / tool_media_transcribe were unhooked.
+    // -----------------------------------------------------------------
+
+    /// Build a minimal `*** Add File:` patch targeting `target`. Used by the
+    /// apply_patch gate tests below.
+    fn add_file_patch(target: &str, content: &str) -> String {
+        let mut s = String::from("*** Begin Patch\n");
+        s.push_str(&format!("*** Add File: {target}\n"));
+        for line in content.lines() {
+            s.push_str(&format!("+{line}\n"));
+        }
+        s.push_str("*** End Patch\n");
+        s
+    }
+
+    /// `Add File: a` + `Add File: b`. For the multi-path batched-prompt test.
+    fn add_two_files_patch(a: &str, b: &str) -> String {
+        let mut s = String::from("*** Begin Patch\n");
+        s.push_str(&format!("*** Add File: {a}\n+x\n"));
+        s.push_str(&format!("*** Add File: {b}\n+y\n"));
+        s.push_str("*** End Patch\n");
+        s
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_deny_path_blocks_before_disk_touch() {
+        // Review-6 fixup #2: previously apply_patch ran with no policy
+        // gate, so a `deny_paths` glob covering /etc/** would not stop a
+        // patch that adds `/etc/passwd-clone`. Pin that it does now.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("forbidden.txt");
+
+        let outside_canon = outside.path().canonicalize().unwrap();
+        let deny_pattern = format!("{}/**", outside_canon.display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec![deny_pattern],
+        );
+
+        let patch = add_file_patch(target.to_str().unwrap(), "should not land");
+        let stub = Arc::new(ApprovalStubKernel::new(true));
+        let kh: Arc<dyn KernelHandle> = stub.clone();
+
+        let err = tool_apply_patch(
+            &serde_json::json!({"patch": patch}),
+            Some(workspace.path()),
+            Some(&policy),
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await
+        .expect_err("deny path must block apply_patch");
+        assert!(
+            err.contains("apply_patch blocked by file_policy"),
+            "error must name the file_policy block: {err}"
+        );
+        assert!(
+            !target.exists(),
+            "target must not have been written when policy denied the patch"
+        );
+        assert_eq!(
+            stub.call_count(),
+            0,
+            "deny must short-circuit before approval surfacer fires"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_batches_multipath_prompt_into_one_request() {
+        // Review-6 fixup #2: a multi-file patch with two Prompt-tier targets
+        // must surface ONE batched approval, not N. Mirrors the shell-gate
+        // batching invariant so apply_patch doesn't burn N approvals on
+        // every multi-file write.
+        //
+        // We use targets *inside* the workspace under a `prompt_paths` glob
+        // because apply_patch::apply_patch enforces its own workspace
+        // sandbox at the bottom of the stack. file_policy precedence puts
+        // prompt_paths above the workspace implicit-allow, so a workspace
+        // path matching prompt_paths still hits the surfacer.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let ws_canon = workspace.path().canonicalize().unwrap();
+        std::fs::create_dir_all(ws_canon.join("review")).unwrap();
+        let a_rel = "review/a.txt";
+        let b_rel = "review/b.txt";
+
+        let prompt_pattern = format!("{}/review/**", ws_canon.display());
+        let policy = build_compiled_policy(
+            &ws_canon,
+            vec![],
+            vec![],
+            vec![prompt_pattern],
+            vec![],
+        );
+
+        let patch = add_two_files_patch(a_rel, b_rel);
+        let stub = Arc::new(ApprovalStubKernel::new(true));
+        let kh: Arc<dyn KernelHandle> = stub.clone();
+
+        tool_apply_patch(
+            &serde_json::json!({"patch": patch}),
+            Some(workspace.path()),
+            Some(&policy),
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await
+        .expect("approved batched prompt must succeed");
+
+        assert_eq!(
+            stub.call_count(),
+            1,
+            "two prompt-tier targets must collapse to one approval; got {}: {:?}",
+            stub.call_count(),
+            stub.calls()
+        );
+        let last = stub.last().expect("approval recorded");
+        assert_eq!(last.1, "apply_patch", "tool_label must be apply_patch");
+        assert!(
+            last.2.contains("a.txt") && last.2.contains("b.txt"),
+            "batched summary must mention both targets: {}",
+            last.2
+        );
+        assert!(
+            ws_canon.join(a_rel).exists() && ws_canon.join(b_rel).exists(),
+            "approved patch must apply"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_deny_short_circuits_before_prompt_batch() {
+        // Mirror of the shell-gate corollary: if any path hard-Denies,
+        // apply_patch must fail without surfacing approvals for the Prompt
+        // siblings — don't waste operator attention on a doomed patch.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let prompt_dir = tempfile::TempDir::new().unwrap();
+        let deny_dir = tempfile::TempDir::new().unwrap();
+        let prompt_target = prompt_dir.path().join("prompt.txt");
+        let deny_target = deny_dir.path().join("deny.txt");
+
+        let prompt_pattern =
+            format!("{}/**", prompt_dir.path().canonicalize().unwrap().display());
+        let deny_pattern = format!("{}/**", deny_dir.path().canonicalize().unwrap().display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![prompt_pattern],
+            vec![deny_pattern],
+        );
+
+        let patch = add_two_files_patch(
+            prompt_target.to_str().unwrap(),
+            deny_target.to_str().unwrap(),
+        );
+        let stub = Arc::new(ApprovalStubKernel::new(true));
+        let kh: Arc<dyn KernelHandle> = stub.clone();
+
+        let err = tool_apply_patch(
+            &serde_json::json!({"patch": patch}),
+            Some(workspace.path()),
+            Some(&policy),
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await
+        .expect_err("deny sibling must fail the whole patch");
+        assert!(err.contains("apply_patch blocked by file_policy"), "{err}");
+        assert_eq!(
+            stub.call_count(),
+            0,
+            "deny must short-circuit before approval surfacer fires"
+        );
+        assert!(!prompt_target.exists() && !deny_target.exists());
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_inside_workspace_no_policy_passes() {
+        // Regression: with no file_policy, apply_patch behaves exactly as
+        // before the gate was added — workspace-relative writes succeed
+        // without any approval calls. (Pin: review-6 fix did not change
+        // legacy semantics.)
+        let workspace = tempfile::TempDir::new().unwrap();
+        let target_rel = "inside.txt";
+        let patch = add_file_patch(target_rel, "ok");
+
+        let result = tool_apply_patch(
+            &serde_json::json!({"patch": patch}),
+            Some(workspace.path()),
+            None, // no file_policy
+            None,
+            None,
+        )
+        .await
+        .expect("legacy path must succeed without a policy");
+        assert!(result.contains("added"), "summary: {result}");
+        assert!(workspace.path().join(target_rel).exists());
+    }
+
+    #[tokio::test]
+    async fn test_media_describe_deny_path_blocks_before_engine_check() {
+        // Review-6 fixup #3: media_describe was previously gated only by
+        // `validate_path` (..-rejection). A `deny_paths` glob outside the
+        // workspace was silently bypassed. Pin that the gate now fires
+        // before any other check — so we can observe the file_policy error
+        // even without a real MediaEngine.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("img.png");
+        std::fs::write(&target, b"\x89PNG\r\n").unwrap();
+
+        let outside_canon = outside.path().canonicalize().unwrap();
+        let deny_pattern = format!("{}/**", outside_canon.display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec![deny_pattern],
+        );
+
+        let stub = Arc::new(ApprovalStubKernel::new(true));
+        let kh: Arc<dyn KernelHandle> = stub.clone();
+
+        let err = tool_media_describe(
+            &serde_json::json!({"path": target.to_str().unwrap()}),
+            None, // media_engine — gate must fire first regardless
+            Some(workspace.path()),
+            Some(&policy),
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await
+        .expect_err("deny path must block media_describe");
+        assert!(
+            err.contains("denied by file_policy"),
+            "error must surface as a file_policy denial, not an engine error: {err}"
+        );
+        assert_eq!(
+            stub.call_count(),
+            0,
+            "deny must short-circuit before approval surfacer fires"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_media_transcribe_deny_path_blocks_before_engine_check() {
+        // Review-6 fixup #3: same as media_describe, for the audio sibling.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("clip.mp3");
+        std::fs::write(&target, b"id3").unwrap();
+
+        let outside_canon = outside.path().canonicalize().unwrap();
+        let deny_pattern = format!("{}/**", outside_canon.display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec![deny_pattern],
+        );
+
+        let stub = Arc::new(ApprovalStubKernel::new(true));
+        let kh: Arc<dyn KernelHandle> = stub.clone();
+
+        let err = tool_media_transcribe(
+            &serde_json::json!({"path": target.to_str().unwrap()}),
+            None,
+            Some(workspace.path()),
+            Some(&policy),
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await
+        .expect_err("deny path must block media_transcribe");
+        assert!(
+            err.contains("denied by file_policy"),
+            "error must surface as a file_policy denial, not an engine error: {err}"
+        );
+        assert_eq!(stub.call_count(), 0);
     }
 }

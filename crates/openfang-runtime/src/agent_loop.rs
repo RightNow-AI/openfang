@@ -253,6 +253,56 @@ fn build_user_turn_message(user_message: &str, blocks: Option<Vec<ContentBlock>>
     }
 }
 
+/// ANAI-40 (review-6 fixup): produce the `CompiledFilePolicy` to hand to the
+/// tool runner.
+///
+/// Layers the per-agent overlay (`manifest.file_policy`) over the kernel's
+/// global `[file_policy]` (`KernelHandle::global_file_policy`), then compiles
+/// against the workspace root. Returns `None` only when there is genuinely no
+/// policy in play (no overlay, no global, or no workspace) — in that case the
+/// runtime falls back to the legacy workspace hard-lock, preserving prior
+/// behavior for agents that opt out of `[file_policy]` entirely.
+///
+/// Compile errors are logged and treated as "no policy" — failing closed
+/// against an unsafe config that won't compile is preferable to crashing
+/// the loop. Operators see the warning in logs.
+fn compile_effective_file_policy(
+    overlay: Option<&openfang_types::file_policy::FilePolicy>,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    workspace_root: Option<&Path>,
+) -> Option<openfang_types::file_policy::CompiledFilePolicy> {
+    let global = kernel.map(|k| k.global_file_policy()).unwrap_or_default();
+    layer_and_compile_file_policy(overlay, &global, workspace_root)
+}
+
+/// Pure function split out of `compile_effective_file_policy` so tests can
+/// exercise the overlay-over-global layering and the all-default short-circuit
+/// without needing to construct a `KernelHandle` stub.
+fn layer_and_compile_file_policy(
+    overlay: Option<&openfang_types::file_policy::FilePolicy>,
+    global: &openfang_types::file_policy::FilePolicy,
+    workspace_root: Option<&Path>,
+) -> Option<openfang_types::file_policy::CompiledFilePolicy> {
+    let ws = workspace_root?;
+    let effective = match overlay {
+        Some(over) => over.layered_over(global),
+        None => global.clone(),
+    };
+    // Skip compilation entirely when the effective policy is the all-default
+    // empty shape — preserves "no policy = legacy workspace sandbox" for
+    // agents that don't configure either layer.
+    if effective == openfang_types::file_policy::FilePolicy::default() {
+        return None;
+    }
+    match effective.compile(ws.to_path_buf()) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            warn!(error = %e, "Failed to compile file_policy; falling back to workspace sandbox");
+            None
+        }
+    }
+}
+
 /// Run the agent execution loop for a single user message.
 ///
 /// This is the core of OpenFang: it loads session context, recalls memories,
@@ -888,22 +938,23 @@ pub async fn run_agent_loop(
                     // Resolve effective exec policy (per-agent override or global)
                     let effective_exec_policy = manifest.exec_policy.as_ref();
 
-                    // ANAI-40: compile the agent's file_policy (if any) against the
-                    // workspace root. We need a workspace to compile because the
-                    // policy binds `workspace` at compile time (the implicit-allow
-                    // tier in `evaluate`). Compilation is cheap (glob-count small);
-                    // any compile error is logged and falls back to the legacy
-                    // workspace hard-lock — failing closed against unsafe configs.
-                    let compiled_file_policy = match (manifest.file_policy.as_ref(), workspace_root) {
-                        (Some(fp), Some(ws)) => match fp.compile(ws.to_path_buf()) {
-                            Ok(c) => Some(c),
-                            Err(e) => {
-                                warn!(error = %e, "Failed to compile file_policy; falling back to workspace sandbox");
-                                None
-                            }
-                        },
-                        _ => None,
-                    };
+                    // ANAI-40: layer the agent's `file_policy` (if any) over the
+                    // kernel's global `file_policy`, then compile the result
+                    // against the workspace root. We need a workspace to compile
+                    // because the policy binds `workspace` at compile time (the
+                    // implicit-allow tier in `evaluate`). Compilation is cheap
+                    // (glob-count small); any compile error is logged and falls
+                    // back to the legacy workspace hard-lock — failing closed
+                    // against unsafe configs.
+                    //
+                    // Fixup (review 6): previously only the manifest field was
+                    // compiled, so the global `[file_policy]` block was dead
+                    // code (the schema doc claimed otherwise). Now both layer.
+                    let compiled_file_policy = compile_effective_file_policy(
+                        manifest.file_policy.as_ref(),
+                        kernel.as_ref(),
+                        workspace_root,
+                    );
 
                     // Timeout-wrapped execution
                     let timeout = tool_timeout_for(&tool_call.name);
@@ -2099,22 +2150,14 @@ pub async fn run_agent_loop_streaming(
                     // Resolve effective exec policy (per-agent override or global)
                     let effective_exec_policy = manifest.exec_policy.as_ref();
 
-                    // ANAI-40: compile the agent's file_policy (if any) against the
-                    // workspace root. We need a workspace to compile because the
-                    // policy binds `workspace` at compile time (the implicit-allow
-                    // tier in `evaluate`). Compilation is cheap (glob-count small);
-                    // any compile error is logged and falls back to the legacy
-                    // workspace hard-lock — failing closed against unsafe configs.
-                    let compiled_file_policy = match (manifest.file_policy.as_ref(), workspace_root) {
-                        (Some(fp), Some(ws)) => match fp.compile(ws.to_path_buf()) {
-                            Ok(c) => Some(c),
-                            Err(e) => {
-                                warn!(error = %e, "Failed to compile file_policy; falling back to workspace sandbox");
-                                None
-                            }
-                        },
-                        _ => None,
-                    };
+                    // ANAI-40: see streaming-loop comment above. Same overlay
+                    // logic — manifest.file_policy layered over the kernel's
+                    // global `[file_policy]`, then compiled.
+                    let compiled_file_policy = compile_effective_file_policy(
+                        manifest.file_policy.as_ref(),
+                        kernel.as_ref(),
+                        workspace_root,
+                    );
 
                     // Timeout-wrapped execution
                     let timeout = tool_timeout_for(&tool_call.name);
@@ -3205,6 +3248,117 @@ mod tests {
     use async_trait::async_trait;
     use openfang_types::tool::ToolCall;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    // -----------------------------------------------------------------
+    // Review-6 fixup #1: KernelConfig.file_policy was dead code.
+    // Pin that the runtime's layer-and-compile actually layers a global
+    // policy under a per-agent overlay (vs. ignoring the global outright).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_layer_and_compile_uses_global_when_no_overlay() {
+        // Overlay = None, global non-empty: effective should be the global.
+        // Pin via behavioral check: a deny pattern in the global policy
+        // must reject a path under it.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let ws_canon = workspace.path().canonicalize().unwrap();
+        let global = openfang_types::file_policy::FilePolicy {
+            deny_paths: vec!["/etc/**".to_string()],
+            ..Default::default()
+        };
+        let compiled =
+            layer_and_compile_file_policy(None, &global, Some(&ws_canon)).expect("must compile");
+        let decision = compiled.evaluate(
+            std::path::Path::new("/etc/passwd"),
+            openfang_types::file_policy::FileOp::Read,
+        );
+        assert!(
+            matches!(decision, openfang_types::file_policy::FileDecision::Deny { .. }),
+            "global deny must apply when overlay is None: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn test_layer_and_compile_overlay_layers_over_global() {
+        // Overlay non-empty: per-agent overlay wins per-field, but
+        // unset overlay fields inherit from global. Pin both sides.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let ws_canon = workspace.path().canonicalize().unwrap();
+        let global = openfang_types::file_policy::FilePolicy {
+            deny_paths: vec!["/etc/**".to_string()], // overlay omits → inherited
+            read_paths: vec!["/var/log/**".to_string()], // overlay overrides
+            ..Default::default()
+        };
+        let overlay = openfang_types::file_policy::FilePolicy {
+            // Override read_paths with a different glob; deny_paths inherits.
+            read_paths: vec!["/usr/share/**".to_string()],
+            ..Default::default()
+        };
+        let compiled = layer_and_compile_file_policy(Some(&overlay), &global, Some(&ws_canon))
+            .expect("must compile");
+
+        // Inherited deny still bites.
+        let denied = compiled.evaluate(
+            std::path::Path::new("/etc/passwd"),
+            openfang_types::file_policy::FileOp::Read,
+        );
+        assert!(
+            matches!(
+                denied,
+                openfang_types::file_policy::FileDecision::Deny { .. }
+            ),
+            "inherited global deny must still apply: {denied:?}"
+        );
+        // Overlay's read_paths replaces global's.
+        let overlay_allow = compiled.evaluate(
+            std::path::Path::new("/usr/share/man/man1/ls.1"),
+            openfang_types::file_policy::FileOp::Read,
+        );
+        assert!(
+            matches!(
+                overlay_allow,
+                openfang_types::file_policy::FileDecision::Allow
+            ),
+            "overlay read_paths must apply: {overlay_allow:?}"
+        );
+        // Global's read_paths is shadowed by overlay (non-empty replaces).
+        let shadowed = compiled.evaluate(
+            std::path::Path::new("/var/log/syslog"),
+            openfang_types::file_policy::FileOp::Read,
+        );
+        assert!(
+            matches!(
+                shadowed,
+                openfang_types::file_policy::FileDecision::Deny { .. }
+            ),
+            "global read_paths must be replaced (not unioned): {shadowed:?}"
+        );
+    }
+
+    #[test]
+    fn test_layer_and_compile_returns_none_when_both_default() {
+        // Neither layer configured → return None so the runtime keeps the
+        // legacy workspace-only sandbox path (no behavioral surprise for
+        // agents that opted out of [file_policy] entirely).
+        let workspace = tempfile::TempDir::new().unwrap();
+        let global = openfang_types::file_policy::FilePolicy::default();
+        assert!(
+            layer_and_compile_file_policy(None, &global, Some(workspace.path())).is_none(),
+            "both-default → None"
+        );
+    }
+
+    #[test]
+    fn test_layer_and_compile_returns_none_without_workspace() {
+        // No workspace root → can't compile (workspace is bound at compile
+        // time). Return None; runtime will fall through to workspace
+        // sandbox (which itself short-circuits without a workspace).
+        let global = openfang_types::file_policy::FilePolicy {
+            deny_paths: vec!["/etc/**".to_string()],
+            ..Default::default()
+        };
+        assert!(layer_and_compile_file_policy(None, &global, None).is_none());
+    }
 
     #[test]
     fn test_max_iterations_constant() {

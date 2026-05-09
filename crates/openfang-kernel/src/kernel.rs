@@ -6713,6 +6713,13 @@ async fn cron_fan_out_targets(
 
 #[async_trait]
 impl KernelHandle for OpenFangKernel {
+    fn global_file_policy(&self) -> openfang_types::file_policy::FilePolicy {
+        // ANAI-40 fixup: surface the kernel's `[file_policy]` block so the
+        // runtime can layer per-agent overrides over it. Previously
+        // unwired — `KernelConfig.file_policy` was dead code.
+        self.config.file_policy.clone()
+    }
+
     async fn spawn_agent(
         &self,
         manifest_toml: &str,

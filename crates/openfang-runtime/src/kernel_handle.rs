@@ -117,6 +117,18 @@ pub trait KernelHandle: Send + Sync {
         Err("Cron scheduler not available".to_string())
     }
 
+    /// Return the kernel's globally-configured `[file_policy]`. Per-agent
+    /// manifests may override this field-by-field via
+    /// [`openfang_types::file_policy::FilePolicy::layered_over`].
+    ///
+    /// Default impl returns `FilePolicy::default()` so non-production
+    /// `KernelHandle` impls (test stubs, mocks) do not need to know about
+    /// file_policy. The production `OpenFangKernel` overrides this to return
+    /// `self.config.file_policy.clone()`.
+    fn global_file_policy(&self) -> openfang_types::file_policy::FilePolicy {
+        openfang_types::file_policy::FilePolicy::default()
+    }
+
     /// Check if a tool requires approval based on current policy.
     fn requires_approval(&self, tool_name: &str) -> bool {
         let _ = tool_name;
