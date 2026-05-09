@@ -44,8 +44,8 @@
 
 use openfang_kernel::OpenFangKernel;
 use openfang_mcp_bridge::protocol::{
-    CallRequest, CallResponse, CallResult, Frame, Hello, HelloAck, PROTOCOL_VERSION,
-    SOCKET_RELATIVE_PATH, codec,
+    codec, CallRequest, CallResponse, CallResult, Frame, Hello, HelloAck, PROTOCOL_VERSION,
+    SOCKET_RELATIVE_PATH,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -237,7 +237,9 @@ async fn handle_connection(
 
         let result = dispatch_call(&call, &kernel).await;
         let result_kind = match &result {
-            CallResult::Ok { is_error: false, .. } => "ok",
+            CallResult::Ok {
+                is_error: false, ..
+            } => "ok",
             CallResult::Ok { is_error: true, .. } => "tool_error",
             CallResult::Error { .. } => "dispatch_error",
         };
@@ -519,7 +521,10 @@ mod tests {
             };
 
             // Mirror production allowlist logic.
-            let result = if !LEGACY_DEFAULT_ALLOWED_TOOLS.iter().any(|t| *t == call.tool_name) {
+            let result = if !LEGACY_DEFAULT_ALLOWED_TOOLS
+                .iter()
+                .any(|t| *t == call.tool_name)
+            {
                 CallResult::Error {
                     message: format!(
                         "tool '{}' not in bridge allowlist (permitted: {:?})",
