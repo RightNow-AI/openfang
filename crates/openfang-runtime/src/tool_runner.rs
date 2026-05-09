@@ -249,9 +249,36 @@ pub async fn execute_tool(
     debug!(tool_name, "Executing tool");
     let result = match tool_name {
         // Filesystem tools
-        "file_read" => tool_file_read(input, workspace_root, file_policy).await,
-        "file_write" => tool_file_write(input, workspace_root, file_policy).await,
-        "file_list" => tool_file_list(input, workspace_root, file_policy).await,
+        "file_read" => {
+            tool_file_read(
+                input,
+                workspace_root,
+                file_policy,
+                kernel,
+                caller_agent_id,
+            )
+            .await
+        }
+        "file_write" => {
+            tool_file_write(
+                input,
+                workspace_root,
+                file_policy,
+                kernel,
+                caller_agent_id,
+            )
+            .await
+        }
+        "file_list" => {
+            tool_file_list(
+                input,
+                workspace_root,
+                file_policy,
+                kernel,
+                caller_agent_id,
+            )
+            .await
+        }
         "apply_patch" => tool_apply_patch(input, workspace_root).await,
 
         // Web tools (upgraded: multi-provider search, SSRF-protected fetch)
@@ -338,6 +365,8 @@ pub async fn execute_tool(
                 workspace_root,
                 exec_policy,
                 file_policy,
+                kernel,
+                caller_agent_id,
             )
             .await
         }
@@ -382,7 +411,17 @@ pub async fn execute_tool(
 
         // TTS/STT tools
         "text_to_speech" => tool_text_to_speech(input, tts_engine, workspace_root).await,
-        "speech_to_text" => tool_speech_to_text(input, media_engine, workspace_root, file_policy).await,
+        "speech_to_text" => {
+            tool_speech_to_text(
+                input,
+                media_engine,
+                workspace_root,
+                file_policy,
+                kernel,
+                caller_agent_id,
+            )
+            .await
+        }
 
         // Docker sandbox tool
         "docker_exec" => {
@@ -401,7 +440,9 @@ pub async fn execute_tool(
         "cron_cancel" => tool_cron_cancel(input, kernel).await,
 
         // Channel send tool (proactive outbound messaging)
-        "channel_send" => tool_channel_send(input, kernel, workspace_root, file_policy).await,
+        "channel_send" => {
+            tool_channel_send(input, kernel, workspace_root, file_policy, caller_agent_id).await
+        }
 
         // Persistent process tools
         "process_start" => {
@@ -412,6 +453,7 @@ pub async fn execute_tool(
                 exec_policy,
                 workspace_root,
                 file_policy,
+                kernel,
             )
             .await
         }
@@ -677,14 +719,26 @@ fn validate_path(path: &str) -> Result<&str, String> {
 ///
 /// `..` components are rejected outright in both modes as defense-in-depth;
 /// canonicalization handles target traversal but not author intent.
-fn resolve_file_path(
+async fn resolve_file_path(
     raw_path: &str,
     workspace_root: Option<&Path>,
     file_policy: Option<&CompiledFilePolicy>,
     op: FileOp,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
+    tool_label: &str,
 ) -> Result<PathBuf, String> {
     if let Some(policy) = file_policy {
-        return resolve_with_policy(raw_path, workspace_root, policy, op);
+        return resolve_with_policy(
+            raw_path,
+            workspace_root,
+            policy,
+            op,
+            kernel,
+            caller_agent_id,
+            tool_label,
+        )
+        .await;
     }
     if let Some(root) = workspace_root {
         crate::workspace_sandbox::resolve_sandbox_path(raw_path, root)
@@ -696,11 +750,21 @@ fn resolve_file_path(
 
 /// ANAI-40 policy-gated path resolution. Canonicalizes the path (or its
 /// parent for new files), then evaluates against `policy`.
-fn resolve_with_policy(
+///
+/// On `FileDecision::Prompt`, surfaces a human approval request through the
+/// kernel's `ApprovalManager` (ANAI-40 step 5). Approved → returns the
+/// canonical path; denied/timed out → returns Err. If no kernel handle is
+/// available (e.g. unit-test contexts), Prompt fails closed with an
+/// explanatory error — same posture as a denied approval.
+#[allow(clippy::too_many_arguments)]
+async fn resolve_with_policy(
     raw_path: &str,
     workspace_root: Option<&Path>,
     policy: &CompiledFilePolicy,
     op: FileOp,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
+    tool_label: &str,
 ) -> Result<PathBuf, String> {
     let path = Path::new(raw_path);
 
@@ -751,11 +815,75 @@ fn resolve_with_policy(
         FileDecision::Deny { reason } => {
             Err(format!("Access denied by file_policy: {reason}"))
         }
-        FileDecision::Prompt { reason } => Err(format!(
-            "Access requires approval (file_policy prompt path): {reason}. \
-             Per-path approval surfacing is not yet wired (ANAI-40 step 5); \
-             until then, promote this path to write_paths/read_paths or \
-             remove it from prompt_paths to proceed."
+        FileDecision::Prompt { reason } => {
+            request_file_policy_approval(
+                kernel,
+                caller_agent_id,
+                tool_label,
+                op,
+                raw_path,
+                &canon,
+                &reason,
+            )
+            .await?;
+            Ok(canon)
+        }
+    }
+}
+
+/// ANAI-40 step 5: surface a `FileDecision::Prompt` through the kernel's
+/// approval manager and translate the human decision back into Ok/Err.
+///
+/// `tool_label` is the surface tool name (e.g. `"file_read"`, `"shell_exec"`)
+/// used both for risk classification and for the prompt copy. The summary
+/// includes the operation, the resolved path, and the policy reason so the
+/// approver has enough context to decide without inspecting the raw input.
+///
+/// Fails closed if no kernel handle is available — this is the unit-test
+/// path and any future caller that forgets to thread the handle. Better to
+/// error loudly than silently bypass an approval gate.
+async fn request_file_policy_approval(
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
+    tool_label: &str,
+    op: FileOp,
+    raw: &str,
+    resolved: &Path,
+    reason: &str,
+) -> Result<(), String> {
+    let Some(kh) = kernel else {
+        return Err(format!(
+            "{tool_label} requires approval (file_policy prompt path): {reason} \
+             (op = {op:?}, raw = {raw:?}, resolved = {}). \
+             Approval surfacer unavailable (no kernel handle in this context); \
+             promote this path to read_paths/write_paths or remove it from \
+             prompt_paths to proceed.",
+            resolved.display()
+        ));
+    };
+    let agent_id = caller_agent_id.unwrap_or("unknown");
+    let summary = format!(
+        "file_policy prompt: {tool_label} {op:?} {} — {reason}",
+        resolved.display()
+    );
+    debug!(
+        tool_label,
+        ?op,
+        agent_id,
+        path = %resolved.display(),
+        "Surfacing file_policy approval request"
+    );
+    match kh.request_approval(agent_id, tool_label, &summary).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!(
+            "{tool_label} denied by approver (file_policy prompt path): {reason} \
+             (op = {op:?}, raw = {raw:?}, resolved = {})",
+            resolved.display()
+        )),
+        Err(e) => Err(format!(
+            "{tool_label} approval system error while gating file_policy prompt: {e} \
+             (op = {op:?}, raw = {raw:?}, resolved = {})",
+            resolved.display()
         )),
     }
 }
@@ -764,9 +892,20 @@ async fn tool_file_read(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
     file_policy: Option<&CompiledFilePolicy>,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root, file_policy, FileOp::Read)?;
+    let resolved = resolve_file_path(
+        raw_path,
+        workspace_root,
+        file_policy,
+        FileOp::Read,
+        kernel,
+        caller_agent_id,
+        "file_read",
+    )
+    .await?;
     tokio::fs::read_to_string(&resolved)
         .await
         .map_err(|e| format!("Failed to read file: {e}"))
@@ -776,9 +915,20 @@ async fn tool_file_write(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
     file_policy: Option<&CompiledFilePolicy>,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root, file_policy, FileOp::Write)?;
+    let resolved = resolve_file_path(
+        raw_path,
+        workspace_root,
+        file_policy,
+        FileOp::Write,
+        kernel,
+        caller_agent_id,
+        "file_write",
+    )
+    .await?;
     let content = input["content"]
         .as_str()
         .ok_or("Missing 'content' parameter")?;
@@ -801,9 +951,20 @@ async fn tool_file_list(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
     file_policy: Option<&CompiledFilePolicy>,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root, file_policy, FileOp::Read)?;
+    let resolved = resolve_file_path(
+        raw_path,
+        workspace_root,
+        file_policy,
+        FileOp::Read,
+        kernel,
+        caller_agent_id,
+        "file_list",
+    )
+    .await?;
     let mut entries = tokio::fs::read_dir(&resolved)
         .await
         .map_err(|e| format!("Failed to list directory: {e}"))?;
@@ -999,15 +1160,19 @@ fn lexically_normalize(p: &Path) -> PathBuf {
 /// command is not in the extractor table (unrecognized commands fall back
 /// to `exec_policy` only — `file_policy` does not gate them in v1; see brief).
 ///
-/// Returns `Err(reason)` if any extracted path resolves to `Deny`, or to
-/// `Prompt` (per-path approval surfacing is ANAI-40 step 5; until then,
-/// prompt is treated as a soft deny with an explanatory reason — same
-/// degraded behavior as the MCP file tools in step 3).
-fn gate_shell_argv_against_file_policy(
+/// Returns `Err(reason)` if any extracted path resolves to `Deny`, or if a
+/// `Prompt` decision is denied/timed-out by the human approver. On `Prompt`,
+/// the gate surfaces an approval request through the kernel's
+/// `ApprovalManager` (ANAI-40 step 5); approved paths are admitted, others
+/// fall through to a denial error. With no kernel handle available, Prompt
+/// fails closed (same posture as a denied approval).
+async fn gate_shell_argv_against_file_policy(
     argv: &[String],
     workspace_root: Option<&Path>,
     file_policy: Option<&CompiledFilePolicy>,
     tool_label: &str,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
 ) -> Result<(), String> {
     let Some(policy) = file_policy else {
         return Ok(());
@@ -1039,24 +1204,32 @@ fn gate_shell_argv_against_file_policy(
                 ));
             }
             FileDecision::Prompt { reason } => {
-                return Err(format!(
-                    "{tool_label} requires approval (file_policy prompt path): {reason} \
-                     (op = {op:?}, raw = {raw:?}, resolved = {resolved:?}). \
-                     Per-path approval surfacing is not yet wired (ANAI-40 step 5); \
-                     until then, prompt-tier paths are rejected from the shell vector."
-                ));
+                let raw_str = raw.to_string_lossy();
+                request_file_policy_approval(
+                    kernel,
+                    caller_agent_id,
+                    tool_label,
+                    op,
+                    &raw_str,
+                    &resolved,
+                    &reason,
+                )
+                .await?;
             }
         }
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn tool_shell_exec(
     input: &serde_json::Value,
     allowed_env: &[String],
     workspace_root: Option<&Path>,
     exec_policy: Option<&openfang_types::config::ExecPolicy>,
     file_policy: Option<&CompiledFilePolicy>,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
 ) -> Result<String, String> {
     let command = input["command"]
         .as_str()
@@ -1088,7 +1261,10 @@ async fn tool_shell_exec(
             workspace_root,
             file_policy,
             "shell_exec",
-        )?;
+            kernel,
+            caller_agent_id,
+        )
+        .await?;
     }
 
     let mut cmd = if use_direct_exec {
@@ -1879,6 +2055,7 @@ async fn tool_channel_send(
     kernel: Option<&Arc<dyn KernelHandle>>,
     workspace_root: Option<&Path>,
     file_policy: Option<&CompiledFilePolicy>,
+    caller_agent_id: Option<&str>,
 ) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
 
@@ -1935,7 +2112,16 @@ async fn tool_channel_send(
 
     // Local file attachment: read from disk and send as FileData
     if let Some(raw_path) = file_path {
-        let resolved = resolve_file_path(raw_path, workspace_root, file_policy, FileOp::Read)?;
+        let resolved = resolve_file_path(
+            raw_path,
+            workspace_root,
+            file_policy,
+            FileOp::Read,
+            kernel,
+            caller_agent_id,
+            "channel_send",
+        )
+        .await?;
         let data = tokio::fs::read(&resolved)
             .await
             .map_err(|e| format!("Failed to read file '{}': {e}", resolved.display()))?;
@@ -2625,17 +2811,29 @@ async fn tool_text_to_speech(
     serde_json::to_string_pretty(&response).map_err(|e| format!("Serialize error: {e}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn tool_speech_to_text(
     input: &serde_json::Value,
     media_engine: Option<&crate::media_understanding::MediaEngine>,
     workspace_root: Option<&Path>,
     file_policy: Option<&CompiledFilePolicy>,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
 ) -> Result<String, String> {
     let engine = media_engine.ok_or("Media engine not available for speech-to-text")?;
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
     let _language = input["language"].as_str();
 
-    let resolved = resolve_file_path(raw_path, workspace_root, file_policy, FileOp::Read)?;
+    let resolved = resolve_file_path(
+        raw_path,
+        workspace_root,
+        file_policy,
+        FileOp::Read,
+        kernel,
+        caller_agent_id,
+        "speech_to_text",
+    )
+    .await?;
 
     // Read the audio file
     let data = tokio::fs::read(&resolved)
@@ -2748,6 +2946,7 @@ async fn tool_docker_exec(
 /// args=["/some/file"] would delete the file even though "rm" was not
 /// in the allowlist. This function now performs the same checks as
 /// shell_exec: metacharacter rejection plus exec_policy validation.
+#[allow(clippy::too_many_arguments)]
 async fn tool_process_start(
     input: &serde_json::Value,
     pm: Option<&crate::process_manager::ProcessManager>,
@@ -2755,6 +2954,7 @@ async fn tool_process_start(
     exec_policy: Option<&openfang_types::config::ExecPolicy>,
     workspace_root: Option<&Path>,
     file_policy: Option<&CompiledFilePolicy>,
+    kernel: Option<&Arc<dyn KernelHandle>>,
 ) -> Result<String, String> {
     let pm = pm.ok_or("Process manager not available")?;
     let agent_id = caller_agent_id.unwrap_or("default");
@@ -2816,7 +3016,10 @@ async fn tool_process_start(
             workspace_root,
             file_policy,
             "process_start",
-        )?;
+            kernel,
+            caller_agent_id,
+        )
+        .await?;
     }
 
     let proc_id = pm.start(agent_id, command, &args).await?;
@@ -3813,7 +4016,7 @@ mod tests {
             "args": ["/tmp/openfang_test_should_not_be_deleted.txt"],
         });
 
-        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy), None, None).await;
+        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy), None, None, None).await;
 
         assert!(
             result.is_err(),
@@ -3851,7 +4054,7 @@ mod tests {
             "command": "rm; cat /etc/passwd",
             "args": [],
         });
-        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy), None, None).await;
+        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy), None, None, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("metacharacter") || pm.count() == 0);
     }
@@ -3871,7 +4074,7 @@ mod tests {
             "command": "echo",
             "args": ["$(rm -rf /)"],
         });
-        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy), None, None).await;
+        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy), None, None, None).await;
         assert!(
             result.is_err(),
             "process_start must reject metacharacters in args"
@@ -3892,7 +4095,7 @@ mod tests {
             "command": "echo",
             "args": ["hello"],
         });
-        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy), None, None).await;
+        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy), None, None, None).await;
         assert!(result.is_err(), "Deny mode must block process_start");
         assert!(result.unwrap_err().to_lowercase().contains("disabled"));
         assert_eq!(pm.count(), 0);
@@ -4179,9 +4382,10 @@ mod tests {
     // Verifies that when a CompiledFilePolicy is supplied, the workspace
     // hard-lock is replaced by policy evaluation: paths outside the
     // workspace become reachable when explicitly allowed by the policy,
-    // and remain blocked otherwise. Also pins the "Prompt deferred"
-    // behavior — until ANAI-40 step 5 wires per-path approval, prompt
-    // matches must fail closed rather than silently allow.
+    // and remain blocked otherwise. Step 5 wires `Prompt` decisions
+    // through the kernel's ApprovalManager — without a kernel handle,
+    // Prompt fails closed (see test_file_read_policy_prompt_path_no_kernel
+    // and test_file_read_policy_prompt_path_approved/_denied).
     // -----------------------------------------------------------------
 
     fn build_compiled_policy(
@@ -4226,6 +4430,8 @@ mod tests {
             &serde_json::json!({"path": target.to_str().unwrap()}),
             Some(workspace.path()),
             Some(&policy),
+            None,
+            None,
         )
         .await
         .expect("read must succeed under file_policy");
@@ -4254,6 +4460,8 @@ mod tests {
             &serde_json::json!({"path": target.to_str().unwrap(), "content": "nope"}),
             Some(workspace.path()),
             Some(&policy),
+            None,
+            None,
         )
         .await;
         let err = result.expect_err("write must be denied for read_paths target");
@@ -4264,10 +4472,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_read_policy_prompt_path_fails_closed() {
-        // Until ANAI-40 step 5 wires per-path approval, a `prompt_paths`
-        // hit must surface as an error explaining the gap — not silently
-        // allow the access.
+    async fn test_file_read_policy_prompt_path_no_kernel() {
+        // Step 5: when no kernel handle is available (e.g. unit-test path,
+        // or a future caller forgot to thread it), a `prompt_paths` hit
+        // must fail closed with an explanatory error — never silently allow.
         let workspace = tempfile::TempDir::new().unwrap();
         let outside = tempfile::TempDir::new().unwrap();
         let target = outside.path().join("secret");
@@ -4287,12 +4495,18 @@ mod tests {
             &serde_json::json!({"path": target.to_str().unwrap()}),
             Some(workspace.path()),
             Some(&policy),
+            None,
+            None,
         )
         .await
-        .expect_err("prompt path must fail closed pre-step-5");
+        .expect_err("prompt path must fail closed without a kernel handle");
         assert!(
             err.contains("requires approval"),
             "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("Approval surfacer unavailable"),
+            "error must explain why approval was unreachable: {err}"
         );
     }
 
@@ -4304,8 +4518,8 @@ mod tests {
     // contract directly — same policy, parsed argv, expected verdict.
     // -----------------------------------------------------------------
 
-    #[test]
-    fn test_shell_gate_allows_unknown_command() {
+    #[tokio::test]
+    async fn test_shell_gate_allows_unknown_command() {
         // Commands not in the extractor table fall through to exec_policy.
         // file_policy does not gate them in v1 (per the brief).
         let workspace = tempfile::TempDir::new().unwrap();
@@ -4322,12 +4536,15 @@ mod tests {
             Some(workspace.path()),
             Some(&policy),
             "shell_exec",
-        );
+            None,
+            None,
+        )
+        .await;
         assert!(res.is_ok(), "unknown commands must pass the gate");
     }
 
-    #[test]
-    fn test_shell_gate_blocks_cat_on_denied_path() {
+    #[tokio::test]
+    async fn test_shell_gate_blocks_cat_on_denied_path() {
         let workspace = tempfile::TempDir::new().unwrap();
         let policy = build_compiled_policy(
             &workspace.path().canonicalize().unwrap(),
@@ -4342,13 +4559,16 @@ mod tests {
             Some(workspace.path()),
             Some(&policy),
             "shell_exec",
+            None,
+            None,
         )
+        .await
         .expect_err("denied read path must trip the gate");
         assert!(err.contains("blocked by file_policy"), "got: {err}");
     }
 
-    #[test]
-    fn test_shell_gate_blocks_rm_on_default_deny() {
+    #[tokio::test]
+    async fn test_shell_gate_blocks_rm_on_default_deny() {
         // Outside-workspace write with default = deny must be rejected.
         let workspace = tempfile::TempDir::new().unwrap();
         let policy = build_compiled_policy(
@@ -4364,14 +4584,17 @@ mod tests {
             Some(workspace.path()),
             Some(&policy),
             "shell_exec",
+            None,
+            None,
         )
+        .await
         .expect_err("default-deny write must trip the gate");
         assert!(err.contains("blocked by file_policy"), "got: {err}");
         assert!(err.contains("Write"), "op must surface in error: {err}");
     }
 
-    #[test]
-    fn test_shell_gate_allows_writes_inside_workspace() {
+    #[tokio::test]
+    async fn test_shell_gate_allows_writes_inside_workspace() {
         // Workspace is implicit read+write — `cp` into it must pass.
         let workspace = tempfile::TempDir::new().unwrap();
         let ws = workspace.path().canonicalize().unwrap();
@@ -4383,27 +4606,43 @@ mod tests {
             src.to_string_lossy().into_owned(),
             dst.to_string_lossy().into_owned(),
         ];
-        let res = gate_shell_argv_against_file_policy(&argv, Some(&ws), Some(&policy), "shell_exec");
+        let res = gate_shell_argv_against_file_policy(
+            &argv,
+            Some(&ws),
+            Some(&policy),
+            "shell_exec",
+            None,
+            None,
+        )
+        .await;
         assert!(res.is_ok(), "workspace-internal cp must pass: {res:?}");
     }
 
-    #[test]
-    fn test_shell_gate_resolves_relative_path_against_workspace() {
+    #[tokio::test]
+    async fn test_shell_gate_resolves_relative_path_against_workspace() {
         // Relative paths from `cat notes.txt` must be anchored to the
         // workspace before evaluation, not left ambiguous.
         let workspace = tempfile::TempDir::new().unwrap();
         let ws = workspace.path().canonicalize().unwrap();
         let policy = build_compiled_policy(&ws, vec![], vec![], vec![], vec![]);
         let argv = vec!["cat".to_string(), "notes.txt".to_string()];
-        let res = gate_shell_argv_against_file_policy(&argv, Some(&ws), Some(&policy), "shell_exec");
+        let res = gate_shell_argv_against_file_policy(
+            &argv,
+            Some(&ws),
+            Some(&policy),
+            "shell_exec",
+            None,
+            None,
+        )
+        .await;
         // Resolves to <ws>/notes.txt → workspace implicit allow → ok.
         assert!(res.is_ok(), "relative path inside workspace must pass: {res:?}");
     }
 
-    #[test]
-    fn test_shell_gate_prompt_path_fails_closed() {
-        // Step-5 deferral: prompt-tier shell hits surface as a soft deny
-        // until the approval surfacer is wired.
+    #[tokio::test]
+    async fn test_shell_gate_prompt_path_no_kernel() {
+        // Step 5: with no kernel handle the gate cannot surface an
+        // approval; prompt-tier shell hits must fail closed.
         let workspace = tempfile::TempDir::new().unwrap();
         let ws = workspace.path().canonicalize().unwrap();
         let policy = build_compiled_policy(
@@ -4414,17 +4653,30 @@ mod tests {
             vec![],
         );
         let argv = vec!["tee".to_string(), "/var/log/app.log".to_string()];
-        let err = gate_shell_argv_against_file_policy(&argv, Some(&ws), Some(&policy), "shell_exec")
-            .expect_err("prompt path must fail closed pre-step-5");
+        let err = gate_shell_argv_against_file_policy(
+            &argv,
+            Some(&ws),
+            Some(&policy),
+            "shell_exec",
+            None,
+            None,
+        )
+        .await
+        .expect_err("prompt path must fail closed without a kernel handle");
         assert!(err.contains("requires approval"), "got: {err}");
+        assert!(
+            err.contains("Approval surfacer unavailable"),
+            "error must explain why approval was unreachable: {err}"
+        );
     }
 
-    #[test]
-    fn test_shell_gate_no_policy_is_passthrough() {
+    #[tokio::test]
+    async fn test_shell_gate_no_policy_is_passthrough() {
         // Without a policy, the gate must not block anything — preserves
         // pre-ANAI-40 behavior for agents that ship no [file_policy] block.
         let argv = vec!["rm".to_string(), "/etc/hosts".to_string()];
-        let res = gate_shell_argv_against_file_policy(&argv, None, None, "shell_exec");
+        let res = gate_shell_argv_against_file_policy(&argv, None, None, "shell_exec", None, None)
+            .await;
         assert!(res.is_ok(), "no-policy gate must be a no-op");
     }
 
@@ -4458,8 +4710,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_shell_gate_blocks_dot_dot_escape_to_denied_path() {
+    #[tokio::test]
+    async fn test_shell_gate_blocks_dot_dot_escape_to_denied_path() {
         // End-to-end regression for the must-fix: argv with `..` traversal
         // past root must still be caught by `deny_paths` after lexical
         // normalization.
@@ -4480,13 +4732,16 @@ mod tests {
             Some(workspace.path()),
             Some(&policy),
             "shell_exec",
+            None,
+            None,
         )
+        .await
         .expect_err("dot-dot escape must hit deny_paths");
         assert!(err.contains("blocked by file_policy"), "got: {err}");
     }
 
-    #[test]
-    fn test_shell_gate_fails_closed_without_workspace_anchor() {
+    #[tokio::test]
+    async fn test_shell_gate_fails_closed_without_workspace_anchor() {
         // Fail-closed: relative path + policy configured + no workspace_root
         // must Err, not silently pass. (Pre-fixup, this was a `continue`.)
         let workspace = tempfile::TempDir::new().unwrap();
@@ -4498,16 +4753,24 @@ mod tests {
             vec![],
         );
         let argv = vec!["cat".to_string(), "notes.txt".to_string()];
-        let err = gate_shell_argv_against_file_policy(&argv, None, Some(&policy), "shell_exec")
-            .expect_err("missing workspace_root with active policy must fail closed");
+        let err = gate_shell_argv_against_file_policy(
+            &argv,
+            None,
+            Some(&policy),
+            "shell_exec",
+            None,
+            None,
+        )
+        .await
+        .expect_err("missing workspace_root with active policy must fail closed");
         assert!(
             err.contains("cannot anchor relative path"),
             "got: {err}"
         );
     }
 
-    #[test]
-    fn test_shell_gate_uses_tool_label_in_error() {
+    #[tokio::test]
+    async fn test_shell_gate_uses_tool_label_in_error() {
         // process_start vs shell_exec: the error must reflect the calling
         // tool, not be patched up via string replace.
         let workspace = tempfile::TempDir::new().unwrap();
@@ -4524,7 +4787,10 @@ mod tests {
             Some(workspace.path()),
             Some(&policy),
             "process_start",
+            None,
+            None,
         )
+        .await
         .expect_err("denied path");
         assert!(
             err.starts_with("process_start blocked by file_policy"),
@@ -4553,9 +4819,323 @@ mod tests {
             &serde_json::json!({"path": target.to_str().unwrap()}),
             Some(workspace.path()),
             Some(&policy),
+            None,
+            None,
         )
         .await
         .expect("workspace read must succeed under empty policy");
         assert_eq!(result, "wsp");
+    }
+
+    // -----------------------------------------------------------------
+    // ANAI-40 step 5: file_policy `Prompt` decisions surface through
+    // KernelHandle::request_approval. Approved → access proceeds;
+    // denied → tool returns Err. Tested via a tiny KernelHandle stub
+    // that records the request and returns a canned decision.
+    // -----------------------------------------------------------------
+
+    use crate::kernel_handle::{AgentInfo, KernelHandle};
+    use async_trait::async_trait;
+    use std::sync::Mutex as StdMutex;
+
+    /// Minimal KernelHandle stub for approval surfacing tests. Records the
+    /// last request_approval invocation and returns a canned decision.
+    struct ApprovalStubKernel {
+        decision: bool,
+        last: StdMutex<Option<(String, String, String)>>, // (agent_id, tool, summary)
+    }
+
+    impl ApprovalStubKernel {
+        fn new(decision: bool) -> Self {
+            Self {
+                decision,
+                last: StdMutex::new(None),
+            }
+        }
+        fn last(&self) -> Option<(String, String, String)> {
+            self.last.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl KernelHandle for ApprovalStubKernel {
+        async fn spawn_agent(
+            &self,
+            _manifest_toml: &str,
+            _parent_id: Option<&str>,
+        ) -> Result<(String, String), String> {
+            unimplemented!("stub")
+        }
+        async fn send_to_agent(&self, _id: &str, _msg: &str) -> Result<String, String> {
+            unimplemented!("stub")
+        }
+        fn list_agents(&self) -> Vec<AgentInfo> {
+            vec![]
+        }
+        fn kill_agent(&self, _id: &str) -> Result<(), String> {
+            unimplemented!("stub")
+        }
+        fn memory_store(&self, _k: &str, _v: serde_json::Value) -> Result<(), String> {
+            unimplemented!("stub")
+        }
+        fn memory_recall(&self, _k: &str) -> Result<Option<serde_json::Value>, String> {
+            unimplemented!("stub")
+        }
+        fn find_agents(&self, _q: &str) -> Vec<AgentInfo> {
+            vec![]
+        }
+        async fn task_post(
+            &self,
+            _t: &str,
+            _d: &str,
+            _a: Option<&str>,
+            _c: Option<&str>,
+        ) -> Result<String, String> {
+            unimplemented!("stub")
+        }
+        async fn task_claim(
+            &self,
+            _a: &str,
+        ) -> Result<Option<serde_json::Value>, String> {
+            unimplemented!("stub")
+        }
+        async fn task_complete(&self, _t: &str, _r: &str) -> Result<(), String> {
+            unimplemented!("stub")
+        }
+        async fn task_list(
+            &self,
+            _s: Option<&str>,
+        ) -> Result<Vec<serde_json::Value>, String> {
+            unimplemented!("stub")
+        }
+        async fn publish_event(
+            &self,
+            _t: &str,
+            _p: serde_json::Value,
+        ) -> Result<(), String> {
+            unimplemented!("stub")
+        }
+        async fn knowledge_add_entity(
+            &self,
+            _e: openfang_types::memory::Entity,
+        ) -> Result<String, String> {
+            unimplemented!("stub")
+        }
+        async fn knowledge_add_relation(
+            &self,
+            _r: openfang_types::memory::Relation,
+        ) -> Result<String, String> {
+            unimplemented!("stub")
+        }
+        async fn knowledge_query(
+            &self,
+            _p: openfang_types::memory::GraphPattern,
+        ) -> Result<Vec<openfang_types::memory::GraphMatch>, String> {
+            unimplemented!("stub")
+        }
+
+        fn requires_approval(&self, _tool_name: &str) -> bool {
+            // Step-5 tests target the in-dispatch file_policy approval
+            // path, not the up-front approval gate. Returning false keeps
+            // the up-front gate quiet so we observe only the file_policy
+            // surfacer.
+            false
+        }
+
+        async fn request_approval(
+            &self,
+            agent_id: &str,
+            tool_name: &str,
+            action_summary: &str,
+        ) -> Result<bool, String> {
+            *self.last.lock().unwrap() = Some((
+                agent_id.to_string(),
+                tool_name.to_string(),
+                action_summary.to_string(),
+            ));
+            Ok(self.decision)
+        }
+    }
+
+    fn stub_kernel(decision: bool) -> Arc<dyn KernelHandle> {
+        Arc::new(ApprovalStubKernel::new(decision))
+    }
+
+    #[tokio::test]
+    async fn test_file_read_prompt_path_approved_proceeds() {
+        // Step 5: a `prompt_paths` hit with an approving kernel must
+        // surface an approval request, then complete the read normally.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("notes.txt");
+        std::fs::write(&target, "approved!").unwrap();
+
+        let outside_canon = outside.path().canonicalize().unwrap();
+        let pattern = format!("{}/**", outside_canon.display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![pattern],
+            vec![],
+        );
+
+        let stub = Arc::new(ApprovalStubKernel::new(true));
+        let kh: Arc<dyn KernelHandle> = stub.clone();
+
+        let result = tool_file_read(
+            &serde_json::json!({"path": target.to_str().unwrap()}),
+            Some(workspace.path()),
+            Some(&policy),
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await
+        .expect("approved prompt-path read must succeed");
+        assert_eq!(result, "approved!");
+
+        // Verify the approval request carried useful context.
+        let last = stub.last().expect("approval must have been requested");
+        assert_eq!(last.0, "agent-test");
+        assert_eq!(last.1, "file_read");
+        assert!(last.2.contains("file_policy prompt"), "summary: {}", last.2);
+        assert!(last.2.contains("Read"), "summary: {}", last.2);
+    }
+
+    #[tokio::test]
+    async fn test_file_write_prompt_path_denied_blocks() {
+        // Step 5: a `prompt_paths` hit with a denying kernel must surface
+        // the request and then fail closed with a clear error.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("denied.txt");
+
+        let outside_canon = outside.path().canonicalize().unwrap();
+        let pattern = format!("{}/**", outside_canon.display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![pattern],
+            vec![],
+        );
+
+        let kh = stub_kernel(false);
+
+        let err = tool_file_write(
+            &serde_json::json!({"path": target.to_str().unwrap(), "content": "nope"}),
+            Some(workspace.path()),
+            Some(&policy),
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await
+        .expect_err("denied prompt-path write must fail");
+        assert!(
+            err.contains("denied by approver"),
+            "error must surface human denial: {err}"
+        );
+        assert!(
+            !target.exists(),
+            "target must not have been written when approval was denied"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shell_gate_prompt_path_approved_passes() {
+        // Step 5: shell-vector prompt-tier hit with approving kernel must
+        // pass the gate without raising an error.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let ws = workspace.path().canonicalize().unwrap();
+        let policy = build_compiled_policy(
+            &ws,
+            vec![],
+            vec![],
+            vec!["/var/log/**".to_string()],
+            vec![],
+        );
+        let argv = vec!["tee".to_string(), "/var/log/app.log".to_string()];
+        let kh = stub_kernel(true);
+
+        let res = gate_shell_argv_against_file_policy(
+            &argv,
+            Some(&ws),
+            Some(&policy),
+            "shell_exec",
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await;
+        assert!(res.is_ok(), "approved prompt path must pass: {res:?}");
+    }
+
+    #[tokio::test]
+    async fn test_shell_gate_prompt_path_denied_blocks() {
+        // Step 5: shell-vector prompt-tier hit with denying kernel must
+        // fail with the human-denial error shape.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let ws = workspace.path().canonicalize().unwrap();
+        let policy = build_compiled_policy(
+            &ws,
+            vec![],
+            vec![],
+            vec!["/var/log/**".to_string()],
+            vec![],
+        );
+        let argv = vec!["tee".to_string(), "/var/log/app.log".to_string()];
+        let kh = stub_kernel(false);
+
+        let err = gate_shell_argv_against_file_policy(
+            &argv,
+            Some(&ws),
+            Some(&policy),
+            "shell_exec",
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await
+        .expect_err("denied prompt-path shell call must fail");
+        assert!(
+            err.contains("denied by approver"),
+            "error must surface human denial: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_policy_deny_does_not_invoke_approver() {
+        // Sanity: a hard `deny_paths` hit must short-circuit before the
+        // approval surfacer is ever called. The stub records the last
+        // request_approval call; we expect None.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("nope");
+
+        let outside_canon = outside.path().canonicalize().unwrap();
+        let pattern = format!("{}/**", outside_canon.display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec![pattern],
+        );
+
+        let stub = Arc::new(ApprovalStubKernel::new(true));
+        let kh: Arc<dyn KernelHandle> = stub.clone();
+
+        let _ = tool_file_read(
+            &serde_json::json!({"path": target.to_str().unwrap()}),
+            Some(workspace.path()),
+            Some(&policy),
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await
+        .expect_err("deny must short-circuit");
+
+        assert!(
+            stub.last().is_none(),
+            "deny must not surface an approval request"
+        );
     }
 }
