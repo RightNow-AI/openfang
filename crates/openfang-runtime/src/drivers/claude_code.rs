@@ -500,7 +500,7 @@ impl LlmDriver for ClaudeCodeDriver {
             request.caller_agent_id.as_deref(),
             request.caller_allowed_tools.as_deref(),
         )
-        .map(|cfg| {
+        .inspect(|cfg| {
             cmd.arg("--mcp-config").arg(cfg.path());
             // `--strict-mcp-config` makes CC ignore any user/global MCP
             // config that might otherwise merge in — we want exactly
@@ -513,7 +513,6 @@ impl LlmDriver for ClaudeCodeDriver {
             if bridge_debug_enabled() {
                 cmd.arg("--debug");
             }
-            cfg
         });
         let bridge_wired = _bridge_cfg.is_some();
         let bridge_debug = bridge_wired && bridge_debug_enabled();
@@ -742,14 +741,13 @@ impl LlmDriver for ClaudeCodeDriver {
             request.caller_agent_id.as_deref(),
             request.caller_allowed_tools.as_deref(),
         )
-        .map(|cfg| {
+        .inspect(|cfg| {
             cmd.arg("--mcp-config").arg(cfg.path());
             cmd.arg("--strict-mcp-config");
             // Optional --debug — see complete() for rationale.
             if bridge_debug_enabled() {
                 cmd.arg("--debug");
             }
-            cfg
         });
         let bridge_wired = _bridge_cfg.is_some();
         let bridge_debug = bridge_wired && bridge_debug_enabled();
