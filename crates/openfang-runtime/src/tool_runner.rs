@@ -816,74 +816,116 @@ async fn resolve_with_policy(
             Err(format!("Access denied by file_policy: {reason}"))
         }
         FileDecision::Prompt { reason } => {
-            request_file_policy_approval(
-                kernel,
-                caller_agent_id,
-                tool_label,
+            let item = FilePolicyPromptItem {
                 op,
-                raw_path,
-                &canon,
-                &reason,
-            )
-            .await?;
+                raw: raw_path,
+                resolved: &canon,
+                reason: &reason,
+            };
+            request_file_policy_approval(kernel, caller_agent_id, tool_label, &[item]).await?;
             Ok(canon)
         }
     }
 }
 
-/// ANAI-40 step 5: surface a `FileDecision::Prompt` through the kernel's
-/// approval manager and translate the human decision back into Ok/Err.
+/// One Prompt-tier path awaiting approval. Borrowed inputs so callers can
+/// keep ownership of their resolved/raw/reason buffers across the await.
+struct FilePolicyPromptItem<'a> {
+    op: FileOp,
+    raw: &'a str,
+    resolved: &'a Path,
+    reason: &'a str,
+}
+
+fn render_prompt_line(it: &FilePolicyPromptItem<'_>) -> String {
+    format!(
+        "{:?} {} (raw {:?}) — {}",
+        it.op,
+        it.resolved.display(),
+        it.raw,
+        it.reason
+    )
+}
+
+fn render_prompt_lines(items: &[FilePolicyPromptItem<'_>]) -> String {
+    items
+        .iter()
+        .map(render_prompt_line)
+        .collect::<Vec<_>>()
+        .join("\n  - ")
+}
+
+/// ANAI-40 step 5: surface one or more `FileDecision::Prompt` outcomes
+/// through the kernel's approval manager and translate the human decision
+/// back into Ok/Err. The shell gate batches all Prompt-tier paths from a
+/// single argv into one call so a multi-path command (`cp a b c`) costs
+/// one prompt, not N.
 ///
-/// `tool_label` is the surface tool name (e.g. `"file_read"`, `"shell_exec"`)
-/// used both for risk classification and for the prompt copy. The summary
-/// includes the operation, the resolved path, and the policy reason so the
-/// approver has enough context to decide without inspecting the raw input.
+/// `tool_label` is the surface tool name (e.g. `"file_read"`,
+/// `"shell_exec"`); it is passed to `request_approval` directly so the UI
+/// can render it next to the summary, and is therefore *not* duplicated
+/// inside the summary body. The summary includes the operation, resolved
+/// path, raw token, and policy reason so the approver has the context
+/// they need without inspecting the original tool input.
 ///
-/// Fails closed if no kernel handle is available — this is the unit-test
-/// path and any future caller that forgets to thread the handle. Better to
-/// error loudly than silently bypass an approval gate.
+/// Fails closed in two cases:
+///   1. No kernel handle (unit-test path or any caller that forgot to
+///      thread one) — error loudly rather than silently skip the gate.
+///   2. `caller_agent_id` is `None` — without attribution we'd log a
+///      fake-looking `"unknown"` agent in the audit trail. Refuse.
 async fn request_file_policy_approval(
     kernel: Option<&Arc<dyn KernelHandle>>,
     caller_agent_id: Option<&str>,
     tool_label: &str,
-    op: FileOp,
-    raw: &str,
-    resolved: &Path,
-    reason: &str,
+    items: &[FilePolicyPromptItem<'_>],
 ) -> Result<(), String> {
+    debug_assert!(
+        !items.is_empty(),
+        "request_file_policy_approval called with no items"
+    );
     let Some(kh) = kernel else {
         return Err(format!(
-            "{tool_label} requires approval (file_policy prompt path): {reason} \
-             (op = {op:?}, raw = {raw:?}, resolved = {}). \
+            "{tool_label} requires approval (file_policy prompt path):\n  - {}\n\
              Approval surfacer unavailable (no kernel handle in this context); \
-             promote this path to read_paths/write_paths or remove it from \
+             promote these path(s) to read_paths/write_paths or remove them from \
              prompt_paths to proceed.",
-            resolved.display()
+            render_prompt_lines(items)
         ));
     };
-    let agent_id = caller_agent_id.unwrap_or("unknown");
-    let summary = format!(
-        "file_policy prompt: {tool_label} {op:?} {} — {reason}",
-        resolved.display()
-    );
+    let Some(agent_id) = caller_agent_id else {
+        return Err(format!(
+            "{tool_label} blocked by file_policy: approval surfacer requires \
+             caller_agent_id for audit attribution, but none was threaded to \
+             the gate. This is a fail-closed safeguard — refusing to surface a \
+             prompt without attribution.\n  - {}",
+            render_prompt_lines(items)
+        ));
+    };
+    let summary = if items.len() == 1 {
+        format!("file_policy prompt: {}", render_prompt_line(&items[0]))
+    } else {
+        format!(
+            "file_policy prompt: {} paths require approval:\n  - {}",
+            items.len(),
+            render_prompt_lines(items)
+        )
+    };
     debug!(
         tool_label,
-        ?op,
+        item_count = items.len(),
         agent_id,
-        path = %resolved.display(),
         "Surfacing file_policy approval request"
     );
     match kh.request_approval(agent_id, tool_label, &summary).await {
         Ok(true) => Ok(()),
         Ok(false) => Err(format!(
-            "{tool_label} denied by approver (file_policy prompt path): {reason} \
-             (op = {op:?}, raw = {raw:?}, resolved = {})",
-            resolved.display()
+            "{tool_label} denied by approver (file_policy prompt path):\n  - {}",
+            render_prompt_lines(items)
         )),
         Err(e) => Err(format!(
-            "{tool_label} approval system error while gating file_policy prompt: {e} \
-             (op = {op:?}, raw = {raw:?}, resolved = {})",
-            resolved.display()
+            "{tool_label} approval system error while gating file_policy prompt: \
+             {e}\n  - {}",
+            render_prompt_lines(items)
         )),
     }
 }
@@ -1182,6 +1224,12 @@ async fn gate_shell_argv_against_file_policy(
         crate::shell_path_extractor::Extraction::Known(v) => v,
         crate::shell_path_extractor::Extraction::Unknown => return Ok(()),
     };
+    // Two-pass: scan all paths first so a hard Deny short-circuits *before*
+    // we burn the operator's attention on a Prompt sibling. Then issue a
+    // single batched approval covering every Prompt-tier path at once —
+    // `cp a b c` with three prompt-tier targets becomes one prompt, not
+    // three sequential ones.
+    let mut prompts: Vec<(String, FileOp, PathBuf, String)> = Vec::new();
     for (raw, op) in pairs {
         let resolved = resolve_shell_path(&raw, workspace_root);
         // The evaluator `debug_assert!`s on absolute paths. If we can't
@@ -1204,19 +1252,21 @@ async fn gate_shell_argv_against_file_policy(
                 ));
             }
             FileDecision::Prompt { reason } => {
-                let raw_str = raw.to_string_lossy();
-                request_file_policy_approval(
-                    kernel,
-                    caller_agent_id,
-                    tool_label,
-                    op,
-                    &raw_str,
-                    &resolved,
-                    &reason,
-                )
-                .await?;
+                prompts.push((raw.to_string_lossy().into_owned(), op, resolved, reason));
             }
         }
+    }
+    if !prompts.is_empty() {
+        let items: Vec<FilePolicyPromptItem<'_>> = prompts
+            .iter()
+            .map(|(raw, op, resolved, reason)| FilePolicyPromptItem {
+                op: *op,
+                raw: raw.as_str(),
+                resolved: resolved.as_path(),
+                reason: reason.as_str(),
+            })
+            .collect();
+        request_file_policy_approval(kernel, caller_agent_id, tool_label, &items).await?;
     }
     Ok(())
 }
@@ -4838,25 +4888,50 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
 
-    /// Minimal KernelHandle stub for approval surfacing tests. Records the
-    /// last request_approval invocation and returns a canned decision.
+    /// Minimal KernelHandle stub for approval surfacing tests. Records every
+    /// `request_approval` call and returns a canned decision. The
+    /// `requires_approval` flag controls whether the up-front dispatch gate
+    /// in `execute_tool` fires too — defaults to false so step-5 unit tests
+    /// observe only the in-tool file_policy surfacer; flip to true to pin
+    /// the combined behavior (both gates active) end-to-end.
     struct ApprovalStubKernel {
         decision: bool,
-        last: StdMutex<Option<(String, String, String)>>, // (agent_id, tool, summary)
+        requires_approval: bool,
+        calls: StdMutex<Vec<(String, String, String)>>, // (agent_id, tool, summary)
     }
 
     impl ApprovalStubKernel {
         fn new(decision: bool) -> Self {
             Self {
                 decision,
-                last: StdMutex::new(None),
+                requires_approval: false,
+                calls: StdMutex::new(Vec::new()),
+            }
+        }
+        fn with_requires_approval(decision: bool, requires: bool) -> Self {
+            Self {
+                decision,
+                requires_approval: requires,
+                calls: StdMutex::new(Vec::new()),
             }
         }
         fn last(&self) -> Option<(String, String, String)> {
-            self.last.lock().unwrap().clone()
+            self.calls.lock().unwrap().last().cloned()
+        }
+        fn call_count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+        fn calls(&self) -> Vec<(String, String, String)> {
+            self.calls.lock().unwrap().clone()
         }
     }
 
+    // The unimplemented!() arms below are intentional: KernelHandle is the
+    // full kernel surface, but step-5 approval tests only exercise
+    // `requires_approval` and `request_approval`. Forcing a panic on every
+    // other method ensures the stub fails loudly if a future test starts
+    // depending on additional kernel behavior — better than returning silent
+    // defaults that drift from production semantics.
     #[async_trait]
     impl KernelHandle for ApprovalStubKernel {
         async fn spawn_agent(
@@ -4935,11 +5010,7 @@ mod tests {
         }
 
         fn requires_approval(&self, _tool_name: &str) -> bool {
-            // Step-5 tests target the in-dispatch file_policy approval
-            // path, not the up-front approval gate. Returning false keeps
-            // the up-front gate quiet so we observe only the file_policy
-            // surfacer.
-            false
+            self.requires_approval
         }
 
         async fn request_approval(
@@ -4948,7 +5019,7 @@ mod tests {
             tool_name: &str,
             action_summary: &str,
         ) -> Result<bool, String> {
-            *self.last.lock().unwrap() = Some((
+            self.calls.lock().unwrap().push((
                 agent_id.to_string(),
                 tool_name.to_string(),
                 action_summary.to_string(),
@@ -5000,6 +5071,22 @@ mod tests {
         assert_eq!(last.1, "file_read");
         assert!(last.2.contains("file_policy prompt"), "summary: {}", last.2);
         assert!(last.2.contains("Read"), "summary: {}", last.2);
+        // Step-5 fixup: raw token must appear in summary so the operator
+        // sees what the agent actually requested, not just the resolved path.
+        let raw = target.to_str().unwrap();
+        assert!(
+            last.2.contains(raw),
+            "summary must include raw token {raw:?}: {}",
+            last.2
+        );
+        // Step-5 fixup: tool_label must NOT be duplicated inside the summary
+        // — it is already passed to the kernel as the second arg and the UI
+        // renders both. Search outside the trailing `_label` accidents.
+        assert!(
+            !last.2.contains("file_read "),
+            "summary must not duplicate tool_label: {}",
+            last.2
+        );
     }
 
     #[tokio::test]
@@ -5137,5 +5224,208 @@ mod tests {
             stub.last().is_none(),
             "deny must not surface an approval request"
         );
+    }
+
+    #[tokio::test]
+    async fn test_shell_gate_batches_multipath_prompt_into_one_request() {
+        // Step-5 fixup #3: a multi-path argv with two Prompt-tier targets
+        // must surface ONE batched approval, not two sequential ones.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let ws = workspace.path().canonicalize().unwrap();
+        let policy = build_compiled_policy(
+            &ws,
+            vec![],
+            vec![],
+            vec!["/var/log/**".to_string()],
+            vec![],
+        );
+        // `cp` splits args as Read(src) + Write(dst); both prompt-tier.
+        let argv = vec![
+            "cp".to_string(),
+            "/var/log/src.log".to_string(),
+            "/var/log/dst.log".to_string(),
+        ];
+        let stub = Arc::new(ApprovalStubKernel::new(true));
+        let kh: Arc<dyn KernelHandle> = stub.clone();
+
+        gate_shell_argv_against_file_policy(
+            &argv,
+            Some(&ws),
+            Some(&policy),
+            "shell_exec",
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await
+        .expect("batched approval must succeed");
+
+        assert_eq!(
+            stub.call_count(),
+            1,
+            "multi-path prompt must collapse to a single approval call; got {} calls: {:?}",
+            stub.call_count(),
+            stub.calls()
+        );
+        let last = stub.last().expect("call recorded");
+        assert!(
+            last.2.contains("/var/log/src.log") && last.2.contains("/var/log/dst.log"),
+            "batched summary must mention both paths: {}",
+            last.2
+        );
+        assert!(
+            last.2.contains("2 paths require approval"),
+            "batched summary must announce the count: {}",
+            last.2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shell_gate_deny_short_circuits_before_prompt_batch() {
+        // Step-5 fixup #3 corollary: if any path hard-Denies, the gate must
+        // return Err *without* surfacing approvals for the Prompt siblings.
+        // Don't burn the operator's attention on a request that's doomed.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let ws = workspace.path().canonicalize().unwrap();
+        let policy = build_compiled_policy(
+            &ws,
+            vec![],
+            vec![],
+            vec!["/var/log/**".to_string()],
+            vec!["/etc/**".to_string()],
+        );
+        let argv = vec![
+            "cp".to_string(),
+            "/var/log/ok.log".to_string(), // Prompt
+            "/etc/passwd".to_string(),     // Deny
+        ];
+        let stub = Arc::new(ApprovalStubKernel::new(true));
+        let kh: Arc<dyn KernelHandle> = stub.clone();
+
+        let err = gate_shell_argv_against_file_policy(
+            &argv,
+            Some(&ws),
+            Some(&policy),
+            "shell_exec",
+            Some(&kh),
+            Some("agent-test"),
+        )
+        .await
+        .expect_err("deny sibling must fail the call");
+        assert!(err.contains("blocked by file_policy"), "{err}");
+        assert_eq!(
+            stub.call_count(),
+            0,
+            "deny must short-circuit before approval surfacer fires"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_policy_prompt_fails_closed_when_agent_id_missing() {
+        // Step-5 fixup #1: a Prompt path with kernel attached but
+        // caller_agent_id = None must fail closed rather than log a
+        // fake-looking "unknown" attribution into the audit trail.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("notes.txt");
+        std::fs::write(&target, "x").unwrap();
+
+        let outside_canon = outside.path().canonicalize().unwrap();
+        let pattern = format!("{}/**", outside_canon.display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![pattern],
+            vec![],
+        );
+
+        let stub = Arc::new(ApprovalStubKernel::new(true));
+        let kh: Arc<dyn KernelHandle> = stub.clone();
+
+        let err = tool_file_read(
+            &serde_json::json!({"path": target.to_str().unwrap()}),
+            Some(workspace.path()),
+            Some(&policy),
+            Some(&kh),
+            None, // <-- no caller_agent_id
+        )
+        .await
+        .expect_err("missing caller_agent_id must fail closed on Prompt");
+        assert!(
+            err.contains("caller_agent_id"),
+            "error must name the missing attribution: {err}"
+        );
+        assert_eq!(
+            stub.call_count(),
+            0,
+            "must not surface approval without attribution"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_combined_gates_double_prompt_under_requires_approval() {
+        // Step-5 fixup #2: pin v1 behavior when BOTH gates fire — the
+        // up-front `requires_approval` gate AND the in-tool file_policy
+        // surfacer. Currently expect TWO approval calls per user action
+        // (one per gate). If a future change adds dedup, this test should
+        // be updated to assert one call; until then, this test documents
+        // the double-prompt cost so it cannot regress silently.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let target = outside.path().join("notes.txt");
+        std::fs::write(&target, "data").unwrap();
+
+        let outside_canon = outside.path().canonicalize().unwrap();
+        let pattern = format!("{}/**", outside_canon.display());
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![pattern],
+            vec![],
+        );
+
+        let stub = Arc::new(ApprovalStubKernel::with_requires_approval(true, true));
+        let kh: Arc<dyn KernelHandle> = stub.clone();
+
+        let result = execute_tool(
+            "test-id",
+            "file_read",
+            &serde_json::json!({"path": target.to_str().unwrap()}),
+            Some(&kh),
+            None, // allowed_tools
+            Some("agent-combined"),
+            None, // skill_registry
+            None, // mcp_connections
+            None, // web_ctx
+            None, // browser_ctx
+            None, // allowed_env_vars
+            Some(workspace.path()),
+            None, // media_engine
+            None, // exec_policy
+            None, // tts_engine
+            None, // docker_config
+            None, // process_manager
+            Some(&policy),
+        )
+        .await;
+        assert!(!result.is_error, "combined-approved read must succeed: {}", result.content);
+
+        // v1 documented behavior: two prompts (up-front gate + file_policy
+        // surfacer). If you add dedup, change the assertion to 1 and
+        // remove this comment.
+        assert_eq!(
+            stub.call_count(),
+            2,
+            "v1 expects double-prompt; got calls: {:?}",
+            stub.calls()
+        );
+        // The up-front gate uses tool_name as label; the file_policy
+        // surfacer uses tool_label="file_read" too. Both must be attributed
+        // to the right agent.
+        for call in stub.calls() {
+            assert_eq!(call.0, "agent-combined", "agent_id must propagate to both gates");
+            assert_eq!(call.1, "file_read");
+        }
     }
 }
