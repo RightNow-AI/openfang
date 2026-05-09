@@ -180,6 +180,7 @@ impl SetupWizard {
             profile: None,
             fallback_models: vec![],
             exec_policy: None,
+            file_policy: None,
             tool_allowlist: vec![],
             tool_blocklist: vec![],
             cache_context: false,

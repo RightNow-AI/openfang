@@ -19,6 +19,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 bitflags = "2"
+globset = { workspace = true }
 
 [dev-dependencies]
 rmp-serde = { workspace = true }

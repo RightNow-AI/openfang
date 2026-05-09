@@ -103,6 +103,9 @@ json5 = "0.4"
 # Directory walking
 walkdir = "2"
 
+# Glob matching (file_policy path matching)
+globset = "0.4"
+
 # Security
 sha2 = "0.10"
 sha1 = "0.10"

@@ -1139,6 +1139,13 @@ pub struct KernelConfig {
     /// Shell/exec security policy.
     #[serde(default)]
     pub exec_policy: ExecPolicy,
+    /// Unified filesystem access policy (ANAI-40).
+    ///
+    /// Gates all filesystem access regardless of vector — MCP file tools,
+    /// shell commands, redirected output. Workspace remains the implicit
+    /// read+write root; this policy extends it with explicit globs.
+    #[serde(default)]
+    pub file_policy: crate::file_policy::FilePolicy,
     /// Agent bindings for multi-account routing.
     #[serde(default)]
     pub bindings: Vec<AgentBinding>,
@@ -1429,6 +1436,7 @@ impl Default for KernelConfig {
             max_cron_jobs: default_max_cron_jobs(),
             include: Vec::new(),
             exec_policy: ExecPolicy::default(),
+            file_policy: crate::file_policy::FilePolicy::default(),
             bindings: Vec::new(),
             broadcast: BroadcastConfig::default(),
             auto_reply: AutoReplyConfig::default(),
