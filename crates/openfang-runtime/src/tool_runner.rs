@@ -337,6 +337,7 @@ pub async fn execute_tool(
                 allowed_env_vars.unwrap_or(&[]),
                 workspace_root,
                 exec_policy,
+                file_policy,
             )
             .await
         }
@@ -404,7 +405,15 @@ pub async fn execute_tool(
 
         // Persistent process tools
         "process_start" => {
-            tool_process_start(input, process_manager, caller_agent_id, exec_policy).await
+            tool_process_start(
+                input,
+                process_manager,
+                caller_agent_id,
+                exec_policy,
+                workspace_root,
+                file_policy,
+            )
+            .await
         }
         "process_poll" => tool_process_poll(input, process_manager).await,
         "process_write" => tool_process_write(input, process_manager).await,
@@ -929,11 +938,107 @@ async fn tool_web_search_legacy(input: &serde_json::Value) -> Result<String, Str
 // Shell tool
 // ---------------------------------------------------------------------------
 
+/// Resolve a shell-vector path against the agent CWD (workspace) and lexically
+/// normalize it. Used before handing the path to `CompiledFilePolicy::evaluate`,
+/// which requires an absolute path.
+///
+/// We do **not** call `canonicalize` — that would require the path to exist on
+/// disk, which is wrong for write ops creating new files. Symlink-following is
+/// listed as an open question on the ANAI-40 brief; v1 evaluates the lexical
+/// path. (See `projects/openfang-fork/issues/anai-40-file-policy.md`,
+/// "Open questions: symlinks".)
+fn resolve_shell_path(raw: &Path, workspace_root: Option<&Path>) -> PathBuf {
+    let joined = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else if let Some(ws) = workspace_root {
+        ws.join(raw)
+    } else {
+        // No workspace anchor — best-effort. Policy will likely default-deny.
+        raw.to_path_buf()
+    };
+    lexically_normalize(&joined)
+}
+
+/// Lexically collapse `.` and `..` components. Does not touch the filesystem.
+fn lexically_normalize(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Pop only if the last pushed component is a regular Normal
+                // directory; otherwise (root, prefix, or empty) leave as-is.
+                let popped = out.components().next_back().is_some_and(|c| {
+                    matches!(c, Component::Normal(_))
+                });
+                if popped {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Gate a parsed shell argv against `file_policy` (ANAI-40 step 4).
+///
+/// Returns `Ok(())` if every recognized path resolves to `Allow`, OR the
+/// command is not in the extractor table (unrecognized commands fall back
+/// to `exec_policy` only — `file_policy` does not gate them in v1; see brief).
+///
+/// Returns `Err(reason)` if any extracted path resolves to `Deny`, or to
+/// `Prompt` (per-path approval surfacing is ANAI-40 step 5; until then,
+/// prompt is treated as a soft deny with an explanatory reason — same
+/// degraded behavior as the MCP file tools in step 3).
+fn gate_shell_argv_against_file_policy(
+    argv: &[String],
+    workspace_root: Option<&Path>,
+    file_policy: Option<&CompiledFilePolicy>,
+) -> Result<(), String> {
+    let Some(policy) = file_policy else {
+        return Ok(());
+    };
+    let extraction = crate::shell_path_extractor::extract(argv);
+    let pairs = match extraction {
+        crate::shell_path_extractor::Extraction::Known(v) => v,
+        crate::shell_path_extractor::Extraction::Unknown => return Ok(()),
+    };
+    for (raw, op) in pairs {
+        let resolved = resolve_shell_path(&raw, workspace_root);
+        // The evaluator `debug_assert!`s on absolute paths. If we couldn't
+        // anchor (no workspace, relative path), skip — exec_policy still gates.
+        if !resolved.is_absolute() {
+            continue;
+        }
+        match policy.evaluate(&resolved, op) {
+            FileDecision::Allow => {}
+            FileDecision::Deny { reason } => {
+                return Err(format!(
+                    "shell_exec blocked by file_policy: {reason} (op = {op:?})"
+                ));
+            }
+            FileDecision::Prompt { reason } => {
+                return Err(format!(
+                    "shell_exec requires approval (file_policy prompt path): {reason}. \
+                     Per-path approval surfacing is not yet wired (ANAI-40 step 5); \
+                     until then, prompt-tier paths are rejected from the shell vector."
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn tool_shell_exec(
     input: &serde_json::Value,
     allowed_env: &[String],
     workspace_root: Option<&Path>,
     exec_policy: Option<&openfang_types::config::ExecPolicy>,
+    file_policy: Option<&CompiledFilePolicy>,
 ) -> Result<String, String> {
     let command = input["command"]
         .as_str()
@@ -953,6 +1058,15 @@ async fn tool_shell_exec(
     let use_direct_exec = exec_policy
         .map(|p| p.mode == openfang_types::config::ExecSecurityMode::Allowlist)
         .unwrap_or(true); // Default to safe mode
+
+    // ANAI-40 step 4: gate filesystem-touching commands against file_policy
+    // before spawn. Best-effort parse via shlex; the upstream metacharacter
+    // gate has already rejected anything shlex couldn't reasonably split.
+    // Applied to both Allowlist and Full modes — file_policy is orthogonal
+    // to exec_policy and must hold even when shell access is unrestricted.
+    if let Some(parsed_argv) = shlex::split(command) {
+        gate_shell_argv_against_file_policy(&parsed_argv, workspace_root, file_policy)?;
+    }
 
     let mut cmd = if use_direct_exec {
         // SAFE PATH: Split command into argv using POSIX shell lexer rules,
@@ -2616,6 +2730,8 @@ async fn tool_process_start(
     pm: Option<&crate::process_manager::ProcessManager>,
     caller_agent_id: Option<&str>,
     exec_policy: Option<&openfang_types::config::ExecPolicy>,
+    workspace_root: Option<&Path>,
+    file_policy: Option<&CompiledFilePolicy>,
 ) -> Result<String, String> {
     let pm = pm.ok_or("Process manager not available")?;
     let agent_id = caller_agent_id.unwrap_or("default");
@@ -2664,6 +2780,16 @@ async fn tool_process_start(
                 policy.mode
             ));
         }
+    }
+
+    // ANAI-40 step 4: gate filesystem-touching commands against file_policy.
+    // process_start receives argv pre-split, so no shlex parse is needed.
+    {
+        let mut argv = Vec::with_capacity(args.len() + 1);
+        argv.push(command.to_string());
+        argv.extend(args.iter().cloned());
+        gate_shell_argv_against_file_policy(&argv, workspace_root, file_policy)
+            .map_err(|e| e.replace("shell_exec", "process_start"))?;
     }
 
     let proc_id = pm.start(agent_id, command, &args).await?;
@@ -3660,7 +3786,7 @@ mod tests {
             "args": ["/tmp/openfang_test_should_not_be_deleted.txt"],
         });
 
-        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy)).await;
+        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy), None, None).await;
 
         assert!(
             result.is_err(),
@@ -3698,7 +3824,7 @@ mod tests {
             "command": "rm; cat /etc/passwd",
             "args": [],
         });
-        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy)).await;
+        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy), None, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("metacharacter") || pm.count() == 0);
     }
@@ -3718,7 +3844,7 @@ mod tests {
             "command": "echo",
             "args": ["$(rm -rf /)"],
         });
-        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy)).await;
+        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy), None, None).await;
         assert!(
             result.is_err(),
             "process_start must reject metacharacters in args"
@@ -3739,7 +3865,7 @@ mod tests {
             "command": "echo",
             "args": ["hello"],
         });
-        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy)).await;
+        let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy), None, None).await;
         assert!(result.is_err(), "Deny mode must block process_start");
         assert!(result.unwrap_err().to_lowercase().contains("disabled"));
         assert_eq!(pm.count(), 0);
@@ -4141,6 +4267,142 @@ mod tests {
             err.contains("requires approval"),
             "unexpected error: {err}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // ANAI-40 step 4: file_policy gating of the shell vector
+    //
+    // gate_shell_argv_against_file_policy is the seam used by both
+    // tool_shell_exec and tool_process_start. These tests pin its
+    // contract directly — same policy, parsed argv, expected verdict.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_shell_gate_allows_unknown_command() {
+        // Commands not in the extractor table fall through to exec_policy.
+        // file_policy does not gate them in v1 (per the brief).
+        let workspace = tempfile::TempDir::new().unwrap();
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec!["/etc/**".to_string()],
+        );
+        let argv = vec!["python".to_string(), "/etc/passwd".to_string()];
+        let res = gate_shell_argv_against_file_policy(
+            &argv,
+            Some(workspace.path()),
+            Some(&policy),
+        );
+        assert!(res.is_ok(), "unknown commands must pass the gate");
+    }
+
+    #[test]
+    fn test_shell_gate_blocks_cat_on_denied_path() {
+        let workspace = tempfile::TempDir::new().unwrap();
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec!["/etc/**".to_string()],
+        );
+        let argv = vec!["cat".to_string(), "/etc/passwd".to_string()];
+        let err = gate_shell_argv_against_file_policy(
+            &argv,
+            Some(workspace.path()),
+            Some(&policy),
+        )
+        .expect_err("denied read path must trip the gate");
+        assert!(err.contains("blocked by file_policy"), "got: {err}");
+    }
+
+    #[test]
+    fn test_shell_gate_blocks_rm_on_default_deny() {
+        // Outside-workspace write with default = deny must be rejected.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let policy = build_compiled_policy(
+            &workspace.path().canonicalize().unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let argv = vec!["rm".to_string(), "/tmp/some-file".to_string()];
+        let err = gate_shell_argv_against_file_policy(
+            &argv,
+            Some(workspace.path()),
+            Some(&policy),
+        )
+        .expect_err("default-deny write must trip the gate");
+        assert!(err.contains("blocked by file_policy"), "got: {err}");
+        assert!(err.contains("Write"), "op must surface in error: {err}");
+    }
+
+    #[test]
+    fn test_shell_gate_allows_writes_inside_workspace() {
+        // Workspace is implicit read+write — `cp` into it must pass.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let ws = workspace.path().canonicalize().unwrap();
+        let src = ws.join("src.txt");
+        let dst = ws.join("dst.txt");
+        let policy = build_compiled_policy(&ws, vec![], vec![], vec![], vec![]);
+        let argv = vec![
+            "cp".to_string(),
+            src.to_string_lossy().into_owned(),
+            dst.to_string_lossy().into_owned(),
+        ];
+        let res = gate_shell_argv_against_file_policy(&argv, Some(&ws), Some(&policy));
+        assert!(res.is_ok(), "workspace-internal cp must pass: {res:?}");
+    }
+
+    #[test]
+    fn test_shell_gate_resolves_relative_path_against_workspace() {
+        // Relative paths from `cat notes.txt` must be anchored to the
+        // workspace before evaluation, not left ambiguous.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let ws = workspace.path().canonicalize().unwrap();
+        let policy = build_compiled_policy(&ws, vec![], vec![], vec![], vec![]);
+        let argv = vec!["cat".to_string(), "notes.txt".to_string()];
+        let res = gate_shell_argv_against_file_policy(&argv, Some(&ws), Some(&policy));
+        // Resolves to <ws>/notes.txt → workspace implicit allow → ok.
+        assert!(res.is_ok(), "relative path inside workspace must pass: {res:?}");
+    }
+
+    #[test]
+    fn test_shell_gate_prompt_path_fails_closed() {
+        // Step-5 deferral: prompt-tier shell hits surface as a soft deny
+        // until the approval surfacer is wired.
+        let workspace = tempfile::TempDir::new().unwrap();
+        let ws = workspace.path().canonicalize().unwrap();
+        let policy = build_compiled_policy(
+            &ws,
+            vec![],
+            vec![],
+            vec!["/var/log/**".to_string()],
+            vec![],
+        );
+        let argv = vec!["tee".to_string(), "/var/log/app.log".to_string()];
+        let err = gate_shell_argv_against_file_policy(&argv, Some(&ws), Some(&policy))
+            .expect_err("prompt path must fail closed pre-step-5");
+        assert!(err.contains("requires approval"), "got: {err}");
+    }
+
+    #[test]
+    fn test_shell_gate_no_policy_is_passthrough() {
+        // Without a policy, the gate must not block anything — preserves
+        // pre-ANAI-40 behavior for agents that ship no [file_policy] block.
+        let argv = vec!["rm".to_string(), "/etc/hosts".to_string()];
+        let res = gate_shell_argv_against_file_policy(&argv, None, None);
+        assert!(res.is_ok(), "no-policy gate must be a no-op");
+    }
+
+    #[test]
+    fn test_lexically_normalize_collapses_dot_dot() {
+        let p = std::path::PathBuf::from("/ws/sub/../other/./file.txt");
+        let norm = lexically_normalize(&p);
+        assert_eq!(norm, std::path::PathBuf::from("/ws/other/file.txt"));
     }
 
     #[tokio::test]
