@@ -13,9 +13,69 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use openfang_types::message::{ContentBlock, Role, StopReason, TokenUsage};
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tracing::{debug, info, warn};
+
+/// Env var names published by the daemon for bridge-wiring discovery.
+/// Kept as string literals (not imported from `openfang_mcp_bridge`)
+/// because the runtime crate intentionally does not depend on the bridge
+/// crate — the bridge depends on the runtime's protocol surface, not the
+/// other way around. The values must match
+/// `openfang_mcp_bridge::protocol::SOCKET_ENV_VAR` and the daemon-side
+/// fallback in `openfang-api::server::run_daemon`.
+const BRIDGE_SOCKET_ENV: &str = "OPENFANG_BRIDGE_SOCKET";
+const BRIDGE_BIN_ENV: &str = "OPENFANG_BRIDGE_BIN";
+const BRIDGE_TOKEN_ENV: &str = "OPENFANG_BRIDGE_TOKEN";
+const BRIDGE_AGENT_ID_ENV: &str = "OPENFANG_BRIDGE_AGENT_ID";
+/// Comma-separated tool allowlist published into the bridge child's env.
+/// The bridge advertises this list via MCP `tools/list` to its CC parent
+/// so CC sees the full per-agent surface declared in `agent.toml`. The
+/// daemon-side `bridge_ipc::dispatch_call` re-validates against the
+/// manifest at call time — this env var is purely the surface advertisement.
+const BRIDGE_ALLOWED_ENV: &str = "OPENFANG_BRIDGE_ALLOWED";
+
+/// Master kill-switch for the OpenFang MCP bridge. Default off. When unset
+/// or not in {`1`, `true`}, `try_build_bridge_mcp_config` returns `None` and
+/// CC is spawned exactly as it was before ANAI-30 step 4 — no `--mcp-config`,
+/// no temp file, no bridge child. Flip via `launchctl setenv
+/// OPENFANG_BRIDGE_ENABLED 1` (in the daemon's launchd plist for persistence)
+/// then bounce the daemon. Lets us deploy the bridge code path without
+/// putting it inline with every CC invocation, so a regression doesn't take
+/// down model completions until the gate is removed once the bridge is
+/// validated end-to-end.
+const BRIDGE_ENABLED_ENV: &str = "OPENFANG_BRIDGE_ENABLED";
+
+/// Returns `true` iff the bridge gate env var is set to a recognized truthy
+/// value. Anything else — unset, empty, `0`, `false`, garbage — is `false`.
+fn bridge_enabled() -> bool {
+    match std::env::var(BRIDGE_ENABLED_ENV) {
+        Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        Err(_) => false,
+    }
+}
+
+/// Opt-in diagnostic flag for bridge-wired CC spawns. When set, the driver
+/// adds `--debug` to claude (which dumps MCP launch + handshake details into
+/// `~/.claude/debug/<uuid>.txt`) and logs a 4 KB tail of CC's stderr at INFO
+/// after the subprocess exits. Off by default — `--debug` is noisy and
+/// produces a debug file per spawn. Use only when actively debugging the
+/// bridge handshake or MCP wiring; the daemon-side `bridge_ipc` INFO logs
+/// (`accepted connection`, `handshake complete`, `dispatching call`) cover
+/// the normal observability needs.
+const BRIDGE_DEBUG_ENV: &str = "OPENFANG_BRIDGE_DEBUG";
+
+fn bridge_debug_enabled() -> bool {
+    match std::env::var(BRIDGE_DEBUG_ENV) {
+        Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        Err(_) => false,
+    }
+}
+
+/// MCP server name advertised inside the per-spawn `--mcp-config`. CC will
+/// namespace each tool as `mcp__<this>__<toolname>`.
+const BRIDGE_MCP_SERVER_NAME: &str = "openfang";
 
 /// Environment variable names (and suffixes) to strip from the subprocess
 /// to prevent leaking API keys from other providers. We keep the full env
@@ -168,6 +228,16 @@ impl ClaudeCodeDriver {
         for key in SENSITIVE_ENV_EXACT {
             cmd.env_remove(key);
         }
+        // Strip bridge discovery env from CC's child env. The bridge gets
+        // these via the per-spawn `--mcp-config` `env` map (set explicitly
+        // when `try_build_bridge_mcp_config` writes the config); CC itself
+        // has no use for them and inheriting them would risk a stray bridge
+        // process picking up the daemon socket without a fresh per-spawn
+        // token.
+        cmd.env_remove(BRIDGE_SOCKET_ENV);
+        cmd.env_remove(BRIDGE_BIN_ENV);
+        cmd.env_remove(BRIDGE_TOKEN_ENV);
+        cmd.env_remove(BRIDGE_AGENT_ID_ENV);
         // Remove any env var with a sensitive suffix, unless it's CLAUDE_*
         for (key, _) in std::env::vars() {
             if key.starts_with("CLAUDE_") {
@@ -182,6 +252,153 @@ impl ClaudeCodeDriver {
             }
         }
     }
+}
+
+/// Per-spawn MCP config handle. Holds the path to a JSON file that CC
+/// reads via `--mcp-config <path>` to discover the OpenFang bridge.
+///
+/// The file lives next to the daemon's bridge socket (under `<home>/run/`)
+/// for the duration of a single CC invocation and is removed on drop.
+/// Per-spawn so each `claude` subprocess gets a fresh auth token; CC's
+/// lifetime bounds the file's lifetime, which bounds the token's lifetime.
+struct BridgeMcpConfig {
+    config_path: PathBuf,
+}
+
+impl BridgeMcpConfig {
+    fn path(&self) -> &std::path::Path {
+        &self.config_path
+    }
+}
+
+impl Drop for BridgeMcpConfig {
+    fn drop(&mut self) {
+        // Best-effort: if removal fails (e.g. socket dir already gone on
+        // shutdown) we don't propagate. The file is per-invocation and
+        // contains only a token + paths; staleness is harmless.
+        let _ = std::fs::remove_file(&self.config_path);
+    }
+}
+
+/// Build the `--mcp-config` JSON document from already-resolved inputs.
+/// Pure — no env reads, no filesystem writes — so it's tractable to test.
+/// The wire shape mirrors what `claude --mcp-config` accepts: a top-level
+/// `mcpServers` object keyed by server name, each value carrying `command`,
+/// `args`, and `env`.
+fn build_bridge_mcp_config_value(
+    socket: &str,
+    bridge_bin: &str,
+    agent_id: &str,
+    token: &str,
+    allowed_tools: Option<&[String]>,
+) -> serde_json::Value {
+    let mut env_map = serde_json::Map::new();
+    env_map.insert(
+        BRIDGE_SOCKET_ENV.into(),
+        serde_json::Value::String(socket.to_string()),
+    );
+    env_map.insert(
+        BRIDGE_TOKEN_ENV.into(),
+        serde_json::Value::String(token.to_string()),
+    );
+    env_map.insert(
+        BRIDGE_AGENT_ID_ENV.into(),
+        serde_json::Value::String(agent_id.to_string()),
+    );
+    if let Some(tools) = allowed_tools {
+        // Empty list would degenerate into the bridge's hardcoded default,
+        // which is the wrong behavior — an empty manifest means "no tools."
+        // Emit the env var even if empty so the bridge advertises nothing.
+        env_map.insert(
+            BRIDGE_ALLOWED_ENV.into(),
+            serde_json::Value::String(tools.join(",")),
+        );
+    }
+
+    let mut server_entry = serde_json::Map::new();
+    server_entry.insert(
+        "command".into(),
+        serde_json::Value::String(bridge_bin.to_string()),
+    );
+    server_entry.insert("args".into(), serde_json::Value::Array(vec![]));
+    server_entry.insert("env".into(), serde_json::Value::Object(env_map));
+
+    let mut servers = serde_json::Map::new();
+    servers.insert(
+        BRIDGE_MCP_SERVER_NAME.into(),
+        serde_json::Value::Object(server_entry),
+    );
+
+    let mut root = serde_json::Map::new();
+    root.insert("mcpServers".into(), serde_json::Value::Object(servers));
+    serde_json::Value::Object(root)
+}
+
+/// Generate a per-spawn random token. ANAI-30 uses a random UUID; the
+/// daemon currently treats any non-empty token as authenticated. ANAI-31
+/// will replace this with a daemon-issued token tied to the caller's
+/// identity in an in-memory table.
+fn generate_bridge_token() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// Build the per-spawn `--mcp-config` JSON for a CC invocation, if the
+/// daemon has published bridge wiring discovery and the request carries
+/// a caller identity. Returns `None` when bridge wiring is unavailable —
+/// CC is then spawned without an OpenFang MCP server, exactly as before
+/// step 4. Logs at `info` level on first wire and `debug` per-spawn so
+/// operators can see whether a given run was bridge-enabled.
+fn try_build_bridge_mcp_config(
+    caller_agent_id: Option<&str>,
+    caller_allowed_tools: Option<&[String]>,
+) -> Option<BridgeMcpConfig> {
+    // Gate first — cheapest check, and when off we want zero side effects:
+    // no temp file, no token generation, no log line beyond trace level.
+    if !bridge_enabled() {
+        return None;
+    }
+    let agent_id = caller_agent_id?;
+    let socket = std::env::var(BRIDGE_SOCKET_ENV).ok()?;
+    let bridge_bin = std::env::var(BRIDGE_BIN_ENV).ok()?;
+    let token = generate_bridge_token();
+
+    let cfg = build_bridge_mcp_config_value(
+        &socket,
+        &bridge_bin,
+        agent_id,
+        &token,
+        caller_allowed_tools,
+    );
+
+    // Place the config next to the socket so cleanup is colocated and the
+    // bridge socket dir already exists with the right permissions.
+    let socket_dir = std::path::Path::new(&socket).parent()?.to_path_buf();
+    let path = socket_dir.join(format!("cc-mcp-{}.json", uuid::Uuid::new_v4()));
+
+    let serialized = serde_json::to_string(&cfg).ok()?;
+    if let Err(e) = std::fs::write(&path, serialized) {
+        warn!(error = %e, path = %path.display(), "failed to write CC mcp-config");
+        return None;
+    }
+
+    // 0600 — file contains a per-spawn auth token. No other uid should read it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o600);
+            let _ = std::fs::set_permissions(&path, perms);
+        }
+    }
+
+    debug!(
+        agent_id = %agent_id,
+        config = %path.display(),
+        "wired CC --mcp-config for OpenFang bridge"
+    );
+
+    Some(BridgeMcpConfig { config_path: path })
 }
 
 /// JSON output from `claude -p --output-format json`.
@@ -280,6 +497,29 @@ impl LlmDriver for ClaudeCodeDriver {
             cmd.arg("--model").arg(model);
         }
 
+        // Wire the OpenFang MCP bridge if the daemon has published discovery
+        // env vars (`OPENFANG_BRIDGE_SOCKET` + `OPENFANG_BRIDGE_BIN`) and
+        // the request carries a caller identity. The guard lives for the
+        // remainder of the call; on drop it removes the temp config file.
+        let _bridge_cfg =
+            try_build_bridge_mcp_config(request.caller_agent_id.as_deref(), request.caller_allowed_tools.as_deref()).map(|cfg| {
+                cmd.arg("--mcp-config").arg(cfg.path());
+                // `--strict-mcp-config` makes CC ignore any user/global MCP
+                // config that might otherwise merge in — we want exactly
+                // the OpenFang bridge for this invocation, nothing else.
+                cmd.arg("--strict-mcp-config");
+                // Optional diagnostic: with `OPENFANG_BRIDGE_DEBUG=1` we add
+                // `--debug` so CC writes MCP launch + handshake details into
+                // `~/.claude/debug/<uuid>.txt`. Off by default — daemon-side
+                // bridge_ipc INFO logs are the supported observability path.
+                if bridge_debug_enabled() {
+                    cmd.arg("--debug");
+                }
+                cfg
+            });
+        let bridge_wired = _bridge_cfg.is_some();
+        let bridge_debug = bridge_wired && bridge_debug_enabled();
+
         Self::apply_env_filter(&mut cmd);
 
         // Inject HOME so the CLI can find its credentials (~/.claude/) when
@@ -292,7 +532,7 @@ impl LlmDriver for ClaudeCodeDriver {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, "Spawning Claude Code CLI");
+        debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, bridge_wired, "Spawning Claude Code CLI");
 
         // Spawn child process instead of cmd.output() so we can track PID and timeout
         let mut child = cmd.spawn().map_err(|e| {
@@ -409,6 +649,27 @@ impl LlmDriver for ClaudeCodeDriver {
 
         info!(model = %pid_label, "Claude Code CLI subprocess completed successfully");
 
+        // Optional diagnostic: when bridge debug is enabled, log a tail of
+        // CC's stderr (with --debug it contains MCP launch/handshake info).
+        // Bounded to 4KB so we don't blow up logs. Off by default — see
+        // `bridge_debug_enabled()`.
+        if bridge_debug {
+            let stderr_text = String::from_utf8_lossy(&stderr_bytes);
+            let tail: String = stderr_text
+                .chars()
+                .rev()
+                .take(4096)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            info!(
+                model = %pid_label,
+                stderr_tail = %tail.trim(),
+                "CC stderr tail (bridge wired, --debug)"
+            );
+        }
+
         let stdout = String::from_utf8_lossy(&stdout_bytes);
 
         // Try JSON parse first
@@ -476,6 +737,22 @@ impl LlmDriver for ClaudeCodeDriver {
             cmd.arg("--model").arg(model);
         }
 
+        // Bridge wiring (see `complete()` for full rationale). Guard kept
+        // alive for the rest of the streaming function so the per-spawn
+        // config file outlives the CC subprocess.
+        let _bridge_cfg =
+            try_build_bridge_mcp_config(request.caller_agent_id.as_deref(), request.caller_allowed_tools.as_deref()).map(|cfg| {
+                cmd.arg("--mcp-config").arg(cfg.path());
+                cmd.arg("--strict-mcp-config");
+                // Optional --debug — see complete() for rationale.
+                if bridge_debug_enabled() {
+                    cmd.arg("--debug");
+                }
+                cfg
+            });
+        let bridge_wired = _bridge_cfg.is_some();
+        let bridge_debug = bridge_wired && bridge_debug_enabled();
+
         Self::apply_env_filter(&mut cmd);
 
         // Same HOME and stdin hygiene as the non-streaming path.
@@ -486,7 +763,7 @@ impl LlmDriver for ClaudeCodeDriver {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        debug!(cli = %self.cli_path, "Spawning Claude Code CLI (streaming)");
+        debug!(cli = %self.cli_path, bridge_wired, "Spawning Claude Code CLI (streaming)");
 
         let mut child = cmd.spawn().map_err(|e| {
             LlmError::Http(format!(
@@ -507,6 +784,19 @@ impl LlmDriver for ClaudeCodeDriver {
             self.active_pids.remove(&pid_label);
             LlmError::Http("No stdout from claude CLI".to_string())
         })?;
+
+        // Drain stderr concurrently with stdout. Required whenever `--debug`
+        // is on (chatty CC can otherwise deadlock on a full stderr pipe once
+        // the OS buffer fills, ~64 KB). Cheap when --debug is off, so we
+        // unconditionally drain — keeps the streaming path uniform.
+        let child_stderr = child.stderr.take();
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            if let Some(mut err) = child_stderr {
+                let _ = err.read_to_end(&mut buf).await;
+            }
+            buf
+        });
 
         let reader = tokio::io::BufReader::new(stdout);
         let mut lines = reader.lines();
@@ -616,16 +906,12 @@ impl LlmDriver for ClaudeCodeDriver {
             .await
             .map_err(|e| LlmError::Http(format!("Claude CLI wait failed: {e}")))?;
 
+        // Stderr was being drained concurrently — collect it now.
+        let stderr_bytes = stderr_task.await.unwrap_or_default();
+        let stderr_text = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+
         if !status.success() {
             let code = status.code().unwrap_or(1);
-            // Read stderr for diagnostic info
-            let stderr_text = if let Some(mut err) = child.stderr.take() {
-                let mut buf = Vec::new();
-                let _ = err.read_to_end(&mut buf).await;
-                String::from_utf8_lossy(&buf).trim().to_string()
-            } else {
-                String::new()
-            };
             warn!(
                 exit_code = code,
                 model = %pid_label,
@@ -643,6 +929,23 @@ impl LlmDriver for ClaudeCodeDriver {
                     }
                 ),
             });
+        }
+
+        // Optional diagnostic: log CC stderr tail when bridge debug is on.
+        if bridge_debug {
+            let tail: String = stderr_text
+                .chars()
+                .rev()
+                .take(4096)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            info!(
+                model = %pid_label,
+                stderr_tail = %tail,
+                "CC stderr tail (streaming, bridge wired, --debug)"
+            );
         }
 
         let _ = tx
@@ -717,6 +1020,8 @@ mod tests {
             temperature: 0.7,
             system: Some("You are helpful.".to_string()),
             thinking: None,
+            caller_agent_id: None,
+            caller_allowed_tools: None,
         };
 
         let prompt = ClaudeCodeDriver::build_prompt(&request);
@@ -780,6 +1085,183 @@ mod tests {
         map.insert("test-agent".to_string(), 12345);
         assert_eq!(driver.active_pids().len(), 1);
         assert_eq!(driver.active_pids()[0], ("test-agent".to_string(), 12345));
+    }
+
+    #[test]
+    fn test_apply_env_filter_strips_bridge_discovery_vars() {
+        // Verifies the filter removes the four bridge-discovery vars so a
+        // CC subprocess can't accidentally inherit them. The bridge gets
+        // these via `--mcp-config`'s `env` map only.
+        let mut cmd = tokio::process::Command::new("/bin/true");
+        cmd.env(BRIDGE_SOCKET_ENV, "/tmp/should-not-survive.sock");
+        cmd.env(BRIDGE_BIN_ENV, "/usr/local/bin/should-not-survive");
+        cmd.env(BRIDGE_TOKEN_ENV, "should-not-survive");
+        cmd.env(BRIDGE_AGENT_ID_ENV, "should-not-survive");
+
+        ClaudeCodeDriver::apply_env_filter(&mut cmd);
+
+        // tokio's Command exposes its env via std::process::Command::get_envs()
+        // through deref. Walk it; any of the four bridge vars present means
+        // the filter is broken.
+        let std_cmd = cmd.as_std();
+        for (key, value) in std_cmd.get_envs() {
+            // None means "remove this env var on spawn"; any of our keys
+            // showing up with Some means the filter missed them.
+            let key_str = key.to_string_lossy();
+            if matches!(
+                key_str.as_ref(),
+                BRIDGE_SOCKET_ENV | BRIDGE_BIN_ENV | BRIDGE_TOKEN_ENV | BRIDGE_AGENT_ID_ENV
+            ) {
+                assert!(
+                    value.is_none(),
+                    "bridge env var {key_str} survived apply_env_filter as {value:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_build_bridge_mcp_config_shape() {
+        let cfg = build_bridge_mcp_config_value(
+            "/home/user/.openfang/run/bridge.sock",
+            "/usr/local/bin/openfang-mcp-bridge",
+            "agent-uuid-1234",
+            "tok-abc",
+            None,
+        );
+
+        // mcpServers.openfang.{command,args,env} all present with the
+        // shape claude --mcp-config expects.
+        let server = cfg
+            .pointer("/mcpServers/openfang")
+            .expect("openfang server entry missing");
+        assert_eq!(
+            server.pointer("/command").and_then(|v| v.as_str()),
+            Some("/usr/local/bin/openfang-mcp-bridge")
+        );
+        assert!(
+            server.pointer("/args").map(|v| v.is_array()).unwrap_or(false),
+            "args must be a JSON array"
+        );
+
+        // env carries exactly the three discovery vars. No more, no less —
+        // any extras would leak unintended state into the bridge process.
+        let env = server
+            .pointer("/env")
+            .and_then(|v| v.as_object())
+            .expect("env object missing");
+        assert_eq!(env.len(), 3, "env must contain exactly socket/token/agent_id when allowed=None");
+        assert_eq!(env.get(BRIDGE_SOCKET_ENV).and_then(|v| v.as_str()), Some("/home/user/.openfang/run/bridge.sock"));
+        assert_eq!(env.get(BRIDGE_TOKEN_ENV).and_then(|v| v.as_str()), Some("tok-abc"));
+        assert_eq!(env.get(BRIDGE_AGENT_ID_ENV).and_then(|v| v.as_str()), Some("agent-uuid-1234"));
+        assert!(
+            env.get(BRIDGE_ALLOWED_ENV).is_none(),
+            "ALLOWED env must be omitted when caller_allowed_tools=None"
+        );
+    }
+
+    /// ANAI-32: when an allowlist is supplied, it lands in
+    /// `OPENFANG_BRIDGE_ALLOWED` as a comma-joined string. The bridge
+    /// process parses this back into its `tools/list` advertisement.
+    #[test]
+    fn test_build_bridge_mcp_config_allowed_tools_join() {
+        let tools: Vec<String> = ["file_read", "shell_exec", "channel_send"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let cfg = build_bridge_mcp_config_value(
+            "/sock", "/bin", "agent", "tok", Some(&tools),
+        );
+        let env = cfg
+            .pointer("/mcpServers/openfang/env")
+            .and_then(|v| v.as_object())
+            .expect("env object");
+        assert_eq!(
+            env.get(BRIDGE_ALLOWED_ENV).and_then(|v| v.as_str()),
+            Some("file_read,shell_exec,channel_send"),
+        );
+    }
+
+    /// ANAI-32: an explicit empty allowlist still sets the env var (to
+    /// the empty string). The bridge interprets that as "no tools" —
+    /// without the var set it would fall back to its hardcoded default,
+    /// which would silently grant tools the manifest never authorized.
+    #[test]
+    fn test_build_bridge_mcp_config_empty_allowed_tools_emits_empty_env() {
+        let tools: Vec<String> = vec![];
+        let cfg = build_bridge_mcp_config_value(
+            "/sock", "/bin", "agent", "tok", Some(&tools),
+        );
+        let env = cfg
+            .pointer("/mcpServers/openfang/env")
+            .and_then(|v| v.as_object())
+            .expect("env object");
+        assert_eq!(
+            env.get(BRIDGE_ALLOWED_ENV).and_then(|v| v.as_str()),
+            Some(""),
+            "empty manifest must publish empty allowlist, not fall through to default"
+        );
+    }
+
+    #[test]
+    fn test_bridge_mcp_config_drop_removes_file() {
+        // BridgeMcpConfig is a per-spawn token holder; on drop, the file
+        // must vanish so a stale token can't be reused by anything that
+        // happens to glob `<home>/run/cc-mcp-*.json`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cc-mcp-test.json");
+        std::fs::write(&path, "{}").expect("seed file");
+        assert!(path.exists());
+
+        {
+            let _guard = BridgeMcpConfig {
+                config_path: path.clone(),
+            };
+            assert!(path.exists(), "file present while guard held");
+        }
+
+        assert!(!path.exists(), "file must be removed when guard drops");
+    }
+
+    #[test]
+    fn test_bridge_enabled_gate() {
+        // Single test exercises the whole truth table for the gate, in
+        // sequence, because `OPENFANG_BRIDGE_ENABLED` is process-global.
+        // No other test reads or writes this var, so we don't need
+        // serial_test infrastructure — just be a good citizen and
+        // restore the original value on exit.
+        let original = std::env::var(BRIDGE_ENABLED_ENV).ok();
+
+        // Unset → off.
+        std::env::remove_var(BRIDGE_ENABLED_ENV);
+        assert!(!bridge_enabled(), "unset must read as off");
+
+        // Truthy values.
+        for v in ["1", "true", "TRUE", "True"] {
+            std::env::set_var(BRIDGE_ENABLED_ENV, v);
+            assert!(bridge_enabled(), "{v} must read as on");
+        }
+
+        // Anything else is off — including `2`, empty, garbage.
+        for v in ["0", "false", "False", "", "yes", "on", "garbage"] {
+            std::env::set_var(BRIDGE_ENABLED_ENV, v);
+            assert!(!bridge_enabled(), "{v:?} must read as off");
+        }
+
+        // Even with full bridge wiring published, the gate alone suppresses
+        // config generation. We don't assert positive-path here because
+        // setting BRIDGE_SOCKET_ENV/BRIDGE_BIN_ENV process-globally would
+        // race with apply_env_filter tests; the shape test covers the
+        // construction path. This test owns the gate behavior only.
+        std::env::remove_var(BRIDGE_ENABLED_ENV);
+        let cfg = try_build_bridge_mcp_config(Some("agent-x"), None);
+        assert!(cfg.is_none(), "gate off → None regardless of other env");
+
+        // Restore.
+        match original {
+            Some(v) => std::env::set_var(BRIDGE_ENABLED_ENV, v),
+            None => std::env::remove_var(BRIDGE_ENABLED_ENV),
+        }
     }
 
     #[test]

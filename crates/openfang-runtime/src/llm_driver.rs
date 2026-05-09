@@ -65,6 +65,28 @@ pub struct CompletionRequest {
     pub system: Option<String>,
     /// Extended thinking configuration (if supported by the model).
     pub thinking: Option<openfang_types::config::ThinkingConfig>,
+    /// Identity of the OpenFang agent issuing this request, if any.
+    ///
+    /// Plumbed through so subprocess-style drivers (Claude Code, Qwen Code,
+    /// future Codex-style) can bind the OpenFang→bridge IPC connection to a
+    /// caller. Currently consumed by [`crate::drivers::claude_code`] to set
+    /// `OPENFANG_BRIDGE_AGENT_ID` on the bridge child it spawns via
+    /// `--mcp-config`. Other drivers ignore it. ANAI-31 will replace the
+    /// in-band agent_id with a server-derived identity bound to the
+    /// per-spawn token, but the field stays in place as the integration
+    /// point.
+    pub caller_agent_id: Option<String>,
+    /// Caller's effective tool allowlist (typically from
+    /// `manifest.capabilities.tools`). Plumbed through so subprocess-style
+    /// drivers (Claude Code) can publish the per-agent allowlist to their
+    /// bridge child via `OPENFANG_BRIDGE_ALLOWED`. The daemon-side bridge
+    /// dispatcher *also* re-checks this against the manifest at call time —
+    /// this field exists purely so the bridge can advertise the right
+    /// `tools/list` to its CC parent (otherwise CC would only see the
+    /// hardcoded four-tool default and refuse to attempt the rest).
+    /// `None` falls back to the bridge's own default — for ANAI-32 callers
+    /// it should always be `Some` when `caller_agent_id` is set.
+    pub caller_allowed_tools: Option<Vec<String>>,
 }
 
 /// A response from an LLM completion.
@@ -327,6 +349,8 @@ mod tests {
             temperature: 0.0,
             system: None,
             thinking: None,
+            caller_agent_id: None,
+            caller_allowed_tools: None,
         };
 
         let response = driver.stream(request, tx).await.unwrap();

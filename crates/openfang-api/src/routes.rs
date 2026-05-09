@@ -7713,6 +7713,8 @@ pub async fn test_provider(
                 temperature: 0.0,
                 system: None,
                 thinking: None,
+                caller_agent_id: None,
+                caller_allowed_tools: None,
             };
             match driver.complete(test_req).await {
                 Ok(_) => {

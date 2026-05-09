@@ -6,6 +6,7 @@ use openfang_types::approval::{
     ApprovalDecision, ApprovalPolicy, ApprovalRequest, ApprovalResponse, RiskLevel,
 };
 use std::collections::VecDeque;
+use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -13,12 +14,34 @@ use uuid::Uuid;
 const MAX_PENDING_PER_AGENT: usize = 5;
 /// Max recent approval records to retain for history and UI visibility.
 const MAX_RECENT_APPROVALS: usize = 100;
+/// Capacity for the approval-event broadcast channel. Slow subscribers
+/// will receive `RecvError::Lagged` rather than blocking the kernel; they
+/// can resync via `list_pending()`.
+const EVENT_CHANNEL_CAPACITY: usize = 256;
+
+/// Lifecycle event for an approval request. Subscribers (e.g. the channel
+/// bridge) translate `Submitted` into a user-visible prompt and use
+/// `Resolved` / `TimedOut` to clear or update that prompt.
+#[derive(Debug, Clone)]
+pub enum ApprovalEvent {
+    /// A new approval request has been submitted and is awaiting decision.
+    Submitted(ApprovalRequest),
+    /// A pending request has been resolved by a human (or auto-policy).
+    Resolved {
+        request: ApprovalRequest,
+        decision: ApprovalDecision,
+        decided_by: Option<String>,
+    },
+    /// A pending request expired without a decision.
+    TimedOut(ApprovalRequest),
+}
 
 /// Manages approval requests with oneshot channels for blocking resolution.
 pub struct ApprovalManager {
     pending: DashMap<Uuid, PendingRequest>,
     recent: std::sync::Mutex<VecDeque<ApprovalRecord>>,
     policy: std::sync::RwLock<ApprovalPolicy>,
+    events: broadcast::Sender<ApprovalEvent>,
 }
 
 struct PendingRequest {
@@ -36,11 +59,21 @@ pub struct ApprovalRecord {
 
 impl ApprovalManager {
     pub fn new(policy: ApprovalPolicy) -> Self {
+        let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Self {
             pending: DashMap::new(),
             recent: std::sync::Mutex::new(VecDeque::new()),
             policy: std::sync::RwLock::new(policy),
+            events,
         }
+    }
+
+    /// Subscribe to approval lifecycle events. The receiver will see every
+    /// subsequent `Submitted` / `Resolved` / `TimedOut` event. Lag-tolerant:
+    /// a slow consumer that drops messages will get `RecvError::Lagged` and
+    /// can resync via `list_pending()`.
+    pub fn subscribe(&self) -> broadcast::Receiver<ApprovalEvent> {
+        self.events.subscribe()
     }
 
     /// Check if a tool requires approval based on current policy.
@@ -58,7 +91,12 @@ impl ApprovalManager {
             .filter(|r| r.value().request.agent_id == req.agent_id)
             .count();
         if agent_pending >= MAX_PENDING_PER_AGENT {
-            warn!(agent_id = %req.agent_id, "Approval request rejected: too many pending");
+            warn!(
+                agent_id = %req.agent_id,
+                tool_name = %req.tool_name,
+                pending = agent_pending,
+                "Approval request rejected: too many pending for this agent"
+            );
             return ApprovalDecision::Denied;
         }
 
@@ -75,11 +113,25 @@ impl ApprovalManager {
             },
         );
 
-        info!(request_id = %id, "Approval request submitted, waiting for resolution");
+        info!(
+            request_id = %id,
+            agent_id = %req_for_timeout.agent_id,
+            tool_name = %req_for_timeout.tool_name,
+            risk = ?req_for_timeout.risk_level,
+            timeout_secs = req_for_timeout.timeout_secs,
+            action = %truncate_for_log(&req_for_timeout.action_summary, 160),
+            "Approval request submitted, waiting for resolution"
+        );
+
+        // Fan out submission to subscribers (e.g. channel bridge surfacer).
+        // Best-effort: no subscribers => no-op; lag is the subscriber's problem.
+        let _ = self
+            .events
+            .send(ApprovalEvent::Submitted(req_for_timeout.clone()));
 
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(decision)) => {
-                debug!(request_id = %id, ?decision, "Approval resolved");
+                debug!(request_id = %id, ?decision, "Approval future resolved");
                 decision
             }
             _ => {
@@ -88,8 +140,19 @@ impl ApprovalManager {
                     .remove(&id)
                     .map(|(_, pending)| pending.request)
                     .unwrap_or(req_for_timeout);
-                self.push_recent(request, ApprovalDecision::TimedOut, None, Utc::now());
-                warn!(request_id = %id, "Approval request timed out");
+                self.push_recent(
+                    request.clone(),
+                    ApprovalDecision::TimedOut,
+                    None,
+                    Utc::now(),
+                );
+                warn!(
+                    request_id = %id,
+                    agent_id = %request.agent_id,
+                    tool_name = %request.tool_name,
+                    "Approval request timed out — no human resolved it within timeout"
+                );
+                let _ = self.events.send(ApprovalEvent::TimedOut(request));
                 ApprovalDecision::TimedOut
             }
         }
@@ -116,9 +179,24 @@ impl ApprovalManager {
                     response.decided_by.clone(),
                     response.decided_at,
                 );
+                // Emit lifecycle event before unblocking the waiter so
+                // surfaces can update their prompt before the requester
+                // reacts to the decision.
+                let _ = self.events.send(ApprovalEvent::Resolved {
+                    request: pending.request.clone(),
+                    decision,
+                    decided_by: response.decided_by.clone(),
+                });
                 // Send decision to waiting agent (ignore error if receiver dropped)
                 let _ = pending.sender.send(decision);
-                info!(request_id = %request_id, ?decision, "Approval request resolved");
+                info!(
+                    request_id = %request_id,
+                    agent_id = %pending.request.agent_id,
+                    tool_name = %pending.request.tool_name,
+                    ?decision,
+                    decided_by = response.decided_by.as_deref().unwrap_or("<unspecified>"),
+                    "Approval request resolved"
+                );
                 Ok(response)
             }
             None => Err(format!("No pending approval request with id {request_id}")),
@@ -185,6 +263,19 @@ impl ApprovalManager {
             recent.pop_back();
         }
     }
+}
+
+/// UTF-8-safe truncation for tracing log fields. Adds an ellipsis when the
+/// input exceeds `max` bytes; preserves character boundaries.
+fn truncate_for_log(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 // ---------------------------------------------------------------------------
@@ -455,6 +546,96 @@ mod tests {
     // -----------------------------------------------------------------------
     // policy defaults
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // subscribe — receives Submitted on request_approval()
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_subscribe_receives_submitted_and_timed_out() {
+        let mgr = Arc::new(default_manager());
+        let mut rx = mgr.subscribe();
+
+        let req = make_request("agent-sub", "shell_exec", 1);
+        let id = req.id;
+
+        let mgr2 = Arc::clone(&mgr);
+        tokio::spawn(async move {
+            let _ = mgr2.request_approval(req).await;
+        });
+
+        // Submitted event should fire essentially immediately.
+        let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("Submitted event timed out")
+            .expect("broadcast closed");
+        match evt {
+            ApprovalEvent::Submitted(r) => assert_eq!(r.id, id),
+            other => panic!("expected Submitted, got {other:?}"),
+        }
+
+        // After the 1s request timeout, a TimedOut event should fire.
+        let evt = tokio::time::timeout(std::time::Duration::from_millis(2000), rx.recv())
+            .await
+            .expect("TimedOut event timed out")
+            .expect("broadcast closed");
+        match evt {
+            ApprovalEvent::TimedOut(r) => assert_eq!(r.id, id),
+            other => panic!("expected TimedOut, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_receives_resolved() {
+        let mgr = Arc::new(default_manager());
+        let mut rx = mgr.subscribe();
+
+        let req = make_request("agent-sub", "shell_exec", 60);
+        let id = req.id;
+
+        let mgr2 = Arc::clone(&mgr);
+        tokio::spawn(async move {
+            let _ = mgr2.request_approval(req).await;
+        });
+
+        // Drain the Submitted event first.
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("Submitted not received");
+
+        // Resolve.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        mgr.resolve(id, ApprovalDecision::Approved, Some("test".into()))
+            .expect("resolve");
+
+        let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("Resolved event timed out")
+            .expect("broadcast closed");
+        match evt {
+            ApprovalEvent::Resolved {
+                request,
+                decision,
+                decided_by,
+            } => {
+                assert_eq!(request.id, id);
+                assert_eq!(decision, ApprovalDecision::Approved);
+                assert_eq!(decided_by.as_deref(), Some("test"));
+            }
+            other => panic!("expected Resolved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_truncate_for_log() {
+        assert_eq!(truncate_for_log("short", 10), "short");
+        assert_eq!(truncate_for_log("123456789", 5), "12345…");
+        // multi-byte safety: 'é' is 2 bytes
+        let s = "aé";
+        let out = truncate_for_log(s, 2);
+        // Should not panic and should preserve a char boundary.
+        assert!(out.ends_with('…'));
+    }
 
     #[test]
     fn test_policy_defaults() {

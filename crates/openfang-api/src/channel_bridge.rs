@@ -54,9 +54,11 @@ use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_channels::wecom::WeComAdapter;
+use openfang_kernel::approval::ApprovalEvent;
 use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_types::agent::AgentId;
+use openfang_types::approval::ApprovalDecision;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
@@ -1799,6 +1801,15 @@ pub async fn start_channel_bridge_with_config(
     let router = Arc::new(router);
     let mut manager = BridgeManager::new(bridge_handle, router);
 
+    // Spawn the approval-surfacing pump *before* starting adapters so we don't
+    // miss any submission events that might race with adapter startup. The
+    // surfacer survives the duration of the daemon process; on bridge
+    // hot-reload a second one would be spawned, but the broadcast channel
+    // tolerates multiple subscribers and the older one will drain naturally
+    // once the kernel arc is dropped (it never is, in practice — that's a
+    // known leak shape for hot-reload, tracked separately).
+    spawn_approval_surfacer(kernel.clone());
+
     let mut started_names = Vec::new();
     for (adapter, _) in adapters {
         let name = adapter.name().to_string();
@@ -1892,6 +1903,167 @@ pub async fn reload_channels_from_disk(
     );
 
     Ok(started)
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Approval surfacer: subscribes to ApprovalManager events and pushes a
+// human-readable prompt to the relevant agent's bound channel(s).
+//
+// Without this pump, approval requests park in the manager's pending map
+// silently and time out, because nothing in the system tells a human they
+// exist. The bridge has pull-side helpers (`/approvals` / `/approve <id>`),
+// but no push surface — this fills that hole.
+// ──────────────────────────────────────────────────────────────────────────
+
+fn spawn_approval_surfacer(kernel: Arc<OpenFangKernel>) {
+    let mut rx = kernel.approval_manager.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(ApprovalEvent::Submitted(req)) => {
+                    if let Err(e) = surface_submitted(&kernel, &req).await {
+                        warn!(
+                            request_id = %req.id,
+                            agent_id = %req.agent_id,
+                            tool_name = %req.tool_name,
+                            error = %e,
+                            "Failed to surface approval request — request will time out unless resolved via dashboard"
+                        );
+                    }
+                }
+                Ok(ApprovalEvent::Resolved {
+                    request,
+                    decision,
+                    decided_by,
+                }) => {
+                    let verb = match decision {
+                        ApprovalDecision::Approved => "approved",
+                        ApprovalDecision::Denied => "denied",
+                        ApprovalDecision::TimedOut => "timed out",
+                    };
+                    let by = decided_by
+                        .as_deref()
+                        .map(|d| format!(" by {d}"))
+                        .unwrap_or_default();
+                    let body = format!(
+                        "Approval `{}` for `{}` {}{}.",
+                        short_id(&request.id.to_string()),
+                        request.tool_name,
+                        verb,
+                        by
+                    );
+                    let _ = surface_followup(&kernel, &request, &body).await;
+                }
+                Ok(ApprovalEvent::TimedOut(req)) => {
+                    let body = format!(
+                        "Approval `{}` for `{}` timed out — request expired without a decision.",
+                        short_id(&req.id.to_string()),
+                        req.tool_name,
+                    );
+                    let _ = surface_followup(&kernel, &req, &body).await;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(
+                        skipped = n,
+                        "Approval surfacer lagged behind broadcast — some events dropped; resync via /approvals"
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    info!("Approval surfacer shutting down: broadcast channel closed");
+                    return;
+                }
+            }
+        }
+    });
+}
+
+async fn surface_submitted(
+    kernel: &Arc<OpenFangKernel>,
+    req: &openfang_types::approval::ApprovalRequest,
+) -> Result<(), String> {
+    let action = safe_truncate_str(&req.action_summary, 400);
+    let body = format!(
+        "Approval needed `{short}`\n\
+         • agent: `{agent}`\n\
+         • tool: `{tool}` (risk: {risk:?})\n\
+         • action: {action}\n\
+         • timeout: {timeout}s\n\
+         \n\
+         Reply with `/approve {short}` or `/reject {short}` to resolve.",
+        short = short_id(&req.id.to_string()),
+        agent = req.agent_id,
+        tool = req.tool_name,
+        risk = req.risk_level,
+        action = action,
+        timeout = req.timeout_secs,
+    );
+    surface_followup(kernel, req, &body).await
+}
+
+/// Resolve `agent_id → (channel_type, channel_id)` via the agent's bindings
+/// and push `body` to the first matching surface. Returns Err if no
+/// destination could be located.
+async fn surface_followup(
+    kernel: &Arc<OpenFangKernel>,
+    req: &openfang_types::approval::ApprovalRequest,
+    body: &str,
+) -> Result<(), String> {
+    // The approval request stores `agent_id` as a stringified `AgentId` UUID
+    // (see kernel::request_approval). Parse it back to look up the registry
+    // entry and then resolve the agent's bindings by *name*.
+    let agent_uuid: AgentId = req
+        .agent_id
+        .parse()
+        .map_err(|e| format!("agent_id '{}' not parseable: {e}", req.agent_id))?;
+    let entry = kernel
+        .registry
+        .get(agent_uuid)
+        .ok_or_else(|| format!("agent {} not in registry", agent_uuid))?;
+    let agent_name = entry.name;
+
+    // Find the first binding for this agent that has both a channel type and
+    // a channel/conversation id — those are the bindings we can actually
+    // address with `send_channel_message`. More specific bindings sort first
+    // (see `add_binding`), so this naturally prefers the most specific route.
+    let bindings = kernel.list_bindings();
+    let target = bindings
+        .iter()
+        .find(|b| {
+            b.agent.eq_ignore_ascii_case(&agent_name)
+                && b.match_rule.channel.is_some()
+                && b.match_rule.channel_id.is_some()
+        })
+        .ok_or_else(|| {
+            format!(
+                "no binding with concrete (channel, channel_id) for agent '{agent_name}' — \
+                 add a binding in config.toml to receive approval prompts on a channel"
+            )
+        })?;
+
+    let channel = target
+        .match_rule
+        .channel
+        .as_deref()
+        .ok_or_else(|| "binding missing channel".to_string())?;
+    let channel_id = target
+        .match_rule
+        .channel_id
+        .as_deref()
+        .ok_or_else(|| "binding missing channel_id".to_string())?;
+
+    <OpenFangKernel as KernelHandle>::send_channel_message(
+        kernel,
+        channel,
+        channel_id,
+        body,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+fn short_id(id: &str) -> String {
+    id.chars().take(8).collect()
 }
 
 #[cfg(test)]

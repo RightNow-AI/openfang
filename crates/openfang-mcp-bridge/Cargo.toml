@@ -1,0 +1,52 @@
+[package]
+name = "openfang-mcp-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MCP (Model Context Protocol) bridge — exposes OpenFang's tool surface to Claude Code subprocesses (and other MCP clients) over stdio, scoped per-agent identity."
+
+# Spike status: this is the ANAI-29 scaffold. The crate compiles a stub stdio
+# MCP server that responds to `initialize` + `tools/list` with a hard-coded
+# `ping` tool. Real ToolDispatcher wiring lands in ANAI-30+.
+
+[dependencies]
+# Workspace-shared
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
+
+# MCP — Rust SDK for Model Context Protocol.
+# Pinned at scaffold time; revisit during ANAI-30 once we know which features
+# (server, transport-io, macros) we actually need.
+rmcp = { version = "1", features = ["server", "transport-io"] }
+
+# OpenFang internals — types crate only.
+#
+# The bridge consumes a narrow `ToolDispatcher` trait, defined locally in this
+# crate (see lib.rs). The runtime will implement that trait and pass an
+# `Arc<dyn ToolDispatcher>` in. We deliberately avoid pulling in
+# `openfang-runtime` / `openfang-kernel` / `openfang-memory` here — the seam
+# is one-way (runtime depends on bridge, not vice versa) so the bridge stays
+# testable in isolation and out of the kernel/compactor blast radius.
+#
+# `openfang-types` is the cross-crate type bus (zero behavior, no runtime/kernel
+# deps), so depending on it preserves the runtime-free invariant. The bridge
+# uses it for the canonical built-in tool registry — see ANAI-32: bridge and
+# runtime advertise the same kernel surface from a single SOT.
+openfang-types = { path = "../openfang-types" }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+default = ["ipc-codec"]
+# Enables async length-prefixed framing helpers in `protocol::codec`. Pulled
+# in by both the daemon-side IPC server and the bridge binary; consumers that
+# only need the protocol type definitions can disable it.
+ipc-codec = []
