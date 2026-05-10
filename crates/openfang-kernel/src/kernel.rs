@@ -6892,20 +6892,25 @@ impl KernelHandle for OpenFangKernel {
             .await
             .map_err(|e| format!("Feedback task enqueue failed: {e}"))?;
 
-        if let Err(e) = self
-            .publish_event(
-                "feedback.captured",
-                serde_json::json!({
-                    "feedback_id": feedback_id.clone(),
-                    "task_id": task_id.clone(),
-                    "parent_agent_id": caller_agent_id,
-                    "reviewer": reviewer,
-                }),
-            )
-            .await
-        {
-            warn!(error = %e, "Failed to publish feedback.captured event");
-        }
+        let caller: AgentId = caller_agent_id
+            .parse()
+            .unwrap_or_else(|_| AgentId::default());
+        let event = Event::new(
+            caller,
+            EventTarget::Broadcast,
+            EventPayload::Custom(
+                serde_json::to_vec(&serde_json::json!({
+                    "feedback.captured": {
+                        "feedback_id": feedback_id.clone(),
+                        "task_id": task_id.clone(),
+                        "parent_agent_id": caller_agent_id,
+                        "reviewer": reviewer,
+                    }
+                }))
+                .unwrap_or_default(),
+            ),
+        );
+        let _ = self.publish_event(event).await;
 
         Ok(serde_json::json!({
             "status": "queued",
