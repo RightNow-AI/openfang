@@ -38,4 +38,19 @@ for agent in dovi-feedback-reviewer; do
   fi
 done
 
+echo "Registering event triggers..."
+REVIEWER_ID=$(curl -sf http://localhost:4200/api/agents -H "${AUTH}" | python3 -c "import sys,json; [print(a['id']) for a in json.load(sys.stdin) if a['name']=='dovi-feedback-reviewer']" 2>/dev/null || true)
+if [ -n "${REVIEWER_ID}" ]; then
+  EXISTING=$(curl -sf "http://localhost:4200/api/triggers?agent_id=${REVIEWER_ID}" -H "${AUTH}" 2>/dev/null || echo "[]")
+  if echo "${EXISTING}" | grep -q "feedback.captured"; then
+    echo "Feedback trigger already registered."
+  else
+    curl -sf -X POST http://localhost:4200/api/triggers -H 'Content-Type: application/json' -H "${AUTH}" \
+      -d "{\"agent_id\":\"${REVIEWER_ID}\",\"pattern\":{\"content_match\":{\"substring\":\"feedback.captured\"}},\"prompt_template\":\"A feedback event was captured. Check pending tasks for feedback_analysis and process any pending feedback.\",\"max_fires\":0}" \
+      && echo "Registered feedback trigger."
+  fi
+else
+  echo "Reviewer not found, skipping trigger registration."
+fi
+
 echo "Done."
