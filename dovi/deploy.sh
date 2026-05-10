@@ -25,4 +25,17 @@ fi
 
 echo "Restarting OpenFang..."
 systemctl --user restart openfang.service
+sleep 2
+
+echo "Registering new agents..."
+API_KEY=$(grep 'api_key' "${OPENFANG_HOME}/config.toml" | head -1 | sed 's/.*= *"\(.*\)".*/\1/')
+AUTH="Authorization: Bearer ${API_KEY}"
+for agent in dovi-feedback-reviewer; do
+  if ! curl -sf http://localhost:4200/api/agents -H "${AUTH}" | grep -q "\"name\":\"${agent}\""; then
+    curl -sf -X POST http://localhost:4200/api/agents -H 'Content-Type: application/json' -H "${AUTH}" -d "{\"template\":\"${agent}\"}" && echo "Registered ${agent}."
+  else
+    echo "${agent} already registered."
+  fi
+done
+
 echo "Done."
