@@ -70,6 +70,26 @@ pub trait KernelHandle: Send + Sync {
     /// List tasks, optionally filtered by status.
     async fn task_list(&self, status: Option<&str>) -> Result<Vec<serde_json::Value>, String>;
 
+    /// Capture user feedback and enqueue background analysis.
+    async fn feedback_capture(
+        &self,
+        caller_agent_id: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let _ = (caller_agent_id, input);
+        Err("Feedback capture not available".to_string())
+    }
+
+    /// Complete a feedback task and append a short summary to the parent session.
+    async fn feedback_complete(
+        &self,
+        caller_agent_id: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let _ = (caller_agent_id, input);
+        Err("Feedback completion not available".to_string())
+    }
+
     /// Publish a custom event that can trigger proactive agents.
     async fn publish_event(
         &self,

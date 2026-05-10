@@ -474,11 +474,37 @@ impl MemorySubstrate {
         assigned_to: Option<&str>,
         created_by: Option<&str>,
     ) -> OpenFangResult<String> {
+        self.task_post_with_payload(
+            title,
+            description,
+            assigned_to,
+            created_by,
+            title,
+            serde_json::Value::Null,
+            0,
+        )
+        .await
+    }
+
+    /// Post a new task with a typed JSON payload to the shared queue.
+    pub async fn task_post_with_payload(
+        &self,
+        title: &str,
+        description: &str,
+        assigned_to: Option<&str>,
+        created_by: Option<&str>,
+        task_type: &str,
+        payload: serde_json::Value,
+        priority: i64,
+    ) -> OpenFangResult<String> {
         let conn = Arc::clone(&self.conn);
         let title = title.to_string();
         let description = description.to_string();
         let assigned_to = assigned_to.unwrap_or("").to_string();
         let created_by = created_by.unwrap_or("").to_string();
+        let task_type = task_type.to_string();
+        let payload = serde_json::to_vec(&payload)
+            .map_err(|e| OpenFangError::Internal(format!("Task payload serialize failed: {e}")))?;
 
         tokio::task::spawn_blocking(move || {
             let id = uuid::Uuid::new_v4().to_string();
@@ -486,8 +512,19 @@ impl MemorySubstrate {
             let db = conn.lock().map_err(|e| OpenFangError::Internal(e.to_string()))?;
             db.execute(
                 "INSERT INTO task_queue (id, agent_id, task_type, payload, status, priority, created_at, title, description, assigned_to, created_by)
-                 VALUES (?1, ?2, ?3, ?4, 'pending', 0, ?5, ?6, ?7, ?8, ?9)",
-                rusqlite::params![id, &created_by, &title, b"", now, title, description, assigned_to, created_by],
+                 VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    &id,
+                    &created_by,
+                    &task_type,
+                    payload,
+                    priority,
+                    now,
+                    &title,
+                    &description,
+                    &assigned_to,
+                    &created_by
+                ],
             )
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
             Ok(id)
@@ -505,7 +542,7 @@ impl MemorySubstrate {
             let db = conn.lock().map_err(|e| OpenFangError::Internal(e.to_string()))?;
             // Find first pending task assigned to this agent, or any unassigned pending task
             let mut stmt = db.prepare(
-                "SELECT id, title, description, assigned_to, created_by, created_at
+                "SELECT id, title, description, assigned_to, created_by, created_at, task_type, payload
                  FROM task_queue
                  WHERE status = 'pending' AND (assigned_to = ?1 OR assigned_to = '')
                  ORDER BY priority DESC, created_at ASC
@@ -520,21 +557,36 @@ impl MemorySubstrate {
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Vec<u8>>(7)?,
                 ))
             });
 
             match result {
-                Ok((id, title, description, assigned, created_by, created_at)) => {
+                Ok((
+                    id,
+                    title,
+                    description,
+                    assigned,
+                    created_by,
+                    created_at,
+                    task_type,
+                    payload_bytes,
+                )) => {
                     // Update status to in_progress
                     db.execute(
                         "UPDATE task_queue SET status = 'in_progress', assigned_to = ?2 WHERE id = ?1",
-                        rusqlite::params![id, agent_id],
+                        rusqlite::params![&id, &agent_id],
                     ).map_err(|e| OpenFangError::Memory(e.to_string()))?;
+                    let payload = serde_json::from_slice::<serde_json::Value>(&payload_bytes)
+                        .unwrap_or(serde_json::Value::Null);
 
                     Ok(Some(serde_json::json!({
                         "id": id,
                         "title": title,
                         "description": description,
+                        "task_type": task_type,
+                        "payload": payload,
                         "status": "in_progress",
                         "assigned_to": if assigned.is_empty() { &agent_id } else { &assigned },
                         "created_by": created_by,
@@ -580,17 +632,18 @@ impl MemorySubstrate {
             let db = conn.lock().map_err(|e| OpenFangError::Internal(e.to_string()))?;
             let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match &status {
                 Some(s) => (
-                    "SELECT id, title, description, status, assigned_to, created_by, created_at, completed_at, result FROM task_queue WHERE status = ?1 ORDER BY created_at DESC",
+                    "SELECT id, title, description, status, assigned_to, created_by, created_at, completed_at, result, task_type, payload FROM task_queue WHERE status = ?1 ORDER BY created_at DESC",
                     vec![Box::new(s.clone())],
                 ),
                 None => (
-                    "SELECT id, title, description, status, assigned_to, created_by, created_at, completed_at, result FROM task_queue ORDER BY created_at DESC",
+                    "SELECT id, title, description, status, assigned_to, created_by, created_at, completed_at, result, task_type, payload FROM task_queue ORDER BY created_at DESC",
                     vec![],
                 ),
             };
 
             let mut stmt = db.prepare(sql).map_err(|e| OpenFangError::Memory(e.to_string()))?;
-            let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
             let rows = stmt.query_map(params_refs.as_slice(), |row| {
                 Ok(serde_json::json!({
                     "id": row.get::<_, String>(0)?,
@@ -602,6 +655,11 @@ impl MemorySubstrate {
                     "created_at": row.get::<_, String>(6).unwrap_or_default(),
                     "completed_at": row.get::<_, Option<String>>(7).unwrap_or(None),
                     "result": row.get::<_, Option<String>>(8).unwrap_or(None),
+                    "task_type": row.get::<_, String>(9).unwrap_or_default(),
+                    "payload": row.get::<_, Vec<u8>>(10)
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                        .unwrap_or(serde_json::Value::Null),
                 }))
             }).map_err(|e| OpenFangError::Memory(e.to_string()))?;
 

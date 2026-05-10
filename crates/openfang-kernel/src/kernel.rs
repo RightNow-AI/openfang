@@ -6823,6 +6823,169 @@ impl KernelHandle for OpenFangKernel {
             .map_err(|e| format!("Task list failed: {e}"))
     }
 
+    async fn feedback_capture(
+        &self,
+        caller_agent_id: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let parent_agent_id: AgentId = caller_agent_id
+            .parse()
+            .map_err(|e| format!("Invalid caller agent ID: {e}"))?;
+        let entry = self
+            .registry
+            .get(parent_agent_id)
+            .ok_or_else(|| format!("Parent agent not found: {caller_agent_id}"))?;
+
+        let signal = input["signal"]
+            .as_str()
+            .ok_or("Missing 'signal' parameter")?;
+        if !matches!(signal, "positive" | "negative" | "mixed" | "unclear") {
+            return Err("Invalid feedback signal; expected positive, negative, mixed, or unclear"
+                .to_string());
+        }
+        let target = input["target"].as_str().unwrap_or("session");
+        let user_note = input["user_note"].as_str().unwrap_or("");
+        let related_skill = input["related_skill"].as_str();
+        let target_message_id = input["target_message_id"].as_str();
+        let short_excerpt = input["short_excerpt"].as_str();
+        let active_task = input["active_task"].as_str();
+        let reviewer = input["reviewer"]
+            .as_str()
+            .unwrap_or("dovi-feedback-reviewer");
+
+        let feedback_id = format!("fb_{}", uuid::Uuid::new_v4());
+        let captured_at = chrono::Utc::now().to_rfc3339();
+        let parent_agent_name = entry.name.clone();
+        let parent_session_id = entry.session_id.0.to_string();
+        let payload = serde_json::json!({
+            "schema_version": 1,
+            "feedback_id": feedback_id.clone(),
+            "parent_agent_id": caller_agent_id,
+            "parent_agent_name": parent_agent_name.clone(),
+            "parent_session_id": parent_session_id.clone(),
+            "signal": signal,
+            "target": target,
+            "user_note": user_note,
+            "related_skill": related_skill,
+            "target_message_id": target_message_id,
+            "short_excerpt": short_excerpt,
+            "active_task": active_task,
+            "captured_at": captured_at,
+        });
+
+        let title = format!("Analyze feedback {feedback_id}");
+        let description = format!(
+            "Analyze {signal} feedback for {agent} about {target}.",
+            agent = parent_agent_name
+        );
+        let task_id = self
+            .memory
+            .task_post_with_payload(
+                &title,
+                &description,
+                Some(reviewer),
+                Some(caller_agent_id),
+                "feedback_analysis",
+                payload.clone(),
+                10,
+            )
+            .await
+            .map_err(|e| format!("Feedback task enqueue failed: {e}"))?;
+
+        if let Err(e) = self
+            .publish_event(
+                "feedback.captured",
+                serde_json::json!({
+                    "feedback_id": feedback_id.clone(),
+                    "task_id": task_id.clone(),
+                    "parent_agent_id": caller_agent_id,
+                    "reviewer": reviewer,
+                }),
+            )
+            .await
+        {
+            warn!(error = %e, "Failed to publish feedback.captured event");
+        }
+
+        Ok(serde_json::json!({
+            "status": "queued",
+            "feedback_id": feedback_id,
+            "task_id": task_id,
+            "reviewer": reviewer,
+            "message": "Feedback captured and queued for background analysis."
+        }))
+    }
+
+    async fn feedback_complete(
+        &self,
+        _caller_agent_id: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let task_id = input["task_id"]
+            .as_str()
+            .ok_or("Missing 'task_id' parameter")?;
+        let feedback_id = input["feedback_id"]
+            .as_str()
+            .ok_or("Missing 'feedback_id' parameter")?;
+        let parent_agent_id_str = input["parent_agent_id"]
+            .as_str()
+            .ok_or("Missing 'parent_agent_id' parameter")?;
+        let parent_session_id_str = input["parent_session_id"]
+            .as_str()
+            .ok_or("Missing 'parent_session_id' parameter")?;
+        let summary = input["summary"]
+            .as_str()
+            .ok_or("Missing 'summary' parameter")?;
+        let result = input["result"]
+            .as_str()
+            .ok_or("Missing 'result' parameter")?;
+        let status = input["status"].as_str().unwrap_or("completed");
+
+        let parent_agent_id: AgentId = parent_agent_id_str
+            .parse()
+            .map_err(|e| format!("Invalid parent agent ID: {e}"))?;
+        let parent_session_id = SessionId(
+            uuid::Uuid::parse_str(parent_session_id_str)
+                .map_err(|e| format!("Invalid parent session ID: {e}"))?,
+        );
+
+        let message_text = format!(
+            "Feedback processed:\n- ID: {feedback_id}\n- Status: {status}\n- Summary: {summary}\n- Output: full report stored in feedback task `{task_id}`."
+        );
+        let message = openfang_types::message::Message::assistant(message_text);
+
+        let mut session = self
+            .memory
+            .get_session(parent_session_id)
+            .map_err(|e| format!("Parent session lookup failed: {e}"))?
+            .ok_or_else(|| format!("Parent session not found: {parent_session_id_str}"))?;
+
+        self.memory
+            .task_complete(task_id, result)
+            .await
+            .map_err(|e| format!("Feedback task complete failed: {e}"))?;
+
+        session.messages.push(message.clone());
+        self.memory
+            .save_session(&session)
+            .map_err(|e| format!("Parent session save failed: {e}"))?;
+
+        if let Err(e) = self
+            .memory
+            .append_canonical(parent_agent_id, &[message], None)
+        {
+            warn!(error = %e, "Failed to append feedback summary to canonical session");
+        }
+
+        Ok(serde_json::json!({
+            "status": "completed",
+            "feedback_id": feedback_id,
+            "task_id": task_id,
+            "parent_session_id": parent_session_id_str,
+            "message": "Feedback analysis completed and summary appended to the parent session."
+        }))
+    }
+
     async fn publish_event(
         &self,
         event_type: &str,

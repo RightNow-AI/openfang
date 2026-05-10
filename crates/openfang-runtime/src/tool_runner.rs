@@ -310,6 +310,8 @@ pub async fn execute_tool(
         "task_claim" => tool_task_claim(kernel, caller_agent_id).await,
         "task_complete" => tool_task_complete(input, kernel).await,
         "task_list" => tool_task_list(input, kernel).await,
+        "feedback_capture" => tool_feedback_capture(input, kernel, caller_agent_id).await,
+        "feedback_complete" => tool_feedback_complete(input, kernel, caller_agent_id).await,
         "event_publish" => tool_event_publish(input, kernel).await,
 
         // Scheduling tools
@@ -771,6 +773,62 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "status": { "type": "string", "description": "Filter by status: pending, in_progress, completed (optional)" }
                 }
+            }),
+        },
+        ToolDefinition {
+            name: "feedback_capture".to_string(),
+            description: "Capture user feedback about this agent's current or recent behavior and enqueue background analysis. Do not analyze the feedback in the main conversation.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "signal": {
+                        "type": "string",
+                        "enum": ["positive", "negative", "mixed", "unclear"],
+                        "description": "Feedback sentiment or direction"
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "What the feedback is about, such as current_response, previous_response, session, tool_action, memory_behavior, or workflow"
+                    },
+                    "user_note": {
+                        "type": "string",
+                        "description": "The user's feedback text or reason"
+                    },
+                    "related_skill": {
+                        "type": "string",
+                        "description": "Optional skill or workflow related to the feedback"
+                    },
+                    "target_message_id": {
+                        "type": "string",
+                        "description": "Optional message or turn identifier if known"
+                    },
+                    "short_excerpt": {
+                        "type": "string",
+                        "description": "Optional short excerpt of the response or behavior being evaluated"
+                    },
+                    "active_task": {
+                        "type": "string",
+                        "description": "Optional current task or flow to resume after feedback capture"
+                    }
+                },
+                "required": ["signal", "target"]
+            }),
+        },
+        ToolDefinition {
+            name: "feedback_complete".to_string(),
+            description: "Complete a queued feedback analysis task and append a short summary to the original parent session. Intended for feedback reviewer agents.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string", "description": "The feedback task ID to complete" },
+                    "feedback_id": { "type": "string", "description": "The feedback event ID" },
+                    "parent_agent_id": { "type": "string", "description": "The parent agent ID whose session should receive the summary" },
+                    "parent_session_id": { "type": "string", "description": "The parent session ID that should receive the summary" },
+                    "summary": { "type": "string", "description": "Short factual summary to append to the parent session" },
+                    "result": { "type": "string", "description": "Full feedback analysis result to store on the task" },
+                    "status": { "type": "string", "description": "Completion status, normally completed" }
+                },
+                "required": ["task_id", "feedback_id", "parent_agent_id", "parent_session_id", "summary", "result"]
             }),
         },
         ToolDefinition {
@@ -1811,6 +1869,28 @@ async fn tool_task_list(
         return Ok("No tasks found.".to_string());
     }
     serde_json::to_string_pretty(&tasks).map_err(|e| format!("Serialize error: {e}"))
+}
+
+async fn tool_feedback_capture(
+    input: &serde_json::Value,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
+) -> Result<String, String> {
+    let kh = require_kernel(kernel)?;
+    let agent_id = caller_agent_id.ok_or("Agent ID required for feedback_capture")?;
+    let result = kh.feedback_capture(agent_id, input.clone()).await?;
+    serde_json::to_string_pretty(&result).map_err(|e| format!("Serialize error: {e}"))
+}
+
+async fn tool_feedback_complete(
+    input: &serde_json::Value,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
+) -> Result<String, String> {
+    let kh = require_kernel(kernel)?;
+    let agent_id = caller_agent_id.ok_or("Agent ID required for feedback_complete")?;
+    let result = kh.feedback_complete(agent_id, input.clone()).await?;
+    serde_json::to_string_pretty(&result).map_err(|e| format!("Serialize error: {e}"))
 }
 
 async fn tool_event_publish(
@@ -3428,6 +3508,8 @@ mod tests {
         assert!(names.contains(&"task_claim"));
         assert!(names.contains(&"task_complete"));
         assert!(names.contains(&"task_list"));
+        assert!(names.contains(&"feedback_capture"));
+        assert!(names.contains(&"feedback_complete"));
         assert!(names.contains(&"event_publish"));
         // 5 new Phase 3 tools
         assert!(names.contains(&"schedule_create"));
@@ -3479,6 +3561,8 @@ mod tests {
             "task_claim",
             "task_complete",
             "task_list",
+            "feedback_capture",
+            "feedback_complete",
             "event_publish",
         ];
         for name in &collab_tools {
