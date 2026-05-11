@@ -16,11 +16,14 @@ for skill in planning-system task-tracking session-feedback; do
 done
 
 echo "Deploying OpenFang binary..."
-if [ -f "${REPO}/target/aarch64-unknown-linux-gnu/release/openfang" ]; then
+if [ -n "${OPENFANG_BINARY:-}" ] && [ -f "${OPENFANG_BINARY}" ]; then
+  cp "${OPENFANG_BINARY}" "${OPENFANG_HOME}/bin/openfang"
+  echo "Binary updated from OPENFANG_BINARY=${OPENFANG_BINARY}."
+elif [ -f "${REPO}/target/aarch64-unknown-linux-gnu/release/openfang" ]; then
   cp "${REPO}/target/aarch64-unknown-linux-gnu/release/openfang" "${OPENFANG_HOME}/bin/openfang"
   echo "Binary updated from cross-build."
 else
-  echo "No cross-build binary found. Run 'cargo build --release' or download from CI."
+  echo "No binary found. Set OPENFANG_BINARY=/path/to/openfang or download/build target/aarch64-unknown-linux-gnu/release/openfang."
 fi
 
 echo "Restarting OpenFang..."

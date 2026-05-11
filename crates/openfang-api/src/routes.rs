@@ -12095,6 +12095,41 @@ pub async fn comms_task(
     }
 }
 
+/// GET /api/feedbacks - List feedback analysis tasks for dashboard visibility.
+pub async fn list_feedback_tasks(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let status = params.get("status").map(String::as_str);
+    if let Some(s) = status {
+        if !matches!(s, "pending" | "in_progress" | "completed" | "failed") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid status filter"})),
+            );
+        }
+    }
+
+    match state.kernel.memory.task_list(status).await {
+        Ok(tasks) => {
+            let feedback_tasks: Vec<serde_json::Value> = tasks
+                .into_iter()
+                .filter(|task| task["task_type"].as_str() == Some("feedback_analysis"))
+                .collect();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "tasks": feedback_tasks,
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to list feedback tasks: {e}")})),
+        ),
+    }
+}
+
 // ── Dashboard Authentication (username/password sessions) ──
 
 /// POST /api/auth/login — Authenticate with username/password, returns session token.

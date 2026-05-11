@@ -667,6 +667,11 @@ pub async fn build_router(
             "/api/bindings/{index}",
             axum::routing::delete(routes::remove_binding),
         )
+        // Feedback task visibility
+        .route(
+            "/api/feedbacks",
+            axum::routing::get(routes::list_feedback_tasks),
+        )
         // A2A (Agent-to-Agent) Protocol endpoints
         .route(
             "/.well-known/agent.json",
