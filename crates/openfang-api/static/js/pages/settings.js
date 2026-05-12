@@ -25,6 +25,9 @@ function settingsPage() {
     providerUrlSaving: {},
     providerTesting: {},
     providerTestResults: {},
+    providerSearch: '',
+    providerStatusFilter: '',
+    providerCategoryFilter: '',
     copilotOAuth: { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 },
     customProviderName: '',
     customProviderUrl: '',
@@ -336,6 +339,94 @@ function settingsPage() {
       var seen = {};
       this.models.forEach(function(m) { seen[m.provider] = true; });
       return Object.keys(seen).sort();
+    },
+
+    /// Coarse category for a provider used to group the Providers tab.
+    /// Returns: 'frontier' | 'oss' | 'local' | 'aggregator' | 'regional' | 'other'.
+    providerCategory(p) {
+      if (!p) return 'other';
+      if (p.is_local || p.key_required === false) return 'local';
+      var id = (p.id || '').toLowerCase();
+      var FRONTIER = ['anthropic','openai','gemini','google','xai','bedrock','azure','vertex'];
+      var OSS = ['groq','together','fireworks','cerebras','sambanova','deepseek','mistral','perplexity','cohere','ai21','huggingface','replicate','nvidia','venice','novita','chutes'];
+      var AGG = ['openrouter','litellm','github-copilot','claude-code'];
+      var REGIONAL = ['qwen','minimax','zhipu','zai','moonshot','qianfan','volcengine','kimi'];
+      if (FRONTIER.indexOf(id) !== -1) return 'frontier';
+      if (REGIONAL.indexOf(id) !== -1) return 'regional';
+      if (AGG.indexOf(id) !== -1) return 'aggregator';
+      if (OSS.indexOf(id) !== -1) return 'oss';
+      return 'other';
+    },
+
+    providerCategoryLabel(cat) {
+      switch (cat) {
+        case 'frontier':   return 'Frontier (Anthropic, OpenAI, Google, xAI, Bedrock)';
+        case 'oss':        return 'Open-Weight Hosts (Groq, Together, Fireworks, DeepSeek, etc.)';
+        case 'aggregator': return 'Aggregators & Gateways (OpenRouter, GitHub Copilot)';
+        case 'regional':   return 'Regional / China (Qwen, Zhipu, Moonshot, MiniMax)';
+        case 'local':      return 'Local / Self-Hosted (Ollama, vLLM, LM Studio, Lemonade)';
+        default:           return 'Other Providers';
+      }
+    },
+
+    /// Stable category order for grouped rendering.
+    get providerCategoriesOrdered() {
+      return ['frontier', 'oss', 'aggregator', 'regional', 'local', 'other'];
+    },
+
+    /// Returns filter-matched providers grouped by category, preserving order.
+    /// Each entry: { category, label, items: [...] }. Empty groups are omitted.
+    get providersGrouped() {
+      var self = this;
+      var filtered = this.filteredProviders;
+      var by = {};
+      filtered.forEach(function(p) {
+        var c = self.providerCategory(p);
+        if (!by[c]) by[c] = [];
+        by[c].push(p);
+      });
+      // Sort each group: configured first, then alphabetical
+      Object.keys(by).forEach(function(c) {
+        by[c].sort(function(a, b) {
+          var ac = a.auth_status === 'configured' ? 0 : 1;
+          var bc = b.auth_status === 'configured' ? 0 : 1;
+          if (ac !== bc) return ac - bc;
+          return (a.display_name || a.id).localeCompare(b.display_name || b.id);
+        });
+      });
+      var out = [];
+      this.providerCategoriesOrdered.forEach(function(c) {
+        if (by[c] && by[c].length) {
+          out.push({ category: c, label: self.providerCategoryLabel(c), items: by[c] });
+        }
+      });
+      return out;
+    },
+
+    get filteredProviders() {
+      var self = this;
+      return this.providers.filter(function(p) {
+        if (self.providerStatusFilter === 'configured' && p.auth_status !== 'configured') return false;
+        if (self.providerStatusFilter === 'unconfigured' && p.auth_status === 'configured') return false;
+        if (self.providerCategoryFilter && self.providerCategory(p) !== self.providerCategoryFilter) return false;
+        if (self.providerSearch) {
+          var q = self.providerSearch.toLowerCase();
+          if ((p.display_name || '').toLowerCase().indexOf(q) === -1 &&
+              (p.id || '').toLowerCase().indexOf(q) === -1 &&
+              (p.api_key_env || '').toLowerCase().indexOf(q) === -1) return false;
+        }
+        return true;
+      });
+    },
+
+    get configuredProviderCount() {
+      return this.providers.filter(function(p) { return p.auth_status === 'configured'; }).length;
+    },
+
+    clearProviderFilters() {
+      this.providerSearch = '';
+      this.providerStatusFilter = '';
+      this.providerCategoryFilter = '';
     },
 
     get uniqueTiers() {

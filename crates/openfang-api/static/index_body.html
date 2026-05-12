@@ -847,8 +847,15 @@
                     <svg x-show="!agent.identity || !agent.identity.emoji" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                   </div>
                   <div style="min-width:0;flex:1">
-                    <div class="font-bold" style="font-size:13px" x-text="agent.name"></div>
-                    <div class="text-xs text-dim font-mono" style="font-size:11px" x-text="agent.model_name"></div>
+                    <div class="font-bold" style="font-size:13px">
+                      <span x-text="agent.name"></span>
+                      <!-- Issue #1026: live inferencing indicator -->
+                      <span x-show="agent.is_inferencing" class="agent-inferencing-dot" title="Agent is calling the LLM right now" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);margin-left:6px;vertical-align:middle;animation:agent-inferencing-pulse 1.2s ease-in-out infinite"></span>
+                    </div>
+                    <div class="text-xs text-dim font-mono" style="font-size:11px">
+                      <span x-show="!agent.is_inferencing" x-text="agent.model_name"></span>
+                      <span x-show="agent.is_inferencing" style="color:var(--accent);font-weight:600">Inferencing…</span>
+                    </div>
                   </div>
                   <span class="badge" :class="'badge-' + agent.state.toLowerCase()" x-text="agent.state" style="font-size:10px"></span>
                   <button class="agent-chip-config-btn" @click.stop="showDetail(agent)" title="Agent settings" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:transparent;cursor:pointer;color:var(--text-dim);transition:all 0.15s;flex-shrink:0" @mouseenter="$el.style.borderColor='var(--accent)';$el.style.color='var(--accent)';$el.style.background='var(--surface2)'" @mouseleave="$el.style.borderColor='var(--border)';$el.style.color='var(--text-dim)';$el.style.background='transparent'">
@@ -3564,11 +3571,47 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <div x-show="tab === 'providers'">
             <div class="info-card">
               <h4>LLM Providers</h4>
-              <p>OpenFang supports 12 LLM providers out of the box. Configure API keys to unlock models from each provider. Set environment variables and restart, or use the form below to save keys directly.</p>
+              <p>OpenFang ships with <span x-text="providers.length"></span> built-in providers and you can add unlimited custom ones. <span x-text="configuredProviderCount"></span> currently configured. Filter, search, or jump to a category below &mdash; only providers with a saved key (or that need none) light up models for your agents.</p>
             </div>
-            <div class="card-grid">
-              <template x-for="p in providers" :key="p.id">
-                <div class="card provider-card" :class="providerCardClass(p)">
+            <!-- Filter toolbar -->
+            <div class="flex gap-2 mb-4" style="flex-wrap:wrap;align-items:center">
+              <div class="search-input" style="flex:1;min-width:200px">
+                <span style="color:var(--text-muted)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg></span>
+                <input placeholder="Search providers..." x-model="providerSearch">
+              </div>
+              <select class="form-select" style="width:170px" x-model="providerStatusFilter">
+                <option value="">All Statuses</option>
+                <option value="configured">Configured</option>
+                <option value="unconfigured">Needs Key</option>
+              </select>
+              <select class="form-select" style="width:200px" x-model="providerCategoryFilter">
+                <option value="">All Categories</option>
+                <option value="frontier">Frontier</option>
+                <option value="oss">Open-Weight Hosts</option>
+                <option value="aggregator">Aggregators</option>
+                <option value="regional">Regional / China</option>
+                <option value="local">Local / Self-Hosted</option>
+                <option value="other">Other</option>
+              </select>
+              <button class="btn btn-ghost btn-sm" @click="clearProviderFilters()" x-show="providerSearch || providerStatusFilter || providerCategoryFilter">Clear</button>
+            </div>
+            <div class="text-xs text-dim mb-2" x-text="filteredProviders.length + ' of ' + providers.length + ' providers'"></div>
+            <!-- Empty state for filters -->
+            <div x-show="!filteredProviders.length && providers.length" style="text-align:center;padding:32px 16px">
+              <h3 style="margin:0 0 4px;font-size:14px">No providers match your filters</h3>
+              <p class="text-xs text-dim">Try a different search term or category.</p>
+              <button class="btn btn-ghost btn-sm mt-2" @click="clearProviderFilters()">Clear Filters</button>
+            </div>
+            <!-- Grouped provider sections -->
+            <template x-for="group in providersGrouped" :key="group.category">
+              <div style="margin-bottom:1.25rem">
+                <div class="card-header" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">
+                  <span x-text="group.label"></span>
+                  <span class="text-xs text-dim" style="font-weight:normal;text-transform:none;letter-spacing:0" x-text="'(' + group.items.length + ')'"></span>
+                </div>
+                <div class="card-grid">
+                  <template x-for="p in group.items" :key="p.id">
+                    <div class="card provider-card" :class="providerCardClass(p)">
                   <div class="flex justify-between items-center mb-2">
                     <div class="card-header" style="margin:0" x-text="p.display_name"></div>
                     <span class="badge" :class="providerAuthClass(p)" x-text="providerAuthText(p)"></span>
@@ -3627,9 +3670,11 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                       </div>
                     </div>
                   </template>
+                    </div>
+                  </template>
                 </div>
-              </template>
-            </div>
+              </div>
+            </template>
             <!-- Add Custom Provider -->
             <div class="info-card mt-4" style="border:1px solid var(--border)">
               <h4 style="margin-top:0">Add Custom Provider</h4>
