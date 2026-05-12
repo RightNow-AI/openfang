@@ -5216,26 +5216,85 @@ impl OpenFangKernel {
     }
 
     /// Collect every provider ID the operator has actually referenced in
-    /// their effective config — the default model, every fallback chain
-    /// entry, every `[provider_urls]` key, and every registered agent's
-    /// manifest provider (including per-agent `fallback_models`). Used by
-    /// the local provider probe loop so that we don't spam `WARN Local
-    /// provider offline` for providers the user never asked about (#1031).
+    /// their effective config. Walks the surfaces below so the local
+    /// provider probe loop does not spam `WARN Local provider offline`
+    /// for providers the user never asked about (#1031, #1188):
+    ///
+    /// 1. Default model (boot config + hot-reload override).
+    /// 2. Global fallback chain (boot config + hot-reload override).
+    /// 3. Explicit `[provider_urls]` keys.
+    /// 4. Every registered agent manifest provider + per-agent
+    ///    `fallback_models`.
+    /// 5. Catalog-resolved aliases — model names on default/fallback/manifest
+    ///    that resolve to a different concrete provider via the catalog.
+    /// 6. Per-channel `overrides.model` for every enabled channel adapter,
+    ///    resolved through the model catalog.
+    /// 7. Bundled and user-installed skills — tags that match a known
+    ///    provider ID, and `config` variables whose `env` matches a known
+    ///    provider's `api_key_env`.
+    /// 8. MCP server configs — `env` entries that match a known provider's
+    ///    `api_key_env`.
     fn referenced_providers(&self) -> std::collections::HashSet<String> {
         let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // Snapshot catalog lookups up front so we don't keep the lock across
+        // long iterations. Provider IDs are lowercased model-side already.
+        let (provider_ids, env_to_provider) = {
+            let catalog = self
+                .model_catalog
+                .read()
+                .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+            let ids: std::collections::HashSet<String> = catalog
+                .list_providers()
+                .iter()
+                .map(|p| p.id.clone())
+                .collect();
+            let env_map: std::collections::HashMap<String, String> = catalog
+                .list_providers()
+                .iter()
+                .filter(|p| !p.api_key_env.is_empty())
+                .map(|p| (p.api_key_env.to_ascii_uppercase(), p.id.clone()))
+                .collect();
+            (ids, env_map)
+        };
+
+        // Resolve a model name through the catalog and add the concrete
+        // provider it lives on. Lets us catch alias-only references where
+        // the surrounding `provider` field is "default" or empty (#1188).
+        let add_model = |set: &mut std::collections::HashSet<String>, name: &str| {
+            if name.is_empty() || name == "default" {
+                return;
+            }
+            let catalog = self
+                .model_catalog
+                .read()
+                .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+            if let Some(entry) = catalog.find_model(name) {
+                let p = &entry.provider;
+                if !p.is_empty() && p != "default" {
+                    set.insert(p.clone());
+                }
+            }
+        };
 
         // Default model — respect hot-reloaded override.
         let override_guard = self
             .default_model_override
             .read()
             .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
-        let dm_provider = override_guard
+        let (dm_provider, dm_model) = override_guard
             .as_ref()
-            .map(|dm| dm.provider.clone())
-            .unwrap_or_else(|| self.config.default_model.provider.clone());
+            .map(|dm| (dm.provider.clone(), dm.model.clone()))
+            .unwrap_or_else(|| {
+                (
+                    self.config.default_model.provider.clone(),
+                    self.config.default_model.model.clone(),
+                )
+            });
         if !dm_provider.is_empty() && dm_provider != "default" {
             set.insert(dm_provider);
         }
+        add_model(&mut set, &dm_model);
         drop(override_guard);
 
         // Global fallback chain — respect hot-reloaded override.
@@ -5250,6 +5309,7 @@ impl OpenFangKernel {
             if !fb.provider.is_empty() && fb.provider != "default" {
                 set.insert(fb.provider.clone());
             }
+            add_model(&mut set, &fb.model);
         }
         drop(fb_override);
 
@@ -5264,9 +5324,108 @@ impl OpenFangKernel {
             if !p.is_empty() && p != "default" {
                 set.insert(p.clone());
             }
+            add_model(&mut set, &entry.manifest.model.model);
             for fb in &entry.manifest.fallback_models {
                 if !fb.provider.is_empty() && fb.provider != "default" {
                     set.insert(fb.provider.clone());
+                }
+                add_model(&mut set, &fb.model);
+            }
+        }
+
+        // Channel adapters — each enabled channel may pin `overrides.model`
+        // to a specific model, which resolves to a concrete provider through
+        // the catalog. Skip when no override is set.
+        let ch = &self.config.channels;
+        let channel_overrides: [Option<&openfang_types::config::ChannelOverrides>; 43] = [
+            ch.telegram.as_ref().map(|c| &c.overrides),
+            ch.discord.as_ref().map(|c| &c.overrides),
+            ch.slack.as_ref().map(|c| &c.overrides),
+            ch.whatsapp.as_ref().map(|c| &c.overrides),
+            ch.signal.as_ref().map(|c| &c.overrides),
+            ch.matrix.as_ref().map(|c| &c.overrides),
+            ch.email.as_ref().map(|c| &c.overrides),
+            ch.teams.as_ref().map(|c| &c.overrides),
+            ch.mattermost.as_ref().map(|c| &c.overrides),
+            ch.irc.as_ref().map(|c| &c.overrides),
+            ch.google_chat.as_ref().map(|c| &c.overrides),
+            ch.twitch.as_ref().map(|c| &c.overrides),
+            ch.rocketchat.as_ref().map(|c| &c.overrides),
+            ch.zulip.as_ref().map(|c| &c.overrides),
+            ch.xmpp.as_ref().map(|c| &c.overrides),
+            ch.line.as_ref().map(|c| &c.overrides),
+            ch.viber.as_ref().map(|c| &c.overrides),
+            ch.messenger.as_ref().map(|c| &c.overrides),
+            ch.reddit.as_ref().map(|c| &c.overrides),
+            ch.mastodon.as_ref().map(|c| &c.overrides),
+            ch.bluesky.as_ref().map(|c| &c.overrides),
+            ch.feishu.as_ref().map(|c| &c.overrides),
+            ch.revolt.as_ref().map(|c| &c.overrides),
+            ch.nextcloud.as_ref().map(|c| &c.overrides),
+            ch.guilded.as_ref().map(|c| &c.overrides),
+            ch.keybase.as_ref().map(|c| &c.overrides),
+            ch.threema.as_ref().map(|c| &c.overrides),
+            ch.nostr.as_ref().map(|c| &c.overrides),
+            ch.webex.as_ref().map(|c| &c.overrides),
+            ch.pumble.as_ref().map(|c| &c.overrides),
+            ch.flock.as_ref().map(|c| &c.overrides),
+            ch.twist.as_ref().map(|c| &c.overrides),
+            ch.mumble.as_ref().map(|c| &c.overrides),
+            ch.dingtalk.as_ref().map(|c| &c.overrides),
+            ch.dingtalk_stream.as_ref().map(|c| &c.overrides),
+            ch.discourse.as_ref().map(|c| &c.overrides),
+            ch.gitter.as_ref().map(|c| &c.overrides),
+            ch.ntfy.as_ref().map(|c| &c.overrides),
+            ch.gotify.as_ref().map(|c| &c.overrides),
+            ch.webhook.as_ref().map(|c| &c.overrides),
+            ch.linkedin.as_ref().map(|c| &c.overrides),
+            ch.wecom.as_ref().map(|c| &c.overrides),
+            ch.mqtt.as_ref().map(|c| &c.overrides),
+        ];
+        for overrides in channel_overrides.iter().flatten() {
+            if let Some(model) = overrides.model.as_deref() {
+                add_model(&mut set, model);
+            }
+        }
+
+        // Skills — bundled + user-installed. Two indirect provider hints:
+        //   1. Tag matching a known provider ID (e.g. tag "openai" on a
+        //      skill that drives the OpenAI API).
+        //   2. A declared config variable whose `env` matches a known
+        //      provider's `api_key_env` (e.g. env = "OPENAI_API_KEY"
+        //      → openai).
+        let skill_registry = self
+            .skill_registry
+            .read()
+            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+        for skill in skill_registry.list() {
+            for tag in &skill.manifest.skill.tags {
+                let lower = tag.to_ascii_lowercase();
+                if provider_ids.contains(&lower) {
+                    set.insert(lower);
+                }
+            }
+            for var in skill.manifest.config.values() {
+                if let Some(env_name) = var.env.as_deref() {
+                    if let Some(provider) =
+                        env_to_provider.get(&env_name.to_ascii_uppercase())
+                    {
+                        set.insert(provider.clone());
+                    }
+                }
+            }
+        }
+        drop(skill_registry);
+
+        // MCP server configs — each entry's `env` allowlist may include a
+        // provider's API key env var, which is enough evidence the operator
+        // wired that provider into their MCP server.
+        for server in &self.config.mcp_servers {
+            for env_name in &server.env {
+                if let Some(provider) =
+                    env_to_provider.get(&env_name.to_ascii_uppercase())
+                {
+                    set.insert(provider.clone());
                 }
             }
         }
@@ -8788,6 +8947,187 @@ mod tests {
             );
         }
 
+        kernel.shutdown();
+    }
+
+    // ----------------------------------------------------------------------
+    // Issue #1188: referenced_providers() must also walk MCP server configs,
+    // skill manifests, channel adapters, and catalog aliases. Otherwise the
+    // probe loop still spams "Local provider offline" for providers that are
+    // referenced indirectly. Each block below pins one new surface so a
+    // regression on any single surface fails its own assertion.
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn test_1188_referenced_providers_resolves_alias_to_provider() {
+        use openfang_types::config::DefaultModelConfig;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-1188-alias");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        // Operator sets provider = "default" and picks the model by its
+        // builtin catalog alias "opus", which resolves to provider
+        // "anthropic". The literal provider field is "default", so the
+        // pre-fix walker would not have added anthropic.
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            default_model: DefaultModelConfig {
+                provider: "default".to_string(),
+                model: "opus".to_string(),
+                api_key_env: "ANTHROPIC_API_KEY".to_string(),
+                base_url: None,
+                subprocess_timeout_secs: None,
+            },
+            ..KernelConfig::default()
+        };
+
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let referenced = kernel.referenced_providers();
+        assert!(
+            referenced.contains("anthropic"),
+            "alias 'opus' must resolve to anthropic ({referenced:?})"
+        );
+        kernel.shutdown();
+    }
+
+    #[test]
+    fn test_1188_referenced_providers_walks_channel_overrides() {
+        use openfang_types::config::{
+            ChannelOverrides, ChannelsConfig, DefaultModelConfig, TelegramConfig,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-1188-channel");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        let overrides = ChannelOverrides {
+            model: Some("opus".to_string()),
+            ..ChannelOverrides::default()
+        };
+
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            default_model: DefaultModelConfig {
+                provider: "groq".to_string(),
+                model: "llama-3.1-70b".to_string(),
+                api_key_env: "GROQ_API_KEY".to_string(),
+                base_url: None,
+                subprocess_timeout_secs: None,
+            },
+            channels: ChannelsConfig {
+                telegram: Some(TelegramConfig {
+                    overrides,
+                    ..TelegramConfig::default()
+                }),
+                ..ChannelsConfig::default()
+            },
+            ..KernelConfig::default()
+        };
+
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let referenced = kernel.referenced_providers();
+        assert!(
+            referenced.contains("anthropic"),
+            "channel override 'opus' must pull in anthropic ({referenced:?})"
+        );
+        kernel.shutdown();
+    }
+
+    #[test]
+    fn test_1188_referenced_providers_walks_mcp_env() {
+        use openfang_types::config::{
+            DefaultModelConfig, McpServerConfigEntry, McpTransportEntry,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-1188-mcp");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        // MCP server passes through OPENAI_API_KEY, which is the api_key_env
+        // for the openai provider, so openai must be considered referenced.
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            default_model: DefaultModelConfig {
+                provider: "groq".to_string(),
+                model: "llama-3.1-70b".to_string(),
+                api_key_env: "GROQ_API_KEY".to_string(),
+                base_url: None,
+                subprocess_timeout_secs: None,
+            },
+            mcp_servers: vec![McpServerConfigEntry {
+                name: "openai-proxy".to_string(),
+                transport: McpTransportEntry::Stdio {
+                    command: "node".to_string(),
+                    args: vec!["proxy.js".to_string()],
+                },
+                timeout_secs: 30,
+                env: vec!["OPENAI_API_KEY".to_string()],
+                headers: vec![],
+            }],
+            ..KernelConfig::default()
+        };
+
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let referenced = kernel.referenced_providers();
+        assert!(
+            referenced.contains("openai"),
+            "MCP env OPENAI_API_KEY must pull in openai ({referenced:?})"
+        );
+        kernel.shutdown();
+    }
+
+    #[test]
+    fn test_1188_referenced_providers_walks_skill_tags() {
+        use openfang_types::config::DefaultModelConfig;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-1188-skill");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            default_model: DefaultModelConfig {
+                provider: "groq".to_string(),
+                model: "llama-3.1-70b".to_string(),
+                api_key_env: "GROQ_API_KEY".to_string(),
+                base_url: None,
+                subprocess_timeout_secs: None,
+            },
+            ..KernelConfig::default()
+        };
+
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+
+        // Drop a minimal skill manifest with a tag matching a known
+        // provider ID, then load it through the kernel's registry.
+        let skill_dir = home_dir.join("skills").join("openai-helper");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let manifest_toml = r#"
+[skill]
+name = "openai-helper"
+version = "0.1.0"
+description = "test skill"
+tags = ["openai"]
+
+[runtime]
+type = "promptonly"
+"#;
+        std::fs::write(skill_dir.join("skill.toml"), manifest_toml).unwrap();
+        {
+            let mut reg = kernel.skill_registry.write().unwrap();
+            reg.load_skill(&skill_dir).expect("skill loads");
+        }
+
+        let referenced = kernel.referenced_providers();
+        assert!(
+            referenced.contains("openai"),
+            "skill tag 'openai' must pull in openai ({referenced:?})"
+        );
         kernel.shutdown();
     }
 
