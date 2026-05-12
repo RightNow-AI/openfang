@@ -176,6 +176,7 @@ impl SetupWizard {
             autonomous: None,
             pinned_model: None,
             workspace: None,
+            state_dir: None,
             generate_identity_files: true,
             profile: None,
             fallback_models: vec![],

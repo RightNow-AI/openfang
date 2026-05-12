@@ -474,11 +474,23 @@ pub struct AgentManifest {
     /// Pinned model override (used in Stable mode).
     #[serde(default)]
     pub pinned_model: Option<String>,
-    /// Agent workspace directory. Auto-created on spawn.
-    /// Default: `{workspaces_dir}/{agent_name}-{agent_id_prefix}/`
+    /// Agent workspace directory. User-facing working area for output, data,
+    /// skills, context.md, and uploads. When the user sets this in agent.toml
+    /// (e.g. `workspace = "/home/me/Documents"`) the runtime treats it as the
+    /// agent's working directory and will NOT scaffold private state files
+    /// there. Multiple agents can share the same workspace to collaborate on
+    /// files. See issue #1097.
+    /// Default: `{workspaces_dir}/{agent_name}/` (same as state_dir).
     #[serde(default)]
     pub workspace: Option<PathBuf>,
-    /// Whether to generate workspace identity files (SOUL.md, USER.md, etc.) on creation.
+    /// Agent private state directory. Stores identity files (SOUL.md, etc.),
+    /// AGENT.json, sessions/, and the daily memory log. Always lives under
+    /// `~/.openfang/workspaces/{name}/` regardless of where the user-facing
+    /// workspace points. Auto-derived on spawn. See issue #1097.
+    #[serde(default)]
+    pub state_dir: Option<PathBuf>,
+    /// Whether to generate identity files (SOUL.md, USER.md, etc.) in
+    /// `state_dir` on creation.
     #[serde(default = "default_true")]
     pub generate_identity_files: bool,
     /// Per-agent exec policy override. If None, uses global exec_policy.
@@ -550,6 +562,7 @@ impl Default for AgentManifest {
             autonomous: None,
             pinned_model: None,
             workspace: None,
+            state_dir: None,
             generate_identity_files: true,
             exec_policy: None,
             tool_allowlist: Vec::new(),
@@ -809,6 +822,7 @@ mod tests {
             autonomous: None,
             pinned_model: None,
             workspace: None,
+            state_dir: None,
             generate_identity_files: true,
             exec_policy: None,
             tool_allowlist: Vec::new(),

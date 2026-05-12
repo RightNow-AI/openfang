@@ -339,6 +339,7 @@ mod tests {
                 autonomous: None,
                 pinned_model: None,
                 workspace: None,
+                state_dir: None,
                 generate_identity_files: true,
                 exec_policy: None,
                 tool_allowlist: vec![],

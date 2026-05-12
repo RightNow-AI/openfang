@@ -3703,7 +3703,14 @@ pub async fn install_skill(
     let config = openfang_skills::marketplace::MarketplaceConfig::default();
     let client = openfang_skills::marketplace::MarketplaceClient::new(config);
 
-    match client.install(&req.name, &skills_dir).await {
+    let opts = openfang_skills::installer::InstallOptions {
+        require_signed: req.require_signed,
+        allowed_signer_keys: req.allowed_signer_keys.clone(),
+    };
+    match client
+        .install_with_options(&req.name, &skills_dir, &opts)
+        .await
+    {
         Ok(version) => {
             // Hot-reload so agents see the new skill immediately
             state.kernel.reload_skills();
@@ -9973,8 +9980,10 @@ pub async fn clone_agent(
 
     // new_name always wins over any name field in overrides.
     cloned_manifest.name = new_name.clone();
-    // Let the kernel assign a fresh workspace path — never share with the template.
+    // Let the kernel assign fresh workspace and state directory paths.
+    // Never share private state with the template (see issue #868, #1097).
     cloned_manifest.workspace = None;
+    cloned_manifest.state_dir = None;
 
     // Spawn the cloned agent.
     let new_id = match state.kernel.spawn_agent(cloned_manifest) {
@@ -9987,25 +9996,42 @@ pub async fn clone_agent(
         }
     };
 
-    // Copy non-memory workspace files from source to destination.
-    // MEMORY.md and HEARTBEAT.md are intentionally skipped — the cloned agent
-    // must start with independent memory (issue #868).
+    // Copy non-memory identity files from source state_dir to destination
+    // state_dir. MEMORY.md and HEARTBEAT.md are intentionally skipped — the
+    // cloned agent must start with independent memory (issue #868). Identity
+    // files live in state_dir per #1097; fall back to legacy workspace for
+    // older agents.
     let new_entry = state.kernel.registry.get(new_id);
+    let src_state = source
+        .manifest
+        .state_dir
+        .as_ref()
+        .or(source.manifest.workspace.as_ref());
+    let dst_state = new_entry.as_ref().and_then(|e| {
+        e.manifest
+            .state_dir
+            .as_ref()
+            .or(e.manifest.workspace.as_ref())
+    });
+    if let (Some(src_ws), Some(dst_ws)) = (src_state, dst_state) {
+        if let (Ok(src_can), Ok(dst_can)) = (src_ws.canonicalize(), dst_ws.canonicalize()) {
+            for &fname in KNOWN_IDENTITY_FILES {
+                if MEMORY_FILES.contains(&fname) {
+                    continue;
+                }
+                let src_file = src_can.join(fname);
+                let dst_file = dst_can.join(fname);
+                if src_file.exists() {
+                    let _ = std::fs::copy(&src_file, &dst_file);
+                }
+            }
+        }
+    }
+    // Copy the user-facing `skills/` subdirectory so curated skills travel
+    // with the template. These live in the workspace, not the state dir.
     if let (Some(ref src_ws), Some(ref new_entry)) = (&source.manifest.workspace, &new_entry) {
         if let Some(ref dst_ws) = new_entry.manifest.workspace {
             if let (Ok(src_can), Ok(dst_can)) = (src_ws.canonicalize(), dst_ws.canonicalize()) {
-                for &fname in KNOWN_IDENTITY_FILES {
-                    if MEMORY_FILES.contains(&fname) {
-                        continue;
-                    }
-                    let src_file = src_can.join(fname);
-                    let dst_file = dst_can.join(fname);
-                    if src_file.exists() {
-                        let _ = std::fs::copy(&src_file, &dst_file);
-                    }
-                }
-                // Copy the `skills/` subdirectory if present so curated skills
-                // travel with the template.
                 let src_skills = src_can.join("skills");
                 let dst_skills = dst_can.join("skills");
                 if src_skills.is_dir() {
@@ -10108,8 +10134,11 @@ pub async fn list_agent_files(
         }
     };
 
-    let workspace = match entry.manifest.workspace {
-        Some(ref ws) => ws.clone(),
+    // Identity files live in the agent's private state directory (see #1097).
+    // Fall back to the legacy workspace location for agents created before the
+    // split so existing on-disk files remain reachable.
+    let workspace = match entry.manifest.state_dir.as_ref().or(entry.manifest.workspace.as_ref()) {
+        Some(ws) => ws.clone(),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -10170,8 +10199,15 @@ pub async fn get_agent_file(
         }
     };
 
-    let workspace = match entry.manifest.workspace {
-        Some(ref ws) => ws.clone(),
+    // Identity files live in the agent's private state directory (see #1097).
+    // Fall back to legacy workspace for agents created before the split.
+    let workspace = match entry
+        .manifest
+        .state_dir
+        .as_ref()
+        .or(entry.manifest.workspace.as_ref())
+    {
+        Some(ws) => ws.clone(),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -10277,8 +10313,15 @@ pub async fn set_agent_file(
         }
     };
 
-    let workspace = match entry.manifest.workspace {
-        Some(ref ws) => ws.clone(),
+    // Identity files live in the agent's private state directory (see #1097).
+    // Fall back to legacy workspace for agents created before the split.
+    let workspace = match entry
+        .manifest
+        .state_dir
+        .as_ref()
+        .or(entry.manifest.workspace.as_ref())
+    {
+        Some(ws) => ws.clone(),
         None => {
             return (
                 StatusCode::NOT_FOUND,

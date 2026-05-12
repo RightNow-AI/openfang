@@ -134,6 +134,23 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Update an agent's private state directory path. The state directory
+    /// holds identity files, sessions, and per-agent memory and is always
+    /// kept separate from the user-facing workspace. See issue #1097.
+    pub fn update_state_dir(
+        &self,
+        id: AgentId,
+        state_dir: Option<std::path::PathBuf>,
+    ) -> OpenFangResult<()> {
+        let mut entry = self
+            .agents
+            .get_mut(&id)
+            .ok_or_else(|| OpenFangError::AgentNotFound(id.to_string()))?;
+        entry.manifest.state_dir = state_dir;
+        entry.last_active = chrono::Utc::now();
+        Ok(())
+    }
+
     /// Update an agent's visual identity (emoji, avatar, color).
     pub fn update_identity(
         &self,
@@ -391,6 +408,7 @@ mod tests {
                 autonomous: None,
                 pinned_model: None,
                 workspace: None,
+                state_dir: None,
                 generate_identity_files: true,
                 exec_policy: None,
                 tool_allowlist: vec![],

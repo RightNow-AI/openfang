@@ -288,9 +288,38 @@ impl DeliveryTracker {
     }
 }
 
-/// Create workspace directory structure for an agent.
+/// Create the agent's private state directory layout. Holds identity files,
+/// AGENT.json, sessions/, memory/, and logs/. Lives under
+/// `~/.openfang/workspaces/{name}/` regardless of where the user pointed the
+/// user-facing workspace. See issue #1097.
+fn ensure_state_dir(state_dir: &Path, workspace: &Path) -> KernelResult<()> {
+    for subdir in &["sessions", "logs", "memory"] {
+        std::fs::create_dir_all(state_dir.join(subdir)).map_err(|e| {
+            KernelError::OpenFang(OpenFangError::Internal(format!(
+                "Failed to create state dir {}/{subdir}: {e}",
+                state_dir.display()
+            )))
+        })?;
+    }
+    // Write agent metadata file (best-effort).
+    let meta = serde_json::json!({
+        "created_at": chrono::Utc::now().to_rfc3339(),
+        "state_dir": state_dir.display().to_string(),
+        "workspace": workspace.display().to_string(),
+    });
+    let _ = std::fs::write(
+        state_dir.join("AGENT.json"),
+        serde_json::to_string_pretty(&meta).unwrap_or_default(),
+    );
+    Ok(())
+}
+
+/// Create the user-facing workspace layout. Only `data/`, `output/`, and
+/// `skills/` are scaffolded here. When the user points the workspace at a
+/// pre-existing path like `~/Documents`, these subdirs are created lazily
+/// inside it without dumping identity files or sessions. See issue #1097.
 fn ensure_workspace(workspace: &Path) -> KernelResult<()> {
-    for subdir in &["data", "output", "sessions", "skills", "logs", "memory"] {
+    for subdir in &["data", "output", "skills"] {
         std::fs::create_dir_all(workspace.join(subdir)).map_err(|e| {
             KernelError::OpenFang(OpenFangError::Internal(format!(
                 "Failed to create workspace dir {}/{subdir}: {e}",
@@ -298,15 +327,6 @@ fn ensure_workspace(workspace: &Path) -> KernelResult<()> {
             )))
         })?;
     }
-    // Write agent metadata file (best-effort)
-    let meta = serde_json::json!({
-        "created_at": chrono::Utc::now().to_rfc3339(),
-        "workspace": workspace.display().to_string(),
-    });
-    let _ = std::fs::write(
-        workspace.join("AGENT.json"),
-        serde_json::to_string_pretty(&meta).unwrap_or_default(),
-    );
     Ok(())
 }
 
@@ -447,15 +467,18 @@ fn generate_identity_files(workspace: &Path, manifest: &AgentManifest) {
 }
 
 /// Append an assistant response summary to the daily memory log (best-effort, append-only).
-/// Caps daily log at 1MB to prevent unbounded growth.
-fn append_daily_memory_log(workspace: &Path, response: &str) {
+/// Caps daily log at 1MB to prevent unbounded growth. Writes to the agent's
+/// private state directory (`state_dir/memory/`), never to the user-facing
+/// workspace, so pointing `workspace = "/home/me/Documents"` does not litter
+/// the user's folder with per-day markdown files. See issue #1097.
+fn append_daily_memory_log(state_dir: &Path, response: &str) {
     use std::io::Write;
     let trimmed = response.trim();
     if trimmed.is_empty() {
         return;
     }
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let log_path = workspace.join("memory").join(format!("{today}.md"));
+    let log_path = state_dir.join("memory").join(format!("{today}.md"));
     // Security: cap total daily log to 1MB
     if let Ok(metadata) = std::fs::metadata(&log_path) {
         if metadata.len() > 1_048_576 {
@@ -474,16 +497,18 @@ fn append_daily_memory_log(workspace: &Path, response: &str) {
     }
 }
 
-/// Read a workspace identity file with a size cap to prevent prompt stuffing.
-/// Returns None if the file doesn't exist or is empty.
-fn read_identity_file(workspace: &Path, filename: &str) -> Option<String> {
+/// Read an identity file from the agent's private state directory with a size
+/// cap to prevent prompt stuffing. Returns None if the file doesn't exist or
+/// is empty. Identity files live in `state_dir`, not in the user-facing
+/// workspace (see issue #1097), so this is called with the state directory.
+fn read_identity_file(state_dir: &Path, filename: &str) -> Option<String> {
     const MAX_IDENTITY_FILE_BYTES: usize = 32_768; // 32KB cap
-    let path = workspace.join(filename);
-    // Security: ensure path stays inside workspace
+    let path = state_dir.join(filename);
+    // Security: ensure path stays inside the state directory
     match path.canonicalize() {
         Ok(canonical) => {
-            if let Ok(ws_canonical) = workspace.canonicalize() {
-                if !canonical.starts_with(&ws_canonical) {
+            if let Ok(sd_canonical) = state_dir.canonicalize() {
+                if !canonical.starts_with(&sd_canonical) {
                     return None; // path traversal attempt
                 }
             }
@@ -800,6 +825,9 @@ impl OpenFangKernel {
         // Initialize model catalog, detect provider auth, and apply URL overrides
         let mut model_catalog = openfang_runtime::model_catalog::ModelCatalog::new();
         model_catalog.detect_auth();
+        // Env-var overrides for local providers (OLLAMA_HOST, LMSTUDIO_BASE_URL, etc.).
+        // Applied before `provider_urls` so explicit config.toml entries win. See #1154.
+        model_catalog.apply_local_env_overrides();
         if !config.provider_urls.is_empty() {
             model_catalog.apply_url_overrides(&config.provider_urls);
             info!(
@@ -1631,15 +1659,24 @@ impl OpenFangKernel {
         // Apply global budget defaults to agent resource quotas
         apply_budget_defaults(&self.config.budget, &mut manifest.resources);
 
-        // Create workspace directory for the agent (name-based, so SOUL.md survives recreation)
-        let workspace_dir = manifest
-            .workspace
+        // Agent private state always lives under ~/.openfang/workspaces/{name}/.
+        // This is name-based so SOUL.md and per-agent memory survive recreation
+        // and never get dumped into a user-supplied workspace path. See #1097.
+        let state_dir = manifest
+            .state_dir
             .clone()
             .unwrap_or_else(|| self.config.effective_workspaces_dir().join(&name));
+        // The user-facing workspace defaults to the state_dir when the manifest
+        // does not specify one. When the user sets `workspace = "/path"` in
+        // agent.toml we leave that path alone — only data/, output/, skills/
+        // get created lazily so private state never pollutes the target dir.
+        let workspace_dir = manifest.workspace.clone().unwrap_or_else(|| state_dir.clone());
+        ensure_state_dir(&state_dir, &workspace_dir)?;
         ensure_workspace(&workspace_dir)?;
         if manifest.generate_identity_files {
-            generate_identity_files(&workspace_dir, &manifest);
+            generate_identity_files(&state_dir, &manifest);
         }
+        manifest.state_dir = Some(state_dir);
         manifest.workspace = Some(workspace_dir);
 
         // Register capabilities
@@ -2049,16 +2086,27 @@ impl OpenFangKernel {
         let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let mut manifest = entry.manifest.clone();
 
-        // Lazy backfill: create workspace for existing agents spawned before workspaces
-        if manifest.workspace.is_none() {
-            let workspace_dir = self.config.effective_workspaces_dir().join(&manifest.name);
+        // Lazy backfill: create state_dir and workspace for existing agents
+        // spawned before this field existed. Private state always lives under
+        // ~/.openfang/workspaces/{name}/; the user-facing workspace defaults
+        // to the same path unless the manifest already pinned one. See #1097.
+        if manifest.state_dir.is_none() {
+            let state_dir = self.config.effective_workspaces_dir().join(&manifest.name);
+            let workspace_dir = manifest.workspace.clone().unwrap_or_else(|| state_dir.clone());
+            if let Err(e) = ensure_state_dir(&state_dir, &workspace_dir) {
+                warn!(agent_id = %agent_id, "Failed to backfill state_dir (streaming): {e}");
+            }
             if let Err(e) = ensure_workspace(&workspace_dir) {
                 warn!(agent_id = %agent_id, "Failed to backfill workspace (streaming): {e}");
             } else {
+                manifest.state_dir = Some(state_dir);
                 manifest.workspace = Some(workspace_dir);
                 let _ = self
                     .registry
                     .update_workspace(agent_id, manifest.workspace.clone());
+                let _ = self
+                    .registry
+                    .update_state_dir(agent_id, manifest.state_dir.clone());
             }
         }
 
@@ -2129,17 +2177,17 @@ impl OpenFangKernel {
                 },
                 workspace_path: manifest.workspace.as_ref().map(|p| p.display().to_string()),
                 soul_md: manifest
-                    .workspace
+                    .state_dir
                     .as_ref()
-                    .and_then(|w| read_identity_file(w, "SOUL.md")),
+                    .and_then(|s| read_identity_file(s, "SOUL.md")),
                 user_md: manifest
-                    .workspace
+                    .state_dir
                     .as_ref()
-                    .and_then(|w| read_identity_file(w, "USER.md")),
+                    .and_then(|s| read_identity_file(s, "USER.md")),
                 memory_md: manifest
-                    .workspace
+                    .state_dir
                     .as_ref()
-                    .and_then(|w| read_identity_file(w, "MEMORY.md")),
+                    .and_then(|s| read_identity_file(s, "MEMORY.md")),
                 canonical_context: self
                     .memory
                     .canonical_context(agent_id, None)
@@ -2154,27 +2202,27 @@ impl OpenFangKernel {
                     .unwrap_or(false),
                 is_autonomous: manifest.autonomous.is_some(),
                 agents_md: manifest
-                    .workspace
+                    .state_dir
                     .as_ref()
-                    .and_then(|w| read_identity_file(w, "AGENTS.md")),
+                    .and_then(|s| read_identity_file(s, "AGENTS.md")),
                 bootstrap_md: manifest
-                    .workspace
+                    .state_dir
                     .as_ref()
-                    .and_then(|w| read_identity_file(w, "BOOTSTRAP.md")),
+                    .and_then(|s| read_identity_file(s, "BOOTSTRAP.md")),
                 workspace_context: manifest.workspace.as_ref().map(|w| {
                     let mut ws_ctx =
                         openfang_runtime::workspace_context::WorkspaceContext::detect(w);
                     ws_ctx.build_context_section()
                 }),
                 identity_md: manifest
-                    .workspace
+                    .state_dir
                     .as_ref()
-                    .and_then(|w| read_identity_file(w, "IDENTITY.md")),
+                    .and_then(|s| read_identity_file(s, "IDENTITY.md")),
                 heartbeat_md: if manifest.autonomous.is_some() {
                     manifest
-                        .workspace
+                        .state_dir
                         .as_ref()
-                        .and_then(|w| read_identity_file(w, "HEARTBEAT.md"))
+                        .and_then(|s| read_identity_file(s, "HEARTBEAT.md"))
                 } else {
                     None
                 },
@@ -2315,15 +2363,17 @@ impl OpenFangKernel {
                         }
                     }
 
-                    // Write JSONL session mirror to workspace
-                    if let Some(ref workspace) = manifest.workspace {
+                    // Write JSONL session mirror and daily memory log to the
+                    // agent's private state directory, not the user-facing
+                    // workspace. See issue #1097.
+                    if let Some(ref state_dir) = manifest.state_dir {
                         if let Err(e) =
-                            memory.write_jsonl_mirror(&session, &workspace.join("sessions"))
+                            memory.write_jsonl_mirror(&session, &state_dir.join("sessions"))
                         {
                             warn!("Failed to write JSONL session mirror (streaming): {e}");
                         }
                         // Append daily memory log (best-effort)
-                        append_daily_memory_log(workspace, &result.response);
+                        append_daily_memory_log(state_dir, &result.response);
                     }
 
                     kernel_clone
@@ -2608,17 +2658,27 @@ impl OpenFangKernel {
         // Apply model routing if configured (disabled in Stable mode)
         let mut manifest = entry.manifest.clone();
 
-        // Lazy backfill: create workspace for existing agents spawned before workspaces
-        if manifest.workspace.is_none() {
-            let workspace_dir = self.config.effective_workspaces_dir().join(&manifest.name);
+        // Lazy backfill: create state_dir and workspace for existing agents.
+        // Private state lives under ~/.openfang/workspaces/{name}/. User-facing
+        // workspace stays at whatever the manifest pinned (or defaults to the
+        // state_dir). See issue #1097.
+        if manifest.state_dir.is_none() {
+            let state_dir = self.config.effective_workspaces_dir().join(&manifest.name);
+            let workspace_dir = manifest.workspace.clone().unwrap_or_else(|| state_dir.clone());
+            if let Err(e) = ensure_state_dir(&state_dir, &workspace_dir) {
+                warn!(agent_id = %agent_id, "Failed to backfill state_dir: {e}");
+            }
             if let Err(e) = ensure_workspace(&workspace_dir) {
                 warn!(agent_id = %agent_id, "Failed to backfill workspace: {e}");
             } else {
+                manifest.state_dir = Some(state_dir);
                 manifest.workspace = Some(workspace_dir);
-                // Persist updated workspace in registry
                 let _ = self
                     .registry
                     .update_workspace(agent_id, manifest.workspace.clone());
+                let _ = self
+                    .registry
+                    .update_state_dir(agent_id, manifest.state_dir.clone());
             }
         }
 
@@ -2697,17 +2757,17 @@ impl OpenFangKernel {
                 },
                 workspace_path: manifest.workspace.as_ref().map(|p| p.display().to_string()),
                 soul_md: manifest
-                    .workspace
+                    .state_dir
                     .as_ref()
-                    .and_then(|w| read_identity_file(w, "SOUL.md")),
+                    .and_then(|s| read_identity_file(s, "SOUL.md")),
                 user_md: manifest
-                    .workspace
+                    .state_dir
                     .as_ref()
-                    .and_then(|w| read_identity_file(w, "USER.md")),
+                    .and_then(|s| read_identity_file(s, "USER.md")),
                 memory_md: manifest
-                    .workspace
+                    .state_dir
                     .as_ref()
-                    .and_then(|w| read_identity_file(w, "MEMORY.md")),
+                    .and_then(|s| read_identity_file(s, "MEMORY.md")),
                 canonical_context: self
                     .memory
                     .canonical_context(agent_id, None)
@@ -2722,27 +2782,27 @@ impl OpenFangKernel {
                     .unwrap_or(false),
                 is_autonomous: manifest.autonomous.is_some(),
                 agents_md: manifest
-                    .workspace
+                    .state_dir
                     .as_ref()
-                    .and_then(|w| read_identity_file(w, "AGENTS.md")),
+                    .and_then(|s| read_identity_file(s, "AGENTS.md")),
                 bootstrap_md: manifest
-                    .workspace
+                    .state_dir
                     .as_ref()
-                    .and_then(|w| read_identity_file(w, "BOOTSTRAP.md")),
+                    .and_then(|s| read_identity_file(s, "BOOTSTRAP.md")),
                 workspace_context: manifest.workspace.as_ref().map(|w| {
                     let mut ws_ctx =
                         openfang_runtime::workspace_context::WorkspaceContext::detect(w);
                     ws_ctx.build_context_section()
                 }),
                 identity_md: manifest
-                    .workspace
+                    .state_dir
                     .as_ref()
-                    .and_then(|w| read_identity_file(w, "IDENTITY.md")),
+                    .and_then(|s| read_identity_file(s, "IDENTITY.md")),
                 heartbeat_md: if manifest.autonomous.is_some() {
                     manifest
-                        .workspace
+                        .state_dir
                         .as_ref()
-                        .and_then(|w| read_identity_file(w, "HEARTBEAT.md"))
+                        .and_then(|s| read_identity_file(s, "HEARTBEAT.md"))
                 } else {
                     None
                 },
@@ -2880,16 +2940,17 @@ impl OpenFangKernel {
             }
         }
 
-        // Write JSONL session mirror to workspace
-        if let Some(ref workspace) = manifest.workspace {
+        // Write JSONL session mirror and daily memory log to the agent's
+        // private state directory, not the user-facing workspace. See #1097.
+        if let Some(ref state_dir) = manifest.state_dir {
             if let Err(e) = self
                 .memory
-                .write_jsonl_mirror(&session, &workspace.join("sessions"))
+                .write_jsonl_mirror(&session, &state_dir.join("sessions"))
             {
                 warn!("Failed to write JSONL session mirror: {e}");
             }
             // Append daily memory log (best-effort)
-            append_daily_memory_log(workspace, &result.response);
+            append_daily_memory_log(state_dir, &result.response);
         }
 
         // Record usage in the metering engine (uses catalog pricing as single source of truth)
@@ -6326,7 +6387,16 @@ impl OpenFangKernel {
                 summary.push_str(&format!("- {name}: {desc} [tools: {}]\n", tools.join(", ")));
             }
         }
-        summary.push_str("Use these skill tools when they match the user's request.");
+        // Issue #1038: skill directories (e.g. ~/.openfang/skills/) live OUTSIDE
+        // the workspace sandbox. Tell the agent to use the dedicated skill_*
+        // tools instead of falling back to file_read / shell_exec to inspect them.
+        summary.push_str(
+            "Use these skill tools when they match the user's request. \
+             To inspect a skill's full instructions, call skill_describe with the skill name — \
+             do NOT use file_read or shell_exec on the skills directory, those paths are \
+             outside the agent workspace and will fail. \
+             Use skill_list to enumerate skills and skill_execute to run a skill's tool.",
+        );
         summary
     }
 
@@ -7856,6 +7926,7 @@ mod tests {
             autonomous: None,
             pinned_model: None,
             workspace: None,
+            state_dir: None,
             generate_identity_files: true,
             exec_policy: None,
             tool_allowlist: vec![],
@@ -7899,6 +7970,7 @@ mod tests {
             autonomous: None,
             pinned_model: None,
             workspace: Some(std::path::PathBuf::from("/var/lib/openfang/agents/demo")),
+            state_dir: None,
             generate_identity_files: true,
             exec_policy: Some(ExecPolicy::default()),
             tool_allowlist: vec![],
@@ -7950,6 +8022,7 @@ mod tests {
             autonomous: None,
             pinned_model: None,
             workspace: Some(std::path::PathBuf::from("/old")),
+            state_dir: None,
             generate_identity_files: true,
             exec_policy: None,
             tool_allowlist: vec![],
@@ -8006,6 +8079,7 @@ mod tests {
             autonomous: None,
             pinned_model: None,
             workspace: None,
+            state_dir: None,
             generate_identity_files: true,
             exec_policy: Some(cached_policy.clone()),
             tool_allowlist: vec![],
@@ -8119,6 +8193,7 @@ mod tests {
             autonomous: None,
             pinned_model: None,
             workspace: None,
+            state_dir: None,
             generate_identity_files: true,
             exec_policy: None,
             tool_allowlist: vec![],
@@ -9229,5 +9304,79 @@ system_prompt = "You are a test agent."
         assert!(kernel2.registry.find_by_name("my-custom-agent").is_some());
 
         kernel2.shutdown();
+    }
+
+    /// Regression for #1097: when a user points an agent's workspace at an
+    /// existing directory like `~/Documents`, the runtime must NOT scaffold
+    /// private state into that directory. Identity files (SOUL.md, AGENT.json,
+    /// etc.) and `sessions/` / `memory/` / `logs/` must land in the agent's
+    /// private state directory; only the lightweight user-facing layout
+    /// (`data/`, `output/`, `skills/`) may appear in the workspace.
+    #[test]
+    fn test_workspace_outside_openfang_stays_clean() {
+        use tempfile::TempDir;
+
+        let user_workspace = TempDir::new().expect("temp user workspace");
+        let state_dir = TempDir::new().expect("temp state dir");
+
+        // Pre-populate the user workspace with an unrelated file to make sure
+        // we don't trample existing contents either.
+        std::fs::write(user_workspace.path().join("pre-existing.txt"), b"hello")
+            .expect("write pre-existing file");
+
+        let manifest = AgentManifest {
+            name: "ws-test".to_string(),
+            description: "x".to_string(),
+            ..AgentManifest::default()
+        };
+
+        // Simulate the spawn path: state dir gets the private layout, user
+        // workspace only gets the lightweight subdirs.
+        ensure_state_dir(state_dir.path(), user_workspace.path()).expect("ensure_state_dir");
+        ensure_workspace(user_workspace.path()).expect("ensure_workspace");
+        generate_identity_files(state_dir.path(), &manifest);
+
+        // Private state files must live in state_dir.
+        for fname in &[
+            "AGENT.json",
+            "SOUL.md",
+            "USER.md",
+            "MEMORY.md",
+            "AGENTS.md",
+            "BOOTSTRAP.md",
+            "IDENTITY.md",
+        ] {
+            assert!(
+                state_dir.path().join(fname).exists(),
+                "{fname} should be created in state_dir"
+            );
+            assert!(
+                !user_workspace.path().join(fname).exists(),
+                "{fname} must NOT pollute the user-facing workspace (issue #1097)"
+            );
+        }
+        for subdir in &["sessions", "memory", "logs"] {
+            assert!(
+                state_dir.path().join(subdir).is_dir(),
+                "{subdir}/ should be created in state_dir"
+            );
+            assert!(
+                !user_workspace.path().join(subdir).exists(),
+                "{subdir}/ must NOT pollute the user-facing workspace (issue #1097)"
+            );
+        }
+
+        // The user-facing workspace gets only the lightweight layout.
+        for subdir in &["data", "output", "skills"] {
+            assert!(
+                user_workspace.path().join(subdir).is_dir(),
+                "{subdir}/ should be created in workspace"
+            );
+        }
+
+        // The pre-existing file must still be intact.
+        let contents = std::fs::read_to_string(user_workspace.path().join("pre-existing.txt"))
+            .expect("read pre-existing");
+        assert_eq!(contents, "hello", "must not overwrite user files");
     }
 }
