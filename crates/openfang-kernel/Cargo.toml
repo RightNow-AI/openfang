@@ -6,6 +6,7 @@ license.workspace = true
 description = "Core kernel for the OpenFang Agent OS"
 
 [dependencies]
+openfang-auth = { path = "../openfang-auth" }
 openfang-types = { path = "../openfang-types" }
 openfang-memory = { path = "../openfang-memory" }
 openfang-runtime = { path = "../openfang-runtime" }

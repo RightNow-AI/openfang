@@ -817,7 +817,7 @@ impl OpenFangKernel {
             .map_err(|e| KernelError::BootFailed(format!("WASM sandbox init failed: {e}")))?;
 
         // Initialize RBAC authentication manager
-        let auth = AuthManager::new(&config.users);
+        let auth = AuthManager::new(&config.users, &config.external_auth_providers);
         if auth.is_enabled() {
             info!("RBAC enabled with {} users", auth.user_count());
         }
