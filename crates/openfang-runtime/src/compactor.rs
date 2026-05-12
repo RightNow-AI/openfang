@@ -1322,6 +1322,7 @@ mod tests {
                 data: "base64data".to_string(),
                 source_url: Some("https://cdn.discordapp.com/attachments/x/y.png".to_string()),
             }]),
+        ..Default::default()
         }];
         let text = build_conversation_text(&messages, &config);
         assert!(
@@ -1341,6 +1342,7 @@ mod tests {
                 data: "base64data".to_string(),
                 source_url: Some("http://example.com/foo.jpg".to_string()),
             }]),
+        ..Default::default()
         }];
         let text = build_conversation_text(&messages, &config);
         assert!(
@@ -1363,6 +1365,7 @@ mod tests {
                     "file:///Users/x/.openfang/tmp/images/abc.png".to_string(),
                 ),
             }]),
+        ..Default::default()
         }];
         let text = build_conversation_text(&messages, &config);
         assert!(
