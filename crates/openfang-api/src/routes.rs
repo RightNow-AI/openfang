@@ -692,6 +692,98 @@ pub async fn kill_agent(
     }
 }
 
+/// DELETE /api/agents/{id}/uninstall — Permanently uninstall an agent.
+///
+/// Issue #1163: in addition to killing the agent (registry + memory + cron),
+/// this also removes the on-disk `~/.openfang/agents/<name>/` directory so
+/// the agent does not auto-respawn on the next daemon start.
+pub async fn uninstall_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            );
+        }
+    };
+
+    // Capture the agent name BEFORE killing — registry entry is gone after.
+    let agent_name = match state.kernel.registry.get(agent_id) {
+        Some(entry) => entry.name.clone(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            );
+        }
+    };
+
+    // Step 1: kill the agent (registry, memory, cron, triggers, caps).
+    if let Err(e) = state.kernel.kill_agent(agent_id) {
+        tracing::warn!("kill_agent failed during uninstall for {id}: {e}");
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Agent not found or already terminated"})),
+        );
+    }
+
+    // Step 2: remove ~/.openfang/agents/<name>/ so the agent does NOT
+    // auto-respawn from disk on the next daemon start.
+    let agents_dir = state.kernel.config.home_dir.join("agents");
+    let agent_dir = agents_dir.join(&agent_name);
+
+    let dir_removed = if agent_dir.is_dir() {
+        // Safety: only allow removal if the parent is exactly the agents root.
+        let parent_ok = agent_dir
+            .parent()
+            .map(|p| p == agents_dir.as_path())
+            .unwrap_or(false);
+        if !parent_ok {
+            tracing::warn!(
+                agent = %agent_name,
+                path = %agent_dir.display(),
+                "Refusing to remove agent dir outside agents root"
+            );
+            false
+        } else {
+            match std::fs::remove_dir_all(&agent_dir) {
+                Ok(()) => {
+                    tracing::info!(
+                        agent = %agent_name,
+                        path = %agent_dir.display(),
+                        "Removed agent directory on uninstall (#1163)"
+                    );
+                    true
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        agent = %agent_name,
+                        path = %agent_dir.display(),
+                        "Failed to remove agent directory: {e}"
+                    );
+                    false
+                }
+            }
+        }
+    } else {
+        false
+    };
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "uninstalled",
+            "agent_id": id,
+            "name": agent_name,
+            "dir_removed": dir_removed,
+        })),
+    )
+}
+
 /// POST /api/agents/{id}/restart — Restart a crashed/stuck agent.
 ///
 /// Cancels any active task, resets agent state to Running, and updates last_active.
@@ -12612,5 +12704,112 @@ mod skill_config_tests {
 
         let back: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(back, doc);
+    }
+}
+
+#[cfg(test)]
+mod uninstall_agent_tests {
+    //! Issue #1163 — directory-removal portion of the uninstall flow.
+    //!
+    //! These tests exercise the same logic the route handler runs after
+    //! `kernel.kill_agent()`: locate `<home>/agents/<name>/`, verify it is
+    //! directly under the agents root, and remove it. Live end-to-end
+    //! coverage (real HTTP + kernel) belongs in `tests/api_integration_test.rs`.
+    use std::path::Path;
+
+    /// Mirror of the dir-removal logic in `uninstall_agent`. Kept in sync
+    /// with the route handler so the rules can be unit-tested without a
+    /// running kernel. Returns whether the directory was removed.
+    fn remove_agent_dir(home_dir: &Path, agent_name: &str) -> bool {
+        let agents_dir = home_dir.join("agents");
+        let agent_dir = agents_dir.join(agent_name);
+        if !agent_dir.is_dir() {
+            return false;
+        }
+        let parent_ok = agent_dir
+            .parent()
+            .map(|p| p == agents_dir.as_path())
+            .unwrap_or(false);
+        if !parent_ok {
+            return false;
+        }
+        std::fs::remove_dir_all(&agent_dir).is_ok()
+    }
+
+    #[test]
+    fn removes_agent_directory_under_agents_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let agents = home.join("agents");
+        std::fs::create_dir_all(agents.join("trash-agent")).unwrap();
+        std::fs::write(
+            agents.join("trash-agent").join("agent.toml"),
+            "name = \"trash-agent\"\n",
+        )
+        .unwrap();
+
+        assert!(agents.join("trash-agent").is_dir());
+        let removed = remove_agent_dir(&home, "trash-agent");
+        assert!(removed, "agent directory must be removed");
+        assert!(!agents.join("trash-agent").exists());
+    }
+
+    #[test]
+    fn returns_false_when_no_directory_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("agents")).unwrap();
+
+        let removed = remove_agent_dir(&home, "ghost-agent");
+        assert!(!removed, "no dir => false, but uninstall still succeeds");
+    }
+
+    #[test]
+    fn does_not_touch_siblings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let agents = home.join("agents");
+        std::fs::create_dir_all(agents.join("trash-agent")).unwrap();
+        std::fs::create_dir_all(agents.join("keep-me")).unwrap();
+        std::fs::write(
+            agents.join("trash-agent").join("agent.toml"),
+            "name = \"trash-agent\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            agents.join("keep-me").join("agent.toml"),
+            "name = \"keep-me\"\n",
+        )
+        .unwrap();
+
+        assert!(remove_agent_dir(&home, "trash-agent"));
+        assert!(!agents.join("trash-agent").exists());
+        assert!(
+            agents.join("keep-me").is_dir(),
+            "sibling agent dirs must not be touched by uninstall"
+        );
+    }
+
+    #[test]
+    fn rejects_path_traversal_attempt() {
+        // A name like "../escape" would join to a path whose parent is the
+        // agents root only if the file system resolves it that way — but
+        // `parent()` on a non-canonicalized Path returns the textual parent,
+        // which for `<home>/agents/../escape` is `<home>/agents/..`, not
+        // `<home>/agents`. The check rejects it.
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("agents")).unwrap();
+        // Create a sibling dir outside agents/ that an attacker might want
+        // to delete.
+        std::fs::create_dir_all(home.join("escape")).unwrap();
+        std::fs::write(home.join("escape").join("secret.toml"), "x = 1\n").unwrap();
+
+        let removed = remove_agent_dir(&home, "../escape");
+        assert!(!removed, "must reject path-traversal names");
+        assert!(
+            home.join("escape").is_dir(),
+            "sibling dir outside agents/ must NOT be deleted"
+        );
     }
 }

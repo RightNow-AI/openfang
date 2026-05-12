@@ -376,6 +376,29 @@ function agentsPage() {
       });
     },
 
+    // Issue #1163: uninstall an agent (kill + remove ~/.openfang/agents/<name>/).
+    uninstallAgent(agent) {
+      var self = this;
+      OpenFangToast.confirm(
+        'Uninstall Agent',
+        'Uninstall agent "' + agent.name + '"? This stops the agent AND deletes its files from your workspace. This cannot be undone.',
+        async function() {
+          try {
+            var res = await OpenFangAPI.del('/api/agents/' + agent.id + '/uninstall');
+            var msg = 'Agent "' + agent.name + '" uninstalled';
+            if (res && res.dir_removed === false) {
+              msg += ' (no on-disk files found)';
+            }
+            OpenFangToast.success(msg);
+            self.showDetailModal = false;
+            await Alpine.store('app').refreshAgents();
+          } catch(e) {
+            OpenFangToast.error('Failed to uninstall agent: ' + e.message);
+          }
+        }
+      );
+    },
+
     killAllAgents() {
       var list = this.filteredAgents;
       if (!list.length) return;

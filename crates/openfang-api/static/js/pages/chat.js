@@ -1212,6 +1212,37 @@ function chatPage() {
       });
     },
 
+    // Permanently uninstall the agent: kill + remove ~/.openfang/agents/<name>/
+    // Issue #1163.
+    uninstallAgent: function() {
+      if (!this.currentAgent) return;
+      var self = this;
+      var name = this.currentAgent.name;
+      var agentId = this.currentAgent.id;
+      OpenFangToast.confirm(
+        'Uninstall Agent',
+        'Uninstall agent "' + name + '"? This stops the agent AND deletes its files from your workspace. This cannot be undone.',
+        async function() {
+          try {
+            var res = await OpenFangAPI.del('/api/agents/' + agentId + '/uninstall');
+            OpenFangAPI.wsDisconnect();
+            self._wsAgent = null;
+            self.currentAgent = null;
+            self.messages = [];
+            try { localStorage.removeItem('of-active-agent'); } catch(e) { /* ignore */ }
+            var msg = 'Agent "' + name + '" uninstalled';
+            if (res && res.dir_removed === false) {
+              msg += ' (no on-disk files found)';
+            }
+            OpenFangToast.success(msg);
+            Alpine.store('app').refreshAgents();
+          } catch(e) {
+            OpenFangToast.error('Failed to uninstall agent: ' + e.message);
+          }
+        }
+      );
+    },
+
     _latexTimer: null,
     scrollToBottom() {
       var self = this;

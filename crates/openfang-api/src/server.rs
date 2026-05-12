@@ -187,6 +187,10 @@ pub async fn build_router(
                 .patch(routes::patch_agent),
         )
         .route(
+            "/api/agents/{id}/uninstall",
+            axum::routing::delete(routes::uninstall_agent),
+        )
+        .route(
             "/api/agents/{id}/mode",
             axum::routing::put(routes::set_agent_mode),
         )
