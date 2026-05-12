@@ -298,7 +298,7 @@ fn convert_messages(
                                 thought_signature,
                             });
                         }
-                        ContentBlock::Image { media_type, data } => {
+                        ContentBlock::Image { media_type, data, .. } => {
                             parts.push(GeminiPart::InlineData {
                                 inline_data: GeminiInlineData {
                                     mime_type: media_type.clone(),
