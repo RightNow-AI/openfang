@@ -7077,6 +7077,10 @@ pub async fn compact_session(
 }
 
 /// POST /api/agents/{id}/stop — Cancel an agent's current LLM run.
+///
+/// If the agent is owned by an active hand instance, the hand instance is
+/// also deactivated. Otherwise the hand stays registered as `Active` and the
+/// user cannot re-activate it via the wizard (issue #1164).
 pub async fn stop_agent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -7090,6 +7094,33 @@ pub async fn stop_agent(
             )
         }
     };
+
+    // If this agent is the agent of an active hand instance, deactivate the
+    // hand entirely — which also kills the agent and cancels the run. This
+    // matches what users expect when they click Stop on a hand-owned agent.
+    if let Some(instance) = state.kernel.hand_registry.find_by_agent(agent_id) {
+        match state.kernel.deactivate_hand(instance.instance_id) {
+            Ok(()) => {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "status": "ok",
+                        "message": "Hand deactivated",
+                        "hand_deactivated": true,
+                        "hand_id": instance.hand_id,
+                        "instance_id": instance.instance_id,
+                    })),
+                );
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("{e}")})),
+                );
+            }
+        }
+    }
+
     match state.kernel.stop_agent_run(agent_id) {
         Ok(true) => (
             StatusCode::OK,

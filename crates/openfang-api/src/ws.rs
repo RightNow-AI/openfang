@@ -1025,15 +1025,30 @@ async fn handle_command(
                 serde_json::json!({"type": "error", "content": format!("Compaction failed: {e}")})
             }
         },
-        "stop" => match state.kernel.stop_agent_run(agent_id) {
-            Ok(true) => {
-                serde_json::json!({"type": "command_result", "command": cmd, "message": "Run cancelled."})
+        "stop" => {
+            // If this agent is owned by an active hand instance, deactivate the
+            // hand entirely so the user can re-activate it (issue #1164).
+            if let Some(instance) = state.kernel.hand_registry.find_by_agent(agent_id) {
+                match state.kernel.deactivate_hand(instance.instance_id) {
+                    Ok(()) => serde_json::json!({
+                        "type": "command_result",
+                        "command": cmd,
+                        "message": format!("Hand '{}' deactivated.", instance.hand_id),
+                    }),
+                    Err(e) => serde_json::json!({"type": "error", "content": format!("Stop failed: {e}")}),
+                }
+            } else {
+                match state.kernel.stop_agent_run(agent_id) {
+                    Ok(true) => {
+                        serde_json::json!({"type": "command_result", "command": cmd, "message": "Run cancelled."})
+                    }
+                    Ok(false) => {
+                        serde_json::json!({"type": "command_result", "command": cmd, "message": "No active run to cancel."})
+                    }
+                    Err(e) => serde_json::json!({"type": "error", "content": format!("Stop failed: {e}")}),
+                }
             }
-            Ok(false) => {
-                serde_json::json!({"type": "command_result", "command": cmd, "message": "No active run to cancel."})
-            }
-            Err(e) => serde_json::json!({"type": "error", "content": format!("Stop failed: {e}")}),
-        },
+        }
         "model" => {
             if args.is_empty() {
                 if let Some(entry) = state.kernel.registry.get(agent_id) {

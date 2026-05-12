@@ -8126,6 +8126,69 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
+    // Issue #1164: Agent Stop on a hand-owned agent must also deactivate the
+    // hand instance, otherwise the hand stays Active and the user cannot
+    // re-activate it (wizard fails with 400 "Hand already active").
+    // ----------------------------------------------------------------------
+    #[test]
+    fn test_hand_owned_agent_stop_clears_hand_for_reactivation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-kernel-hand-stop-test");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+
+        // Activate a hand and grab its agent id (mirrors what the wizard does).
+        let instance = kernel
+            .activate_hand("lead", HashMap::new(), None)
+            .expect("lead hand should activate");
+        let agent_id = instance.agent_id.expect("lead hand agent id");
+        let first_instance_id = instance.instance_id;
+
+        // Sanity: hand is Active and re-activation is rejected.
+        assert!(kernel
+            .activate_hand("lead", HashMap::new(), None)
+            .is_err());
+
+        // Simulate what POST /api/agents/{id}/stop now does for a hand-owned
+        // agent: look up the instance and deactivate the hand (which also
+        // kills the agent and cancels any running task).
+        let owning = kernel
+            .hand_registry
+            .find_by_agent(agent_id)
+            .expect("active hand owning the agent");
+        assert_eq!(owning.instance_id, first_instance_id);
+        kernel
+            .deactivate_hand(owning.instance_id)
+            .expect("deactivate via stop path");
+
+        // The hand instance must be gone now — re-activation must succeed.
+        assert!(kernel.hand_registry.find_by_agent(agent_id).is_none());
+        let active: Vec<_> = kernel
+            .hand_registry
+            .list_instances()
+            .into_iter()
+            .filter(|i| i.hand_id == "lead")
+            .collect();
+        assert!(
+            active.is_empty(),
+            "no lead instances should remain after stop",
+        );
+
+        let second = kernel
+            .activate_hand("lead", HashMap::new(), None)
+            .expect("hand must be re-activatable after stop");
+        assert_ne!(second.instance_id, first_instance_id);
+
+        kernel.shutdown();
+    }
+
+    // ----------------------------------------------------------------------
     // Issue #890: activate_agent — wake up inactive agents
     // ----------------------------------------------------------------------
 
