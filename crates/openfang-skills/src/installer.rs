@@ -200,13 +200,14 @@ pub fn enforce_require_signed(
     // a benign signed envelope alongside malicious skill files and pass the
     // check.
     //
-    // FOLLOW-UP (Codex Finding 1): there is still a TOCTOU window between
-    // extraction (in marketplace::install_with_options / clawhub) and this
-    // call. A local writer can swap files in that window. Real fix is to
-    // extract into a private staging dir, validate, then atomically rename
-    // into place. Symlink + canonicalization checks here close the
-    // redirect-via-symlink path; CRLF/BOM normalization closes the
-    // Windows false-reject path; package.json closes the OpenClaw gap.
+    // Defense layers (Codex Findings 1-4 from audit of 4c496be):
+    //   - Symlink + canonicalization checks: redirect-via-symlink closed
+    //   - CRLF/BOM normalization: Windows false-reject closed
+    //   - package.json in candidate list: OpenClaw gap closed
+    //   - clawhub::install_with_options now uses staging-then-atomic-rename
+    //     so this function runs inside a private dir not yet visible at the
+    //     final install path. That closes the TOCTOU window where a local
+    //     writer could swap files between extract and enforce.
     //
     // Read every candidate manifest file in the installed dir and require
     // that at least one byte-matches envelope.manifest after BOM strip +

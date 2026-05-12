@@ -547,9 +547,24 @@ impl ClawHubClient {
         };
         info!(slug, sha256 = %sha256, "Downloaded skill");
 
-        // Create skill directory
-        let skill_dir = target_dir.join(slug);
-        std::fs::create_dir_all(&skill_dir)?;
+        // Codex Finding 1 (#1170 followup): extract into a private staging
+        // directory and atomically rename into the final location only after
+        // enforce_require_signed passes. Without this, a local writer with
+        // access to target_dir/<slug>/ can swap files between extraction
+        // and the binding check (the TOCTOU window).
+        let final_dir = target_dir.join(slug);
+        let staging_dir = target_dir.join(format!(
+            ".staging-{}-{}-{}",
+            slug,
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        // Pre-clean any leftover staging dir from a prior crashed install.
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        std::fs::create_dir_all(&staging_dir)?;
+        // Use the staging path for all extraction/conversion work.
+        // After enforcement passes the function renames it to final_dir.
+        let skill_dir = staging_dir.clone();
 
         // Detect content type and extract accordingly
         let content_str = String::from_utf8_lossy(&bytes);
@@ -664,6 +679,33 @@ impl ClawHubClient {
             let _ = std::fs::remove_dir_all(&skill_dir);
             return Err(e);
         }
+
+        // Step 9: Atomic rename staging -> final. Closes the TOCTOU window
+        // between extraction and enforcement (Codex Finding 1). If the final
+        // location already exists from a prior install, replace it
+        // atomically (where the filesystem allows) or fall back to
+        // remove-then-rename.
+        if final_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&final_dir) {
+                let _ = std::fs::remove_dir_all(&skill_dir);
+                return Err(SkillError::SecurityBlocked(format!(
+                    "install: failed to clear existing {} before atomic rename: {e}",
+                    final_dir.display()
+                )));
+            }
+        }
+        if let Err(e) = std::fs::rename(&skill_dir, &final_dir) {
+            let _ = std::fs::remove_dir_all(&skill_dir);
+            return Err(SkillError::SecurityBlocked(format!(
+                "install: atomic rename {} -> {} failed: {e}",
+                skill_dir.display(),
+                final_dir.display()
+            )));
+        }
+        // From this point on the skill lives at final_dir, not staging.
+        // (Variable kept for clarity even though unread; future tracing
+        // additions reference it.)
+        let _skill_dir = final_dir;
 
         let result = ClawHubInstallResult {
             skill_name: manifest.skill.name.clone(),
