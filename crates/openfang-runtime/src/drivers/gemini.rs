@@ -1635,6 +1635,7 @@ mod tests {
                         "thought_signature": "text_sig_abc"
                     })),
                 }]),
+                ..Default::default()
             },
         ];
 
