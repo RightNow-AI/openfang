@@ -396,6 +396,7 @@ mod tests {
                 tool_allowlist: vec![],
                 tool_blocklist: vec![],
                 cache_context: false,
+                max_history_messages: None,
             },
             state: AgentState::Created,
             mode: AgentMode::default(),

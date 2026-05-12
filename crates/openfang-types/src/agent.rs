@@ -497,6 +497,29 @@ pub struct AgentManifest {
     /// on the next message. See issue #843.
     #[serde(default)]
     pub cache_context: bool,
+    /// Per-agent override for the maximum number of in-context message turns
+    /// kept before the safety-valve trim kicks in. `None` falls back to the
+    /// runtime default (20). Primary/orchestrator agents typically want more
+    /// (e.g. 40); short-lived worker agents want less (e.g. 4-6) so their
+    /// `agent_send` results stay focused. See issue #871.
+    #[serde(default)]
+    pub max_history_messages: Option<usize>,
+}
+
+/// Runtime default for `AgentManifest::max_history_messages` when the agent
+/// does not specify an override. Kept in sync with `agent_loop::MAX_HISTORY_MESSAGES`.
+pub const DEFAULT_MAX_HISTORY_MESSAGES: usize = 20;
+
+impl AgentManifest {
+    /// Resolve the effective history cap: agent manifest override, falling
+    /// back to `DEFAULT_MAX_HISTORY_MESSAGES`. Values of `Some(0)` are treated
+    /// as the default to avoid an agent accidentally disabling history.
+    pub fn effective_max_history_messages(&self) -> usize {
+        match self.max_history_messages {
+            Some(n) if n > 0 => n,
+            _ => DEFAULT_MAX_HISTORY_MESSAGES,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -532,6 +555,7 @@ impl Default for AgentManifest {
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
             cache_context: false,
+            max_history_messages: None,
         }
     }
 }
@@ -790,6 +814,7 @@ mod tests {
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
             cache_context: false,
+            max_history_messages: None,
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let deserialized: AgentManifest = serde_json::from_str(&json).unwrap();

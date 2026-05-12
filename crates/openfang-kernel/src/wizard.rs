@@ -183,6 +183,7 @@ impl SetupWizard {
             tool_allowlist: vec![],
             tool_blocklist: vec![],
             cache_context: false,
+            max_history_messages: None,
         };
 
         let skills_to_install: Vec<String> = intent

@@ -815,6 +815,13 @@ module = "builtin:chat"
 # Optional metadata
 tags = ["tag1", "tag2"]
 
+# Optional per-agent history cap (issue #871). Falls back to the runtime
+# default (20) when unset. Bump it for primary/orchestrator agents that need
+# longer conversational memory, lower it for short-lived worker agents so
+# their agent_send results stay focused.
+# max_history_messages = 40   # primary/orchestrator
+# max_history_messages = 6    # worker
+
 # Model configuration (required)
 [model]
 provider = "gemini"                  # Provider: gemini, deepseek, groq, openai, anthropic, etc.
