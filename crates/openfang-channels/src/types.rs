@@ -97,6 +97,60 @@ pub struct ChannelMessage {
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
+// Re-export the adapter allowlist from openfang-types so config validation
+// and routing share a single source of truth (no drift between the two).
+pub use openfang_types::config::CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL;
+
+impl ChannelMessage {
+    /// Return the platform-native channel/conversation ID for this message,
+    /// suitable for matching against an `AgentBinding`'s `channel_id` field.
+    ///
+    /// Resolution order:
+    /// 1. For adapters in [`CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL`],
+    ///    `sender.platform_id` already *is* the channel ID (these adapters
+    ///    overload the field because it doubles as the send target).
+    /// 2. Otherwise, fall back to `metadata["channel_id"]` if present (any
+    ///    adapter can opt in by populating that key).
+    /// 3. Otherwise, `None`.
+    ///
+    /// This is the central routing-time accessor — config validation and the
+    /// router both consult it (directly or via the same allowlist) so the two
+    /// cannot drift.
+    pub fn channel_id(&self) -> Option<String> {
+        // For builtin variants the string is already lowercase by construction.
+        // For `Custom(s)`, adapters _should_ register lowercase names but we
+        // case-fold here so a stray `Custom("Twitch")` cannot silently slip
+        // past the allowlist (and out of step with the validation path, which
+        // already lowercases user input). Allocates only on the Custom arm.
+        let channel_str: std::borrow::Cow<'_, str> = match &self.channel {
+            ChannelType::Telegram => "telegram".into(),
+            ChannelType::Discord => "discord".into(),
+            ChannelType::Slack => "slack".into(),
+            ChannelType::WhatsApp => "whatsapp".into(),
+            ChannelType::Signal => "signal".into(),
+            ChannelType::Matrix => "matrix".into(),
+            ChannelType::Email => "email".into(),
+            ChannelType::Teams => "teams".into(),
+            ChannelType::Mattermost => "mattermost".into(),
+            ChannelType::WebChat => "webchat".into(),
+            ChannelType::CLI => "cli".into(),
+            ChannelType::Mqtt => "mqtt".into(),
+            ChannelType::Custom(s) => s.to_lowercase().into(),
+        };
+        if CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL
+            .iter()
+            .any(|c| *c == channel_str.as_ref())
+        {
+            Some(self.sender.platform_id.clone())
+        } else {
+            self.metadata
+                .get("channel_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        }
+    }
+}
+
 /// Agent lifecycle phase for UX indicators.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -363,6 +417,34 @@ mod tests {
         let json = serde_json::to_string(&ct).unwrap();
         let back: ChannelType = serde_json::from_str(&json).unwrap();
         assert_eq!(back, ChannelType::Email);
+    }
+
+    #[test]
+    fn test_channel_id_custom_arm_is_case_insensitive() {
+        // A stray capitalized Custom variant must still resolve through the
+        // allowlist. The validation path lowercases user input; the routing
+        // path needs the same case-fold to stay in sync.
+        let make = |name: &str| ChannelMessage {
+            channel: ChannelType::Custom(name.to_string()),
+            platform_message_id: "m".to_string(),
+            sender: ChannelUser {
+                platform_id: "C123".to_string(),
+                display_name: "x".to_string(),
+                openfang_user: None,
+            },
+            content: ChannelContent::Text("hi".to_string()),
+            target_agent: None,
+            timestamp: Utc::now(),
+            is_group: false,
+            thread_id: None,
+            metadata: HashMap::new(),
+        };
+        assert_eq!(make("twitch").channel_id().as_deref(), Some("C123"));
+        assert_eq!(make("Twitch").channel_id().as_deref(), Some("C123"));
+        assert_eq!(make("TWITCH").channel_id().as_deref(), Some("C123"));
+        // Lark spelling (Feishu Intl) must also match.
+        assert_eq!(make("lark").channel_id().as_deref(), Some("C123"));
+        assert_eq!(make("Lark").channel_id().as_deref(), Some("C123"));
     }
 
     #[test]
