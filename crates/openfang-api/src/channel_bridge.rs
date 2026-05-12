@@ -1250,10 +1250,17 @@ pub async fn start_channel_bridge_with_config(
     // Matrix
     if let Some(ref mx_config) = config.matrix {
         if let Some(token) = read_token(&mx_config.access_token_env, "Matrix") {
-            let adapter = Arc::new(MatrixAdapter::new(
+            // MSC2918 refresh-token support: optional env var, when present the
+            // adapter auto-recovers from M_UNKNOWN_TOKEN 401s.
+            let refresh = mx_config
+                .refresh_token_env
+                .as_deref()
+                .and_then(|env| read_token(env, "Matrix refresh"));
+            let adapter = Arc::new(MatrixAdapter::with_refresh_token(
                 mx_config.homeserver_url.clone(),
                 mx_config.user_id.clone(),
                 token,
+                refresh,
                 mx_config.allowed_rooms.clone(),
                 mx_config.auto_accept_invites,
             ));

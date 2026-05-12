@@ -2128,6 +2128,13 @@ pub struct MatrixConfig {
     pub user_id: String,
     /// Env var name holding the access token.
     pub access_token_env: String,
+    /// Env var name holding the MSC2918 refresh token (optional).
+    ///
+    /// When set, the adapter auto-recovers from `M_UNKNOWN_TOKEN` 401 responses
+    /// by calling `POST /_matrix/client/v3/refresh`. Required for matrix.org
+    /// since the 2025-04-07 migration to MAS (Matrix Authentication Service).
+    #[serde(default)]
+    pub refresh_token_env: Option<String>,
     /// Room IDs to listen in (empty = all joined rooms).
     #[serde(default, deserialize_with = "deserialize_string_or_int_vec")]
     pub allowed_rooms: Vec<String>,
@@ -2147,6 +2154,7 @@ impl Default for MatrixConfig {
             homeserver_url: "https://matrix.org".to_string(),
             user_id: String::new(),
             access_token_env: "MATRIX_ACCESS_TOKEN".to_string(),
+            refresh_token_env: None,
             allowed_rooms: vec![],
             default_agent: None,
             auto_accept_invites: false,
@@ -4155,6 +4163,9 @@ mod tests {
         let mx = MatrixConfig::default();
         assert_eq!(mx.homeserver_url, "https://matrix.org");
         assert_eq!(mx.access_token_env, "MATRIX_ACCESS_TOKEN");
+        // MSC2918 refresh token env defaults to None; operators opt in via
+        // `refresh_token_env = "MATRIX_REFRESH_TOKEN"` in config.toml.
+        assert!(mx.refresh_token_env.is_none());
         assert!(mx.allowed_rooms.is_empty());
     }
 

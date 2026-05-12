@@ -18,14 +18,20 @@ use zeroize::Zeroizing;
 const SYNC_TIMEOUT_MS: u64 = 30000;
 const MAX_MESSAGE_LEN: usize = 4096;
 
+/// Shared access + refresh token pair. Tokens are zeroized on drop and rotated
+/// in place when MSC2918 refresh succeeds.
+type TokenPair = Arc<RwLock<(Zeroizing<String>, Option<Zeroizing<String>>)>>;
+
 /// Matrix channel adapter using the Client-Server API.
 pub struct MatrixAdapter {
     /// Matrix homeserver URL (e.g., `"https://matrix.org"`).
     homeserver_url: String,
     /// Bot's user ID (e.g., "@openfang:matrix.org").
     user_id: String,
-    /// SECURITY: Access token is zeroized on drop.
-    access_token: Zeroizing<String>,
+    /// SECURITY: Access + refresh tokens are zeroized on drop. Stored behind
+    /// an RwLock so the sync loop and send paths see rotated tokens after a
+    /// MSC2918 /refresh call (matrix.org/MAS rotates both tokens every refresh).
+    tokens: TokenPair,
     /// HTTP client.
     client: reqwest::Client,
     /// Allowed room IDs (empty = all joined rooms).
@@ -40,7 +46,7 @@ pub struct MatrixAdapter {
 }
 
 impl MatrixAdapter {
-    /// Create a new Matrix adapter.
+    /// Create a new Matrix adapter without a refresh token.
     pub fn new(
         homeserver_url: String,
         user_id: String,
@@ -48,11 +54,39 @@ impl MatrixAdapter {
         allowed_rooms: Vec<String>,
         auto_accept_invites: bool,
     ) -> Self {
+        Self::with_refresh_token(
+            homeserver_url,
+            user_id,
+            access_token,
+            None,
+            allowed_rooms,
+            auto_accept_invites,
+        )
+    }
+
+    /// Create a new Matrix adapter with an optional refresh token (MSC2918).
+    ///
+    /// When `refresh_token` is `Some`, the adapter will automatically call
+    /// `POST /_matrix/client/v3/refresh` on `401 M_UNKNOWN_TOKEN` responses
+    /// and retry the failed request once. Both tokens rotate on each refresh
+    /// under Matrix Authentication Service (MAS).
+    pub fn with_refresh_token(
+        homeserver_url: String,
+        user_id: String,
+        access_token: String,
+        refresh_token: Option<String>,
+        allowed_rooms: Vec<String>,
+        auto_accept_invites: bool,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let tokens: TokenPair = Arc::new(RwLock::new((
+            Zeroizing::new(access_token),
+            refresh_token.map(Zeroizing::new),
+        )));
         Self {
             homeserver_url,
             user_id,
-            access_token: Zeroizing::new(access_token),
+            tokens,
             client: reqwest::Client::new(),
             allowed_rooms,
             shutdown_tx: Arc::new(shutdown_tx),
@@ -60,6 +94,11 @@ impl MatrixAdapter {
             since_token: Arc::new(RwLock::new(None)),
             auto_accept_invites,
         }
+    }
+
+    /// Read the current access token (cloned).
+    async fn current_access_token(&self) -> String {
+        self.tokens.read().await.0.as_str().to_string()
     }
 
     /// Send a text message to a Matrix room.
@@ -81,18 +120,47 @@ impl MatrixAdapter {
                 "body": chunk,
             });
 
-            let resp = self
-                .client
-                .put(&url)
-                .bearer_auth(&*self.access_token)
-                .json(&body)
-                .send()
-                .await?;
+            let mut attempt = 0;
+            loop {
+                attempt += 1;
+                let token = self.current_access_token().await;
+                let resp = self
+                    .client
+                    .put(&url)
+                    .bearer_auth(&token)
+                    .json(&body)
+                    .send()
+                    .await?;
 
-            if !resp.status().is_success() {
+                if resp.status().is_success() {
+                    break;
+                }
+
                 let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                return Err(format!("Matrix API error {status}: {body}").into());
+                let body_text = resp.text().await.unwrap_or_default();
+
+                // Try a single refresh+retry on M_UNKNOWN_TOKEN (MSC2918).
+                if attempt == 1
+                    && status == reqwest::StatusCode::UNAUTHORIZED
+                    && is_unknown_token_body(&body_text)
+                {
+                    match try_refresh_tokens(&self.client, &self.homeserver_url, &self.tokens)
+                        .await
+                    {
+                        Ok(()) => {
+                            info!("Matrix: access token refreshed via MSC2918, retrying send");
+                            continue;
+                        }
+                        Err(e) => {
+                            return Err(format!(
+                                "Matrix API error {status}: {body_text} (refresh failed: {e})"
+                            )
+                            .into());
+                        }
+                    }
+                }
+
+                return Err(format!("Matrix API error {status}: {body_text}").into());
             }
         }
 
@@ -103,27 +171,119 @@ impl MatrixAdapter {
     async fn validate(&self) -> Result<String, Box<dyn std::error::Error>> {
         let url = format!("{}/_matrix/client/v3/account/whoami", self.homeserver_url);
 
-        let resp = self
-            .client
-            .get(&url)
-            .bearer_auth(&*self.access_token)
-            .send()
-            .await?;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let token = self.current_access_token().await;
+            let resp = self.client.get(&url).bearer_auth(&token).send().await?;
 
-        if !resp.status().is_success() {
+            if resp.status().is_success() {
+                let body: serde_json::Value = resp.json().await?;
+                let user_id = body["user_id"].as_str().unwrap_or("unknown").to_string();
+                return Ok(user_id);
+            }
+
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            if attempt == 1
+                && status == reqwest::StatusCode::UNAUTHORIZED
+                && is_unknown_token_body(&body_text)
+                && try_refresh_tokens(&self.client, &self.homeserver_url, &self.tokens)
+                    .await
+                    .is_ok()
+            {
+                info!("Matrix: access token refreshed via MSC2918, retrying /whoami");
+                continue;
+            }
             return Err("Matrix authentication failed".into());
         }
-
-        let body: serde_json::Value = resp.json().await?;
-        let user_id = body["user_id"].as_str().unwrap_or("unknown").to_string();
-
-        Ok(user_id)
     }
 
     #[cfg(test)]
     fn is_allowed_room(&self, room_id: &str) -> bool {
         self.allowed_rooms.is_empty() || self.allowed_rooms.iter().any(|r| r == room_id)
     }
+}
+
+/// Detect `M_UNKNOWN_TOKEN` errors in a Matrix response body.
+///
+/// Matrix returns 401 for multiple reasons; we only want to refresh on
+/// `M_UNKNOWN_TOKEN` (the access token expired or was revoked). See
+/// <https://spec.matrix.org/latest/client-server-api/#soft-logout>.
+fn is_unknown_token_body(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("errcode").and_then(|c| c.as_str()).map(String::from))
+        .map(|c| c == "M_UNKNOWN_TOKEN")
+        .unwrap_or(false)
+}
+
+/// Whether a Matrix 401 body indicates a hard logout (operator must re-login).
+///
+/// `soft_logout: true` (or absent — default per spec) means the device is still
+/// known to the server and a refresh-token grant is valid. `soft_logout: false`
+/// means the device was invalidated and the operator must perform a new
+/// `m.login.password` flow.
+fn is_hard_logout(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("soft_logout").and_then(|s| s.as_bool()))
+        .map(|soft| !soft)
+        .unwrap_or(false)
+}
+
+/// Call `POST /_matrix/client/v3/refresh` (MSC2918) and rotate the stored tokens.
+///
+/// On success, replaces the access token and (if the server returned one) the
+/// refresh token. MAS (matrix.org since 2025-04-07) rotates the refresh token
+/// on every call, so callers must use the new value next time.
+async fn try_refresh_tokens(
+    client: &reqwest::Client,
+    homeserver: &str,
+    tokens: &TokenPair,
+) -> Result<(), String> {
+    let refresh_token = {
+        let guard = tokens.read().await;
+        match guard.1.as_ref() {
+            Some(rt) => rt.as_str().to_string(),
+            None => return Err("no refresh token configured".to_string()),
+        }
+    };
+
+    let url = format!("{homeserver}/_matrix/client/v3/refresh");
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({ "refresh_token": refresh_token }))
+        .send()
+        .await
+        .map_err(|e| format!("refresh request failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("refresh returned {status}: {body}"));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("refresh response parse error: {e}"))?;
+
+    let new_access = body
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "refresh response missing access_token".to_string())?;
+    let new_refresh = body
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let mut guard = tokens.write().await;
+    guard.0 = Zeroizing::new(new_access.to_string());
+    if let Some(rt) = new_refresh {
+        guard.1 = Some(Zeroizing::new(rt));
+    }
+    Ok(())
 }
 
 /// Accept a room invite by calling POST /_matrix/client/v3/rooms/{room_id}/join.
@@ -218,7 +378,7 @@ impl ChannelAdapter for MatrixAdapter {
 
         let (tx, rx) = mpsc::channel::<ChannelMessage>(256);
         let homeserver = self.homeserver_url.clone();
-        let access_token = self.access_token.clone();
+        let tokens = Arc::clone(&self.tokens);
         // Use the validated user ID from /whoami instead of the config value.
         // Matrix server delegation or casing differences can cause self.user_id
         // to not match the sender field in timeline events, making the bot
@@ -232,9 +392,10 @@ impl ChannelAdapter for MatrixAdapter {
 
         // FIX #4: Do an initial sync to get the since token, skipping old messages.
         if since_token.read().await.is_none() {
-            if let Some(token) = initial_sync(&client, &homeserver, access_token.as_str()).await {
+            let token = self.current_access_token().await;
+            if let Some(next) = initial_sync(&client, &homeserver, &token).await {
                 info!("Matrix: initial sync complete, skipping old messages");
-                *since_token.write().await = Some(token);
+                *since_token.write().await = Some(next);
             }
         }
 
@@ -257,12 +418,13 @@ impl ChannelAdapter for MatrixAdapter {
                     url.push_str(&format!("&since={token}"));
                 }
 
+                let current_token = tokens.read().await.0.as_str().to_string();
                 let resp = tokio::select! {
                     _ = shutdown_rx.changed() => {
                         info!("Matrix adapter shutting down");
                         break;
                     }
-                    result = client.get(&url).bearer_auth(access_token.as_str()).send() => {
+                    result = client.get(&url).bearer_auth(&current_token).send() => {
                         match result {
                             Ok(r) => r,
                             Err(e) => {
@@ -276,7 +438,38 @@ impl ChannelAdapter for MatrixAdapter {
                 };
 
                 if !resp.status().is_success() {
-                    warn!("Matrix sync returned {}", resp.status());
+                    let status = resp.status();
+                    // MSC2918: on 401 M_UNKNOWN_TOKEN with a refresh token configured,
+                    // try refreshing once and loop again immediately. Hard logout
+                    // (soft_logout:false) is unrecoverable here — the operator must
+                    // perform a fresh m.login.password.
+                    if status == reqwest::StatusCode::UNAUTHORIZED {
+                        let body_text = resp.text().await.unwrap_or_default();
+                        if is_unknown_token_body(&body_text) {
+                            if is_hard_logout(&body_text) {
+                                warn!(
+                                    "Matrix: hard logout (soft_logout=false), operator must re-login"
+                                );
+                            } else {
+                                match try_refresh_tokens(&client, &homeserver, &tokens).await {
+                                    Ok(()) => {
+                                        info!(
+                                            "Matrix: access token refreshed via MSC2918, resuming /sync"
+                                        );
+                                        backoff = Duration::from_secs(1);
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        warn!("Matrix: token refresh failed: {e}");
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("Matrix sync returned {status}: {body_text}");
+                        }
+                    } else {
+                        warn!("Matrix sync returned {status}");
+                    }
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_secs(60));
                     continue;
@@ -309,8 +502,8 @@ impl ChannelAdapter for MatrixAdapter {
                                 );
                                 continue;
                             }
-                            accept_invite(&client, &homeserver, access_token.as_str(), room_id)
-                                .await;
+                            let tok = tokens.read().await.0.as_str().to_string();
+                            accept_invite(&client, &homeserver, &tok, room_id).await;
                         }
                     }
                 }
@@ -380,10 +573,11 @@ impl ChannelAdapter for MatrixAdapter {
                                 }
 
                                 // FIX #3: Determine if room is a DM (2 members) or group.
+                                let tok_for_count = tokens.read().await.0.as_str().to_string();
                                 let is_group = get_room_member_count(
                                     &client,
                                     &homeserver,
-                                    access_token.as_str(),
+                                    &tok_for_count,
                                     room_id,
                                 )
                                 .await
@@ -409,10 +603,11 @@ impl ChannelAdapter for MatrixAdapter {
                                 }
 
                                 // FIX #3: Determine if room is a DM (2 members) or group.
+                                let tok_for_count = tokens.read().await.0.as_str().to_string();
                                 let is_group = get_room_member_count(
                                     &client,
                                     &homeserver,
-                                    access_token.as_str(),
+                                    &tok_for_count,
                                     room_id,
                                 )
                                 .await
@@ -485,10 +680,11 @@ impl ChannelAdapter for MatrixAdapter {
             "timeout": 5000,
         });
 
+        let token = self.current_access_token().await;
         let _ = self
             .client
             .put(&url)
-            .bearer_auth(&*self.access_token)
+            .bearer_auth(&token)
             .json(&body)
             .send()
             .await;
@@ -516,6 +712,83 @@ mod tests {
             false,
         );
         assert_eq!(adapter.name(), "matrix");
+    }
+
+    #[test]
+    fn test_is_unknown_token_body() {
+        // Real matrix.org body for M_UNKNOWN_TOKEN under MAS.
+        let body = r#"{"errcode":"M_UNKNOWN_TOKEN","error":"Token is not active","soft_logout":true}"#;
+        assert!(is_unknown_token_body(body));
+        assert!(!is_hard_logout(body));
+
+        let hard = r#"{"errcode":"M_UNKNOWN_TOKEN","error":"Invalidated","soft_logout":false}"#;
+        assert!(is_unknown_token_body(hard));
+        assert!(is_hard_logout(hard));
+
+        let other = r#"{"errcode":"M_FORBIDDEN","error":"You are not allowed"}"#;
+        assert!(!is_unknown_token_body(other));
+        assert!(!is_hard_logout(other));
+
+        // Empty / non-JSON must not trigger refresh.
+        assert!(!is_unknown_token_body(""));
+        assert!(!is_unknown_token_body("not json"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_tokens_rotates_pair() {
+        // Spin up a tiny axum server that mimics MSC2918 /refresh: rotates both
+        // access and refresh tokens and returns the new pair.
+        use axum::{routing::post, Json, Router};
+
+        async fn refresh_handler(
+            Json(body): Json<serde_json::Value>,
+        ) -> Json<serde_json::Value> {
+                let incoming = body
+                    .get("refresh_token")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                assert_eq!(incoming, "old_refresh");
+                Json(serde_json::json!({
+                    "access_token": "new_access",
+                    "refresh_token": "new_refresh",
+                    "expires_in_ms": 3_600_000u64,
+                }))
+        }
+
+        let app = Router::new().route("/_matrix/client/v3/refresh", post(refresh_handler));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let homeserver = format!("http://{addr}");
+        let tokens: TokenPair = Arc::new(RwLock::new((
+            Zeroizing::new("old_access".to_string()),
+            Some(Zeroizing::new("old_refresh".to_string())),
+        )));
+
+        let client = reqwest::Client::new();
+        try_refresh_tokens(&client, &homeserver, &tokens)
+            .await
+            .expect("refresh succeeds");
+
+        let guard = tokens.read().await;
+        assert_eq!(guard.0.as_str(), "new_access");
+        assert_eq!(guard.1.as_ref().map(|s| s.as_str()), Some("new_refresh"));
+        drop(guard);
+
+        // Refresh with no refresh token configured must fail cleanly.
+        let no_refresh: TokenPair = Arc::new(RwLock::new((
+            Zeroizing::new("a".to_string()),
+            None,
+        )));
+        let err = try_refresh_tokens(&client, &homeserver, &no_refresh)
+            .await
+            .unwrap_err();
+        assert!(err.contains("no refresh token"));
+
+        server.abort();
     }
 
     #[test]
