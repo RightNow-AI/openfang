@@ -1237,6 +1237,16 @@ pub async fn delete_workflow(
     });
 
     if state.kernel.workflows.remove_workflow(workflow_id).await {
+        let wf_dir = state
+            .kernel
+            .config
+            .workflows_dir
+            .clone()
+            .unwrap_or_else(|| state.kernel.config.home_dir.join("workflows"));
+        let wf_path = wf_dir.join(format!("{}.json", id));
+        if let Err(e) = std::fs::remove_file(&wf_path) {
+            tracing::warn!("Failed to remove workflow file {}: {e}", wf_path.display());
+        }
         (
             StatusCode::OK,
             Json(serde_json::json!({"status": "removed", "workflow_id": id})),
