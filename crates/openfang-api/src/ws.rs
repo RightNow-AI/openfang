@@ -223,18 +223,31 @@ pub(crate) struct WsAuthCtx<'a> {
 pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::StatusCode> {
     use axum::http::StatusCode;
 
-    // No api_key configured: only allow loopback or explicit opt-in.
+    // No api_key configured: behavior depends on whether dashboard auth is on.
+    //
+    // Issue #1189: previously this path allowed any loopback request through
+    // when api_key was empty, EVEN IF dashboard auth was enabled. That diverged
+    // from the HTTP middleware (which only opens the loopback no-auth path
+    // when api_key is empty AND auth.enabled is false). A local attacker with
+    // loopback access could chat with agents over WS even when the operator
+    // had configured dashboard credentials. Now mirror HTTP exactly.
     if ctx.api_key.is_empty() {
-        // A session cookie can still rescue non-loopback requests when
-        // dashboard auth is enabled.
-        if ctx.auth_enabled && !ctx.session_secret.is_empty() {
-            if let Some(token) = crate::session_auth::extract_session_cookie(ctx.headers) {
-                if crate::session_auth::verify_session_token(&token, ctx.session_secret).is_some()
-                {
-                    return Ok(());
+        // When dashboard auth is configured, require a valid session cookie
+        // regardless of bind address. Loopback no longer bypasses login.
+        if ctx.auth_enabled {
+            if !ctx.session_secret.is_empty() {
+                if let Some(token) = crate::session_auth::extract_session_cookie(ctx.headers) {
+                    if crate::session_auth::verify_session_token(&token, ctx.session_secret)
+                        .is_some()
+                    {
+                        return Ok(());
+                    }
                 }
             }
+            return Err(StatusCode::UNAUTHORIZED);
         }
+        // No api_key AND dashboard auth disabled: keep the dev convenience
+        // path (loopback or explicit OPENFANG_ALLOW_NO_AUTH=1).
         if ctx.is_loopback || ctx.allow_no_auth {
             return Ok(());
         }
@@ -1932,5 +1945,83 @@ mod tests {
             uri: &uri,
         };
         assert!(check_ws_auth(&ctx).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #1189: WS auth must mirror HTTP middleware. When dashboard auth
+    // is enabled, loopback + empty api_key + no cookie must NOT bypass.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ws_auth_dashboard_on_loopback_empty_key_no_cookie_rejected() {
+        // Issue #1189 regression guard: previously this returned Ok(()) because
+        // the empty-api_key branch allowed any loopback request through, even
+        // when dashboard credentials were configured. HTTP middleware rejects
+        // this path; WS must too.
+        let secret = "password-hash-style-secret";
+        let headers = axum::http::HeaderMap::new();
+        let uri = empty_uri();
+        let ctx = WsAuthCtx {
+            api_key: "",
+            auth_enabled: true,
+            session_secret: secret,
+            is_loopback: true,
+            allow_no_auth: false,
+            headers: &headers,
+            uri: &uri,
+        };
+        assert_eq!(
+            check_ws_auth(&ctx).unwrap_err(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "loopback must not bypass dashboard auth when api_key is empty"
+        );
+    }
+
+    #[test]
+    fn ws_auth_dashboard_on_loopback_valid_cookie_accepted() {
+        // With dashboard auth on, a valid session cookie is the supported
+        // credential and must upgrade successfully from loopback too.
+        let secret = "password-hash-style-secret";
+        let token = crate::session_auth::create_session_token("admin", secret, 1);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "cookie",
+            format!("openfang_session={token}").parse().unwrap(),
+        );
+        let uri = empty_uri();
+        let ctx = WsAuthCtx {
+            api_key: "",
+            auth_enabled: true,
+            session_secret: secret,
+            is_loopback: true,
+            allow_no_auth: false,
+            headers: &headers,
+            uri: &uri,
+        };
+        assert!(
+            check_ws_auth(&ctx).is_ok(),
+            "valid session cookie should authorize loopback WS upgrade"
+        );
+    }
+
+    #[test]
+    fn ws_auth_dashboard_off_loopback_empty_key_accepted() {
+        // Preserve the development convenience path: when dashboard auth is
+        // NOT configured AND api_key is empty, loopback still upgrades.
+        let headers = axum::http::HeaderMap::new();
+        let uri = empty_uri();
+        let ctx = WsAuthCtx {
+            api_key: "",
+            auth_enabled: false,
+            session_secret: "",
+            is_loopback: true,
+            allow_no_auth: false,
+            headers: &headers,
+            uri: &uri,
+        };
+        assert!(
+            check_ws_auth(&ctx).is_ok(),
+            "loopback dev path must work when dashboard auth is disabled"
+        );
     }
 }
