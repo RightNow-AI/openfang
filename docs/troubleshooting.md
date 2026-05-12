@@ -110,6 +110,75 @@ rm ~/.config/fish/conf.d/openfang.fish
 - Port already in use: change the port mapping `-p 3001:4200`
 - Permission denied on volume mount: check directory permissions
 
+### Connecting to host services from Docker
+
+If you run OpenFang inside Docker and need to reach a service running on the
+host (Ollama on `127.0.0.1:11434`, whisper.cpp on `127.0.0.1:8090`, a local
+Postgres, etc.), `localhost` inside the container points at the container
+itself, not the host. You must opt in to the host bridge.
+
+On Docker Desktop (macOS/Windows) `host.docker.internal` resolves
+automatically. On Linux and on colima (macOS) it does not, and you must add
+the flag explicitly:
+
+```bash
+docker run --rm \
+  --add-host=host.docker.internal:host-gateway \
+  -e OLLAMA_HOST=http://host.docker.internal:11434 \
+  -p 4200:4200 \
+  ghcr.io/rightnow-ai/openfang:latest
+```
+
+Verify the bridge works:
+
+```bash
+docker exec <container> getent hosts host.docker.internal
+# 192.168.x.x  host.docker.internal
+```
+
+For Docker Compose use `extra_hosts:`:
+
+```yaml
+services:
+  openfang:
+    image: ghcr.io/rightnow-ai/openfang:latest
+    ports:
+      - "4200:4200"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
+```
+
+Without this flag on Linux/colima, calls to host services fail silently with
+connection refused or DNS lookup errors.
+
+### Curl-equipped reference image
+
+The default `ghcr.io/rightnow-ai/openfang` image does not ship `curl`, so
+`docker exec openfang curl ...` returns `exec: curl: not found`. If you need
+in-container probes for healthchecks or egress verification, build a thin
+overlay image:
+
+```dockerfile
+# Dockerfile.curl
+FROM ghcr.io/rightnow-ai/openfang:latest
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+Build and run:
+
+```bash
+docker build -f Dockerfile.curl -t openfang-curl:latest .
+docker run --rm openfang-curl:latest curl -s https://example.com
+```
+
+Use this variant when you need `HEALTHCHECK` directives or in-container
+diagnostics. The base image stays slim by default.
+
 ---
 
 ## Configuration Issues
@@ -595,6 +664,13 @@ docker run -d --name openfang \
   -p 4200:4200 \
   ghcr.io/rightnow-ai/openfang:latest
 ```
+
+To reach a host LLM (Ollama, vLLM, whisper.cpp) from inside the container,
+add `--add-host=host.docker.internal:host-gateway`. See
+[Connecting to host services from Docker](#connecting-to-host-services-from-docker).
+The default image does not ship `curl`; build the
+[curl-equipped overlay](#curl-equipped-reference-image) if you need
+in-container healthchecks.
 
 ### How do I protect the dashboard with a password?
 

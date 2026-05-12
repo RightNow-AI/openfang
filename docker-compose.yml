@@ -11,6 +11,11 @@ services:
       - "4200:4200"
     volumes:
       - openfang-data:/data
+    # Uncomment to reach host services (Ollama, whisper.cpp, local Postgres)
+    # from inside the container. Required on Linux and colima. See
+    # docs/troubleshooting.md#connecting-to-host-services-from-docker.
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}

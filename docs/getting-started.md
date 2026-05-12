@@ -82,6 +82,23 @@ cd openfang
 docker compose up -d
 ```
 
+**Reaching host services from the container.** If you run a local LLM
+(Ollama, whisper.cpp, vLLM) on the host and want the agent to call it, add
+the host-gateway bridge. Required on Linux and colima:
+
+```bash
+docker run -d \
+  --add-host=host.docker.internal:host-gateway \
+  -e OLLAMA_HOST=http://host.docker.internal:11434 \
+  -p 4200:4200 \
+  ghcr.io/rightnow-ai/openfang:latest
+```
+
+For Compose, add `extra_hosts: ["host.docker.internal:host-gateway"]` to the
+service. See [Troubleshooting → Connecting to host services from Docker](troubleshooting.md#connecting-to-host-services-from-docker)
+and the [curl-equipped overlay image](troubleshooting.md#curl-equipped-reference-image)
+if you need in-container `curl` for healthchecks.
+
 ### Verify Installation
 
 ```bash
