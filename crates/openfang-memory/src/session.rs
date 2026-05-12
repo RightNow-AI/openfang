@@ -592,6 +592,9 @@ impl SessionStore {
                                     openfang_types::truncate_str(thinking, 200)
                                 ));
                             }
+                            ContentBlock::RedactedThinking { .. } => {
+                                text_parts.push("[redacted_thinking]".to_string());
+                            }
                             ContentBlock::Unknown => {}
                         }
                     }

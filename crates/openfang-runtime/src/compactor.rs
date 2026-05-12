@@ -404,6 +404,7 @@ fn build_conversation_text(messages: &[Message], config: &CompactionConfig) -> S
                             conversation_text.push_str(&format!("[Image: {media_type}]\n\n"));
                         }
                         ContentBlock::Thinking { .. } => {}
+                        ContentBlock::RedactedThinking { .. } => {}
                         ContentBlock::Unknown => {}
                     }
                 }

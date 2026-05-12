@@ -106,6 +106,15 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_metadata: Option<serde_json::Value>,
     },
+    /// Anthropic redacted-thinking block — encrypted reasoning the model
+    /// chose to hide. The `data` blob is opaque to us but MUST be echoed
+    /// verbatim on subsequent turns, otherwise Anthropic rejects the
+    /// resubmitted history. Only emitted by the Anthropic driver.
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking {
+        /// Opaque encrypted reasoning payload from Anthropic.
+        data: String,
+    },
     /// Catch-all for unrecognized content block types (forward compatibility).
     #[serde(other)]
     Unknown,
@@ -161,7 +170,9 @@ impl MessageContent {
                     ContentBlock::ToolUse { name, input, .. } => {
                         name.len() + input.to_string().len()
                     }
-                    ContentBlock::Image { .. } | ContentBlock::Unknown => 0,
+                    ContentBlock::Image { .. }
+                    | ContentBlock::RedactedThinking { .. }
+                    | ContentBlock::Unknown => 0,
                 })
                 .sum(),
         }

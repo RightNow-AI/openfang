@@ -100,6 +100,7 @@ impl CompletionResponse {
         self.content.iter().any(|block| match block {
             ContentBlock::Text { text, .. } => !text.is_empty(),
             ContentBlock::Thinking { thinking, .. } => !thinking.is_empty(),
+            ContentBlock::RedactedThinking { data } => !data.is_empty(),
             ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => true,
             _ => false,
         })

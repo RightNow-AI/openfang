@@ -93,6 +93,13 @@ enum ApiContentBlock {
     /// one (e.g. legacy sessions saved before this field was tracked).
     #[serde(rename = "thinking")]
     Thinking { thinking: String, signature: String },
+    /// Redacted (encrypted) thinking block echoed back to the API.
+    ///
+    /// Anthropic returns these when the model decides to hide reasoning;
+    /// the `data` blob is opaque and MUST be echoed verbatim on the next
+    /// turn or the API rejects the resubmitted history.
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking { data: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -139,6 +146,11 @@ enum ResponseContentBlock {
         #[serde(default)]
         signature: Option<String>,
     },
+    /// Redacted (encrypted) thinking block. The `data` blob is opaque to
+    /// us and must be persisted as-is so we can echo it back on the next
+    /// request — Anthropic rejects history that strips these blocks.
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking { data: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,6 +186,10 @@ enum ContentBlockAccum {
         name: String,
         input_json: String,
     },
+    /// Redacted (encrypted) thinking block streamed from Anthropic.
+    /// The opaque `data` blob arrives on `content_block_start` and must be
+    /// persisted so the next turn can echo it back verbatim.
+    RedactedThinking { data: String },
 }
 
 #[async_trait]
@@ -447,6 +463,19 @@ impl LlmDriver for AnthropicDriver {
                                         signature: initial_sig,
                                     });
                                 }
+                                "redacted_thinking" => {
+                                    // Anthropic delivers redacted_thinking
+                                    // as a single block_start with the opaque
+                                    // `data` blob (no delta events). Store it
+                                    // verbatim so we can echo it back on the
+                                    // next request — API rejects history
+                                    // that strips redacted_thinking blocks.
+                                    let data = block["data"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string();
+                                    blocks.push(ContentBlockAccum::RedactedThinking { data });
+                                }
                                 _ => {}
                             }
                         }
@@ -603,6 +632,11 @@ impl LlmDriver for AnthropicDriver {
                         });
                         tool_calls.push(ToolCall { id, name, input });
                     }
+                    ContentBlockAccum::RedactedThinking { data } => {
+                        if !data.is_empty() {
+                            content.push(ContentBlock::RedactedThinking { data });
+                        }
+                    }
                 }
             }
 
@@ -710,6 +744,18 @@ fn convert_message(msg: &Message) -> ApiMessage {
                             }
                         })
                     }
+                    ContentBlock::RedactedThinking { data } => {
+                        // Echo the encrypted blob verbatim. Anthropic
+                        // rejects history that drops redacted_thinking
+                        // blocks, so always include them on resubmission.
+                        if data.is_empty() {
+                            None
+                        } else {
+                            Some(ApiContentBlock::RedactedThinking {
+                                data: data.clone(),
+                            })
+                        }
+                    }
                     ContentBlock::Unknown => None,
                 })
                 .collect();
@@ -756,6 +802,9 @@ fn convert_response(api: ApiResponse) -> CompletionResponse {
                         "format": "anthropic_extended_thinking"
                     })),
                 });
+            }
+            ResponseContentBlock::RedactedThinking { data } => {
+                content.push(ContentBlock::RedactedThinking { data });
             }
         }
     }
@@ -1018,5 +1067,120 @@ mod tests {
             }
             _ => panic!("expected Thinking response block"),
         }
+    }
+
+    /// Issue #1148 — Anthropic `redacted_thinking` blocks must survive the
+    /// full driver round-trip. The opaque `data` blob is required verbatim
+    /// on resubmission; dropping or mutating it causes the API to reject
+    /// the assistant turn on the next request.
+    #[test]
+    fn test_redacted_thinking_round_trip() {
+        // Step 1: API delivers a response with a redacted_thinking block.
+        let api_response = ApiResponse {
+            content: vec![
+                ResponseContentBlock::RedactedThinking {
+                    data: "EncRyPt3D_BLO8".to_string(),
+                },
+                ResponseContentBlock::Text {
+                    text: "The answer is 42.".to_string(),
+                },
+            ],
+            stop_reason: "end_turn".to_string(),
+            usage: ApiUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+            },
+        };
+        let response = convert_response(api_response);
+        assert_eq!(response.content.len(), 2);
+
+        // Step 2: The opaque blob must reach the ContentBlock layer.
+        match &response.content[0] {
+            ContentBlock::RedactedThinking { data } => {
+                assert_eq!(data, "EncRyPt3D_BLO8");
+            }
+            other => panic!("expected RedactedThinking content block, got {other:?}"),
+        }
+
+        // Step 3: Resubmit the assistant turn as conversation history.
+        let assistant_msg = Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(response.content.clone()),
+        };
+        let api_msg = convert_message(&assistant_msg);
+        let blocks = match api_msg.content {
+            ApiContent::Blocks(b) => b,
+            _ => panic!("expected Blocks content"),
+        };
+
+        // The redacted_thinking block must appear in the outbound payload.
+        let mut found_redacted = false;
+        for block in &blocks {
+            if let ApiContentBlock::RedactedThinking { data } = block {
+                assert_eq!(data, "EncRyPt3D_BLO8");
+                found_redacted = true;
+            }
+        }
+        assert!(
+            found_redacted,
+            "outbound API request must include the redacted_thinking block"
+        );
+
+        // Step 4: On-the-wire JSON shape (`type=redacted_thinking`, `data` present).
+        let outbound_json = serde_json::to_value(&blocks).unwrap();
+        let arr = outbound_json.as_array().unwrap();
+        let redacted_json = arr
+            .iter()
+            .find(|v| v["type"] == "redacted_thinking")
+            .expect("redacted_thinking block in JSON");
+        assert_eq!(redacted_json["data"], "EncRyPt3D_BLO8");
+    }
+
+    /// API response wire format for `redacted_thinking` is parsed correctly.
+    #[test]
+    fn test_redacted_thinking_serde() {
+        let json = serde_json::json!({
+            "type": "redacted_thinking",
+            "data": "opaque_blob_xyz"
+        });
+        let block: ResponseContentBlock = serde_json::from_value(json).unwrap();
+        match block {
+            ResponseContentBlock::RedactedThinking { data } => {
+                assert_eq!(data, "opaque_blob_xyz");
+            }
+            _ => panic!("expected RedactedThinking response block"),
+        }
+    }
+
+    /// Empty redacted_thinking blocks (e.g. interrupted stream) must be
+    /// dropped on outbound to avoid sending malformed history.
+    #[test]
+    fn test_redacted_thinking_empty_dropped_outbound() {
+        let assistant_msg = Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::RedactedThinking {
+                    data: String::new(),
+                },
+                ContentBlock::Text {
+                    text: "Hello.".to_string(),
+                    provider_metadata: None,
+                },
+            ]),
+        };
+        let api_msg = convert_message(&assistant_msg);
+        let blocks = match api_msg.content {
+            ApiContent::Blocks(b) => b,
+            _ => panic!("expected Blocks content"),
+        };
+        for block in &blocks {
+            assert!(
+                !matches!(block, ApiContentBlock::RedactedThinking { .. }),
+                "empty redacted_thinking block must be dropped"
+            );
+        }
+        assert!(blocks
+            .iter()
+            .any(|b| matches!(b, ApiContentBlock::Text { .. })));
     }
 }

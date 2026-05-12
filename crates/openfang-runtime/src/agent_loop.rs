@@ -3313,6 +3313,66 @@ mod tests {
         assert_eq!(saved_text, Some(final_text));
     }
 
+    /// Issue #1148 — when the LLM hits MaxTokens, the persisted assistant
+    /// turn must keep `Thinking` and `RedactedThinking` blocks so reasoning
+    /// state survives across the token-limit boundary. The helper used by
+    /// the MaxTokens branches is the same `build_assistant_message_preserving_thinking`
+    /// that EndTurn uses; this test pins that contract for both block types
+    /// so the four MaxTokens persistence sites stay correct.
+    #[test]
+    fn test_build_assistant_message_preserves_redacted_thinking_for_max_tokens() {
+        let response_blocks = vec![
+            ContentBlock::Thinking {
+                thinking: "Mid-stream reasoning".to_string(),
+                signature: Some("sig_xyz".to_string()),
+                provider_metadata: Some(serde_json::json!({
+                    "format": "anthropic_extended_thinking"
+                })),
+            },
+            ContentBlock::RedactedThinking {
+                data: "encrypted_blob_abc".to_string(),
+            },
+            ContentBlock::Text {
+                text: "Partial answer before token limit".to_string(),
+                provider_metadata: None,
+            },
+        ];
+        let final_text = "Partial answer before token limit";
+        let msg = build_assistant_message_preserving_thinking(&response_blocks, final_text);
+        let blocks = match &msg.content {
+            MessageContent::Blocks(b) => b,
+            other => panic!("expected Blocks content for MaxTokens persistence, got {other:?}"),
+        };
+
+        // All reasoning blocks must survive the persistence step so the
+        // follow-up "Please continue." turn carries them back to the model.
+        let has_thinking = blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Thinking { .. }));
+        let has_redacted = blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::RedactedThinking { .. }));
+        assert!(has_thinking, "Thinking block must be preserved on MaxTokens");
+        assert!(
+            has_redacted,
+            "RedactedThinking block must be preserved on MaxTokens"
+        );
+
+        // Verify the opaque blob is byte-identical (Anthropic rejects altered data).
+        for b in blocks {
+            if let ContentBlock::RedactedThinking { data } = b {
+                assert_eq!(data, "encrypted_blob_abc");
+            }
+        }
+
+        // Final text reflects what the user will see.
+        let saved_text = blocks.iter().find_map(|b| match b {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        });
+        assert_eq!(saved_text, Some(final_text));
+    }
+
     #[test]
     fn test_retry_constants() {
         assert_eq!(MAX_RETRIES, 3);
