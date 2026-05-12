@@ -15,6 +15,9 @@ pub fn map_tool_name(openclaw_name: &str) -> Option<&'static str> {
         "Edit" | "edit" => Some("file_write"),
         "Glob" | "glob" | "list_files" => Some("file_list"),
         "Grep" | "grep" => Some("file_list"),
+        "Mkdir" | "mkdir" | "make_directory" | "makeDirectory" | "make_dir" | "makedir"
+        | "create_dir" | "createDir" | "createDirectory" | "new_directory" | "new_folder"
+        | "create_folder" | "createFolder" => Some("create_directory"),
         "Bash" | "bash" | "exec" | "execute_command" => Some("shell_exec"),
         "WebSearch" | "web_search" => Some("web_search"),
         "WebFetch" | "fetch_url" | "web_fetch" => Some("web_fetch"),
@@ -56,6 +59,7 @@ pub fn is_known_openfang_tool(name: &str) -> bool {
         "file_read"
             | "file_write"
             | "file_list"
+            | "create_directory"
             | "shell_exec"
             | "web_search"
             | "web_fetch"
@@ -147,6 +151,14 @@ mod tests {
         assert_eq!(map_tool_name("execute"), Some("shell_exec"));
         assert_eq!(map_tool_name("shell"), Some("shell_exec"));
 
+        // create_directory aliases
+        assert_eq!(map_tool_name("Mkdir"), Some("create_directory"));
+        assert_eq!(map_tool_name("mkdir"), Some("create_directory"));
+        assert_eq!(map_tool_name("make_directory"), Some("create_directory"));
+        assert_eq!(map_tool_name("create_dir"), Some("create_directory"));
+        assert_eq!(map_tool_name("createDirectory"), Some("create_directory"));
+        assert_eq!(map_tool_name("create_folder"), Some("create_directory"));
+
         // Unknown
         assert_eq!(map_tool_name("unknown_tool"), None);
         assert_eq!(map_tool_name(""), None);
@@ -180,6 +192,7 @@ mod tests {
             "file_read",
             "file_write",
             "file_list",
+            "create_directory",
             "shell_exec",
             "web_search",
             "web_fetch",
