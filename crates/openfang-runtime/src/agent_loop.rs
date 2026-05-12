@@ -2119,49 +2119,51 @@ pub async fn run_agent_loop_streaming(
                     // Resolve effective exec policy (per-agent override or global)
                     let effective_exec_policy = manifest.exec_policy.as_ref();
 
-                    // Timeout-wrapped execution
-                    let timeout = tool_timeout_for(&tool_call.name);
-                    let timeout_secs = timeout.as_secs();
-                    let result = match tokio::time::timeout(
-                        timeout,
-                        tool_runner::execute_tool(
-                            &tool_call.id,
-                            &tool_call.name,
-                            &tool_call.input,
-                            kernel.as_ref(),
-                            Some(&allowed_tool_names),
-                            Some(&caller_id_str),
-                            skill_registry,
-                            mcp_connections,
-                            web_ctx,
-                            browser_ctx,
-                            if hand_allowed_env.is_empty() {
-                                None
-                            } else {
-                                Some(&hand_allowed_env)
-                            },
-                            workspace_root,
-                            media_engine,
-                            effective_exec_policy,
-                            tts_engine,
-                            docker_config,
-                            process_manager,
-                        ),
-                    )
-                    .await
-                    {
-                        Ok(result) => result,
-                        Err(_) => {
-                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s (streaming)", timeout_secs);
-                            openfang_types::tool::ToolResult {
-                                tool_use_id: tool_call.id.clone(),
-                                content: format!(
-                                    "Tool '{}' timed out after {}s.",
-                                    tool_call.name, timeout_secs
-                                ),
-                                is_error: true,
+                    // Timeout-wrapped execution. `tool_timeout_for` returns None
+                    // when the operator disabled the timeout (issue #1125).
+                    let timeout_opt = tool_timeout_for(&tool_call.name);
+                    let exec_fut = tool_runner::execute_tool(
+                        &tool_call.id,
+                        &tool_call.name,
+                        &tool_call.input,
+                        kernel.as_ref(),
+                        Some(&allowed_tool_names),
+                        Some(&caller_id_str),
+                        skill_registry,
+                        mcp_connections,
+                        web_ctx,
+                        browser_ctx,
+                        if hand_allowed_env.is_empty() {
+                            None
+                        } else {
+                            Some(&hand_allowed_env)
+                        },
+                        workspace_root,
+                        media_engine,
+                        effective_exec_policy,
+                        tts_engine,
+                        docker_config,
+                        process_manager,
+                    );
+                    let result = match timeout_opt {
+                        Some(timeout) => {
+                            let timeout_secs = timeout.as_secs();
+                            match tokio::time::timeout(timeout, exec_fut).await {
+                                Ok(result) => result,
+                                Err(_) => {
+                                    warn!(tool = %tool_call.name, "Tool execution timed out after {}s (streaming)", timeout_secs);
+                                    openfang_types::tool::ToolResult {
+                                        tool_use_id: tool_call.id.clone(),
+                                        content: format!(
+                                            "Tool '{}' timed out after {}s.",
+                                            tool_call.name, timeout_secs
+                                        ),
+                                        is_error: true,
+                                    }
+                                }
                             }
                         }
+                        None => exec_fut.await,
                     };
 
                     // Fire AfterToolCall hook
@@ -2276,7 +2278,12 @@ pub async fn run_agent_loop_streaming(
                     } else {
                         text
                     };
-                    session.messages.push(Message::assistant(&text));
+                    // Issue #1148: preserve Thinking / RedactedThinking blocks
+                    // present in the response so reasoning state survives
+                    // MaxTokens truncation — same as the EndTurn branch.
+                    let assistant_msg =
+                        build_assistant_message_preserving_thinking(&response.content, &text);
+                    session.messages.push(assistant_msg);
                     if let Err(e) = memory.save_session_async(session).await {
                         warn!("Failed to save session on max continuations: {e}");
                     }
@@ -2307,9 +2314,14 @@ pub async fn run_agent_loop_streaming(
                         directives: Default::default(),
                     });
                 }
+                // Issue #1148: preserve full response content (Thinking,
+                // RedactedThinking, etc.) so reasoning state is not dropped
+                // when continuing across the token-limit boundary.
                 let text = response.text();
-                session.messages.push(Message::assistant(&text));
-                messages.push(Message::assistant(&text));
+                let assistant_msg =
+                    build_assistant_message_preserving_thinking(&response.content, &text);
+                session.messages.push(assistant_msg.clone());
+                messages.push(assistant_msg);
                 session.messages.push(Message::user("Please continue."));
                 messages.push(Message::user("Please continue."));
                 warn!(iteration, "Max tokens hit (streaming), continuing");
