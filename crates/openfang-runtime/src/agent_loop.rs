@@ -3310,12 +3310,65 @@ mod tests {
         assert_eq!(AGENT_TOOL_TIMEOUT_SECS, 600);
     }
 
+    /// All `tool_timeout_for` cases live in one test (defaults plus env
+    /// overrides) to avoid env-var races between parallel test threads.
+    /// Issue #1125: operators on slow local inference (vLLM on old GPUs) need
+    /// to disable or extend the inter-agent timeout via env var.
     #[test]
     fn test_tool_timeout_for_agent_tools() {
-        assert_eq!(tool_timeout_for("agent_send"), Duration::from_secs(600));
-        assert_eq!(tool_timeout_for("agent_spawn"), Duration::from_secs(600));
-        assert_eq!(tool_timeout_for("file_read"), Duration::from_secs(120));
-        assert_eq!(tool_timeout_for("shell_exec"), Duration::from_secs(120));
+        // Baseline: no env overrides → compiled-in defaults.
+        std::env::remove_var("OPENFANG_AGENT_TOOL_TIMEOUT_SECS");
+        std::env::remove_var("OPENFANG_TOOL_TIMEOUT_SECS");
+        assert_eq!(
+            tool_timeout_for("agent_send"),
+            Some(Duration::from_secs(600))
+        );
+        assert_eq!(
+            tool_timeout_for("agent_spawn"),
+            Some(Duration::from_secs(600))
+        );
+        assert_eq!(
+            tool_timeout_for("file_read"),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(
+            tool_timeout_for("shell_exec"),
+            Some(Duration::from_secs(120))
+        );
+
+        // Override: set to 0 → timeout disabled.
+        std::env::set_var("OPENFANG_AGENT_TOOL_TIMEOUT_SECS", "0");
+        std::env::set_var("OPENFANG_TOOL_TIMEOUT_SECS", "0");
+        assert_eq!(tool_timeout_for("agent_send"), None);
+        assert_eq!(tool_timeout_for("agent_spawn"), None);
+        assert_eq!(tool_timeout_for("file_read"), None);
+
+        // Override: custom positive values are honored verbatim.
+        std::env::set_var("OPENFANG_AGENT_TOOL_TIMEOUT_SECS", "1800");
+        std::env::set_var("OPENFANG_TOOL_TIMEOUT_SECS", "300");
+        assert_eq!(
+            tool_timeout_for("agent_send"),
+            Some(Duration::from_secs(1800))
+        );
+        assert_eq!(
+            tool_timeout_for("file_read"),
+            Some(Duration::from_secs(300))
+        );
+
+        // Override: unparseable values fall back to compiled-in defaults.
+        std::env::set_var("OPENFANG_AGENT_TOOL_TIMEOUT_SECS", "not-a-number");
+        std::env::set_var("OPENFANG_TOOL_TIMEOUT_SECS", "");
+        assert_eq!(
+            tool_timeout_for("agent_send"),
+            Some(Duration::from_secs(600))
+        );
+        assert_eq!(
+            tool_timeout_for("file_read"),
+            Some(Duration::from_secs(120))
+        );
+
+        std::env::remove_var("OPENFANG_AGENT_TOOL_TIMEOUT_SECS");
+        std::env::remove_var("OPENFANG_TOOL_TIMEOUT_SECS");
     }
 
     #[test]
