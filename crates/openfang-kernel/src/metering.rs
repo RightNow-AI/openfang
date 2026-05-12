@@ -234,6 +234,12 @@ pub struct BudgetStatus {
 /// Order matters: more specific patterns must come before generic ones
 /// (e.g. "gpt-4o-mini" before "gpt-4o", "gpt-4.1-mini" before "gpt-4.1").
 fn estimate_cost_rates(model: &str) -> (f64, f64) {
+    // ── Requesty (issue #995) ──────────────────────────────────
+    // Router-style gateway. IDs are `requesty/<upstream>/<model>` and
+    // resolve via substring match on the upstream model name below
+    // (e.g. "sonnet", "gpt-4o", "gemini", "deepseek", "llama").
+    // No early-return here — fall through to upstream patterns.
+
     // ── Anthropic ──────────────────────────────────────────────
     if model.contains("haiku") {
         return (0.25, 1.25);

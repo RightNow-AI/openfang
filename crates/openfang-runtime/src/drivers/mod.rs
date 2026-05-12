@@ -21,7 +21,7 @@ use openfang_types::model_catalog::{
     HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
     MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NOVITA_BASE_URL, NVIDIA_NIM_BASE_URL,
     OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL,
-    QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL,
+    QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL,
     VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
     ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
@@ -35,6 +35,64 @@ struct ProviderDefaults {
     key_required: bool,
 }
 
+/// Resolve an OpenAI-compatible base URL for a local/self-hosted provider from
+/// well-known environment variables. Returns `None` if no override is set.
+///
+/// This lets users point Ollama / LM Studio / vLLM / Lemonade at a remote host
+/// (VPS, LXC, another box on the LAN) without editing `~/.openfang/config.toml`.
+///
+/// Recognised variables:
+/// - `ollama`   → `OLLAMA_BASE_URL`, then `OLLAMA_HOST` (Ollama CLI convention)
+/// - `lmstudio` → `LMSTUDIO_BASE_URL`, then `LMSTUDIO_HOST`
+/// - `vllm`     → `VLLM_BASE_URL`, then `VLLM_HOST`
+/// - `lemonade` → `LEMONADE_BASE_URL`, then `LEMONADE_HOST`
+///
+/// `*_HOST` values may omit the scheme and the `/v1` suffix
+/// (e.g. `OLLAMA_HOST=192.168.1.50:11434`); both are normalised.
+pub fn local_provider_url_from_env(provider: &str) -> Option<String> {
+    fn read(var: &str) -> Option<String> {
+        std::env::var(var)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    }
+
+    /// Normalise a host-style value into a full OpenAI-compatible base URL.
+    /// - Adds `http://` if no scheme is present.
+    /// - Appends `/v1` if not already present in the path.
+    fn normalize(raw: &str) -> String {
+        let mut url = if raw.contains("://") {
+            raw.trim_end_matches('/').to_string()
+        } else {
+            format!("http://{}", raw.trim_end_matches('/'))
+        };
+        // Add /v1 suffix if missing (OpenAI-compatible endpoints expect it).
+        // Be lenient: accept either `/v1` or `/v1/` already in place, and also
+        // `/openai/v1` style proxies.
+        let lower = url.to_lowercase();
+        if !lower.ends_with("/v1") && !lower.contains("/v1/") {
+            url.push_str("/v1");
+        }
+        url
+    }
+
+    let (primary, host_fallback) = match provider {
+        "ollama" => ("OLLAMA_BASE_URL", "OLLAMA_HOST"),
+        "lmstudio" => ("LMSTUDIO_BASE_URL", "LMSTUDIO_HOST"),
+        "vllm" => ("VLLM_BASE_URL", "VLLM_HOST"),
+        "lemonade" => ("LEMONADE_BASE_URL", "LEMONADE_HOST"),
+        _ => return None,
+    };
+
+    if let Some(v) = read(primary) {
+        return Some(normalize(&v));
+    }
+    if let Some(v) = read(host_fallback) {
+        return Some(normalize(&v));
+    }
+    None
+}
+
 /// Get defaults for known providers.
 fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
     match provider {
@@ -46,6 +104,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         "openrouter" => Some(ProviderDefaults {
             base_url: OPENROUTER_BASE_URL,
             api_key_env: "OPENROUTER_API_KEY",
+            key_required: true,
+        }),
+        "requesty" => Some(ProviderDefaults {
+            base_url: REQUESTY_BASE_URL,
+            api_key_env: "REQUESTY_API_KEY",
             key_required: true,
         }),
         "deepseek" => Some(ProviderDefaults {
@@ -473,9 +536,14 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             )));
         }
 
+        // Precedence for the base URL:
+        //   1. Explicit `DriverConfig.base_url` (from config.toml or `[provider_urls]`)
+        //   2. Well-known env vars for local providers (`OLLAMA_HOST`, etc.) — issue #1154
+        //   3. Hard-coded provider default (localhost for ollama/lmstudio/vllm/lemonade)
         let base_url = config
             .base_url
             .clone()
+            .or_else(|| local_provider_url_from_env(provider))
             .unwrap_or_else(|| defaults.base_url.to_string());
 
         return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
@@ -629,13 +697,24 @@ pub fn known_providers() -> &'static [&'static str] {
     ]
 }
 
+/// Cross-module env-var serialisation lock for tests that mutate process env.
+///
+/// Several tests in this crate (drivers, model_catalog) set/unset the same
+/// `OLLAMA_*` / `LMSTUDIO_*` env vars and would race under cargo's parallel
+/// test runner. Anything that mutates those vars must hold this lock.
+#[cfg(test)]
+pub(crate) fn env_lock_for_tests() -> &'static std::sync::Mutex<()> {
+    use std::ops::Deref;
+    tests::ENV_LOCK.deref()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::OsString;
     use std::sync::{LazyLock, Mutex};
 
-    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+    pub(super) static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     struct EnvVarGuard {
         key: &'static str,
@@ -1117,5 +1196,115 @@ mod tests {
             driver.is_ok(),
             "unparseable env override should fall through to config field"
         );
+    }
+
+    // ── Issue #1154: env-var URL overrides for local providers ──
+
+    #[test]
+    fn test_local_url_env_ollama_host_normalised() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g1 = EnvVarGuard::remove("OLLAMA_BASE_URL");
+        let _g2 = EnvVarGuard::set("OLLAMA_HOST", "192.168.1.50:11434");
+        let url = local_provider_url_from_env("ollama").expect("env should resolve");
+        assert_eq!(url, "http://192.168.1.50:11434/v1");
+    }
+
+    #[test]
+    fn test_local_url_env_ollama_base_url_wins() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g1 = EnvVarGuard::set("OLLAMA_BASE_URL", "https://llm.example.com/v1");
+        let _g2 = EnvVarGuard::set("OLLAMA_HOST", "should-be-ignored:11434");
+        let url = local_provider_url_from_env("ollama").expect("env should resolve");
+        assert_eq!(url, "https://llm.example.com/v1");
+    }
+
+    #[test]
+    fn test_local_url_env_lmstudio() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g1 = EnvVarGuard::remove("LMSTUDIO_BASE_URL");
+        let _g2 = EnvVarGuard::set("LMSTUDIO_HOST", "http://10.0.0.5:1234");
+        let url = local_provider_url_from_env("lmstudio").expect("env should resolve");
+        assert_eq!(url, "http://10.0.0.5:1234/v1");
+    }
+
+    #[test]
+    fn test_local_url_env_vllm() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g1 = EnvVarGuard::remove("VLLM_BASE_URL");
+        let _g2 = EnvVarGuard::set("VLLM_HOST", "vps.internal:8000");
+        let url = local_provider_url_from_env("vllm").expect("env should resolve");
+        assert_eq!(url, "http://vps.internal:8000/v1");
+    }
+
+    #[test]
+    fn test_local_url_env_unset_returns_none() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g1 = EnvVarGuard::remove("OLLAMA_BASE_URL");
+        let _g2 = EnvVarGuard::remove("OLLAMA_HOST");
+        assert!(local_provider_url_from_env("ollama").is_none());
+    }
+
+    #[test]
+    fn test_local_url_env_only_for_local_providers() {
+        // Cloud providers should never resolve via these helpers — they have
+        // their own *_API_KEY conventions and a fixed cloud base URL.
+        assert!(local_provider_url_from_env("openai").is_none());
+        assert!(local_provider_url_from_env("anthropic").is_none());
+        assert!(local_provider_url_from_env("groq").is_none());
+    }
+
+    #[test]
+    fn test_local_url_env_preserves_existing_v1_suffix() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g1 = EnvVarGuard::set("OLLAMA_BASE_URL", "http://1.2.3.4:11434/v1");
+        let _g2 = EnvVarGuard::remove("OLLAMA_HOST");
+        let url = local_provider_url_from_env("ollama").expect("env should resolve");
+        assert_eq!(url, "http://1.2.3.4:11434/v1");
+    }
+
+    #[test]
+    fn test_create_driver_ollama_uses_env_host() {
+        // End-to-end: when no explicit base_url and no OLLAMA_API_KEY, the
+        // driver should be constructed pointed at the env-supplied host.
+        // (We can't introspect the OpenAIDriver's base_url directly, but
+        // construction succeeds — separate unit covers URL resolution.)
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g1 = EnvVarGuard::remove("OLLAMA_BASE_URL");
+        let _g2 = EnvVarGuard::set("OLLAMA_HOST", "10.20.30.40:11434");
+        let _g3 = EnvVarGuard::remove("OLLAMA_API_KEY");
+
+        let config = DriverConfig {
+            provider: "ollama".to_string(),
+            api_key: None,
+            base_url: None,
+            skip_permissions: true,
+            subprocess_timeout_secs: None,
+        };
+        let driver = create_driver(&config);
+        assert!(
+            driver.is_ok(),
+            "ollama with OLLAMA_HOST set and no API key should construct: {:?}",
+            driver.err()
+        );
+    }
+
+    #[test]
+    fn test_create_driver_lmstudio_no_key_no_env_still_works() {
+        // Pre-#1154 regression guard: lmstudio with no env vars and no API key
+        // should still construct (falls back to localhost default).
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g1 = EnvVarGuard::remove("LMSTUDIO_BASE_URL");
+        let _g2 = EnvVarGuard::remove("LMSTUDIO_HOST");
+        let _g3 = EnvVarGuard::remove("LMSTUDIO_API_KEY");
+
+        let config = DriverConfig {
+            provider: "lmstudio".to_string(),
+            api_key: None,
+            base_url: None,
+            skip_permissions: true,
+            subprocess_timeout_secs: None,
+        };
+        let driver = create_driver(&config);
+        assert!(driver.is_ok(), "lmstudio default should construct");
     }
 }
