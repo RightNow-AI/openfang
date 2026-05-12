@@ -167,8 +167,7 @@ mod tests {
     fn skill_install_request_defaults_back_compat() {
         // Existing callers send `{"name": "..."}` only. New optional fields
         // must default cleanly (issue #1170).
-        let req: SkillInstallRequest =
-            serde_json::from_str(r#"{"name":"github-helper"}"#).unwrap();
+        let req: SkillInstallRequest = serde_json::from_str(r#"{"name":"github-helper"}"#).unwrap();
         assert_eq!(req.name, "github-helper");
         assert!(!req.require_signed);
         assert!(req.allowed_signer_keys.is_empty());

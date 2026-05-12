@@ -1048,7 +1048,9 @@ async fn handle_command(
                         "command": cmd,
                         "message": format!("Hand '{}' deactivated.", instance.hand_id),
                     }),
-                    Err(e) => serde_json::json!({"type": "error", "content": format!("Stop failed: {e}")}),
+                    Err(e) => {
+                        serde_json::json!({"type": "error", "content": format!("Stop failed: {e}")})
+                    }
                 }
             } else {
                 match state.kernel.stop_agent_run(agent_id) {
@@ -1058,7 +1060,9 @@ async fn handle_command(
                     Ok(false) => {
                         serde_json::json!({"type": "command_result", "command": cmd, "message": "No active run to cancel."})
                     }
-                    Err(e) => serde_json::json!({"type": "error", "content": format!("Stop failed: {e}")}),
+                    Err(e) => {
+                        serde_json::json!({"type": "error", "content": format!("Stop failed: {e}")})
+                    }
                 }
             }
         }
@@ -1812,10 +1816,7 @@ mod tests {
         // Cookie signed with the wrong secret must fail.
         let bad = crate::session_auth::create_session_token("alice", "other-secret", 1);
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "cookie",
-            format!("openfang_session={bad}").parse().unwrap(),
-        );
+        headers.insert("cookie", format!("openfang_session={bad}").parse().unwrap());
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "secret",

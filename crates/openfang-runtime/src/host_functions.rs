@@ -258,7 +258,6 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
     })
 }
 
-
 // ---------------------------------------------------------------------------
 // Shell (capability-checked)
 // ---------------------------------------------------------------------------
@@ -561,7 +560,10 @@ mod tests {
         assert!(web_fetch::check_ssrf("http://127.0.0.1:8080/secret", &no_allow).is_err());
         assert!(web_fetch::check_ssrf("http://localhost:3000/api", &no_allow).is_err());
         assert!(web_fetch::check_ssrf("http://169.254.169.254/metadata", &no_allow).is_err());
-        assert!(web_fetch::check_ssrf("http://metadata.google.internal/v1/instance", &no_allow).is_err());
+        assert!(
+            web_fetch::check_ssrf("http://metadata.google.internal/v1/instance", &no_allow)
+                .is_err()
+        );
         // These were previously missing from host_functions — now covered:
         assert!(web_fetch::check_ssrf("http://[::1]:8080/secret", &no_allow).is_err());
         assert!(web_fetch::check_ssrf("http://100.100.100.200/metadata", &no_allow).is_err());

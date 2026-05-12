@@ -144,8 +144,7 @@ impl MatrixAdapter {
                     && status == reqwest::StatusCode::UNAUTHORIZED
                     && is_unknown_token_body(&body_text)
                 {
-                    match try_refresh_tokens(&self.client, &self.homeserver_url, &self.tokens)
-                        .await
+                    match try_refresh_tokens(&self.client, &self.homeserver_url, &self.tokens).await
                     {
                         Ok(()) => {
                             info!("Matrix: access token refreshed via MSC2918, retrying send");
@@ -717,7 +716,8 @@ mod tests {
     #[test]
     fn test_is_unknown_token_body() {
         // Real matrix.org body for M_UNKNOWN_TOKEN under MAS.
-        let body = r#"{"errcode":"M_UNKNOWN_TOKEN","error":"Token is not active","soft_logout":true}"#;
+        let body =
+            r#"{"errcode":"M_UNKNOWN_TOKEN","error":"Token is not active","soft_logout":true}"#;
         assert!(is_unknown_token_body(body));
         assert!(!is_hard_logout(body));
 
@@ -740,19 +740,17 @@ mod tests {
         // access and refresh tokens and returns the new pair.
         use axum::{routing::post, Json, Router};
 
-        async fn refresh_handler(
-            Json(body): Json<serde_json::Value>,
-        ) -> Json<serde_json::Value> {
-                let incoming = body
-                    .get("refresh_token")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                assert_eq!(incoming, "old_refresh");
-                Json(serde_json::json!({
-                    "access_token": "new_access",
-                    "refresh_token": "new_refresh",
-                    "expires_in_ms": 3_600_000u64,
-                }))
+        async fn refresh_handler(Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
+            let incoming = body
+                .get("refresh_token")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            assert_eq!(incoming, "old_refresh");
+            Json(serde_json::json!({
+                "access_token": "new_access",
+                "refresh_token": "new_refresh",
+                "expires_in_ms": 3_600_000u64,
+            }))
         }
 
         let app = Router::new().route("/_matrix/client/v3/refresh", post(refresh_handler));
@@ -779,10 +777,7 @@ mod tests {
         drop(guard);
 
         // Refresh with no refresh token configured must fail cleanly.
-        let no_refresh: TokenPair = Arc::new(RwLock::new((
-            Zeroizing::new("a".to_string()),
-            None,
-        )));
+        let no_refresh: TokenPair = Arc::new(RwLock::new((Zeroizing::new("a".to_string()), None)));
         let err = try_refresh_tokens(&client, &homeserver, &no_refresh)
             .await
             .unwrap_err();

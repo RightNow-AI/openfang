@@ -329,9 +329,7 @@ impl ChannelAdapter for SlackAdapter {
                             // connection during the rotation overlap. Ack on
                             // both, but only forward to the agent once.
                             if is_duplicate_envelope(&seen_envelopes, envelope_id) {
-                                debug!(
-                                    "Slack: skipping duplicate envelope_id {envelope_id}"
-                                );
+                                debug!("Slack: skipping duplicate envelope_id {envelope_id}");
                                 continue;
                             }
 

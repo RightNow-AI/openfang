@@ -3119,8 +3119,7 @@ async fn tool_image_generate(
 
     // Closes #1051: route to a local OpenAI-compatible image generation
     // service when `media.image_gen_base_url` is set.
-    let base_url_override = media_engine
-        .and_then(|e| e.config().image_gen_base_url.as_deref());
+    let base_url_override = media_engine.and_then(|e| e.config().image_gen_base_url.as_deref());
     let result = crate::image_gen::generate_image(&request, base_url_override).await?;
 
     // Save images to workspace if available
@@ -3636,9 +3635,9 @@ fn tool_skill_describe(
         .ok_or("Missing 'name' parameter")?
         .trim();
     let registry = skill_registry.ok_or("No skill registry available")?;
-    let skill = registry
-        .get(name)
-        .ok_or_else(|| format!("Skill '{name}' not found. Use skill_list to see installed skills."))?;
+    let skill = registry.get(name).ok_or_else(|| {
+        format!("Skill '{name}' not found. Use skill_list to see installed skills.")
+    })?;
     let body = skill
         .manifest
         .prompt_context
@@ -3672,9 +3671,9 @@ async fn tool_skill_execute(
         .ok_or("Missing 'skill' parameter")?
         .trim();
     let registry = skill_registry.ok_or("No skill registry available")?;
-    let skill = registry
-        .get(skill_name)
-        .ok_or_else(|| format!("Skill '{skill_name}' not found. Use skill_list to see installed skills."))?;
+    let skill = registry.get(skill_name).ok_or_else(|| {
+        format!("Skill '{skill_name}' not found. Use skill_list to see installed skills.")
+    })?;
 
     // If no tool name was given, default behavior depends on runtime.
     // For prompt-only skills, return the SKILL.md body (most useful response
@@ -4017,14 +4016,14 @@ mod tests {
     async fn test_create_directory_creates_nested() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
-        let result = tool_create_directory(
-            &serde_json::json!({"path": "a/b/c"}),
-            Some(root),
-        )
-        .await;
+        let result = tool_create_directory(&serde_json::json!({"path": "a/b/c"}), Some(root)).await;
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
         let expected = root.join("a").join("b").join("c");
-        assert!(expected.is_dir(), "Expected directory to exist: {}", expected.display());
+        assert!(
+            expected.is_dir(),
+            "Expected directory to exist: {}",
+            expected.display()
+        );
     }
 
     #[tokio::test]
@@ -4032,18 +4031,10 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         // First create
-        let r1 = tool_create_directory(
-            &serde_json::json!({"path": "data/logs"}),
-            Some(root),
-        )
-        .await;
+        let r1 = tool_create_directory(&serde_json::json!({"path": "data/logs"}), Some(root)).await;
         assert!(r1.is_ok());
         // Second create on existing dir should also succeed
-        let r2 = tool_create_directory(
-            &serde_json::json!({"path": "data/logs"}),
-            Some(root),
-        )
-        .await;
+        let r2 = tool_create_directory(&serde_json::json!({"path": "data/logs"}), Some(root)).await;
         assert!(r2.is_ok(), "Expected idempotent success, got: {:?}", r2);
     }
 
@@ -4063,23 +4054,27 @@ mod tests {
             "test-id",
             "create_directory",
             &serde_json::json!({"path": "nested/folder"}),
-            None,            // kernel
-            None,            // allowed_tools
-            None,            // caller_agent_id
-            None,            // skill_registry
-            None,            // mcp_connections
-            None,            // web_ctx
-            None,            // browser_ctx
-            None,            // allowed_env_vars
+            None,                 // kernel
+            None,                 // allowed_tools
+            None,                 // caller_agent_id
+            None,                 // skill_registry
+            None,                 // mcp_connections
+            None,                 // web_ctx
+            None,                 // browser_ctx
+            None,                 // allowed_env_vars
             Some(root.as_path()), // workspace_root
-            None,            // media_engine
-            None,            // exec_policy
-            None,            // tts_engine
-            None,            // docker_config
-            None,            // process_manager
+            None,                 // media_engine
+            None,                 // exec_policy
+            None,                 // tts_engine
+            None,                 // docker_config
+            None,                 // process_manager
         )
         .await;
-        assert!(!result.is_error, "Expected success, got: {}", result.content);
+        assert!(
+            !result.is_error,
+            "Expected success, got: {}",
+            result.content
+        );
         assert!(root.join("nested").join("folder").is_dir());
     }
 

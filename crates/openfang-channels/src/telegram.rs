@@ -1234,9 +1234,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
         assert_eq!(msg.sender.display_name, "Alice Smith");
         assert_eq!(msg.sender.platform_id, "111222333");
@@ -1267,9 +1275,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
 
         // The chat_id (used for replies) stays on sender.platform_id.
         assert_eq!(msg.sender.platform_id, "-1009876543210");
@@ -1308,9 +1324,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
 
         let tg_id = msg
             .metadata
@@ -1345,9 +1369,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agent");
@@ -1379,8 +1411,16 @@ mod tests {
         let client = test_client();
 
         // Empty allowed_users = allow all
-        let msg =
-            parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new()).await;
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await;
         assert!(msg.is_some());
 
         // Non-matching allowed_users = filter out
@@ -1434,9 +1474,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
         assert_eq!(msg.sender.display_name, "Alice Smith");
         assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Edited message!"));
@@ -1472,9 +1520,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agents");
@@ -1498,9 +1554,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         assert!(matches!(msg.content, ChannelContent::Location { .. }));
     }
 
@@ -1524,9 +1588,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         // With a fake token, getFile will fail, so we get a text fallback
         match &msg.content {
             ChannelContent::Text(t) => {
@@ -1561,9 +1633,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.contains("Document received"));
@@ -1594,9 +1674,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.contains("Voice message"));
@@ -1627,9 +1715,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(msg.thread_id, Some("42".to_string()));
         assert!(msg.is_group);
     }
@@ -1649,9 +1745,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(msg.thread_id, None);
         assert!(!msg.is_group);
     }
@@ -1673,9 +1777,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(msg.thread_id, Some("99".to_string()));
     }
 
@@ -1871,9 +1983,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(msg.sender.display_name, "My Channel");
         assert_eq!(msg.sender.platform_id, "-1001234567890");
         assert!(
@@ -1895,8 +2015,16 @@ mod tests {
         });
 
         let client = test_client();
-        let msg =
-            parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new()).await;
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await;
         assert!(msg.is_none());
     }
 
@@ -2162,9 +2290,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.starts_with("[Replying to Bob: We should use Rust]\n\n"));
@@ -2204,9 +2340,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.starts_with("[Replying to Carol: Sunset view]\n\n"));
@@ -2245,9 +2389,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert_eq!(t, "What was that?");
@@ -2283,9 +2435,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert!(t.starts_with("[Replying to Unknown: Anonymous message]\n\n"));
@@ -2310,9 +2470,17 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
-            .await
-            .unwrap();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         match &msg.content {
             ChannelContent::Text(t) => {
                 assert_eq!(t, "Just a normal message");

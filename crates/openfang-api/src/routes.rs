@@ -3856,7 +3856,10 @@ pub async fn audit_append(
     };
     let outcome = req.outcome.clone().unwrap_or_else(|| "ok".to_string());
 
-    let hash = state.kernel.audit_log.record(agent_id, action, detail, outcome);
+    let hash = state
+        .kernel
+        .audit_log
+        .record(agent_id, action, detail, outcome);
     let seq = state.kernel.audit_log.len().saturating_sub(1) as u64;
 
     (
@@ -10063,7 +10066,9 @@ pub async fn clone_agent(
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": format!("Failed to serialize manifest: {e}")})),
+                    Json(
+                        serde_json::json!({"error": format!("Failed to serialize manifest: {e}")}),
+                    ),
                 );
             }
         };
@@ -10240,7 +10245,12 @@ pub async fn list_agent_files(
     // Identity files live in the agent's private state directory (see #1097).
     // Fall back to the legacy workspace location for agents created before the
     // split so existing on-disk files remain reachable.
-    let workspace = match entry.manifest.state_dir.as_ref().or(entry.manifest.workspace.as_ref()) {
+    let workspace = match entry
+        .manifest
+        .state_dir
+        .as_ref()
+        .or(entry.manifest.workspace.as_ref())
+    {
         Some(ws) => ws.clone(),
         None => {
             return (

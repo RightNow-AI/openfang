@@ -460,8 +460,8 @@ impl LlmDriver for OpenAIDriver {
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning_content: None,
-                    reasoning: None,
-                });
+                reasoning: None,
+            });
         }
 
         // Convert messages
@@ -474,8 +474,8 @@ impl LlmDriver for OpenAIDriver {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
-                    reasoning: None,
-                });
+                        reasoning: None,
+                    });
                 }
                 (Role::User, MessageContent::Text(text)) => {
                     oai_messages.push(OaiMessage {
@@ -484,8 +484,8 @@ impl LlmDriver for OpenAIDriver {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
-                    reasoning: None,
-                });
+                        reasoning: None,
+                    });
                 }
                 (Role::Assistant, MessageContent::Text(text)) => {
                     oai_messages.push(OaiMessage {
@@ -494,8 +494,8 @@ impl LlmDriver for OpenAIDriver {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
-                    reasoning: None,
-                });
+                        reasoning: None,
+                    });
                 }
                 (Role::User, MessageContent::Blocks(blocks)) => {
                     // Handle tool results and images in user messages
@@ -519,8 +519,8 @@ impl LlmDriver for OpenAIDriver {
                                     tool_calls: None,
                                     tool_call_id: Some(tool_use_id.clone()),
                                     reasoning_content: None,
-                    reasoning: None,
-                });
+                                    reasoning: None,
+                                });
                             }
                             ContentBlock::Text { text, .. } => {
                                 parts.push(OaiContentPart::Text { text: text.clone() });
@@ -543,8 +543,8 @@ impl LlmDriver for OpenAIDriver {
                             tool_calls: None,
                             tool_call_id: None,
                             reasoning_content: None,
-                    reasoning: None,
-                });
+                            reasoning: None,
+                        });
                     }
                 }
                 (Role::Assistant, MessageContent::Blocks(blocks)) => {
@@ -915,8 +915,8 @@ impl LlmDriver for OpenAIDriver {
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning_content: None,
-                    reasoning: None,
-                });
+                reasoning: None,
+            });
         }
 
         for msg in &request.messages {
@@ -928,8 +928,8 @@ impl LlmDriver for OpenAIDriver {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
-                    reasoning: None,
-                });
+                        reasoning: None,
+                    });
                 }
                 (Role::User, MessageContent::Text(text)) => {
                     oai_messages.push(OaiMessage {
@@ -938,8 +938,8 @@ impl LlmDriver for OpenAIDriver {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
-                    reasoning: None,
-                });
+                        reasoning: None,
+                    });
                 }
                 (Role::Assistant, MessageContent::Text(text)) => {
                     oai_messages.push(OaiMessage {
@@ -948,8 +948,8 @@ impl LlmDriver for OpenAIDriver {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
-                    reasoning: None,
-                });
+                        reasoning: None,
+                    });
                 }
                 (Role::User, MessageContent::Blocks(blocks)) => {
                     for block in blocks {
@@ -969,8 +969,8 @@ impl LlmDriver for OpenAIDriver {
                                 tool_calls: None,
                                 tool_call_id: Some(tool_use_id.clone()),
                                 reasoning_content: None,
-                    reasoning: None,
-                });
+                                reasoning: None,
+                            });
                         }
                     }
                 }
@@ -1492,7 +1492,9 @@ impl LlmDriver for OpenAIDriver {
             // non-zero output_tokens so the agent loop doesn't misclassify
             // this as a "silent failure" and loop unnecessarily.
             if !content.is_empty() && usage.input_tokens == 0 && usage.output_tokens == 0 {
-                debug!("Stream has content but no usage stats â€” setting synthetic output_tokens=1");
+                debug!(
+                    "Stream has content but no usage stats â€” setting synthetic output_tokens=1"
+                );
                 usage.output_tokens = 1;
             }
 
@@ -1956,10 +1958,7 @@ mod tests {
     /// the upstream server is pre- or post-vLLM 0.19.
     #[test]
     fn test_assemble_emits_both_reasoning_fields_for_vllm_compat() {
-        let driver = OpenAIDriver::new(
-            "test".to_string(),
-            "http://localhost:8000/v1".to_string(),
-        );
+        let driver = OpenAIDriver::new("test".to_string(), "http://localhost:8000/v1".to_string());
         let blocks = vec![
             ContentBlock::Thinking {
                 thinking: "MARKER-vllm-019".to_string(),
@@ -1994,8 +1993,7 @@ mod tests {
     /// change in #1157.
     #[test]
     fn test_assemble_no_reasoning_fields_for_plain_model() {
-        let driver =
-            OpenAIDriver::new("test".to_string(), "https://api.openai.com/v1".to_string());
+        let driver = OpenAIDriver::new("test".to_string(), "https://api.openai.com/v1".to_string());
         let blocks = vec![ContentBlock::Text {
             text: "hi".to_string(),
             provider_metadata: None,
@@ -2014,18 +2012,14 @@ mod tests {
     /// understand the new name.
     #[test]
     fn test_assemble_moonshot_keeps_legacy_field_only() {
-        let driver = OpenAIDriver::new(
-            "test".to_string(),
-            "https://api.moonshot.cn/v1".to_string(),
-        );
-        let blocks = vec![
-            ContentBlock::ToolUse {
-                id: "call_1".to_string(),
-                name: "search".to_string(),
-                input: serde_json::json!({"q": "x"}),
-                provider_metadata: None,
-            },
-        ];
+        let driver =
+            OpenAIDriver::new("test".to_string(), "https://api.moonshot.cn/v1".to_string());
+        let blocks = vec![ContentBlock::ToolUse {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            input: serde_json::json!({"q": "x"}),
+            provider_metadata: None,
+        }];
         let msg = assemble_assistant_message(&blocks, "kimi-k2", &driver);
         assert_eq!(
             msg.reasoning_content.as_deref(),
@@ -2174,7 +2168,10 @@ mod tests {
             Some(OaiMessageContent::Text(t)) => t,
             _ => panic!("expected text content"),
         };
-        assert_eq!(content, "answer", "visible content must not include <think>");
+        assert_eq!(
+            content, "answer",
+            "visible content must not include <think>"
+        );
         assert_eq!(
             msg.reasoning_content.as_deref(),
             Some("internal chain-of-thought"),
@@ -2186,8 +2183,7 @@ mod tests {
     /// assistant message â€” preserve the legacy shape.
     #[test]
     fn test_assemble_assistant_no_thinking_is_plain() {
-        let driver =
-            OpenAIDriver::new("test".to_string(), "https://api.openai.com/v1".to_string());
+        let driver = OpenAIDriver::new("test".to_string(), "https://api.openai.com/v1".to_string());
         let blocks = vec![ContentBlock::Text {
             text: "Hi.".to_string(),
             provider_metadata: None,

@@ -60,11 +60,8 @@ impl InstallOptions {
 
 /// Well-known filenames the installer searches for a detached signature
 /// envelope, in priority order.
-const SIGNATURE_CANDIDATES: &[&str] = &[
-    "signature.json",
-    "skill.toml.sig.json",
-    "SKILL.md.sig.json",
-];
+const SIGNATURE_CANDIDATES: &[&str] =
+    &["signature.json", "skill.toml.sig.json", "SKILL.md.sig.json"];
 
 /// Normalize a manifest text for content-binding comparison.
 ///
@@ -167,10 +164,7 @@ pub fn load_signature(skill_dir: &Path) -> Result<Option<SignedManifest>, SkillE
 /// Returns `SkillError::SecurityBlocked` when enforcement is on and the
 /// skill fails any of those checks. On failure the caller is expected to
 /// remove `skill_dir` to keep the skills directory clean.
-pub fn enforce_require_signed(
-    skill_dir: &Path,
-    opts: &InstallOptions,
-) -> Result<(), SkillError> {
+pub fn enforce_require_signed(skill_dir: &Path, opts: &InstallOptions) -> Result<(), SkillError> {
     if !opts.require_signed {
         return Ok(());
     }
@@ -214,8 +208,7 @@ pub fn enforce_require_signed(
     // CRLF→LF normalization (applied symmetrically to both sides).
     // `package.json` is included because openclaw_compat treats it as a
     // valid SKILL manifest source.
-    const MANIFEST_CANDIDATES: &[&str] =
-        &["skill.toml", "SKILL.md", "skill.md", "package.json"];
+    const MANIFEST_CANDIDATES: &[&str] = &["skill.toml", "SKILL.md", "skill.md", "package.json"];
     let normalized_envelope = normalize_manifest_text(&envelope.manifest);
     let mut bound = false;
     for name in MANIFEST_CANDIDATES {

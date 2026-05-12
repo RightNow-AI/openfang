@@ -722,7 +722,8 @@ mod tests {
         assert_eq!(resolved, None);
 
         // Missing channel_id on the wire — no match (the binding is restrictive).
-        let resolved = router.resolve_with_channel_id(&ChannelType::Discord, "any-user", None, None);
+        let resolved =
+            router.resolve_with_channel_id(&ChannelType::Discord, "any-user", None, None);
         assert_eq!(resolved, None);
     }
 

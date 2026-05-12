@@ -69,8 +69,7 @@ fn env_timeout_secs(var: &str) -> Option<u64> {
 fn tool_timeout_for(tool_name: &str) -> Option<Duration> {
     let secs = match tool_name {
         "agent_send" | "agent_spawn" => {
-            env_timeout_secs("OPENFANG_AGENT_TOOL_TIMEOUT_SECS")
-                .unwrap_or(AGENT_TOOL_TIMEOUT_SECS)
+            env_timeout_secs("OPENFANG_AGENT_TOOL_TIMEOUT_SECS").unwrap_or(AGENT_TOOL_TIMEOUT_SECS)
         }
         _ => env_timeout_secs("OPENFANG_TOOL_TIMEOUT_SECS").unwrap_or(TOOL_TIMEOUT_SECS),
     };
@@ -3271,7 +3270,9 @@ mod tests {
         assert_eq!(blocks.len(), 2, "must preserve thinking + text");
         match &blocks[0] {
             ContentBlock::Thinking {
-                thinking, signature, ..
+                thinking,
+                signature,
+                ..
             } => {
                 assert_eq!(thinking, "Let me reason carefully...");
                 assert_eq!(signature.as_deref(), Some("sig_anthropic_xyz"));
@@ -3367,7 +3368,10 @@ mod tests {
         let has_redacted = blocks
             .iter()
             .any(|b| matches!(b, ContentBlock::RedactedThinking { .. }));
-        assert!(has_thinking, "Thinking block must be preserved on MaxTokens");
+        assert!(
+            has_thinking,
+            "Thinking block must be preserved on MaxTokens"
+        );
         assert!(
             has_redacted,
             "RedactedThinking block must be preserved on MaxTokens"
@@ -3409,9 +3413,9 @@ mod tests {
             MessageContent::Blocks(b) => b,
             other => panic!("expected Blocks content for redacted-only turn, got {other:?}"),
         };
-        let has_redacted = blocks
-            .iter()
-            .any(|b| matches!(b, ContentBlock::RedactedThinking { data } if data == "encrypted_only"));
+        let has_redacted = blocks.iter().any(
+            |b| matches!(b, ContentBlock::RedactedThinking { data } if data == "encrypted_only"),
+        );
         assert!(
             has_redacted,
             "RedactedThinking-only turn must be preserved as Blocks"

@@ -328,9 +328,7 @@ fn convert_content_block(block: &ContentBlock) -> Option<BedrockContentBlock> {
             }
         }
         // Image, Thinking, and Unknown are not supported — silently drop
-        ContentBlock::Image { .. }
-        | ContentBlock::Thinking { .. }
-        | ContentBlock::Unknown => None,
+        ContentBlock::Image { .. } | ContentBlock::Thinking { .. } | ContentBlock::Unknown => None,
     }
 }
 

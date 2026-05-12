@@ -434,7 +434,9 @@ mod tests {
         let restored: ContentBlock = serde_json::from_str(&serialized).unwrap();
         match restored {
             ContentBlock::Thinking {
-                thinking, signature, ..
+                thinking,
+                signature,
+                ..
             } => {
                 assert_eq!(thinking, "Let me reason about this carefully...");
                 assert_eq!(
@@ -517,7 +519,9 @@ mod tests {
                 assert_eq!(blocks.len(), 2);
                 match &blocks[0] {
                     ContentBlock::Thinking {
-                        thinking, signature, ..
+                        thinking,
+                        signature,
+                        ..
                     } => {
                         assert_eq!(thinking, "Internal reasoning");
                         assert_eq!(signature.as_deref(), Some("sig_xyz"));
@@ -547,8 +551,7 @@ mod tests {
     fn test_provider_msg_id_is_recorded_but_not_primary() {
         // The LLM-supplied identifier is preserved for debugging only — the
         // server-generated `msg_id` is unchanged and remains the primary key.
-        let msg =
-            Message::assistant("hi").with_provider_msg_id("msg_abc123_anthropic_collidable");
+        let msg = Message::assistant("hi").with_provider_msg_id("msg_abc123_anthropic_collidable");
         assert_eq!(
             msg.provider_msg_id.as_deref(),
             Some("msg_abc123_anthropic_collidable")

@@ -1086,11 +1086,10 @@ impl OpenFangKernel {
             openfang_runtime::media_understanding::MediaEngine::new(config.media.clone());
         // Closes #1051: thread MediaConfig URL overrides into the TTS engine
         // so local OpenAI/ElevenLabs-compatible services can be targeted.
-        let tts_engine = openfang_runtime::tts::TtsEngine::new(config.tts.clone())
-            .with_base_urls(
-                config.media.tts_openai_base_url.clone(),
-                config.media.tts_elevenlabs_base_url.clone(),
-            );
+        let tts_engine = openfang_runtime::tts::TtsEngine::new(config.tts.clone()).with_base_urls(
+            config.media.tts_openai_base_url.clone(),
+            config.media.tts_elevenlabs_base_url.clone(),
+        );
         let mut pairing = crate::pairing::PairingManager::new(config.pairing.clone());
 
         // Load paired devices from database and set up persistence callback
@@ -1246,16 +1245,16 @@ impl OpenFangKernel {
             }
 
             let audit_log_for_cb = Arc::clone(&kernel.audit_log);
-            kernel.hand_registry.set_audit_callback(Arc::new(
-                move |hand_id: &str, hash: &str| {
+            kernel
+                .hand_registry
+                .set_audit_callback(Arc::new(move |hand_id: &str, hash: &str| {
                     audit_log_for_cb.record(
                         "kernel",
                         openfang_runtime::audit::AuditAction::ConfigChange,
                         format!("HAND.toml reload hand={hand_id} sha256={hash}"),
                         "ok",
                     );
-                },
-            ));
+                }));
         }
 
         // Restore persisted agents from SQLite
@@ -1541,9 +1540,7 @@ impl OpenFangKernel {
                     }
                 }
                 if auto_spawned > 0 {
-                    info!(
-                        "Auto-spawned {auto_spawned} agent(s) from ~/.openfang/agents"
-                    );
+                    info!("Auto-spawned {auto_spawned} agent(s) from ~/.openfang/agents");
                 }
             }
         }
@@ -1705,7 +1702,10 @@ impl OpenFangKernel {
         // does not specify one. When the user sets `workspace = "/path"` in
         // agent.toml we leave that path alone — only data/, output/, skills/
         // get created lazily so private state never pollutes the target dir.
-        let workspace_dir = manifest.workspace.clone().unwrap_or_else(|| state_dir.clone());
+        let workspace_dir = manifest
+            .workspace
+            .clone()
+            .unwrap_or_else(|| state_dir.clone());
         ensure_state_dir(&state_dir, &workspace_dir)?;
         ensure_workspace(&workspace_dir)?;
         if manifest.generate_identity_files {
@@ -2127,7 +2127,10 @@ impl OpenFangKernel {
         // to the same path unless the manifest already pinned one. See #1097.
         if manifest.state_dir.is_none() {
             let state_dir = self.config.effective_workspaces_dir().join(&manifest.name);
-            let workspace_dir = manifest.workspace.clone().unwrap_or_else(|| state_dir.clone());
+            let workspace_dir = manifest
+                .workspace
+                .clone()
+                .unwrap_or_else(|| state_dir.clone());
             if let Err(e) = ensure_state_dir(&state_dir, &workspace_dir) {
                 warn!(agent_id = %agent_id, "Failed to backfill state_dir (streaming): {e}");
             }
@@ -2699,7 +2702,10 @@ impl OpenFangKernel {
         // state_dir). See issue #1097.
         if manifest.state_dir.is_none() {
             let state_dir = self.config.effective_workspaces_dir().join(&manifest.name);
-            let workspace_dir = manifest.workspace.clone().unwrap_or_else(|| state_dir.clone());
+            let workspace_dir = manifest
+                .workspace
+                .clone()
+                .unwrap_or_else(|| state_dir.clone());
             if let Err(e) = ensure_state_dir(&state_dir, &workspace_dir) {
                 warn!(agent_id = %agent_id, "Failed to backfill state_dir: {e}");
             }
@@ -5511,9 +5517,7 @@ impl OpenFangKernel {
             }
             for var in skill.manifest.config.values() {
                 if let Some(env_name) = var.env.as_deref() {
-                    if let Some(providers) =
-                        env_to_provider.get(&env_name.to_ascii_uppercase())
-                    {
+                    if let Some(providers) = env_to_provider.get(&env_name.to_ascii_uppercase()) {
                         for provider in providers {
                             set.insert(provider.clone());
                         }
@@ -5528,9 +5532,7 @@ impl OpenFangKernel {
         // wired that provider into their MCP server.
         for server in &self.config.mcp_servers {
             for env_name in &server.env {
-                if let Some(providers) =
-                    env_to_provider.get(&env_name.to_ascii_uppercase())
-                {
+                if let Some(providers) = env_to_provider.get(&env_name.to_ascii_uppercase()) {
                     for provider in providers {
                         set.insert(provider.clone());
                     }
@@ -8022,8 +8024,7 @@ mod tests {
 
         assert_eq!(merged.description, "new", "TOML edits must apply");
         assert_eq!(
-            merged.workspace,
-            entry.workspace,
+            merged.workspace, entry.workspace,
             "kernel-assigned workspace must survive a TOML edit that omits it"
         );
         assert!(
@@ -8438,9 +8439,7 @@ mod tests {
         let first_instance_id = instance.instance_id;
 
         // Sanity: hand is Active and re-activation is rejected.
-        assert!(kernel
-            .activate_hand("lead", HashMap::new(), None)
-            .is_err());
+        assert!(kernel.activate_hand("lead", HashMap::new(), None).is_err());
 
         // Simulate what POST /api/agents/{id}/stop now does for a hand-owned
         // agent: look up the instance and deactivate the hand (which also
@@ -8880,7 +8879,8 @@ mod tests {
             "fallback timeout edits must be hot-reloadable"
         );
         assert!(
-            plan.hot_actions.contains(&HotAction::ReloadFallbackProviders),
+            plan.hot_actions
+                .contains(&HotAction::ReloadFallbackProviders),
             "ReloadFallbackProviders must be present in the plan"
         );
 
@@ -9160,9 +9160,7 @@ mod tests {
 
     #[test]
     fn test_1188_referenced_providers_walks_mcp_env() {
-        use openfang_types::config::{
-            DefaultModelConfig, McpServerConfigEntry, McpTransportEntry,
-        };
+        use openfang_types::config::{DefaultModelConfig, McpServerConfigEntry, McpTransportEntry};
 
         let tmp = tempfile::tempdir().unwrap();
         let home_dir = tmp.path().join("openfang-1188-mcp");

@@ -1660,10 +1660,7 @@ async fn test_clone_agent_happy_path() {
     assert_eq!(manifest["description"], "Cloned for user 1");
     assert_eq!(
         manifest["tags"].as_array().unwrap(),
-        &vec![
-            serde_json::json!("clone"),
-            serde_json::json!("user-1"),
-        ]
+        &vec![serde_json::json!("clone"), serde_json::json!("user-1"),]
     );
     // Inherited from template — the system_prompt should match.
     assert_eq!(
@@ -1678,10 +1675,7 @@ async fn test_clone_agent_happy_path() {
         .await
         .unwrap();
     let agents: Vec<serde_json::Value> = resp.json().await.unwrap();
-    let names: Vec<&str> = agents
-        .iter()
-        .map(|a| a["name"].as_str().unwrap())
-        .collect();
+    let names: Vec<&str> = agents.iter().map(|a| a["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"test-agent"));
     assert!(names.contains(&"cloned-user-1"));
 }
@@ -1731,10 +1725,7 @@ async fn test_clone_agent_name_collision() {
         "duplicate name must return 409 Conflict"
     );
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .contains("already exists"));
+    assert!(body["error"].as_str().unwrap().contains("already exists"));
 
     // Cloning into the template's own name must also be rejected.
     let resp = client

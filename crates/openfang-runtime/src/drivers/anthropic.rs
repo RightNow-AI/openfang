@@ -189,7 +189,9 @@ enum ContentBlockAccum {
     /// Redacted (encrypted) thinking block streamed from Anthropic.
     /// The opaque `data` blob arrives on `content_block_start` and must be
     /// persisted so the next turn can echo it back verbatim.
-    RedactedThinking { data: String },
+    RedactedThinking {
+        data: String,
+    },
 }
 
 #[async_trait]
@@ -454,10 +456,8 @@ impl LlmDriver for AnthropicDriver {
                                 "thinking" => {
                                     // Some API versions ship the signature on
                                     // content_block_start instead of as a delta.
-                                    let initial_sig = block["signature"]
-                                        .as_str()
-                                        .unwrap_or("")
-                                        .to_string();
+                                    let initial_sig =
+                                        block["signature"].as_str().unwrap_or("").to_string();
                                     blocks.push(ContentBlockAccum::Thinking {
                                         thinking: String::new(),
                                         signature: initial_sig,
@@ -470,10 +470,7 @@ impl LlmDriver for AnthropicDriver {
                                     // verbatim so we can echo it back on the
                                     // next request — API rejects history
                                     // that strips redacted_thinking blocks.
-                                    let data = block["data"]
-                                        .as_str()
-                                        .unwrap_or("")
-                                        .to_string();
+                                    let data = block["data"].as_str().unwrap_or("").to_string();
                                     blocks.push(ContentBlockAccum::RedactedThinking { data });
                                 }
                                 _ => {}
@@ -751,9 +748,7 @@ fn convert_message(msg: &Message) -> ApiMessage {
                         if data.is_empty() {
                             None
                         } else {
-                            Some(ApiContentBlock::RedactedThinking {
-                                data: data.clone(),
-                            })
+                            Some(ApiContentBlock::RedactedThinking { data: data.clone() })
                         }
                     }
                     ContentBlock::Unknown => None,
