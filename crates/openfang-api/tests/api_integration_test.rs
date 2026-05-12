@@ -103,6 +103,10 @@ async fn start_test_server_with_provider(
             axum::routing::delete(routes::kill_agent),
         )
         .route(
+            "/api/agents/{id}/clone",
+            axum::routing::post(routes::clone_agent),
+        )
+        .route(
             "/api/triggers",
             axum::routing::get(routes::list_triggers).post(routes::create_trigger),
         )
@@ -380,6 +384,7 @@ async fn test_agent_session_filters_system_messages() {
             content: openfang_types::message::MessageContent::Text(
                 "INTERNAL SYSTEM PROMPT — must not leak to UI".to_string(),
             ),
+            ..Default::default()
         },
         Message::user("hello"),
         Message::assistant("hi there"),
@@ -875,6 +880,10 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         .route(
             "/api/agents/{id}",
             axum::routing::delete(routes::kill_agent),
+        )
+        .route(
+            "/api/agents/{id}/clone",
+            axum::routing::post(routes::clone_agent),
         )
         .route(
             "/api/triggers",
@@ -1516,4 +1525,205 @@ async fn test_cron_jobs_delivery_targets_roundtrip() {
     assert_eq!(targets[0]["append"], true);
     assert_eq!(targets[1]["type"], "webhook");
     assert_eq!(targets[1]["url"], "http://example.com/pulse");
+}
+
+// ---------------------------------------------------------------------------
+// Clone agent endpoint tests (issue #868)
+// ---------------------------------------------------------------------------
+
+/// Happy path: clone an existing template agent into a new agent with a
+/// distinct name. The clone must get a fresh ID, fresh workspace path, and
+/// inherit non-name manifest fields from the template.
+#[tokio::test]
+async fn test_clone_agent_happy_path() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    // Spawn a template agent.
+    let resp = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let template_id = body["agent_id"].as_str().unwrap().to_string();
+
+    // Clone it.
+    let resp = client
+        .post(format!(
+            "{}/api/agents/{}/clone",
+            server.base_url, template_id
+        ))
+        .json(&serde_json::json!({
+            "new_name": "cloned-user-1",
+            "overrides": {
+                "description": "Cloned for user 1",
+                "tags": ["clone", "user-1"]
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201, "clone should succeed");
+    let body: serde_json::Value = resp.json().await.unwrap();
+
+    let new_id = body["agent_id"].as_str().unwrap();
+    assert_ne!(new_id, template_id, "clone must have a fresh agent ID");
+    assert_eq!(body["name"], "cloned-user-1");
+
+    // The full manifest should be returned and reflect the new name + overrides.
+    let manifest = &body["manifest"];
+    assert!(manifest.is_object(), "manifest must be returned");
+    assert_eq!(manifest["name"], "cloned-user-1");
+    assert_eq!(manifest["description"], "Cloned for user 1");
+    assert_eq!(
+        manifest["tags"].as_array().unwrap(),
+        &vec![
+            serde_json::json!("clone"),
+            serde_json::json!("user-1"),
+        ]
+    );
+    // Inherited from template — the system_prompt should match.
+    assert_eq!(
+        manifest["model"]["system_prompt"],
+        "You are a test agent. Reply concisely."
+    );
+
+    // The agent list should now contain both template and clone.
+    let resp = client
+        .get(format!("{}/api/agents", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    let agents: Vec<serde_json::Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = agents
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"test-agent"));
+    assert!(names.contains(&"cloned-user-1"));
+}
+
+/// Cloning into a name that's already taken must fail with 409 Conflict.
+#[tokio::test]
+async fn test_clone_agent_name_collision() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    // Spawn a template agent named "test-agent".
+    let resp = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let template_id = body["agent_id"].as_str().unwrap().to_string();
+
+    // First clone — succeeds.
+    let resp = client
+        .post(format!(
+            "{}/api/agents/{}/clone",
+            server.base_url, template_id
+        ))
+        .json(&serde_json::json!({"new_name": "duplicate-name"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Second clone with the same name — must be rejected.
+    let resp = client
+        .post(format!(
+            "{}/api/agents/{}/clone",
+            server.base_url, template_id
+        ))
+        .json(&serde_json::json!({"new_name": "duplicate-name"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        409,
+        "duplicate name must return 409 Conflict"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("already exists"));
+
+    // Cloning into the template's own name must also be rejected.
+    let resp = client
+        .post(format!(
+            "{}/api/agents/{}/clone",
+            server.base_url, template_id
+        ))
+        .json(&serde_json::json!({"new_name": "test-agent"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+}
+
+/// Cloning a non-existent template must return 404.
+#[tokio::test]
+async fn test_clone_agent_template_not_found() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    // Random valid UUID that does not match any agent.
+    let bogus_id = "00000000-0000-0000-0000-000000000000";
+    let resp = client
+        .post(format!("{}/api/agents/{}/clone", server.base_url, bogus_id))
+        .json(&serde_json::json!({"new_name": "ghost-clone"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("Template agent not found"));
+
+    // Malformed agent id → 400.
+    let resp = client
+        .post(format!("{}/api/agents/not-a-uuid/clone", server.base_url))
+        .json(&serde_json::json!({"new_name": "ghost-clone"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+/// Empty new_name must be rejected with 400.
+#[tokio::test]
+async fn test_clone_agent_empty_name_rejected() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    // Spawn a template agent.
+    let resp = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let template_id = body["agent_id"].as_str().unwrap().to_string();
+
+    let resp = client
+        .post(format!(
+            "{}/api/agents/{}/clone",
+            server.base_url, template_id
+        ))
+        .json(&serde_json::json!({"new_name": "   "}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
 }

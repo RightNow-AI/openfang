@@ -215,6 +215,12 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
             let ready = matches!(e.state, openfang_types::agent::AgentState::Running)
                 && auth_status != "missing";
 
+            // Issue #1026: surface which agents are currently calling the LLM
+            // so the dashboard can render a live "inferencing" indicator.
+            // A running task in the kernel's `running_tasks` map means the
+            // agent loop is in flight (LLM call + tool dispatch).
+            let is_inferencing = state.kernel.running_tasks.contains_key(&e.id);
+
             serde_json::json!({
                 "id": e.id.to_string(),
                 "name": e.name,
@@ -227,6 +233,7 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
                 "model_tier": tier,
                 "auth_status": auth_status,
                 "ready": ready,
+                "is_inferencing": is_inferencing,
                 "profile": e.manifest.profile,
                 "identity": {
                     "emoji": e.identity.emoji,
@@ -321,6 +328,7 @@ pub fn inject_attachments_into_session(
     session.messages.push(Message {
         role: Role::User,
         content: MessageContent::Blocks(image_blocks),
+        ..Default::default()
     });
 
     if let Err(e) = kernel.memory.save_session(&session) {
@@ -9697,12 +9705,49 @@ pub async fn patch_agent_config(
 // ---------------------------------------------------------------------------
 
 /// Request body for cloning an agent.
+///
+/// `overrides` is a free-form JSON object that is deep-merged onto the cloned
+/// manifest before spawning. This lets callers tweak fields like `description`,
+/// `tags`, `model`, etc. without re-stating the entire manifest. The `name`
+/// field on `overrides` is ignored — `new_name` always wins.
 #[derive(serde::Deserialize)]
 pub struct CloneAgentRequest {
     pub new_name: String,
+    #[serde(default)]
+    pub overrides: Option<serde_json::Value>,
 }
 
-/// POST /api/agents/{id}/clone — Clone an agent with its workspace files.
+/// Workspace files that contain accumulated memory or per-session state and
+/// MUST NOT be copied when cloning an agent. The cloned agent starts with
+/// independent memory by design (see issue #868).
+const MEMORY_FILES: &[&str] = &["MEMORY.md", "HEARTBEAT.md"];
+
+/// Deep-merge `overrides` onto `base` JSON. Object fields are recursively
+/// merged; arrays and scalars are replaced.
+fn deep_merge_json(base: &mut serde_json::Value, overrides: serde_json::Value) {
+    match (base, overrides) {
+        (serde_json::Value::Object(base_map), serde_json::Value::Object(over_map)) => {
+            for (k, v) in over_map {
+                match base_map.get_mut(&k) {
+                    Some(existing) => deep_merge_json(existing, v),
+                    None => {
+                        base_map.insert(k, v);
+                    }
+                }
+            }
+        }
+        (slot, value) => {
+            *slot = value;
+        }
+    }
+}
+
+/// POST /api/agents/{template_id}/clone — Clone a template agent into a new
+/// independent agent with its own workspace and memory.
+///
+/// Body: `{ "new_name": "user-42", "overrides": { ... } }`
+///
+/// Returns: `{ "agent_id": "...", "name": "...", "manifest": { ... } }`
 pub async fn clone_agent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -9713,7 +9758,7 @@ pub async fn clone_agent(
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid agent ID"})),
+                Json(serde_json::json!({"error": "Invalid template agent ID"})),
             );
         }
     };
@@ -9725,29 +9770,86 @@ pub async fn clone_agent(
         );
     }
 
-    if req.new_name.trim().is_empty() {
+    let new_name = req.new_name.trim().to_string();
+    if new_name.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "new_name cannot be empty"})),
         );
     }
 
+    // Reject names with path separators / control chars to keep workspace dir naming safe.
+    if new_name
+        .chars()
+        .any(|c| c == '/' || c == '\\' || c == '\0' || c.is_control())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "new_name contains invalid characters"})),
+        );
+    }
+
+    // Reject if template doesn't exist.
     let source = match state.kernel.registry.get(agent_id) {
         Some(e) => e,
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Agent not found"})),
+                Json(serde_json::json!({"error": "Template agent not found"})),
             );
         }
     };
 
-    // Deep-clone manifest with new name
-    let mut cloned_manifest = source.manifest.clone();
-    cloned_manifest.name = req.new_name.clone();
-    cloned_manifest.workspace = None; // Let kernel assign a new workspace
+    // Reject if new_name collides with an existing agent.
+    if state.kernel.registry.find_by_name(&new_name).is_some() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!("An agent named '{}' already exists", new_name)
+            })),
+        );
+    }
 
-    // Spawn the cloned agent
+    // Deep-clone manifest and apply overrides.
+    let mut cloned_manifest = source.manifest.clone();
+    if let Some(overrides) = req.overrides.clone() {
+        if !overrides.is_object() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "overrides must be a JSON object"})),
+            );
+        }
+        // Serialize manifest to JSON, merge overrides, deserialize back.
+        // This lets callers patch arbitrary nested fields without exhaustive enumeration.
+        let mut manifest_json = match serde_json::to_value(&cloned_manifest) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("Failed to serialize manifest: {e}")})),
+                );
+            }
+        };
+        deep_merge_json(&mut manifest_json, overrides);
+        cloned_manifest = match serde_json::from_value(manifest_json) {
+            Ok(m) => m,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(
+                        serde_json::json!({"error": format!("Invalid overrides — manifest no longer valid: {e}")}),
+                    ),
+                );
+            }
+        };
+    }
+
+    // new_name always wins over any name field in overrides.
+    cloned_manifest.name = new_name.clone();
+    // Let the kernel assign a fresh workspace path — never share with the template.
+    cloned_manifest.workspace = None;
+
+    // Spawn the cloned agent.
     let new_id = match state.kernel.spawn_agent(cloned_manifest) {
         Ok(id) => id,
         Err(e) => {
@@ -9758,41 +9860,84 @@ pub async fn clone_agent(
         }
     };
 
-    // Copy workspace files from source to destination
+    // Copy non-memory workspace files from source to destination.
+    // MEMORY.md and HEARTBEAT.md are intentionally skipped — the cloned agent
+    // must start with independent memory (issue #868).
     let new_entry = state.kernel.registry.get(new_id);
-    if let (Some(ref src_ws), Some(ref new_entry)) = (source.manifest.workspace, new_entry) {
+    if let (Some(ref src_ws), Some(ref new_entry)) = (&source.manifest.workspace, &new_entry) {
         if let Some(ref dst_ws) = new_entry.manifest.workspace {
-            // Security: canonicalize both paths
             if let (Ok(src_can), Ok(dst_can)) = (src_ws.canonicalize(), dst_ws.canonicalize()) {
                 for &fname in KNOWN_IDENTITY_FILES {
+                    if MEMORY_FILES.contains(&fname) {
+                        continue;
+                    }
                     let src_file = src_can.join(fname);
                     let dst_file = dst_can.join(fname);
                     if src_file.exists() {
                         let _ = std::fs::copy(&src_file, &dst_file);
                     }
                 }
+                // Copy the `skills/` subdirectory if present so curated skills
+                // travel with the template.
+                let src_skills = src_can.join("skills");
+                let dst_skills = dst_can.join("skills");
+                if src_skills.is_dir() {
+                    let _ = copy_dir_recursive(&src_skills, &dst_skills);
+                }
             }
         }
     }
 
-    // Copy identity from source
+    // Copy visual identity from source so the clone looks like the template.
     let _ = state
         .kernel
         .registry
         .update_identity(new_id, source.identity.clone());
 
-    // Register in channel router so binding resolution finds the cloned agent
+    // Register in channel router so binding resolution finds the cloned agent.
     if let Some(ref mgr) = *state.bridge_manager.lock().await {
-        mgr.router().register_agent(req.new_name.clone(), new_id);
+        mgr.router().register_agent(new_name.clone(), new_id);
     }
+
+    // Return the freshly-spawned manifest (after kernel assigned workspace etc).
+    let manifest_value = new_entry
+        .as_ref()
+        .and_then(|e| serde_json::to_value(&e.manifest).ok())
+        .unwrap_or(serde_json::Value::Null);
 
     (
         StatusCode::CREATED,
         Json(serde_json::json!({
             "agent_id": new_id.to_string(),
-            "name": req.new_name,
+            "name": new_name,
+            "manifest": manifest_value,
         })),
     )
+}
+
+/// Recursively copy a directory tree. Skips any file whose name appears in
+/// `MEMORY_FILES`. Best-effort: errors on individual entries are swallowed so
+/// a clone can still partially succeed (the caller will see the new agent ID).
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        if let Some(name_str) = name.to_str() {
+            if MEMORY_FILES.contains(&name_str) {
+                continue;
+            }
+        }
+        let src_path = entry.path();
+        let dst_path = dst.join(&name);
+        if file_type.is_dir() {
+            let _ = copy_dir_recursive(&src_path, &dst_path);
+        } else if file_type.is_file() {
+            let _ = std::fs::copy(&src_path, &dst_path);
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
