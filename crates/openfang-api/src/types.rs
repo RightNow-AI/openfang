@@ -125,6 +125,40 @@ pub struct CommandsQuery {
     pub surface: Option<String>,
 }
 
+/// Request body for `POST /api/audit/append` (issue #1174).
+///
+/// Lets external (instance-side) wrappers append entries to the Merkle hash
+/// chain audit log. The handler maps `event_type` to an `AuditAction` and
+/// records the entry through `kernel.audit_log`.
+#[derive(Debug, Deserialize)]
+pub struct AuditAppendRequest {
+    /// Operator-supplied event category. Case-insensitive, matched against the
+    /// `AuditAction` enum variants (e.g. `tool_invoke`, `ConfigChange`,
+    /// `agent_message`). Unknown values fall back to `ToolInvoke`.
+    pub event_type: String,
+    /// Agent or wrapper identifier responsible for the event. When empty,
+    /// recorded as `"external-wrapper"`.
+    #[serde(default)]
+    pub agent_id: String,
+    /// Free-form detail string (e.g. tool name, URL, file path).
+    #[serde(default)]
+    pub detail: String,
+    /// Optional arbitrary payload. When present it is serialised to JSON and
+    /// appended onto the entry's detail so the wrapper retains structured
+    /// context without changing the on-chain schema.
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
+    /// Optional outcome string (`"ok"`, `"denied"`, or an error). Defaults to
+    /// `"ok"` when omitted.
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// Optional operator-supplied signing context (e.g. wrapper identity, key
+    /// fingerprint). Mixed into the detail when present so the chain captures
+    /// who attested to the event.
+    #[serde(default)]
+    pub signing_context: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +182,39 @@ mod tests {
         .unwrap();
         assert!(req.require_signed);
         assert_eq!(req.allowed_signer_keys, vec!["abc123".to_string()]);
+    }
+
+    #[test]
+    fn audit_append_request_required_only() {
+        // Only `event_type` is required; everything else must default.
+        let req: AuditAppendRequest =
+            serde_json::from_str(r#"{"event_type":"ToolInvoke"}"#).unwrap();
+        assert_eq!(req.event_type, "ToolInvoke");
+        assert!(req.agent_id.is_empty());
+        assert!(req.detail.is_empty());
+        assert!(req.payload.is_none());
+        assert!(req.outcome.is_none());
+        assert!(req.signing_context.is_none());
+    }
+
+    #[test]
+    fn audit_append_request_full_payload() {
+        let body = r#"{
+            "event_type": "config_change",
+            "agent_id": "wrapper-1",
+            "detail": "rotated key",
+            "payload": {"key_id": "k-42", "ts": 1700000000},
+            "outcome": "ok",
+            "signing_context": "ed25519:deadbeef"
+        }"#;
+        let req: AuditAppendRequest = serde_json::from_str(body).unwrap();
+        assert_eq!(req.event_type, "config_change");
+        assert_eq!(req.agent_id, "wrapper-1");
+        assert_eq!(req.detail, "rotated key");
+        assert_eq!(req.outcome.as_deref(), Some("ok"));
+        assert_eq!(req.signing_context.as_deref(), Some("ed25519:deadbeef"));
+        let payload = req.payload.expect("payload present");
+        assert_eq!(payload["key_id"], "k-42");
+        assert_eq!(payload["ts"], 1_700_000_000);
     }
 }

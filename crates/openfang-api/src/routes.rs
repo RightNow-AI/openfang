@@ -3767,6 +3767,109 @@ pub async fn reload_skills(State(state): State<Arc<AppState>>) -> impl IntoRespo
     Json(serde_json::json!({"status": "reloaded"}))
 }
 
+/// POST /api/audit/append — Append an entry to the Merkle hash chain audit
+/// trail on behalf of an external (instance-side) wrapper (issue #1174).
+///
+/// RBAC: gated by the same bearer-token middleware as POST /api/skills/install
+/// (see `middleware::auth_middleware`). When `api_key` is configured every
+/// caller must present `Authorization: Bearer <key>` — wrappers running in the
+/// same trust boundary as the daemon are expected to share that key.
+pub async fn audit_append(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AuditAppendRequest>,
+) -> impl IntoResponse {
+    use openfang_runtime::audit::AuditAction;
+
+    // SECURITY: bound input sizes so a wrapper cannot wedge the chain with
+    // unbounded strings. The audit table stores TEXT columns and the chain
+    // hash is computed over the same bytes — keep it sane.
+    const MAX_FIELD: usize = 16 * 1024;
+    if req.event_type.len() > MAX_FIELD
+        || req.agent_id.len() > MAX_FIELD
+        || req.detail.len() > MAX_FIELD
+        || req
+            .outcome
+            .as_ref()
+            .map(|s| s.len() > MAX_FIELD)
+            .unwrap_or(false)
+        || req
+            .signing_context
+            .as_ref()
+            .map(|s| s.len() > MAX_FIELD)
+            .unwrap_or(false)
+    {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": "field exceeds 16KB limit"})),
+        );
+    }
+
+    // Map operator-supplied event_type → AuditAction (case-insensitive).
+    let action = match req.event_type.trim().to_ascii_lowercase().as_str() {
+        "toolinvoke" | "tool_invoke" | "tool" => AuditAction::ToolInvoke,
+        "capabilitycheck" | "capability_check" | "capability" => AuditAction::CapabilityCheck,
+        "agentspawn" | "agent_spawn" | "spawn" => AuditAction::AgentSpawn,
+        "agentkill" | "agent_kill" | "kill" => AuditAction::AgentKill,
+        "agentmessage" | "agent_message" | "message" => AuditAction::AgentMessage,
+        "memoryaccess" | "memory_access" | "memory" => AuditAction::MemoryAccess,
+        "fileaccess" | "file_access" | "file" => AuditAction::FileAccess,
+        "networkaccess" | "network_access" | "network" => AuditAction::NetworkAccess,
+        "shellexec" | "shell_exec" | "shell" => AuditAction::ShellExec,
+        "authattempt" | "auth_attempt" | "auth" => AuditAction::AuthAttempt,
+        "wireconnect" | "wire_connect" | "wire" => AuditAction::WireConnect,
+        "configchange" | "config_change" | "config" => AuditAction::ConfigChange,
+        other => {
+            tracing::warn!(
+                "audit_append: unknown event_type {other:?}, falling back to ToolInvoke"
+            );
+            AuditAction::ToolInvoke
+        }
+    };
+
+    // Compose a detail string that preserves the operator's free-form detail
+    // plus optional signing context and structured payload, so wrappers can
+    // attach context without changing the on-chain schema.
+    let mut detail = req.detail.clone();
+    if let Some(ctx) = req.signing_context.as_ref().filter(|s| !s.is_empty()) {
+        if !detail.is_empty() {
+            detail.push_str(" | ");
+        }
+        detail.push_str("signer=");
+        detail.push_str(ctx);
+    }
+    if let Some(payload) = req.payload.as_ref() {
+        let serialised = serde_json::to_string(payload)
+            .unwrap_or_else(|_| String::from("<unserialisable payload>"));
+        // Cap payload contribution so a huge JSON blob cannot blow the entry.
+        let truncated: String = serialised.chars().take(8 * 1024).collect();
+        if !detail.is_empty() {
+            detail.push_str(" | ");
+        }
+        detail.push_str("payload=");
+        detail.push_str(&truncated);
+    }
+
+    let agent_id = if req.agent_id.trim().is_empty() {
+        "external-wrapper".to_string()
+    } else {
+        req.agent_id.clone()
+    };
+    let outcome = req.outcome.clone().unwrap_or_else(|| "ok".to_string());
+
+    let hash = state.kernel.audit_log.record(agent_id, action, detail, outcome);
+    let seq = state.kernel.audit_log.len().saturating_sub(1) as u64;
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "appended",
+            "seq": seq,
+            "hash": hash,
+            "tip": state.kernel.audit_log.tip_hash(),
+        })),
+    )
+}
+
 /// GET /api/marketplace/search — Search the FangHub marketplace.
 pub async fn marketplace_search(
     Query(params): Query<HashMap<String, String>>,

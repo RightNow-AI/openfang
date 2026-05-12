@@ -394,6 +394,11 @@ pub async fn build_router(
             "/api/skills/reload",
             axum::routing::post(routes::reload_skills),
         )
+        // Audit trail (issue #1174 — instance-side wrapper integration)
+        .route(
+            "/api/audit/append",
+            axum::routing::post(routes::audit_append),
+        )
         .route(
             "/api/skills/{id}/config",
             axum::routing::get(routes::get_skill_config).put(routes::put_skill_config),
