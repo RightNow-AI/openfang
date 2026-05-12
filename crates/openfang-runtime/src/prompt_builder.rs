@@ -519,7 +519,7 @@ pub fn tool_category(name: &str) -> &'static str {
 
         "memory_store" | "memory_recall" | "memory_delete" | "memory_list" => "Memory",
 
-        "agent_send" | "agent_spawn" | "agent_list" | "agent_kill" => "Agents",
+        "agent_send" | "agent_spawn" | "agent_list" | "agent_kill" | "agent_activate" => "Agents",
 
         "image_describe" | "image_generate" | "audio_transcribe" | "tts_speak" => "Media",
 
@@ -581,6 +581,7 @@ pub fn tool_hint(name: &str) -> &'static str {
         "agent_spawn" => "create a new agent",
         "agent_list" => "list running agents",
         "agent_kill" => "terminate an agent",
+        "agent_activate" => "wake up an inactive agent so it can receive work",
 
         // Media
         "image_describe" => "describe an image",

@@ -299,6 +299,7 @@ pub async fn execute_tool(
         "agent_spawn" => tool_agent_spawn(input, kernel, caller_agent_id).await,
         "agent_list" => tool_agent_list(kernel),
         "agent_kill" => tool_agent_kill(input, kernel),
+        "agent_activate" => tool_agent_activate(input, kernel),
 
         // Shared memory tools
         "memory_store" => tool_memory_store(input, kernel),
@@ -690,6 +691,24 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "agent_id": { "type": "string", "description": "The agent's UUID to kill" }
+                },
+                "required": ["agent_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "agent_activate".to_string(),
+            description: "Activate (wake up) an inactive agent so it can receive messages \
+                          and process events. Use this when agent_list shows an agent in a \
+                          Suspended, Crashed, or Created state and you want to delegate work \
+                          to it via agent_send. Terminated agents cannot be revived."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "The target agent's UUID or human-readable name"
+                    }
                 },
                 "required": ["agent_id"]
             }),
@@ -1694,6 +1713,20 @@ fn tool_agent_kill(
         .ok_or("Missing 'agent_id' parameter")?;
     kh.kill_agent(agent_id)?;
     Ok(format!("Agent {agent_id} killed successfully."))
+}
+
+fn tool_agent_activate(
+    input: &serde_json::Value,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+) -> Result<String, String> {
+    let kh = require_kernel(kernel)?;
+    let agent_id = input["agent_id"]
+        .as_str()
+        .ok_or("Missing 'agent_id' parameter")?;
+    let name = kh.activate_agent(agent_id)?;
+    Ok(format!(
+        "Agent '{name}' activated. It is now Running and ready to receive messages."
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -3420,6 +3453,8 @@ mod tests {
         assert!(names.contains(&"agent_spawn"));
         assert!(names.contains(&"agent_list"));
         assert!(names.contains(&"agent_kill"));
+        // Issue #890 — wake up inactive agents
+        assert!(names.contains(&"agent_activate"));
         assert!(names.contains(&"memory_store"));
         assert!(names.contains(&"memory_recall"));
         // 6 collaboration tools

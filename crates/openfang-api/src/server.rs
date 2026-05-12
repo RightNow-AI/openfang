@@ -200,6 +200,12 @@ pub async fn build_router(
             axum::routing::post(routes::restart_agent),
         )
         .route(
+            // Issue #890 — alias so dashboards and external orchestrators can
+            // wake an inactive agent via a verb that matches the agent_activate tool.
+            "/api/agents/{id}/activate",
+            axum::routing::post(routes::restart_agent),
+        )
+        .route(
             "/api/agents/{id}/message",
             axum::routing::post(routes::send_message),
         )

@@ -43,6 +43,15 @@ pub trait KernelHandle: Send + Sync {
     /// Kill an agent by ID.
     fn kill_agent(&self, agent_id: &str) -> Result<(), String>;
 
+    /// Activate (wake up) an inactive agent by ID, flipping its state to Running.
+    /// Used by orchestrator agents to dispatch work to currently inactive agents
+    /// (Suspended, Crashed, or never-started). Terminated agents cannot be revived.
+    /// Returns the agent's name on success.
+    fn activate_agent(&self, agent_id: &str) -> Result<String, String> {
+        let _ = agent_id;
+        Err("Agent activation not available".to_string())
+    }
+
     /// Store a value in shared memory (cross-agent accessible).
     fn memory_store(&self, key: &str, value: serde_json::Value) -> Result<(), String>;
 

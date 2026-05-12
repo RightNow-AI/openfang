@@ -3482,6 +3482,44 @@ impl OpenFangKernel {
         ))
     }
 
+    /// Activate (wake up) an inactive agent — flips Suspended/Crashed/Created
+    /// state back to Running so it can receive messages and process events again.
+    ///
+    /// Returns the agent's name on success. `Terminated` agents cannot be
+    /// activated (they have been removed from the registry). `Running` agents
+    /// are a no-op (returns name, last_active is refreshed).
+    ///
+    /// See issue #890 — allows an orchestrator agent to wake other agents.
+    pub fn activate_agent(&self, agent_id: AgentId) -> KernelResult<String> {
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+        })?;
+
+        if entry.state == AgentState::Terminated {
+            return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                "Agent {} is Terminated and cannot be activated",
+                entry.name
+            ))));
+        }
+
+        let was_state = entry.state;
+        let name = entry.name.clone();
+        drop(entry);
+
+        self.registry
+            .set_state(agent_id, AgentState::Running)
+            .map_err(KernelError::OpenFang)?;
+
+        info!(
+            agent = %name,
+            id = %agent_id,
+            previous_state = ?was_state,
+            "Agent activated"
+        );
+
+        Ok(name)
+    }
+
     /// Kill an agent.
     pub fn kill_agent(&self, agent_id: AgentId) -> KernelResult<()> {
         let entry = self
@@ -6823,6 +6861,19 @@ impl KernelHandle for OpenFangKernel {
         OpenFangKernel::kill_agent(self, id).map_err(|e| format!("Kill failed: {e}"))
     }
 
+    fn activate_agent(&self, agent_id: &str) -> Result<String, String> {
+        // Accept UUID or human-readable name.
+        let id: AgentId = match agent_id.parse() {
+            Ok(id) => id,
+            Err(_) => self
+                .registry
+                .find_by_name(agent_id)
+                .map(|e| e.id)
+                .ok_or_else(|| format!("Agent not found: {agent_id}"))?,
+        };
+        OpenFangKernel::activate_agent(self, id).map_err(|e| format!("Activate failed: {e}"))
+    }
+
     fn memory_store(&self, key: &str, value: serde_json::Value) -> Result<(), String> {
         let agent_id = shared_memory_agent_id();
         self.memory
@@ -7983,6 +8034,132 @@ mod tests {
             entry.manifest.tool_blocklist.is_empty(),
             "hand activation should not set a runtime blocklist by default"
         );
+
+        kernel.shutdown();
+    }
+
+    // ----------------------------------------------------------------------
+    // Issue #890: activate_agent — wake up inactive agents
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn test_activate_agent_wakes_suspended_and_crashed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-kernel-activate-test");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+
+        // Suspended agent: should flip to Running.
+        let suspended = register_test_agent(&kernel, "sleepy");
+        kernel
+            .registry
+            .set_state(suspended, AgentState::Suspended)
+            .unwrap();
+        let name = kernel
+            .activate_agent(suspended)
+            .expect("activate suspended agent");
+        assert_eq!(name, "sleepy");
+        assert_eq!(
+            kernel.registry.get(suspended).unwrap().state,
+            AgentState::Running
+        );
+
+        // Crashed agent: should also flip to Running.
+        let crashed = register_test_agent(&kernel, "broken");
+        kernel
+            .registry
+            .set_state(crashed, AgentState::Crashed)
+            .unwrap();
+        kernel.activate_agent(crashed).expect("activate crashed");
+        assert_eq!(
+            kernel.registry.get(crashed).unwrap().state,
+            AgentState::Running
+        );
+
+        // Created (never-started) agent: should also flip to Running.
+        let created = register_test_agent(&kernel, "freshly-baked");
+        kernel
+            .registry
+            .set_state(created, AgentState::Created)
+            .unwrap();
+        kernel.activate_agent(created).expect("activate created");
+        assert_eq!(
+            kernel.registry.get(created).unwrap().state,
+            AgentState::Running
+        );
+
+        // Already-running agent: idempotent, stays Running, no error.
+        kernel.activate_agent(crashed).expect("idempotent activate");
+        assert_eq!(
+            kernel.registry.get(crashed).unwrap().state,
+            AgentState::Running
+        );
+
+        // Terminated agent: rejected.
+        let dead = register_test_agent(&kernel, "zombie");
+        kernel
+            .registry
+            .set_state(dead, AgentState::Terminated)
+            .unwrap();
+        assert!(
+            kernel.activate_agent(dead).is_err(),
+            "Terminated agents must not be revivable"
+        );
+
+        // Unknown agent ID: rejected.
+        assert!(kernel.activate_agent(AgentId::new()).is_err());
+
+        kernel.shutdown();
+    }
+
+    #[test]
+    fn test_activate_agent_handle_accepts_name_and_uuid() {
+        use openfang_runtime::kernel_handle::KernelHandle;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-kernel-activate-handle-test");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+
+        let agent = register_test_agent(&kernel, "worker");
+        kernel
+            .registry
+            .set_state(agent, AgentState::Suspended)
+            .unwrap();
+
+        // Wake by name.
+        let name = KernelHandle::activate_agent(&kernel, "worker").expect("activate by name");
+        assert_eq!(name, "worker");
+        assert_eq!(
+            kernel.registry.get(agent).unwrap().state,
+            AgentState::Running
+        );
+
+        // Put it back to sleep then wake by UUID string.
+        kernel
+            .registry
+            .set_state(agent, AgentState::Suspended)
+            .unwrap();
+        KernelHandle::activate_agent(&kernel, &agent.to_string()).expect("activate by uuid");
+        assert_eq!(
+            kernel.registry.get(agent).unwrap().state,
+            AgentState::Running
+        );
+
+        // Unknown name returns Err.
+        assert!(KernelHandle::activate_agent(&kernel, "ghost").is_err());
 
         kernel.shutdown();
     }
