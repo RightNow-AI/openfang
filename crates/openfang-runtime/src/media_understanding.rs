@@ -24,6 +24,13 @@ impl MediaEngine {
         }
     }
 
+    /// Read-only access to the media configuration. Used by callers that
+    /// need the URL overrides (e.g. image_gen_base_url for #1051) without
+    /// taking ownership of the engine.
+    pub fn config(&self) -> &MediaConfig {
+        &self.config
+    }
+
     /// Describe an image using a vision-capable LLM.
     /// Auto-cascade: Anthropic -> OpenAI -> Gemini (based on API key availability).
     pub async fn describe_image(

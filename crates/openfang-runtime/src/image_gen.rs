@@ -7,7 +7,15 @@ use tracing::warn;
 /// Generate images via OpenAI's image generation API.
 ///
 /// Requires OPENAI_API_KEY to be set.
-pub async fn generate_image(request: &ImageGenRequest) -> Result<ImageGenResult, String> {
+///
+/// `base_url_override` (sourced from `MediaConfig.image_gen_base_url`) lets
+/// callers redirect the request to a local OpenAI-compatible image service
+/// (e.g. Lemonade/Flux, LM Studio). When `None`, the hardcoded
+/// `https://api.openai.com/v1/images/generations` endpoint is used. Closes #1051.
+pub async fn generate_image(
+    request: &ImageGenRequest,
+    base_url_override: Option<&str>,
+) -> Result<ImageGenResult, String> {
     // Validate request
     request.validate()?;
 
@@ -30,9 +38,19 @@ pub async fn generate_image(request: &ImageGenRequest) -> Result<ImageGenResult,
         body["quality"] = serde_json::json!(request.quality);
     }
 
+    // `image_gen_base_url` (config.media.image_gen_base_url) overrides the
+    // hardcoded provider URL when set, allowing the same OpenAI-compat JSON
+    // wire format to be sent to a local image generation service
+    // (Lemonade/Flux, LM Studio, etc.) instead of the cloud provider. The
+    // Authorization header is still built from `OPENAI_API_KEY`; local
+    // services typically accept any non-empty bearer token. Closes #1051.
+    let url = base_url_override
+        .map(|base| format!("{}/v1/images/generations", base.trim_end_matches('/')))
+        .unwrap_or_else(|| "https://api.openai.com/v1/images/generations".to_string());
+
     let client = reqwest::Client::new();
     let response = client
-        .post("https://api.openai.com/v1/images/generations")
+        .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&body)
@@ -199,6 +217,38 @@ mod tests {
             };
             assert!(req.validate().is_ok(), "Failed for size {size}");
         }
+    }
+
+    /// Closes #1051: when `image_gen_base_url` is set, the URL building
+    /// logic must use the override (with `/v1/images/generations` appended)
+    /// and strip any trailing slash from the user-supplied base. When unset,
+    /// the hardcoded provider URL is used.
+    #[test]
+    fn test_image_gen_base_url_override_logic() {
+        // Helper mirroring the URL construction in `generate_image`.
+        fn build(base: Option<&str>) -> String {
+            base.map(|b| format!("{}/v1/images/generations", b.trim_end_matches('/')))
+                .unwrap_or_else(|| "https://api.openai.com/v1/images/generations".to_string())
+        }
+
+        // Default: hardcoded URL preserved (backward compatibility).
+        assert_eq!(build(None), "https://api.openai.com/v1/images/generations");
+
+        // Override applied.
+        assert_eq!(
+            build(Some("http://127.0.0.1:7000")),
+            "http://127.0.0.1:7000/v1/images/generations"
+        );
+
+        // Trailing slash on the user-supplied base is stripped.
+        assert_eq!(
+            build(Some("http://127.0.0.1:7000/")),
+            "http://127.0.0.1:7000/v1/images/generations"
+        );
+        assert_eq!(
+            build(Some("https://images.example.com/")),
+            "https://images.example.com/v1/images/generations"
+        );
     }
 
     #[test]

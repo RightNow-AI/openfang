@@ -1056,7 +1056,13 @@ impl OpenFangKernel {
         // Initialize media understanding engine
         let media_engine =
             openfang_runtime::media_understanding::MediaEngine::new(config.media.clone());
-        let tts_engine = openfang_runtime::tts::TtsEngine::new(config.tts.clone());
+        // Closes #1051: thread MediaConfig URL overrides into the TTS engine
+        // so local OpenAI/ElevenLabs-compatible services can be targeted.
+        let tts_engine = openfang_runtime::tts::TtsEngine::new(config.tts.clone())
+            .with_base_urls(
+                config.media.tts_openai_base_url.clone(),
+                config.media.tts_elevenlabs_base_url.clone(),
+            );
         let mut pairing = crate::pairing::PairingManager::new(config.pairing.clone());
 
         // Load paired devices from database and set up persistence callback

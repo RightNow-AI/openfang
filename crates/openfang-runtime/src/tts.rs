@@ -19,11 +19,38 @@ pub struct TtsResult {
 /// Text-to-speech engine.
 pub struct TtsEngine {
     config: TtsConfig,
+    /// Optional override for OpenAI TTS base URL. When set, the engine POSTs
+    /// to `<openai_base_url>/v1/audio/speech` instead of the hardcoded
+    /// `https://api.openai.com/v1/audio/speech`. Sourced from
+    /// `MediaConfig.tts_openai_base_url`. Closes #1051.
+    openai_base_url: Option<String>,
+    /// Optional override for ElevenLabs TTS base URL. When set, the engine
+    /// POSTs to `<elevenlabs_base_url>/v1/text-to-speech/{voice_id}` instead
+    /// of the hardcoded `https://api.elevenlabs.io/...`. Sourced from
+    /// `MediaConfig.tts_elevenlabs_base_url`. Closes #1051.
+    elevenlabs_base_url: Option<String>,
 }
 
 impl TtsEngine {
     pub fn new(config: TtsConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            openai_base_url: None,
+            elevenlabs_base_url: None,
+        }
+    }
+
+    /// Attach optional base-URL overrides from `MediaConfig`. Use this to
+    /// route TTS calls at a local OpenAI-compatible service (e.g.
+    /// Lemonade/Kokoro, LM Studio) or an ElevenLabs proxy. Closes #1051.
+    pub fn with_base_urls(
+        mut self,
+        openai_base_url: Option<String>,
+        elevenlabs_base_url: Option<String>,
+    ) -> Self {
+        self.openai_base_url = openai_base_url;
+        self.elevenlabs_base_url = elevenlabs_base_url;
+        self
     }
 
     /// Detect which TTS provider is available based on environment variables.
@@ -100,9 +127,21 @@ impl TtsEngine {
             "speed": self.config.openai.speed,
         });
 
+        // `tts_openai_base_url` (config.media.tts_openai_base_url) overrides
+        // the hardcoded provider URL when set, allowing the same OpenAI-compat
+        // JSON wire format to be sent to a local TTS service (Lemonade/Kokoro,
+        // LM Studio, etc.) instead of the cloud provider. The Authorization
+        // header is still built from `OPENAI_API_KEY`; local services typically
+        // accept any non-empty bearer token. Closes #1051.
+        let url = self
+            .openai_base_url
+            .as_deref()
+            .map(|base| format!("{}/v1/audio/speech", base.trim_end_matches('/')))
+            .unwrap_or_else(|| "https://api.openai.com/v1/audio/speech".to_string());
+
         let client = reqwest::Client::new();
         let response = client
-            .post("https://api.openai.com/v1/audio/speech")
+            .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
             .json(&body)
@@ -161,7 +200,17 @@ impl TtsEngine {
             std::env::var("ELEVENLABS_API_KEY").map_err(|_| "ELEVENLABS_API_KEY not set")?;
 
         let voice_id = voice_override.unwrap_or(&self.config.elevenlabs.voice_id);
-        let url = format!("https://api.elevenlabs.io/v1/text-to-speech/{}", voice_id);
+        // `tts_elevenlabs_base_url` (config.media.tts_elevenlabs_base_url)
+        // overrides the hardcoded provider URL when set, allowing the same
+        // ElevenLabs JSON wire format to be routed through a proxy or
+        // self-hosted ElevenLabs-compatible gateway. The `xi-api-key` header
+        // still comes from `ELEVENLABS_API_KEY`. Closes #1051.
+        let base = self
+            .elevenlabs_base_url
+            .as_deref()
+            .map(|b| b.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| "https://api.elevenlabs.io".to_string());
+        let url = format!("{}/v1/text-to-speech/{}", base, voice_id);
 
         let body = serde_json::json!({
             "text": text,
@@ -305,5 +354,89 @@ mod tests {
     #[test]
     fn test_max_audio_constant() {
         assert_eq!(MAX_AUDIO_RESPONSE_BYTES, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_with_base_urls_sets_overrides() {
+        let engine = TtsEngine::new(default_config()).with_base_urls(
+            Some("http://127.0.0.1:8000".to_string()),
+            Some("http://127.0.0.1:9000".to_string()),
+        );
+        assert_eq!(
+            engine.openai_base_url.as_deref(),
+            Some("http://127.0.0.1:8000")
+        );
+        assert_eq!(
+            engine.elevenlabs_base_url.as_deref(),
+            Some("http://127.0.0.1:9000")
+        );
+    }
+
+    /// Closes #1051: when the OpenAI TTS base URL is overridden, the URL
+    /// building logic must append `/v1/audio/speech` and strip any trailing
+    /// slash. When unset, the hardcoded provider URL is used.
+    #[test]
+    fn test_tts_openai_base_url_override_logic() {
+        // Helper mirroring the URL construction in `synthesize_openai`.
+        fn build(base: Option<&str>) -> String {
+            base.map(|b| format!("{}/v1/audio/speech", b.trim_end_matches('/')))
+                .unwrap_or_else(|| "https://api.openai.com/v1/audio/speech".to_string())
+        }
+
+        // Default: hardcoded URL preserved (backward compatibility).
+        assert_eq!(build(None), "https://api.openai.com/v1/audio/speech");
+
+        // Override applied.
+        assert_eq!(
+            build(Some("http://127.0.0.1:8000")),
+            "http://127.0.0.1:8000/v1/audio/speech"
+        );
+
+        // Trailing slash on the user-supplied base is stripped.
+        assert_eq!(
+            build(Some("http://127.0.0.1:8000/")),
+            "http://127.0.0.1:8000/v1/audio/speech"
+        );
+        assert_eq!(
+            build(Some("https://tts.example.com/")),
+            "https://tts.example.com/v1/audio/speech"
+        );
+    }
+
+    /// Closes #1051: when the ElevenLabs TTS base URL is overridden, the URL
+    /// building logic must append `/v1/text-to-speech/{voice_id}` and strip
+    /// any trailing slash. When unset, the hardcoded provider URL is used.
+    #[test]
+    fn test_tts_elevenlabs_base_url_override_logic() {
+        fn build(base: Option<&str>, voice_id: &str) -> String {
+            let b = base
+                .map(|b| b.trim_end_matches('/').to_string())
+                .unwrap_or_else(|| "https://api.elevenlabs.io".to_string());
+            format!("{}/v1/text-to-speech/{}", b, voice_id)
+        }
+
+        let voice = "21m00Tcm4TlvDq8ikWAM";
+
+        // Default: hardcoded URL preserved.
+        assert_eq!(
+            build(None, voice),
+            format!("https://api.elevenlabs.io/v1/text-to-speech/{voice}")
+        );
+
+        // Override applied.
+        assert_eq!(
+            build(Some("http://127.0.0.1:9000"), voice),
+            format!("http://127.0.0.1:9000/v1/text-to-speech/{voice}")
+        );
+
+        // Trailing slash stripped.
+        assert_eq!(
+            build(Some("http://127.0.0.1:9000/"), voice),
+            format!("http://127.0.0.1:9000/v1/text-to-speech/{voice}")
+        );
+        assert_eq!(
+            build(Some("https://eleven.example.com/"), voice),
+            format!("https://eleven.example.com/v1/text-to-speech/{voice}")
+        );
     }
 }
