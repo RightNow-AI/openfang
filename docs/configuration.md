@@ -301,10 +301,11 @@ volumes:
 
 If you prefer mounting `config.toml`, the file must live at `/data/config.toml` inside the container (because of `OPENFANG_HOME=/data`). Placing it at `/opt/openfang/config.toml` or any other path will not be picked up. The port in `api_listen` must also match the port published in `ports:` — the example config in `openfang.toml.example` ships with port `50051` to be safe; change it to `4200` (or whatever port you publish) when running in Docker.
 
-**Security warning.** Once you bind to a non-loopback address, anyone reachable at that address can talk to the API. OpenFang's middleware enforces a fail-closed default:
+**Security warning.** Once you bind to a non-loopback address, anyone reachable at that address can talk to the API. OpenFang's middleware enforces a fail-closed default on authenticated routes:
 
-- If `api_key` is empty AND dashboard auth is disabled AND the bind address is not loopback, all non-loopback requests are rejected with `401 Unauthorized`.
-- To run in this configuration anyway (not recommended), set `OPENFANG_ALLOW_NO_AUTH=1`. This will be loudly logged.
+- If `api_key` is empty AND dashboard auth is disabled AND the bind address is not loopback, authenticated routes reject non-loopback requests with `401 Unauthorized`.
+- A small set of public routes (health check, static assets, OAuth callback) remain reachable so the dashboard can render its login page. They do not expose agent data or accept commands.
+- To run with full open access anyway (not recommended), set `OPENFANG_ALLOW_NO_AUTH=1`. This will be loudly logged.
 
 The supported ways to expose the dashboard safely:
 

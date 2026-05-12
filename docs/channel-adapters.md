@@ -284,6 +284,20 @@ The Telegram adapter uses long-polling via the `getUpdates` API. It polls every 
 
 Messages from authorized users are converted to `ChannelMessage` events and routed to the configured agent. Responses are sent back via the `sendMessage` API. Long responses are automatically split into multiple messages to respect Telegram's 4096-character limit using the shared `split_message()` utility.
 
+### Per-User Identity (`telegram_user_id`)
+
+Every inbound Telegram message exposes the sender's numeric Telegram user_id under `message.metadata["telegram_user_id"]` as a string. This is the stable, permanent identifier from `message.from.id` (or `message.sender_chat.id` for channel/group posts).
+
+Display names are not unique and can change, so agents that need deterministic per-user behavior — RBAC, per-user workspaces, family-assistant style memory keyed by person — should key on `telegram_user_id`, not `sender.display_name`.
+
+The bridge also injects the id into the prompt prefix when no `sender_email` is set:
+
+```
+[From: Alena (tg_id:554772934)] Hello!
+```
+
+Agents can read the raw metadata field via tool calls that expose `ChannelMessage.metadata` (the prompt prefix is a convenience for plain LLM context). `sender.platform_id` continues to hold the **chat_id** (not user_id), since replies are addressed to the chat, not the user.
+
 ### Interactive Setup
 
 ```bash

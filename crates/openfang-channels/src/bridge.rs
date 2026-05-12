@@ -1126,15 +1126,24 @@ async fn dispatch_message(
 
     // Prepend sender context so the agent knows who is speaking.
     // In group spaces this is essential for multi-user conversations.
+    //
+    // For Telegram we also inject the numeric `tg_id` because display names are
+    // not unique and can change — agents that key per-user state (RBAC, per-user
+    // workspaces) need a stable identifier. See issue #915.
     let sender_name = &message.sender.display_name;
     let sender_email = message
         .metadata
         .get("sender_email")
         .and_then(|v| v.as_str());
+    let telegram_user_id = message
+        .metadata
+        .get("telegram_user_id")
+        .and_then(|v| v.as_str());
     let prefixed_text = if !sender_name.is_empty() {
-        match sender_email {
-            Some(email) => format!("[From: {sender_name} <{email}>] {text}"),
-            None => format!("[From: {sender_name}] {text}"),
+        match (sender_email, telegram_user_id) {
+            (Some(email), _) => format!("[From: {sender_name} <{email}>] {text}"),
+            (None, Some(tg_id)) => format!("[From: {sender_name} (tg_id:{tg_id})] {text}"),
+            (None, None) => format!("[From: {sender_name}] {text}"),
         }
     } else {
         text.clone()
