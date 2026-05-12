@@ -198,6 +198,10 @@ function chatPage() {
       if (store.pendingAgent) {
         self.selectAgent(store.pendingAgent);
         store.pendingAgent = null;
+      } else {
+        // Restore previously active agent after page refresh (#1179).
+        // The agent list may not be loaded yet, so resolve once it appears.
+        self._restoreActiveAgent();
       }
 
       // Watch for future pending agent selections (e.g., user clicks agent while on chat)
@@ -205,6 +209,13 @@ function chatPage() {
         if (agent) {
           self.selectAgent(agent);
           Alpine.store('app').pendingAgent = null;
+        }
+      });
+
+      // Re-attempt restore once the agent list arrives from the server
+      this.$watch('$store.app.agents', function(agents) {
+        if (!self.currentAgent && agents && agents.length) {
+          self._restoreActiveAgent();
         }
       });
 
@@ -551,6 +562,7 @@ function chatPage() {
           self._wsAgent = null;
           self.currentAgent = null;
           self.messages = [];
+          try { localStorage.removeItem('of-active-agent'); } catch(e) { /* ignore */ }
           window.dispatchEvent(new Event('close-chat'));
           break;
         case '/budget':
@@ -586,9 +598,27 @@ function chatPage() {
       }
     },
 
+    // Restore the previously-active agent (set in selectAgent) after a page
+    // refresh, so the WebSocket re-attaches to the same session and any
+    // in-flight tool output streams back into the chat (#1179).
+    _restoreActiveAgent: function() {
+      var storedId = null;
+      try { storedId = localStorage.getItem('of-active-agent'); } catch(e) { /* ignore */ }
+      if (!storedId) return;
+      var agents = (Alpine.store('app') && Alpine.store('app').agents) || [];
+      var match = null;
+      for (var i = 0; i < agents.length; i++) {
+        if (agents[i] && agents[i].id === storedId) { match = agents[i]; break; }
+      }
+      if (match) {
+        this.selectAgent(match);
+      }
+    },
+
     selectAgent(agent) {
       this.currentAgent = agent;
       this.messages = [];
+      try { localStorage.setItem('of-active-agent', agent.id); } catch(e) { /* ignore */ }
       this.connectWs(agent.id);
       var t = typeof window.t === 'function' ? window.t : function(s) { return s; };
       // Show welcome tips on first use
@@ -1173,6 +1203,7 @@ function chatPage() {
           self._wsAgent = null;
           self.currentAgent = null;
           self.messages = [];
+          try { localStorage.removeItem('of-active-agent'); } catch(e) { /* ignore */ }
           OpenFangToast.success(t('chat.agent_stopped') + ' "' + name + '"');
           Alpine.store('app').refreshAgents();
         } catch(e) {
