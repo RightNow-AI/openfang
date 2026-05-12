@@ -46,6 +46,11 @@ pub struct TelegramAdapter {
     poll_interval: Duration,
     /// Base URL for Telegram Bot API (supports proxies/mirrors).
     api_base_url: String,
+    /// Maps Telegram forum topic `message_thread_id` to an agent name. When a
+    /// message arrives inside a configured topic, the inbound parser stamps
+    /// `target_agent` so the bridge dispatches to that agent instead of the
+    /// default. Empty map = default routing for every thread. Issue #780.
+    thread_routes: Arc<HashMap<i64, String>>,
     /// Bot username (without @), populated from `getMe` during `start()`.
     /// Used for @mention detection in group messages.
     bot_username: Arc<tokio::sync::RwLock<Option<String>>>,
@@ -80,6 +85,19 @@ impl TelegramAdapter {
         poll_interval: Duration,
         api_url: Option<String>,
     ) -> Self {
+        Self::with_thread_routes(token, allowed_users, poll_interval, api_url, HashMap::new())
+    }
+
+    /// Same as [`new`] but accepts a `thread_routes` map for forum-topic
+    /// routing (issue #780). Keys are Telegram `message_thread_id` values,
+    /// values are agent names to dispatch matching messages to.
+    pub fn with_thread_routes(
+        token: String,
+        allowed_users: Vec<String>,
+        poll_interval: Duration,
+        api_url: Option<String>,
+        thread_routes: HashMap<i64, String>,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let api_base_url = api_url
             .unwrap_or_else(|| DEFAULT_API_URL.to_string())
@@ -91,6 +109,7 @@ impl TelegramAdapter {
             allowed_users,
             poll_interval,
             api_base_url,
+            thread_routes: Arc::new(thread_routes),
             bot_username: Arc::new(tokio::sync::RwLock::new(None)),
             rejected_reactions: Arc::new(Mutex::new(HashSet::new())),
             shutdown_tx: Arc::new(shutdown_tx),
@@ -597,6 +616,7 @@ impl ChannelAdapter for TelegramAdapter {
         let poll_interval = self.poll_interval;
         let api_base_url = self.api_base_url.clone();
         let bot_username = self.bot_username.clone();
+        let thread_routes = self.thread_routes.clone();
         let mut shutdown = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
@@ -717,6 +737,7 @@ impl ChannelAdapter for TelegramAdapter {
                         &client,
                         &api_base_url,
                         bot_uname.as_deref(),
+                        &thread_routes,
                     )
                     .await
                     {
@@ -826,6 +847,7 @@ async fn parse_telegram_update(
     client: &reqwest::Client,
     api_base_url: &str,
     bot_username: Option<&str>,
+    thread_routes: &HashMap<i64, String>,
 ) -> Option<ChannelMessage> {
     let update_id = update["update_id"].as_i64().unwrap_or(0);
     let message = match update
@@ -1008,9 +1030,15 @@ async fn parse_telegram_update(
 
     // Extract forum topic thread_id (Telegram sends this as `message_thread_id`
     // for messages inside forum topics / reply threads).
-    let thread_id = message["message_thread_id"]
-        .as_i64()
-        .map(|tid| tid.to_string());
+    let thread_id_raw = message["message_thread_id"].as_i64();
+    let thread_id = thread_id_raw.map(|tid| tid.to_string());
+
+    // Forum topic routing (issue #780). If the message lives inside a
+    // configured topic, stash the target agent name in metadata under
+    // `target_agent_name` so the bridge dispatcher prefers it over the
+    // channel default. Topics with no entry leave metadata untouched and
+    // fall through to the adapter's default_agent.
+    let target_agent_name = thread_id_raw.and_then(|tid| thread_routes.get(&tid).cloned());
 
     // Detect @mention of the bot in entities / caption_entities for MentionOnly group policy.
     let mut metadata = HashMap::new();
@@ -1041,6 +1069,16 @@ async fn parse_telegram_update(
                 metadata.insert("was_mentioned".to_string(), serde_json::json!(true));
             }
         }
+    }
+
+    // Stash the forum-topic route target so the bridge can dispatch to a
+    // specific agent for this topic. The bridge resolves the name via
+    // `find_agent_by_name` before the standard router fallback.
+    if let Some(name) = target_agent_name {
+        metadata.insert(
+            "target_agent_name".to_string(),
+            serde_json::Value::String(name),
+        );
     }
 
     Some(ChannelMessage {
@@ -1196,7 +1234,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
@@ -1229,7 +1267,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
 
@@ -1270,7 +1308,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
 
@@ -1307,7 +1345,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         match &msg.content {
@@ -1342,7 +1380,7 @@ mod tests {
 
         // Empty allowed_users = allow all
         let msg =
-            parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await;
+            parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new()).await;
         assert!(msg.is_some());
 
         // Non-matching allowed_users = filter out
@@ -1354,6 +1392,7 @@ mod tests {
             &client,
             DEFAULT_API_URL,
             None,
+            &HashMap::new(),
         )
         .await;
         assert!(msg.is_none());
@@ -1367,6 +1406,7 @@ mod tests {
             &client,
             DEFAULT_API_URL,
             None,
+            &HashMap::new(),
         )
         .await;
         assert!(msg.is_some());
@@ -1394,7 +1434,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
@@ -1432,7 +1472,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         match &msg.content {
@@ -1458,7 +1498,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         assert!(matches!(msg.content, ChannelContent::Location { .. }));
@@ -1484,7 +1524,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         // With a fake token, getFile will fail, so we get a text fallback
@@ -1521,7 +1561,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         match &msg.content {
@@ -1554,7 +1594,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         match &msg.content {
@@ -1587,7 +1627,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         assert_eq!(msg.thread_id, Some("42".to_string()));
@@ -1609,7 +1649,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         assert_eq!(msg.thread_id, None);
@@ -1633,10 +1673,183 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         assert_eq!(msg.thread_id, Some("99".to_string()));
+    }
+
+    // ---- Issue #780: forum topic -> agent routing ----
+
+    fn forum_topic_update(thread_id: i64, update_id: i64) -> serde_json::Value {
+        serde_json::json!({
+            "update_id": update_id,
+            "message": {
+                "message_id": 1000 + update_id,
+                "message_thread_id": thread_id,
+                "from": { "id": 555, "first_name": "Operator" },
+                "chat": { "id": -1009998887776_i64, "type": "supergroup" },
+                "date": 1700000000,
+                "text": "scoped message"
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn test_thread_routes_dispatch_matching_topic_to_named_agent() {
+        // A message inside a configured forum topic must route to that agent
+        // via `target_agent`, overriding the channel default.
+        let update = forum_topic_update(42, 1);
+        let mut routes = HashMap::new();
+        routes.insert(42_i64, "support-agent".to_string());
+        routes.insert(99_i64, "ops-agent".to_string());
+
+        let client = test_client();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &routes,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(msg.thread_id, Some("42".to_string()));
+        assert_eq!(
+            msg.metadata
+                .get("target_agent_name")
+                .and_then(|v| v.as_str()),
+            Some("support-agent")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_thread_routes_unconfigured_topic_falls_through() {
+        // A thread id NOT in the route map must leave target_agent = None so
+        // the bridge applies the channel default_agent.
+        let update = forum_topic_update(7, 2);
+        let mut routes = HashMap::new();
+        routes.insert(42_i64, "support-agent".to_string());
+
+        let client = test_client();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &routes,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(msg.thread_id, Some("7".to_string()));
+        assert!(msg.metadata.get("target_agent_name").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_thread_routes_ignored_for_non_topic_message() {
+        // Messages with no message_thread_id (regular group / DM) must never
+        // be matched against thread_routes, even if the map is non-empty.
+        let update = serde_json::json!({
+            "update_id": 3,
+            "message": {
+                "message_id": 1003,
+                "from": { "id": 555, "first_name": "Operator" },
+                "chat": { "id": -1009998887776_i64, "type": "supergroup" },
+                "date": 1700000000,
+                "text": "general group message"
+            }
+        });
+        let mut routes = HashMap::new();
+        routes.insert(42_i64, "support-agent".to_string());
+
+        let client = test_client();
+        let msg = parse_telegram_update(
+            &update,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &routes,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(msg.thread_id, None);
+        assert!(msg.metadata.get("target_agent_name").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_thread_routes_multiple_topics_route_independently() {
+        // Two different topics in the same chat must dispatch to two different
+        // agents.
+        let mut routes = HashMap::new();
+        routes.insert(10_i64, "alpha".to_string());
+        routes.insert(20_i64, "beta".to_string());
+
+        let client = test_client();
+
+        let update_alpha = forum_topic_update(10, 4);
+        let msg_alpha = parse_telegram_update(
+            &update_alpha,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &routes,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            msg_alpha
+                .metadata
+                .get("target_agent_name")
+                .and_then(|v| v.as_str()),
+            Some("alpha")
+        );
+
+        let update_beta = forum_topic_update(20, 5);
+        let msg_beta = parse_telegram_update(
+            &update_beta,
+            &[],
+            "fake:token",
+            &client,
+            DEFAULT_API_URL,
+            None,
+            &routes,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            msg_beta
+                .metadata
+                .get("target_agent_name")
+                .and_then(|v| v.as_str()),
+            Some("beta")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_adapter_with_thread_routes_constructor_stores_map() {
+        // Sanity check that the new constructor wires the route map onto the
+        // adapter so the spawned polling task sees it.
+        let mut routes = HashMap::new();
+        routes.insert(1_i64, "first".to_string());
+        let adapter = TelegramAdapter::with_thread_routes(
+            "test:token".to_string(),
+            vec![],
+            Duration::from_millis(10),
+            Some("https://example.test".to_string()),
+            routes.clone(),
+        );
+        assert_eq!(adapter.thread_routes.as_ref(), &routes);
     }
 
     #[tokio::test]
@@ -1658,7 +1871,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         assert_eq!(msg.sender.display_name, "My Channel");
@@ -1683,7 +1896,7 @@ mod tests {
 
         let client = test_client();
         let msg =
-            parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await;
+            parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new()).await;
         assert!(msg.is_none());
     }
 
@@ -1714,6 +1927,7 @@ mod tests {
             &client,
             DEFAULT_API_URL,
             Some("testbot"),
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -1746,6 +1960,7 @@ mod tests {
             &client,
             DEFAULT_API_URL,
             Some("testbot"),
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -1780,6 +1995,7 @@ mod tests {
             &client,
             DEFAULT_API_URL,
             Some("testbot"),
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -1817,6 +2033,7 @@ mod tests {
             &client,
             DEFAULT_API_URL,
             Some("testbot"),
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -1854,6 +2071,7 @@ mod tests {
             &client,
             DEFAULT_API_URL,
             Some("testbot"),
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -1890,6 +2108,7 @@ mod tests {
             &client,
             DEFAULT_API_URL,
             Some("testbot"),
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -1943,7 +2162,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         match &msg.content {
@@ -1985,7 +2204,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         match &msg.content {
@@ -2026,7 +2245,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         match &msg.content {
@@ -2064,7 +2283,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         match &msg.content {
@@ -2091,7 +2310,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None, &HashMap::new())
             .await
             .unwrap();
         match &msg.content {

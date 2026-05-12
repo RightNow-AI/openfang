@@ -1191,13 +1191,33 @@ async fn dispatch_message(
     // Use resolve_with_context so channel_id-scoped (and guild_id-scoped)
     // bindings can route per channel — see binding_context_for() for the
     // single-source-of-truth allowlist.
+    //
+    // Issue #780: when the adapter stamped a per-thread target agent in
+    // metadata (e.g. Telegram forum-topic routing via `thread_routes`), prefer
+    // it over the standard router so operators can scope topics to specific
+    // agents from config.toml.
+    let target_agent_name = message
+        .metadata
+        .get("target_agent_name")
+        .and_then(|v| v.as_str());
+    let routed_by_name = if let Some(name) = target_agent_name {
+        match handle.find_agent_by_name(name).await {
+            Ok(Some(id)) => Some(id),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     let binding_ctx = binding_context_for(message);
-    let agent_id = router.resolve_with_context(
-        &message.channel,
-        sender_user_id(message),
-        message.sender.openfang_user.as_deref(),
-        &binding_ctx,
-    );
+    let agent_id = routed_by_name.or_else(|| {
+        router.resolve_with_context(
+            &message.channel,
+            sender_user_id(message),
+            message.sender.openfang_user.as_deref(),
+            &binding_ctx,
+        )
+    });
 
     let agent_id = match agent_id {
         Some(id) => id,

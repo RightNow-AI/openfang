@@ -1933,6 +1933,13 @@ pub struct TelegramConfig {
     /// Allows channel_send(channel="telegram", message="...") without a recipient.
     #[serde(default)]
     pub default_chat_id: Option<String>,
+    /// Forum topic routing: maps `message_thread_id` to an agent name.
+    /// When a message arrives inside a Telegram forum topic whose thread id is
+    /// listed here, the bridge dispatches it to the named agent instead of the
+    /// default. Threads not listed fall back to `default_agent`.
+    /// Issue #780.
+    #[serde(default)]
+    pub thread_routes: HashMap<i64, String>,
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
@@ -1947,6 +1954,7 @@ impl Default for TelegramConfig {
             poll_interval_secs: 1,
             api_url: None,
             default_chat_id: None,
+            thread_routes: HashMap::new(),
             overrides: ChannelOverrides::default(),
         }
     }
