@@ -66,6 +66,74 @@ const SIGNATURE_CANDIDATES: &[&str] = &[
     "SKILL.md.sig.json",
 ];
 
+/// Normalize a manifest text for content-binding comparison.
+///
+/// Strips a UTF-8 BOM if present and converts CRLF to LF. Without this,
+/// a Windows checkout with git autocrlf would write `\r\n` line endings
+/// to disk while the signed envelope captured `\n`, and the literal
+/// byte-equality check would reject an otherwise-valid signed manifest.
+/// Applied symmetrically to both sides of the binding compare.
+fn normalize_manifest_text(text: &str) -> String {
+    let trimmed = text.strip_prefix('\u{feff}').unwrap_or(text);
+    trimmed.replace("\r\n", "\n")
+}
+
+/// Verify that a path resolves to a regular file *inside* `dir`, not a
+/// symlink and not an escape via `..` or canonicalization. Returns
+/// `Ok(true)` if the entry is safe to open, `Ok(false)` if it doesn't
+/// exist, and `Err` if the entry exists but fails the safety check.
+///
+/// Without this, an attacker shipping a crafted archive could place
+/// `signature.json` or `skill.toml` as a symlink pointing outside the
+/// skill directory and redirect manifest/envelope reads — bypassing the
+/// intent of the binding enforcement.
+fn safe_regular_file_in(dir: &Path, name: &str) -> Result<bool, SkillError> {
+    let path = dir.join(name);
+    let md = match std::fs::symlink_metadata(&path) {
+        Ok(md) => md,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(SkillError::SecurityBlocked(format!(
+                "require_signed: failed to stat {} for safety check: {e}",
+                path.display()
+            )))
+        }
+    };
+    if md.file_type().is_symlink() {
+        return Err(SkillError::SecurityBlocked(format!(
+            "require_signed: refusing to follow symlink at {} \
+             (skill bundles must ship regular files only)",
+            path.display()
+        )));
+    }
+    if !md.is_file() {
+        return Err(SkillError::SecurityBlocked(format!(
+            "require_signed: {} is not a regular file",
+            path.display()
+        )));
+    }
+    let canon_dir = std::fs::canonicalize(dir).map_err(|e| {
+        SkillError::SecurityBlocked(format!(
+            "require_signed: cannot canonicalize {}: {e}",
+            dir.display()
+        ))
+    })?;
+    let canon_path = std::fs::canonicalize(&path).map_err(|e| {
+        SkillError::SecurityBlocked(format!(
+            "require_signed: cannot canonicalize {}: {e}",
+            path.display()
+        ))
+    })?;
+    if !canon_path.starts_with(&canon_dir) {
+        return Err(SkillError::SecurityBlocked(format!(
+            "require_signed: {} escapes skill directory {}",
+            canon_path.display(),
+            canon_dir.display()
+        )));
+    }
+    Ok(true)
+}
+
 /// Locate a `SignedManifest` envelope inside `skill_dir`, if any.
 ///
 /// Returns the parsed envelope on the first candidate that exists and parses
@@ -73,10 +141,10 @@ const SIGNATURE_CANDIDATES: &[&str] = &[
 /// malformed envelope is a stronger signal than an absent one.
 pub fn load_signature(skill_dir: &Path) -> Result<Option<SignedManifest>, SkillError> {
     for name in SIGNATURE_CANDIDATES {
-        let path = skill_dir.join(name);
-        if !path.exists() {
+        if !safe_regular_file_in(skill_dir, name)? {
             continue;
         }
+        let path = skill_dir.join(name);
         let raw = std::fs::read_to_string(&path)?;
         let envelope: SignedManifest = serde_json::from_str(&raw).map_err(|e| {
             SkillError::InvalidManifest(format!(
@@ -128,24 +196,39 @@ pub fn enforce_require_signed(
     //
     // envelope.verify() only proves the envelope's signature matches its own
     // embedded `manifest` text. Without comparing that text to the actual
-    // skill.toml / SKILL.md on disk, an attacker could ship a benign signed
-    // envelope alongside malicious skill files and pass the check.
+    // skill.toml / SKILL.md / package.json on disk, an attacker could ship
+    // a benign signed envelope alongside malicious skill files and pass the
+    // check.
+    //
+    // FOLLOW-UP (Codex Finding 1): there is still a TOCTOU window between
+    // extraction (in marketplace::install_with_options / clawhub) and this
+    // call. A local writer can swap files in that window. Real fix is to
+    // extract into a private staging dir, validate, then atomically rename
+    // into place. Symlink + canonicalization checks here close the
+    // redirect-via-symlink path; CRLF/BOM normalization closes the
+    // Windows false-reject path; package.json closes the OpenClaw gap.
     //
     // Read every candidate manifest file in the installed dir and require
-    // that at least one byte-matches envelope.manifest.
-    const MANIFEST_CANDIDATES: &[&str] = &["skill.toml", "SKILL.md", "skill.md"];
+    // that at least one byte-matches envelope.manifest after BOM strip +
+    // CRLF→LF normalization (applied symmetrically to both sides).
+    // `package.json` is included because openclaw_compat treats it as a
+    // valid SKILL manifest source.
+    const MANIFEST_CANDIDATES: &[&str] =
+        &["skill.toml", "SKILL.md", "skill.md", "package.json"];
+    let normalized_envelope = normalize_manifest_text(&envelope.manifest);
     let mut bound = false;
     for name in MANIFEST_CANDIDATES {
-        let path = skill_dir.join(name);
-        if !path.exists() {
+        if !safe_regular_file_in(skill_dir, name)? {
             continue;
         }
+        let path = skill_dir.join(name);
         match std::fs::read_to_string(&path) {
-            Ok(actual) if actual == envelope.manifest => {
-                bound = true;
-                break;
+            Ok(actual) => {
+                if normalize_manifest_text(&actual) == normalized_envelope {
+                    bound = true;
+                    break;
+                }
             }
-            Ok(_) => {}
             Err(e) => {
                 return Err(SkillError::SecurityBlocked(format!(
                     "require_signed: failed to read {} for binding check: {e}",
@@ -379,5 +462,85 @@ entry = "rm-rf.py"
 
         let loaded = load_signature(dir.path()).unwrap().unwrap();
         assert_eq!(loaded.signer_id, "alt-name-signer");
+    }
+
+    // Codex audit Finding 2: CRLF/BOM normalization. A Windows checkout
+    // may write \r\n line endings to disk; the signed envelope captured
+    // \n. Literal byte equality would false-reject. Both sides are
+    // normalize_manifest_text-ed before compare.
+    #[test]
+    fn require_signed_accepts_crlf_disk_when_envelope_is_lf() {
+        let dir = TempDir::new().unwrap();
+        let lf_toml = "[skill]\nname = \"x\"\nversion = \"0.1\"\n[runtime]\ntype = \"python\"\nentry = \"main.py\"\n";
+        let crlf_toml = lf_toml.replace('\n', "\r\n");
+        std::fs::write(dir.path().join("skill.toml"), &crlf_toml).unwrap();
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let envelope = SignedManifest::sign(lf_toml, &signing_key, "lf-signer");
+        write_signature(dir.path(), &envelope, "signature.json");
+
+        let opts = InstallOptions::require_signed();
+        assert!(enforce_require_signed(dir.path(), &opts).is_ok());
+    }
+
+    #[test]
+    fn require_signed_accepts_utf8_bom_disk_when_envelope_is_clean() {
+        let dir = TempDir::new().unwrap();
+        let clean = "[skill]\nname = \"x\"\nversion = \"0.1\"\n[runtime]\ntype = \"python\"\nentry = \"main.py\"\n";
+        let with_bom = format!("\u{feff}{clean}");
+        std::fs::write(dir.path().join("skill.toml"), &with_bom).unwrap();
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let envelope = SignedManifest::sign(clean, &signing_key, "bom-signer");
+        write_signature(dir.path(), &envelope, "signature.json");
+
+        let opts = InstallOptions::require_signed();
+        assert!(enforce_require_signed(dir.path(), &opts).is_ok());
+    }
+
+    // Codex audit Finding 3: package.json must be a valid binding candidate
+    // because openclaw_compat treats it as a SKILL manifest source.
+    #[test]
+    fn require_signed_binds_to_package_json() {
+        let dir = TempDir::new().unwrap();
+        let pkg = r#"{"name":"x","version":"0.1.0","openfang":{"skill":"x"}}"#;
+        std::fs::write(dir.path().join("package.json"), pkg).unwrap();
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let envelope = SignedManifest::sign(pkg, &signing_key, "pkg-signer");
+        write_signature(dir.path(), &envelope, "signature.json");
+
+        let opts = InstallOptions::require_signed();
+        assert!(enforce_require_signed(dir.path(), &opts).is_ok());
+    }
+
+    // Codex audit Finding 4: symlinks for signature.json or manifest must
+    // be rejected even when they point to a valid file, to prevent crafted
+    // bundles from redirecting reads outside the skill directory.
+    #[cfg(unix)]
+    #[test]
+    fn require_signed_rejects_symlink_signature() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let toml = write_skill_toml(dir.path());
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let envelope = SignedManifest::sign(toml, &signing_key, "symlink-signer");
+        let outside_sig = outside.path().join("real-sig.json");
+        std::fs::write(
+            &outside_sig,
+            serde_json::to_string_pretty(&envelope).unwrap(),
+        )
+        .unwrap();
+        symlink(&outside_sig, dir.path().join("signature.json")).unwrap();
+
+        let opts = InstallOptions::require_signed();
+        let err = enforce_require_signed(dir.path(), &opts).unwrap_err();
+        match err {
+            SkillError::SecurityBlocked(msg) => {
+                assert!(msg.contains("symlink"), "got: {msg}");
+            }
+            other => panic!("expected SecurityBlocked, got {other:?}"),
+        }
     }
 }

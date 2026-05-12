@@ -65,6 +65,15 @@ pub struct MessageResponse {
 #[derive(Debug, Deserialize)]
 pub struct SkillInstallRequest {
     pub name: String,
+    /// When true, reject the install unless the bundle ships a valid
+    /// Ed25519 SignedManifest envelope bound to the on-disk manifest.
+    /// Maps to `InstallOptions::require_signed` (issue #1170).
+    #[serde(default)]
+    pub require_signed: bool,
+    /// Optional hex-encoded allow-list of acceptable signer public keys.
+    /// Empty = TOFU (any valid signature accepted).
+    #[serde(default)]
+    pub allowed_signer_keys: Vec<String>,
 }
 
 /// Request to uninstall a skill.
@@ -114,4 +123,30 @@ pub struct CommandsQuery {
     /// Surface filter: `web` (default), `cli`, `channel`, or `all`.
     #[serde(default)]
     pub surface: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skill_install_request_defaults_back_compat() {
+        // Existing callers send `{"name": "..."}` only. New optional fields
+        // must default cleanly (issue #1170).
+        let req: SkillInstallRequest =
+            serde_json::from_str(r#"{"name":"github-helper"}"#).unwrap();
+        assert_eq!(req.name, "github-helper");
+        assert!(!req.require_signed);
+        assert!(req.allowed_signer_keys.is_empty());
+    }
+
+    #[test]
+    fn skill_install_request_parses_require_signed() {
+        let req: SkillInstallRequest = serde_json::from_str(
+            r#"{"name":"x","require_signed":true,"allowed_signer_keys":["abc123"]}"#,
+        )
+        .unwrap();
+        assert!(req.require_signed);
+        assert_eq!(req.allowed_signer_keys, vec!["abc123".to_string()]);
+    }
 }
