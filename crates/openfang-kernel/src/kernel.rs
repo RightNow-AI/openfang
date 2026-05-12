@@ -4253,10 +4253,23 @@ impl OpenFangKernel {
             });
         }
 
-        // Probe local providers for reachability and model discovery
+        // Probe local providers for reachability and model discovery.
+        //
+        // Only probe local providers that the user has actually referenced in
+        // their config — `default_model.provider`, `[[fallback_providers]]`,
+        // `[provider_urls]`, or any registered agent's manifest. Probing every
+        // local provider in the catalog (#1031) creates noise like
+        //   WARN Local provider offline provider=vllm
+        //   WARN Local provider offline provider=lmstudio
+        //   WARN Local provider offline provider=lemonade
+        // for users on Groq/OpenAI/etc., making them think their config change
+        // was ignored and the daemon is still falling back to the initial
+        // local setup. Restricting probes to referenced providers means the
+        // warnings only fire for providers the operator actually configured.
         {
             let kernel = Arc::clone(self);
             tokio::spawn(async move {
+                let referenced = kernel.referenced_providers();
                 let local_providers: Vec<(String, String)> = {
                     let catalog = kernel
                         .model_catalog
@@ -4266,9 +4279,15 @@ impl OpenFangKernel {
                         .list_providers()
                         .iter()
                         .filter(|p| !p.key_required)
+                        .filter(|p| referenced.contains(p.id.as_str()))
                         .map(|p| (p.id.clone(), p.base_url.clone()))
                         .collect()
                 };
+
+                if local_providers.is_empty() {
+                    debug!("No local providers referenced in config — skipping probe");
+                    return;
+                }
 
                 for (provider_id, base_url) in &local_providers {
                     let result =
@@ -5065,6 +5084,65 @@ impl OpenFangKernel {
         // Also clear from the in-memory dotenv cache so the resolver
         // doesn't return a stale value from the boot-time snapshot (#736).
         resolver.clear_dotenv_cache(key);
+    }
+
+    /// Collect every provider ID the operator has actually referenced in
+    /// their effective config — the default model, every fallback chain
+    /// entry, every `[provider_urls]` key, and every registered agent's
+    /// manifest provider (including per-agent `fallback_models`). Used by
+    /// the local provider probe loop so that we don't spam `WARN Local
+    /// provider offline` for providers the user never asked about (#1031).
+    fn referenced_providers(&self) -> std::collections::HashSet<String> {
+        let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // Default model — respect hot-reloaded override.
+        let override_guard = self
+            .default_model_override
+            .read()
+            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+        let dm_provider = override_guard
+            .as_ref()
+            .map(|dm| dm.provider.clone())
+            .unwrap_or_else(|| self.config.default_model.provider.clone());
+        if !dm_provider.is_empty() && dm_provider != "default" {
+            set.insert(dm_provider);
+        }
+        drop(override_guard);
+
+        // Global fallback chain — respect hot-reloaded override.
+        let fb_override = self
+            .fallback_providers_override
+            .read()
+            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+        let fb_iter: &[openfang_types::config::FallbackProviderConfig] = fb_override
+            .as_deref()
+            .unwrap_or(&self.config.fallback_providers);
+        for fb in fb_iter {
+            if !fb.provider.is_empty() && fb.provider != "default" {
+                set.insert(fb.provider.clone());
+            }
+        }
+        drop(fb_override);
+
+        // Any explicit URL override implies the operator cares about that provider.
+        for key in self.config.provider_urls.keys() {
+            set.insert(key.clone());
+        }
+
+        // Every registered agent manifest, including per-agent fallback models.
+        for entry in self.registry.list() {
+            let p = &entry.manifest.model.provider;
+            if !p.is_empty() && p != "default" {
+                set.insert(p.clone());
+            }
+            for fb in &entry.manifest.fallback_models {
+                if !fb.provider.is_empty() && fb.provider != "default" {
+                    set.insert(fb.provider.clone());
+                }
+            }
+        }
+
+        set
     }
 
     fn lookup_provider_url(&self, provider: &str) -> Option<String> {
@@ -8297,6 +8375,79 @@ mod tests {
             assert_eq!(slot.len(), 1);
             assert_eq!(slot[0].provider, "codex");
             assert_eq!(slot[0].subprocess_timeout_secs, Some(600));
+        }
+
+        kernel.shutdown();
+    }
+
+    // ----------------------------------------------------------------------
+    // Issue #1031: referenced_providers() must only return providers the
+    // operator has actually configured. Otherwise the local provider probe
+    // loop probes every local provider in the catalog and emits noisy
+    // `WARN Local provider offline` lines for providers (vllm, lmstudio,
+    // lemonade, claude-code, qwen-code) the user never asked about, which
+    // makes them think the daemon ignored their config.toml change.
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn test_referenced_providers_only_includes_configured_ones() {
+        use openfang_types::config::{DefaultModelConfig, FallbackProviderConfig};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-1031-referenced");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        // Operator uses Groq as the default and Ollama as a single fallback.
+        // The catalog contains many other local providers (vllm, lmstudio,
+        // lemonade, ...) but the operator hasn't touched them — they must
+        // NOT show up in the referenced set.
+        let mut provider_urls = std::collections::HashMap::new();
+        provider_urls.insert(
+            "ollama".to_string(),
+            "http://localhost:11434/v1".to_string(),
+        );
+
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            default_model: DefaultModelConfig {
+                provider: "groq".to_string(),
+                model: "llama-3.1-70b".to_string(),
+                api_key_env: "GROQ_API_KEY".to_string(),
+                base_url: None,
+                subprocess_timeout_secs: None,
+            },
+            fallback_providers: vec![FallbackProviderConfig {
+                provider: "ollama".to_string(),
+                model: "llama3.2:latest".to_string(),
+                api_key_env: String::new(),
+                base_url: None,
+                subprocess_timeout_secs: None,
+            }],
+            provider_urls,
+            ..KernelConfig::default()
+        };
+
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let referenced = kernel.referenced_providers();
+
+        // Configured providers ARE referenced.
+        assert!(
+            referenced.contains("groq"),
+            "default provider must be referenced ({referenced:?})"
+        );
+        assert!(
+            referenced.contains("ollama"),
+            "fallback provider must be referenced ({referenced:?})"
+        );
+
+        // The local providers the user did NOT configure must NOT show up.
+        // This is what makes the issue #1031 probe noise go away.
+        for unwanted in &["vllm", "lmstudio", "lemonade", "claude-code", "qwen-code"] {
+            assert!(
+                !referenced.contains(*unwanted),
+                "unconfigured local provider {unwanted:?} must NOT be in the referenced set ({referenced:?})"
+            );
         }
 
         kernel.shutdown();
