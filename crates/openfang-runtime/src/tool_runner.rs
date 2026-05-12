@@ -332,7 +332,7 @@ pub async fn execute_tool(
         "media_transcribe" => tool_media_transcribe(input, media_engine).await,
 
         // Image generation tool
-        "image_generate" => tool_image_generate(input, workspace_root).await,
+        "image_generate" => tool_image_generate(input, workspace_root, media_engine).await,
 
         // TTS/STT tools
         "text_to_speech" => tool_text_to_speech(input, tts_engine, workspace_root).await,
@@ -1667,7 +1667,18 @@ async fn tool_shell_exec(
 
     // SECURITY: Isolate environment to prevent credential leakage.
     // Hand settings may grant access to specific provider API keys.
-    crate::subprocess_sandbox::sandbox_command(&mut cmd, allowed_env);
+    //
+    // Operators can also forward additional vars via
+    // `exec_policy.shell_env_passthrough` (issue #1169). This is the path
+    // Docker users hit: their container env (TZ, GOG_*, etc.) is present
+    // in PID 1 but `env_clear()` strips it. Listing names (or `"*"`) here
+    // re-adds them to the child.
+    let policy_env_passthrough: &[String] = exec_policy
+        .map(|p| p.shell_env_passthrough.as_slice())
+        .unwrap_or(&[]);
+    let merged_env =
+        crate::subprocess_sandbox::merge_env_passthrough(allowed_env, policy_env_passthrough);
+    crate::subprocess_sandbox::sandbox_command(&mut cmd, &merged_env);
 
     // Ensure UTF-8 output on Windows
     #[cfg(windows)]
@@ -3035,6 +3046,7 @@ async fn tool_media_transcribe(
 async fn tool_image_generate(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    media_engine: Option<&crate::media_understanding::MediaEngine>,
 ) -> Result<String, String> {
     let prompt = input["prompt"]
         .as_str()
@@ -3064,7 +3076,11 @@ async fn tool_image_generate(
         count,
     };
 
-    let result = crate::image_gen::generate_image(&request).await?;
+    // Closes #1051: route to a local OpenAI-compatible image generation
+    // service when `media.image_gen_base_url` is set.
+    let base_url_override = media_engine
+        .and_then(|e| e.config().image_gen_base_url.as_deref());
+    let result = crate::image_gen::generate_image(&request, base_url_override).await?;
 
     // Save images to workspace if available
     let saved_paths = if let Some(workspace) = workspace_root {

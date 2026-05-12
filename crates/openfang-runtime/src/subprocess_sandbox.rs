@@ -35,6 +35,12 @@ pub const SAFE_ENV_VARS_WINDOWS: &[&str] = &[
 /// - On Windows, the Windows-specific safe variables (`SAFE_ENV_VARS_WINDOWS`)
 /// - Any additional variables the caller explicitly allows via `allowed_env_vars`
 ///
+/// `allowed_env_vars` accepts either explicit variable names or the special
+/// wildcard entry `"*"`, which forwards every variable present in the parent
+/// process. Use the wildcard only when the operator has explicitly opted in
+/// (e.g. `exec_policy.shell_env_passthrough = ["*"]`) — it will leak any
+/// secret the parent holds into the child.
+///
 /// Variables that are not set in the current process environment are silently
 /// skipped (rather than being set to empty strings).
 pub fn sandbox_command(cmd: &mut tokio::process::Command, allowed_env_vars: &[String]) {
@@ -55,12 +61,36 @@ pub fn sandbox_command(cmd: &mut tokio::process::Command, allowed_env_vars: &[St
         }
     }
 
+    // Wildcard: forward every var from the parent process.
+    if allowed_env_vars.iter().any(|v| v == "*") {
+        for (key, val) in std::env::vars() {
+            cmd.env(key, val);
+        }
+        return;
+    }
+
     // Re-add caller-specified allowed vars.
     for var in allowed_env_vars {
         if let Ok(val) = std::env::var(var) {
             cmd.env(var, val);
         }
     }
+}
+
+/// Merge two env-passthrough lists (hand-granted + exec-policy-granted),
+/// deduplicating entries. If either contains `"*"`, the result is just `["*"]`
+/// (wildcard subsumes anything else).
+pub fn merge_env_passthrough(a: &[String], b: &[String]) -> Vec<String> {
+    if a.iter().any(|v| v == "*") || b.iter().any(|v| v == "*") {
+        return vec!["*".to_string()];
+    }
+    let mut out: Vec<String> = Vec::with_capacity(a.len() + b.len());
+    for v in a.iter().chain(b.iter()) {
+        if !out.iter().any(|existing| existing == v) {
+            out.push(v.clone());
+        }
+    }
+    out
 }
 
 /// Validates that an executable path does not contain directory traversal
@@ -710,6 +740,40 @@ pub async fn wait_or_kill_with_idle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Env passthrough merge (issue #1169) ────────────────────────────
+
+    #[test]
+    fn test_merge_env_passthrough_empty() {
+        let merged = merge_env_passthrough(&[], &[]);
+        assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn test_merge_env_passthrough_dedup() {
+        let a = vec!["TZ".to_string(), "HOME".to_string()];
+        let b = vec!["TZ".to_string(), "PATH".to_string()];
+        let merged = merge_env_passthrough(&a, &b);
+        assert_eq!(merged, vec!["TZ", "HOME", "PATH"]);
+    }
+
+    #[test]
+    fn test_merge_env_passthrough_wildcard_a() {
+        let merged = merge_env_passthrough(&["*".to_string()], &["TZ".to_string()]);
+        assert_eq!(merged, vec!["*"]);
+    }
+
+    #[test]
+    fn test_merge_env_passthrough_wildcard_b() {
+        let merged = merge_env_passthrough(&["TZ".to_string()], &["*".to_string()]);
+        assert_eq!(merged, vec!["*"]);
+    }
+
+    #[test]
+    fn test_exec_policy_default_has_empty_passthrough() {
+        let policy = openfang_types::config::ExecPolicy::default();
+        assert!(policy.shell_env_passthrough.is_empty());
+    }
 
     #[test]
     fn test_validate_path() {

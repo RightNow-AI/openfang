@@ -969,6 +969,25 @@ pub struct ExecPolicy {
     /// produce no stdout/stderr output for this duration. Default: 30.
     #[serde(default = "default_no_output_timeout")]
     pub no_output_timeout_secs: u64,
+    /// Environment variables to forward from the OpenFang process into
+    /// `shell_exec` subprocesses.
+    ///
+    /// By default, subprocesses run with `env_clear()` and only receive a
+    /// minimal safe set (PATH, HOME, TMPDIR, LANG, TERM, etc. — see
+    /// `subprocess_sandbox::SAFE_ENV_VARS`). Anything else — including
+    /// user-defined variables present in the container/host environment —
+    /// is stripped. This list lets operators explicitly re-add specific
+    /// variables to the subprocess environment.
+    ///
+    /// Each entry is an env var name. A single entry of `"*"` forwards
+    /// every variable present in the parent process. Use with care — `*`
+    /// will leak API keys and other secrets into child processes.
+    ///
+    /// Aliases `env_passthrough` and `env_allowlist` are accepted for
+    /// backwards compatibility with users who configured these names
+    /// before the field existed (issue #1169).
+    #[serde(default, alias = "env_passthrough", alias = "env_allowlist")]
+    pub shell_env_passthrough: Vec<String>,
 }
 
 fn default_no_output_timeout() -> u64 {
@@ -990,6 +1009,7 @@ impl Default for ExecPolicy {
             timeout_secs: 30,
             max_output_bytes: 100 * 1024,
             no_output_timeout_secs: default_no_output_timeout(),
+            shell_env_passthrough: Vec::new(),
         }
     }
 }
@@ -4599,5 +4619,55 @@ mod tests {
         "#;
         let config: KernelConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.heartbeat.default_timeout_secs, 300);
+    }
+
+    // ── Issue #1169: shell_env_passthrough on ExecPolicy ──────────────
+
+    #[test]
+    fn test_exec_policy_passthrough_default_empty() {
+        let policy = ExecPolicy::default();
+        assert!(policy.shell_env_passthrough.is_empty());
+    }
+
+    #[test]
+    fn test_exec_policy_passthrough_deserializes() {
+        let toml_str = r#"
+mode = "full"
+shell_env_passthrough = ["TZ", "GOG_ACCOUNT"]
+"#;
+        let policy: ExecPolicy = toml::from_str(toml_str).unwrap();
+        assert_eq!(policy.shell_env_passthrough, vec!["TZ", "GOG_ACCOUNT"]);
+    }
+
+    #[test]
+    fn test_exec_policy_passthrough_alias_env_passthrough() {
+        // Backwards-compat alias from the issue body (#1169).
+        let toml_str = r#"
+mode = "full"
+env_passthrough = ["TZ", "GOG_ACCOUNT"]
+"#;
+        let policy: ExecPolicy = toml::from_str(toml_str).unwrap();
+        assert_eq!(policy.shell_env_passthrough, vec!["TZ", "GOG_ACCOUNT"]);
+    }
+
+    #[test]
+    fn test_exec_policy_passthrough_alias_env_allowlist() {
+        // Backwards-compat alias from the issue body (#1169).
+        let toml_str = r#"
+mode = "full"
+env_allowlist = ["TZ", "HOME"]
+"#;
+        let policy: ExecPolicy = toml::from_str(toml_str).unwrap();
+        assert_eq!(policy.shell_env_passthrough, vec!["TZ", "HOME"]);
+    }
+
+    #[test]
+    fn test_exec_policy_passthrough_wildcard() {
+        let toml_str = r#"
+mode = "full"
+shell_env_passthrough = ["*"]
+"#;
+        let policy: ExecPolicy = toml::from_str(toml_str).unwrap();
+        assert_eq!(policy.shell_env_passthrough, vec!["*"]);
     }
 }
