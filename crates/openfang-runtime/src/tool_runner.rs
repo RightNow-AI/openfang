@@ -478,6 +478,11 @@ pub async fn execute_tool(
             }
         },
 
+        // Skill introspection tools (issue #1038)
+        "skill_list" => tool_skill_list(skill_registry),
+        "skill_describe" => tool_skill_describe(input, skill_registry),
+        "skill_execute" => tool_skill_execute(input, skill_registry).await,
+
         // Canvas / A2UI tool
         "canvas_present" => tool_canvas_present(input, workspace_root).await,
 
@@ -1306,6 +1311,42 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "title": { "type": "string", "description": "Optional title for the canvas panel" }
                 },
                 "required": ["html"]
+            }),
+        },
+        // --- Skill introspection tools (issue #1038) ---
+        // These let the agent discover and read installed skills without
+        // touching the filesystem. Global skills live at ~/.openfang/skills/
+        // which is outside the workspace sandbox — file_read cannot reach them.
+        ToolDefinition {
+            name: "skill_list".to_string(),
+            description: "List all installed skills available to this agent. Returns name, version, description, runtime type, and provided tool names. Use this instead of file_list on the skills directory.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "skill_describe".to_string(),
+            description: "Read the full description (SKILL.md body / prompt context) of an installed skill by name. Use this instead of file_read on a skill's SKILL.md file — global skills live outside the workspace sandbox and cannot be read with file_read.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "The skill name (as returned by skill_list)" }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDefinition {
+            name: "skill_execute".to_string(),
+            description: "Execute a tool provided by an installed skill. For code-runtime skills (Python/Node/Shell) this invokes the underlying script. For prompt-only skills this returns the skill's instruction body so the agent can follow it using built-in tools.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "skill": { "type": "string", "description": "The skill name (as returned by skill_list)" },
+                    "tool": { "type": "string", "description": "Optional name of a tool the skill provides. Omit to invoke the skill's default behavior (returns SKILL.md body for prompt-only skills)." },
+                    "input": { "type": "object", "description": "Optional JSON input for the skill tool" }
+                },
+                "required": ["skill"]
             }),
         },
     ]
@@ -3537,6 +3578,165 @@ async fn tool_canvas_present(
     serde_json::to_string_pretty(&response).map_err(|e| format!("Serialize error: {e}"))
 }
 
+// ---------------------------------------------------------------------------
+// Skill introspection tools (issue #1038)
+//
+// Global skills live at ~/.openfang/skills/ which is outside the agent
+// workspace sandbox. Without these tools the LLM falls back to file_read /
+// shell_exec to inspect SKILL.md files — which fail with path-resolution
+// errors because file_read is workspace-scoped. These tools surface the
+// already-loaded skill registry directly to the agent.
+// ---------------------------------------------------------------------------
+
+/// List all skills available to this agent, with their provided tool names.
+fn tool_skill_list(skill_registry: Option<&SkillRegistry>) -> Result<String, String> {
+    let registry = match skill_registry {
+        Some(r) => r,
+        None => return Ok("No skill registry available.".to_string()),
+    };
+    let skills = registry.list();
+    if skills.is_empty() {
+        return Ok("No skills installed. Install skills via the dashboard or `openfang skill install <name>`.".to_string());
+    }
+    let entries: Vec<serde_json::Value> = skills
+        .iter()
+        .map(|s| {
+            let tool_names: Vec<String> = s
+                .manifest
+                .tools
+                .provided
+                .iter()
+                .map(|t| t.name.clone())
+                .collect();
+            serde_json::json!({
+                "name": s.manifest.skill.name,
+                "version": s.manifest.skill.version,
+                "description": s.manifest.skill.description,
+                "runtime": format!("{:?}", s.manifest.runtime.runtime_type),
+                "enabled": s.enabled,
+                "tools": tool_names,
+                "has_prompt_context": s.manifest.prompt_context.as_ref().is_some_and(|c| !c.is_empty()),
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "count": entries.len(),
+        "skills": entries,
+    }))
+    .map_err(|e| format!("Serialize error: {e}"))
+}
+
+/// Return the full description (SKILL.md body) of a named skill.
+fn tool_skill_describe(
+    input: &serde_json::Value,
+    skill_registry: Option<&SkillRegistry>,
+) -> Result<String, String> {
+    let name = input["name"]
+        .as_str()
+        .ok_or("Missing 'name' parameter")?
+        .trim();
+    let registry = skill_registry.ok_or("No skill registry available")?;
+    let skill = registry
+        .get(name)
+        .ok_or_else(|| format!("Skill '{name}' not found. Use skill_list to see installed skills."))?;
+    let body = skill
+        .manifest
+        .prompt_context
+        .clone()
+        .unwrap_or_else(|| "(No prompt context body — this skill provides executable tools only. Use skill_execute or call its tools directly.)".to_string());
+    let tool_names: Vec<String> = skill
+        .manifest
+        .tools
+        .provided
+        .iter()
+        .map(|t| t.name.clone())
+        .collect();
+    let response = serde_json::json!({
+        "name": skill.manifest.skill.name,
+        "version": skill.manifest.skill.version,
+        "description": skill.manifest.skill.description,
+        "runtime": format!("{:?}", skill.manifest.runtime.runtime_type),
+        "tools": tool_names,
+        "body": body,
+    });
+    serde_json::to_string_pretty(&response).map_err(|e| format!("Serialize error: {e}"))
+}
+
+/// Execute a skill's tool, or for prompt-only skills return the description body.
+async fn tool_skill_execute(
+    input: &serde_json::Value,
+    skill_registry: Option<&SkillRegistry>,
+) -> Result<String, String> {
+    let skill_name = input["skill"]
+        .as_str()
+        .ok_or("Missing 'skill' parameter")?
+        .trim();
+    let registry = skill_registry.ok_or("No skill registry available")?;
+    let skill = registry
+        .get(skill_name)
+        .ok_or_else(|| format!("Skill '{skill_name}' not found. Use skill_list to see installed skills."))?;
+
+    // If no tool name was given, default behavior depends on runtime.
+    // For prompt-only skills, return the SKILL.md body (most useful response
+    // for issue #1038's daily-journal style skills).
+    let tool_name = input["tool"].as_str().map(|s| s.trim());
+    let tool_input = input.get("input").cloned().unwrap_or(serde_json::json!({}));
+
+    let resolved_tool = match tool_name {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => {
+            // No tool specified — return SKILL.md body so the agent can act on it.
+            if let Some(ref body) = skill.manifest.prompt_context {
+                if !body.is_empty() {
+                    let response = serde_json::json!({
+                        "skill": skill.manifest.skill.name,
+                        "mode": "prompt_context",
+                        "body": body,
+                        "note": "This is a prompt-only skill. Follow the instructions in 'body' using your built-in tools.",
+                    });
+                    return serde_json::to_string_pretty(&response)
+                        .map_err(|e| format!("Serialize error: {e}"));
+                }
+            }
+            // Fall through: pick the first provided tool if any
+            skill
+                .manifest
+                .tools
+                .provided
+                .first()
+                .map(|t| t.name.clone())
+                .ok_or_else(|| {
+                    format!("Skill '{skill_name}' provides no tools and has no prompt body.")
+                })?
+        }
+    };
+
+    match openfang_skills::loader::execute_skill_tool(
+        &skill.manifest,
+        &skill.path,
+        &resolved_tool,
+        &tool_input,
+    )
+    .await
+    {
+        Ok(result) => {
+            let content = serde_json::to_string_pretty(&serde_json::json!({
+                "skill": skill.manifest.skill.name,
+                "tool": resolved_tool,
+                "output": result.output,
+                "is_error": result.is_error,
+            }))
+            .unwrap_or_else(|_| result.output.to_string());
+            if result.is_error {
+                Err(content)
+            } else {
+                Ok(content)
+            }
+        }
+        Err(e) => Err(format!("Skill execution failed: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3610,6 +3810,67 @@ mod tests {
         assert!(names.contains(&"docker_exec"));
         // Canvas tool
         assert!(names.contains(&"canvas_present"));
+        // 3 skill introspection tools (issue #1038)
+        assert!(names.contains(&"skill_list"));
+        assert!(names.contains(&"skill_describe"));
+        assert!(names.contains(&"skill_execute"));
+    }
+
+    /// Issue #1038: skill_list, skill_describe, skill_execute work without
+    /// touching the filesystem so global skills (outside the workspace
+    /// sandbox) are reachable by the agent.
+    #[tokio::test]
+    async fn test_skill_tools_no_filesystem_access() {
+        use openfang_skills::registry::SkillRegistry;
+        use tempfile::TempDir;
+
+        // Build a skills directory containing one prompt-only SKILL.md skill
+        // (mirroring the user's daily-journal scenario from #1038).
+        let global_dir = TempDir::new().unwrap();
+        let skill_dir = global_dir.path().join("daily-journal");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: daily-journal\ndescription: Keep a daily journal\n---\n\
+             # Daily Journal\n\nWrite one paragraph per day about what you learned.",
+        )
+        .unwrap();
+
+        let mut registry = SkillRegistry::new(global_dir.path().to_path_buf());
+        registry.load_all().unwrap();
+        assert_eq!(registry.count(), 1);
+
+        // skill_list returns the global skill without any filesystem call
+        let list_out = tool_skill_list(Some(&registry)).unwrap();
+        assert!(list_out.contains("daily-journal"));
+        assert!(list_out.contains("Keep a daily journal"));
+
+        // skill_describe returns the SKILL.md body — no file_read needed
+        let desc_out = tool_skill_describe(
+            &serde_json::json!({ "name": "daily-journal" }),
+            Some(&registry),
+        )
+        .unwrap();
+        assert!(desc_out.contains("Daily Journal"));
+        assert!(desc_out.contains("Write one paragraph"));
+
+        // skill_execute on a prompt-only skill returns the body in 'prompt_context' mode
+        let exec_out = tool_skill_execute(
+            &serde_json::json!({ "skill": "daily-journal" }),
+            Some(&registry),
+        )
+        .await
+        .unwrap();
+        assert!(exec_out.contains("prompt_context"));
+        assert!(exec_out.contains("Daily Journal"));
+
+        // skill_describe on a missing skill returns a helpful error
+        let missing = tool_skill_describe(
+            &serde_json::json!({ "name": "no-such-skill" }),
+            Some(&registry),
+        );
+        assert!(missing.is_err());
+        assert!(missing.unwrap_err().contains("not found"));
     }
 
     #[test]
