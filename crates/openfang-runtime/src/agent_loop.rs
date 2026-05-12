@@ -87,6 +87,7 @@ const MAX_CONTINUATIONS: u32 = 5;
 
 /// Default maximum message history size before auto-trimming to prevent context overflow.
 /// Per-agent overrides come from `AgentManifest::max_history_messages` (issue #871).
+#[allow(dead_code)]
 const MAX_HISTORY_MESSAGES: usize = openfang_types::agent::DEFAULT_MAX_HISTORY_MESSAGES;
 
 /// Detect when the LLM claims to have performed an action (sent, posted, emailed)
@@ -3497,8 +3498,10 @@ mod tests {
     /// Issue #871: an agent with a manifest override uses that value.
     #[test]
     fn test_effective_max_history_uses_manifest_override() {
-        let mut manifest = openfang_types::agent::AgentManifest::default();
-        manifest.max_history_messages = Some(40);
+        let mut manifest = openfang_types::agent::AgentManifest {
+            max_history_messages: Some(40),
+            ..Default::default()
+        };
         assert_eq!(manifest.effective_max_history_messages(), 40);
 
         manifest.max_history_messages = Some(6);
@@ -3510,8 +3513,10 @@ mod tests {
     /// accidentally disabling history entirely.
     #[test]
     fn test_effective_max_history_falls_back_to_default() {
-        let mut manifest = openfang_types::agent::AgentManifest::default();
-        manifest.max_history_messages = None;
+        let mut manifest = openfang_types::agent::AgentManifest {
+            max_history_messages: None,
+            ..Default::default()
+        };
         assert_eq!(
             manifest.effective_max_history_messages(),
             MAX_HISTORY_MESSAGES
