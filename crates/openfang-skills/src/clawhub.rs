@@ -11,6 +11,7 @@
 //! - Download: `GET /api/v1/download?slug=...`
 //! - File: `GET /api/v1/skills/{slug}/file?path=SKILL.md`
 
+use crate::installer::{enforce_require_signed, InstallOptions};
 use crate::openclaw_compat;
 use crate::verify::{SkillVerifier, SkillWarning, WarningSeverity};
 use crate::SkillError;
@@ -491,6 +492,25 @@ impl ClawHubClient {
 
     /// Install a skill from ClawHub into the target directory.
     ///
+    /// Convenience wrapper around [`Self::install_with_options`] using the
+    /// default (permissive) options. Existing callers behave exactly as
+    /// before.
+    pub async fn install(
+        &self,
+        slug: &str,
+        target_dir: &Path,
+    ) -> Result<ClawHubInstallResult, SkillError> {
+        self.install_with_options(slug, target_dir, &InstallOptions::default())
+            .await
+    }
+
+    /// Install a skill from ClawHub with explicit enforcement options.
+    ///
+    /// When `opts.require_signed` is true, the skill must ship with a valid
+    /// Ed25519 `SignedManifest` envelope (see [`crate::installer`] for the
+    /// well-known filenames). Skills failing the gate are removed from disk
+    /// and a `SkillError::SecurityBlocked` is returned.
+    ///
     /// Security pipeline:
     /// 1. Download skill zip and compute SHA256
     /// 2. Detect format (SKILL.md vs package.json)
@@ -499,10 +519,12 @@ impl ClawHubClient {
     /// 5. If prompt-only: run prompt injection scan
     /// 6. Check binary dependencies
     /// 7. Write skill.toml with `verified: false`
-    pub async fn install(
+    /// 8. Enforce `require_signed` if requested.
+    pub async fn install_with_options(
         &self,
         slug: &str,
         target_dir: &Path,
+        opts: &InstallOptions,
     ) -> Result<ClawHubInstallResult, SkillError> {
         // Use /api/v1/download?slug=... endpoint
         let url = format!("{}/download?slug={}", self.base_url, urlencoded(slug));
@@ -637,6 +659,12 @@ impl ClawHubClient {
         // Step 7: Write skill.toml
         openclaw_compat::write_openfang_manifest(&skill_dir, &manifest)?;
 
+        // Step 8: Enforce --require-signed gate, if requested.
+        if let Err(e) = enforce_require_signed(&skill_dir, opts) {
+            let _ = std::fs::remove_dir_all(&skill_dir);
+            return Err(e);
+        }
+
         let result = ClawHubInstallResult {
             skill_name: manifest.skill.name.clone(),
             version: manifest.skill.version.clone(),
@@ -650,6 +678,7 @@ impl ClawHubClient {
             slug,
             skill_name = %result.skill_name,
             warnings = result.warnings.len(),
+            require_signed = opts.require_signed,
             "Installed skill from ClawHub"
         );
 

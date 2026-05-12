@@ -25,3 +25,5 @@ zip = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }

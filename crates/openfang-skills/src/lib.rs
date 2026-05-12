@@ -10,6 +10,7 @@
 pub mod bundled;
 pub mod clawhub;
 pub mod config_injection;
+pub mod installer;
 pub mod loader;
 pub mod marketplace;
 pub mod openclaw_compat;

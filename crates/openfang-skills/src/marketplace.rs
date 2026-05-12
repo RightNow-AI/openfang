@@ -3,6 +3,7 @@
 //! For Phase 1, uses GitHub releases as the registry backend.
 //! Each skill is a GitHub repo with releases containing the skill bundle.
 
+use crate::installer::{enforce_require_signed, InstallOptions};
 use crate::SkillError;
 use std::path::Path;
 use tracing::info;
@@ -90,8 +91,28 @@ impl MarketplaceClient {
 
     /// Install a skill from a GitHub repo by name.
     ///
-    /// Downloads the latest release tarball and extracts it to the target directory.
+    /// Convenience wrapper around [`Self::install_with_options`] using the
+    /// default (permissive) options. Existing callers behave exactly as
+    /// before.
     pub async fn install(&self, skill_name: &str, target_dir: &Path) -> Result<String, SkillError> {
+        self.install_with_options(skill_name, target_dir, &InstallOptions::default())
+            .await
+    }
+
+    /// Install a skill from a GitHub repo with explicit enforcement options.
+    ///
+    /// When `opts.require_signed` is true, the installed bundle must contain
+    /// a valid Ed25519 `SignedManifest` envelope. Skills failing the gate
+    /// are removed from disk and a `SkillError::SecurityBlocked` is
+    /// returned.
+    ///
+    /// Downloads the latest release tarball and extracts it to the target directory.
+    pub async fn install_with_options(
+        &self,
+        skill_name: &str,
+        target_dir: &Path,
+        opts: &InstallOptions,
+    ) -> Result<String, SkillError> {
         let repo = format!("{}/{}", self.config.github_org, skill_name);
         let url = format!(
             "{}/repos/{}/releases/latest",
@@ -163,7 +184,16 @@ impl MarketplaceClient {
             serde_json::to_string_pretty(&meta).unwrap_or_default(),
         )?;
 
-        info!("Installed skill: {skill_name} {version}");
+        // Enforce --require-signed gate, if requested.
+        if let Err(e) = enforce_require_signed(&skill_dir, opts) {
+            let _ = std::fs::remove_dir_all(&skill_dir);
+            return Err(e);
+        }
+
+        info!(
+            "Installed skill: {skill_name} {version} (require_signed={})",
+            opts.require_signed
+        );
         Ok(version)
     }
 }
