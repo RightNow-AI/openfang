@@ -158,22 +158,30 @@ fn build_assistant_message_preserving_thinking(
     response_blocks: &[ContentBlock],
     final_text: &str,
 ) -> Message {
-    let has_thinking = response_blocks
-        .iter()
-        .any(|b| matches!(b, ContentBlock::Thinking { .. }));
-    if !has_thinking {
+    // Key on either Thinking or RedactedThinking — Anthropic/Bedrock both
+    // reject extended-thinking history that drops the redacted variant, so a
+    // turn that contains only RedactedThinking must still be preserved.
+    let has_reasoning = response_blocks.iter().any(|b| {
+        matches!(
+            b,
+            ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+        )
+    });
+    if !has_reasoning {
         return Message::assistant(final_text.to_string());
     }
 
-    // Preserve order: Thinking blocks first (in original order), then a
-    // single Text block carrying `final_text`.  Tool blocks aren't expected
-    // here (StopReason::EndTurn path), but copy them through if present so
-    // we don't drop information.
+    // Preserve order: Thinking / RedactedThinking blocks first (in original
+    // order), then a single Text block carrying `final_text`. Tool blocks
+    // aren't expected here (StopReason::EndTurn path), but copy them through
+    // if present so we don't drop information.
     let mut blocks: Vec<ContentBlock> = Vec::with_capacity(response_blocks.len() + 1);
     let mut emitted_text = false;
     for b in response_blocks {
         match b {
-            ContentBlock::Thinking { .. } => blocks.push(b.clone()),
+            ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {
+                blocks.push(b.clone())
+            }
             ContentBlock::Text { .. } if !emitted_text => {
                 blocks.push(ContentBlock::Text {
                     text: final_text.to_string(),
@@ -3378,6 +3386,36 @@ mod tests {
             _ => None,
         });
         assert_eq!(saved_text, Some(final_text));
+    }
+
+    /// Issue #1187 — a turn that contains only `RedactedThinking` (no
+    /// `Thinking` block) must still trigger the block-preserving path. The
+    /// previous gate keyed solely on `Thinking`, so redacted-only turns were
+    /// downgraded to plain text and the encrypted blob was lost on the next
+    /// request, which Anthropic/Bedrock reject.
+    #[test]
+    fn test_build_assistant_message_preserves_redacted_only() {
+        let response_blocks = vec![
+            ContentBlock::RedactedThinking {
+                data: "encrypted_only".to_string(),
+            },
+            ContentBlock::Text {
+                text: "Answer".to_string(),
+                provider_metadata: None,
+            },
+        ];
+        let msg = build_assistant_message_preserving_thinking(&response_blocks, "Answer");
+        let blocks = match &msg.content {
+            MessageContent::Blocks(b) => b,
+            other => panic!("expected Blocks content for redacted-only turn, got {other:?}"),
+        };
+        let has_redacted = blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::RedactedThinking { data } if data == "encrypted_only"));
+        assert!(
+            has_redacted,
+            "RedactedThinking-only turn must be preserved as Blocks"
+        );
     }
 
     #[test]
