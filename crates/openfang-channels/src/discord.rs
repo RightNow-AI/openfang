@@ -1457,7 +1457,7 @@ mod tests {
     async fn test_parse_image_only_no_caption() {
         let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
         let d = payload_with("", vec![att("photo.png", Some("image/png"), 100_000)]);
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         match msg.content {
@@ -1480,7 +1480,7 @@ mod tests {
             "look at this",
             vec![att("photo.jpg", Some("image/jpeg"), 50_000)],
         );
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         match msg.content {
@@ -1512,7 +1512,7 @@ mod tests {
                 att("b.png", Some("image/png"), 20_000),
             ],
         );
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         match msg.content {
@@ -1536,7 +1536,7 @@ mod tests {
                 att("b.png", Some("image/png"), 20_000),
             ],
         );
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         match msg.content {
@@ -1555,7 +1555,7 @@ mod tests {
     async fn test_parse_heic_falls_to_file() {
         let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
         let d = payload_with("", vec![att("photo.heic", Some("image/heic"), 100_000)]);
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         match msg.content {
@@ -1575,7 +1575,7 @@ mod tests {
             "",
             vec![att("huge.png", Some("image/png"), 6 * 1024 * 1024)],
         );
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         match msg.content {
@@ -1600,7 +1600,7 @@ mod tests {
             "see attached",
             vec![att("doc.pdf", Some("application/pdf"), 200_000)],
         );
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         match msg.content {
@@ -1619,7 +1619,7 @@ mod tests {
         // we should fall back to the filename extension.
         let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
         let d = payload_with("", vec![att("pic.png", None, 50_000)]);
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true)
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads())
             .await
             .unwrap();
         assert!(matches!(msg.content, ChannelContent::Image { .. }));
@@ -1629,7 +1629,7 @@ mod tests {
     async fn test_parse_empty_message_with_no_attachments_returns_none() {
         let bot_id = Arc::new(RwLock::new(Some("bot123".to_string())));
         let d = payload_with("", vec![]);
-        let msg = parse_discord_message(&d, &bot_id, &[], &[], true).await;
+        let msg = parse_discord_message(&d, &bot_id, &[], &[], true, &empty_threads()).await;
         assert!(msg.is_none());
     }
 }

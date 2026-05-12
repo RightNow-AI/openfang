@@ -5249,12 +5249,20 @@ impl OpenFangKernel {
                 .iter()
                 .map(|p| p.id.clone())
                 .collect();
-            let env_map: std::collections::HashMap<String, String> = catalog
-                .list_providers()
-                .iter()
-                .filter(|p| !p.api_key_env.is_empty())
-                .map(|p| (p.api_key_env.to_ascii_uppercase(), p.id.clone()))
-                .collect();
+            // Multi-valued: several providers may share the same api_key_env
+            // (e.g. both `openai` and `codex` use OPENAI_API_KEY). Using a
+            // plain HashMap silently dropped earlier providers — broke #1188.
+            let mut env_map: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            for p in catalog.list_providers() {
+                if p.api_key_env.is_empty() {
+                    continue;
+                }
+                env_map
+                    .entry(p.api_key_env.to_ascii_uppercase())
+                    .or_default()
+                    .push(p.id.clone());
+            }
             (ids, env_map)
         };
 
@@ -5407,10 +5415,12 @@ impl OpenFangKernel {
             }
             for var in skill.manifest.config.values() {
                 if let Some(env_name) = var.env.as_deref() {
-                    if let Some(provider) =
+                    if let Some(providers) =
                         env_to_provider.get(&env_name.to_ascii_uppercase())
                     {
-                        set.insert(provider.clone());
+                        for provider in providers {
+                            set.insert(provider.clone());
+                        }
                     }
                 }
             }
@@ -5422,10 +5432,12 @@ impl OpenFangKernel {
         // wired that provider into their MCP server.
         for server in &self.config.mcp_servers {
             for env_name in &server.env {
-                if let Some(provider) =
+                if let Some(providers) =
                     env_to_provider.get(&env_name.to_ascii_uppercase())
                 {
-                    set.insert(provider.clone());
+                    for provider in providers {
+                        set.insert(provider.clone());
+                    }
                 }
             }
         }

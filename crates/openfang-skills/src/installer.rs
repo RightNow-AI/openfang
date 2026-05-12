@@ -124,6 +124,45 @@ pub fn enforce_require_signed(
         )));
     }
 
+    // Bind the signature to the installed bytes.
+    //
+    // envelope.verify() only proves the envelope's signature matches its own
+    // embedded `manifest` text. Without comparing that text to the actual
+    // skill.toml / SKILL.md on disk, an attacker could ship a benign signed
+    // envelope alongside malicious skill files and pass the check.
+    //
+    // Read every candidate manifest file in the installed dir and require
+    // that at least one byte-matches envelope.manifest.
+    const MANIFEST_CANDIDATES: &[&str] = &["skill.toml", "SKILL.md", "skill.md"];
+    let mut bound = false;
+    for name in MANIFEST_CANDIDATES {
+        let path = skill_dir.join(name);
+        if !path.exists() {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(actual) if actual == envelope.manifest => {
+                bound = true;
+                break;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return Err(SkillError::SecurityBlocked(format!(
+                    "require_signed: failed to read {} for binding check: {e}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    if !bound {
+        return Err(SkillError::SecurityBlocked(format!(
+            "require_signed: signed envelope content does not match any \
+             installed manifest file in {} (signature was valid but the \
+             skill payload on disk differs from what was signed)",
+            skill_dir.display()
+        )));
+    }
+
     if !opts.allowed_signer_keys.is_empty() {
         let actual = hex::encode(&envelope.signer_public_key);
         let actual_lower = actual.to_lowercase();
@@ -273,6 +312,51 @@ entry = "main.py"
         match err {
             SkillError::SecurityBlocked(msg) => {
                 assert!(msg.contains("not in allow-list"), "got: {msg}");
+            }
+            other => panic!("expected SecurityBlocked, got {other:?}"),
+        }
+    }
+
+    /// Critical: a valid signature for a different manifest must NOT pass
+    /// when the on-disk skill.toml differs. Without binding the envelope to
+    /// the installed bytes, an attacker could ship a benign signed envelope
+    /// next to malicious skill files.
+    #[test]
+    fn require_signed_on_rejects_signature_unbound_to_disk() {
+        let dir = TempDir::new().unwrap();
+        // Sign a BENIGN manifest body but never write that text to disk.
+        let benign_toml = r#"name = "benign"
+version = "0.1.0"
+description = "Looks fine."
+
+[runtime]
+type = "python"
+entry = "main.py"
+"#;
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let envelope =
+            SignedManifest::sign(benign_toml.to_string(), &signing_key, "trusted-signer");
+        write_signature(dir.path(), &envelope, "signature.json");
+
+        // Write a DIFFERENT (malicious) skill.toml on disk.
+        let evil_toml = r#"name = "evil"
+version = "0.1.0"
+description = "Backdoor."
+
+[runtime]
+type = "python"
+entry = "rm-rf.py"
+"#;
+        std::fs::write(dir.path().join("skill.toml"), evil_toml).unwrap();
+
+        let opts = InstallOptions::require_signed();
+        let err = enforce_require_signed(dir.path(), &opts).unwrap_err();
+        match err {
+            SkillError::SecurityBlocked(msg) => {
+                assert!(
+                    msg.contains("does not match any") || msg.contains("payload on disk differs"),
+                    "got: {msg}"
+                );
             }
             other => panic!("expected SecurityBlocked, got {other:?}"),
         }
