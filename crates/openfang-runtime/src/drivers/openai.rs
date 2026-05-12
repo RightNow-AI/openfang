@@ -190,9 +190,14 @@ struct OaiMessage {
     tool_calls: Option<Vec<OaiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
-    /// Moonshot Kimi: sent as empty string on assistant messages with tool_calls when using Kimi (thinking is disabled for multi-turn compatibility).
+    /// Legacy reasoning field. Pre-vLLM 0.19, DeepSeek, Moonshot/Kimi (empty string when thinking is disabled for tool_calls multi-turn).
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_content: Option<String>,
+    /// New reasoning field per OpenAI GPT-OSS Responses-API convention.
+    /// vLLM 0.19+ (PR #33402) renamed `reasoning_content` to `reasoning`.
+    /// Issue #1157: emit both for backward compat across servers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<String>,
 }
 
 /// Content can be a plain string or an array of content parts (for images).
@@ -263,8 +268,23 @@ struct OaiResponseMessage {
     content: Option<String>,
     tool_calls: Option<Vec<OaiToolCall>>,
     /// Reasoning/thinking content returned by some models (DeepSeek-R1, Qwen3, etc.)
-    /// via LM Studio, Ollama, and other local inference servers.
+    /// via LM Studio, Ollama, and pre-0.19 vLLM.
     reasoning_content: Option<String>,
+    /// New reasoning field per OpenAI GPT-OSS Responses-API convention.
+    /// vLLM 0.19+ (PR #33402) emits this name instead of `reasoning_content`.
+    /// Issue #1157.
+    reasoning: Option<String>,
+}
+
+impl OaiResponseMessage {
+    /// Return whichever reasoning field the server populated.
+    /// vLLM â‰¥ 0.19 â†’ `reasoning`. Older servers / DeepSeek / Qwen â†’ `reasoning_content`.
+    fn reasoning_text(&self) -> Option<&str> {
+        self.reasoning
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.reasoning_content.as_deref().filter(|s| !s.is_empty()))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -292,16 +312,16 @@ fn strip_trailing_empty_assistant(messages: &mut Vec<OaiMessage>) {
 /// Assemble an outbound assistant `OaiMessage` from `ContentBlock`s, replaying
 /// any `Thinking` blocks in the format the upstream model originally emitted.
 ///
-/// This is the fix for issue #1098 — thinking-model state preservation.
+/// This is the fix for issue #1098 â€” thinking-model state preservation.
 /// Without this, `<think>...</think>` and `reasoning_content` are stripped on
 /// the next turn so the model loses its prior reasoning trace and re-derives
 /// the answer (degrading quality).  We honour `provider_metadata.format`:
 ///
-/// - `"reasoning_content"` → emitted on the OpenAI `reasoning_content` field
+/// - `"reasoning_content"` â†’ emitted on the OpenAI `reasoning_content` field
 ///   (DeepSeek-R1, Qwen3, MiniMax M2 via LM Studio/Ollama)
-/// - `"inline_think"`     → wrapped in `<think>...</think>` and prepended to
+/// - `"inline_think"`     â†’ wrapped in `<think>...</think>` and prepended to
 ///   the visible content (MiniMax M2.5, Llama-3.3-think variants)
-/// - missing/other        → fall back to the legacy Moonshot/Kimi behaviour
+/// - missing/other        â†’ fall back to the legacy Moonshot/Kimi behaviour
 ///   (only emit `reasoning_content` when `needs_reasoning_content()` is true)
 fn assemble_assistant_message(
     blocks: &[ContentBlock],
@@ -360,7 +380,7 @@ fn assemble_assistant_message(
                         }
                     }
                     _ => {
-                        // Unknown format — preserve as inline_think since it's
+                        // Unknown format â€” preserve as inline_think since it's
                         // safe (visible to the model as ordinary text).  The
                         // legacy Moonshot path overrides this below.
                         let entry = format!("<think>{thinking}</think>");
@@ -387,14 +407,22 @@ fn assemble_assistant_message(
     let has_tool_calls = !tool_calls.is_empty();
     let needs_reasoning = driver.needs_reasoning_content(model);
 
-    // Final reasoning_content field: the per-block format hint wins; otherwise
+    // Final reasoning fields: the per-block format hint wins; otherwise
     // fall back to legacy Moonshot/Kimi behaviour (empty string when needed).
-    let reasoning_content = if reasoning_field.is_some() {
-        reasoning_field
+    //
+    // Issue #1157: vLLM â‰¥ 0.19 renamed `reasoning_content` to `reasoning`.
+    // Emit BOTH fields so the persisted thinking trace reaches the model
+    // regardless of which server version we're talking to. Old servers
+    // ignore `reasoning`; new vLLM ignores `reasoning_content` (and would
+    // otherwise silently strip our thinking, see PR vllm#33402).
+    let (reasoning_content, reasoning) = if let Some(text) = reasoning_field {
+        (Some(text.clone()), Some(text))
     } else if needs_reasoning {
-        Some(String::new())
+        // Moonshot/Kimi legacy contract: empty `reasoning_content` to disable
+        // thinking on tool-call multi-turn. The `reasoning` field stays unset.
+        (Some(String::new()), None)
     } else {
-        None
+        (None, None)
     };
 
     OaiMessage {
@@ -415,6 +443,7 @@ fn assemble_assistant_message(
         },
         tool_call_id: None,
         reasoning_content,
+        reasoning,
     }
 }
 
@@ -431,7 +460,8 @@ impl LlmDriver for OpenAIDriver {
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning_content: None,
-            });
+                    reasoning: None,
+                });
         }
 
         // Convert messages
@@ -444,7 +474,8 @@ impl LlmDriver for OpenAIDriver {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
-                    });
+                    reasoning: None,
+                });
                 }
                 (Role::User, MessageContent::Text(text)) => {
                     oai_messages.push(OaiMessage {
@@ -453,7 +484,8 @@ impl LlmDriver for OpenAIDriver {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
-                    });
+                    reasoning: None,
+                });
                 }
                 (Role::Assistant, MessageContent::Text(text)) => {
                     oai_messages.push(OaiMessage {
@@ -462,7 +494,8 @@ impl LlmDriver for OpenAIDriver {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
-                    });
+                    reasoning: None,
+                });
                 }
                 (Role::User, MessageContent::Blocks(blocks)) => {
                     // Handle tool results and images in user messages
@@ -486,7 +519,8 @@ impl LlmDriver for OpenAIDriver {
                                     tool_calls: None,
                                     tool_call_id: Some(tool_use_id.clone()),
                                     reasoning_content: None,
-                                });
+                    reasoning: None,
+                });
                             }
                             ContentBlock::Text { text, .. } => {
                                 parts.push(OaiContentPart::Text { text: text.clone() });
@@ -509,7 +543,8 @@ impl LlmDriver for OpenAIDriver {
                             tool_calls: None,
                             tool_call_id: None,
                             reasoning_content: None,
-                        });
+                    reasoning: None,
+                });
                     }
                 }
                 (Role::Assistant, MessageContent::Blocks(blocks)) => {
@@ -676,7 +711,7 @@ impl LlmDriver for OpenAIDriver {
                     continue;
                 }
 
-                // Model doesn't support function calling — retry without tools
+                // Model doesn't support function calling â€” retry without tools
                 // (e.g. GLM-5 on DashScope returns 500 "internal error" when tools are sent)
                 let body_lower = body.to_lowercase();
                 if !oai_request.tools.is_empty()
@@ -720,19 +755,19 @@ impl LlmDriver for OpenAIDriver {
             let mut content = Vec::new();
             let mut tool_calls = Vec::new();
 
-            // Capture reasoning_content from models that use a separate field
-            // (DeepSeek-R1, Qwen3, etc. via LM Studio/Ollama)
-            if let Some(ref reasoning) = choice.message.reasoning_content {
+            // Capture reasoning text from models that use a separate field.
+            // Issue #1098 (legacy `reasoning_content`) + #1157 (vLLM ≥ 0.19
+            // renamed it to `reasoning`). Accept either.
+            if let Some(reasoning) = choice.message.reasoning_text() {
                 if !reasoning.is_empty() {
-                    debug!(
-                        len = reasoning.len(),
-                        "Captured reasoning_content from response"
-                    );
+                    debug!(len = reasoning.len(), "Captured reasoning from response");
                     // Mark the format so the outbound path knows to re-emit
-                    // this as a `reasoning_content` field rather than as
-                    // inline `<think>` tags. Issue #1098.
+                    // this on the reasoning field rather than as inline
+                    // `<think>` tags. The outbound assembler writes BOTH
+                    // `reasoning` and `reasoning_content` for cross-server
+                    // compat.
                     content.push(ContentBlock::Thinking {
-                        thinking: reasoning.clone(),
+                        thinking: reasoning.to_string(),
                         signature: None,
                         provider_metadata: Some(serde_json::json!({
                             "format": "reasoning_content"
@@ -747,8 +782,10 @@ impl LlmDriver for OpenAIDriver {
                     // embed directly in the content field.
                     let (cleaned, thinking) = extract_think_tags(&text);
                     if let Some(think_text) = thinking {
-                        // Only add if we didn't already get reasoning_content
-                        if choice.message.reasoning_content.is_none() {
+                        // Only add if we didn't already get a reasoning field
+                        // (either legacy `reasoning_content` or new vLLM 0.19+
+                        // `reasoning`). Issue #1157.
+                        if choice.message.reasoning_text().is_none() {
                             // Mark the format so we re-emit as inline `<think>`
                             // tags on the next turn (MiniMax/M2.5 style).
                             content.push(ContentBlock::Thinking {
@@ -843,7 +880,7 @@ impl LlmDriver for OpenAIDriver {
             // this as a "silent failure" and loop unnecessarily.
             if !content.is_empty() && usage.input_tokens == 0 && usage.output_tokens == 0 {
                 debug!(
-                    "Response has content but no usage stats — setting synthetic output_tokens=1"
+                    "Response has content but no usage stats â€” setting synthetic output_tokens=1"
                 );
                 usage.output_tokens = 1;
             }
@@ -877,7 +914,8 @@ impl LlmDriver for OpenAIDriver {
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning_content: None,
-            });
+                    reasoning: None,
+                });
         }
 
         for msg in &request.messages {
@@ -889,7 +927,8 @@ impl LlmDriver for OpenAIDriver {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
-                    });
+                    reasoning: None,
+                });
                 }
                 (Role::User, MessageContent::Text(text)) => {
                     oai_messages.push(OaiMessage {
@@ -898,7 +937,8 @@ impl LlmDriver for OpenAIDriver {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
-                    });
+                    reasoning: None,
+                });
                 }
                 (Role::Assistant, MessageContent::Text(text)) => {
                     oai_messages.push(OaiMessage {
@@ -907,7 +947,8 @@ impl LlmDriver for OpenAIDriver {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
-                    });
+                    reasoning: None,
+                });
                 }
                 (Role::User, MessageContent::Blocks(blocks)) => {
                     for block in blocks {
@@ -927,7 +968,8 @@ impl LlmDriver for OpenAIDriver {
                                 tool_calls: None,
                                 tool_call_id: Some(tool_use_id.clone()),
                                 reasoning_content: None,
-                            });
+                    reasoning: None,
+                });
                         }
                     }
                 }
@@ -1091,7 +1133,7 @@ impl LlmDriver for OpenAIDriver {
                     continue;
                 }
 
-                // Provider doesn't support stream_options — retry without it
+                // Provider doesn't support stream_options â€” retry without it
                 if status == 400
                     && oai_request.stream_options.is_some()
                     && attempt < max_retries
@@ -1104,7 +1146,7 @@ impl LlmDriver for OpenAIDriver {
                     continue;
                 }
 
-                // Model doesn't support function calling — retry without tools
+                // Model doesn't support function calling â€” retry without tools
                 let body_lower = body.to_lowercase();
                 if !oai_request.tools.is_empty()
                     && attempt < max_retries
@@ -1193,7 +1235,7 @@ impl LlmDriver for OpenAIDriver {
                     for choice in choices {
                         let delta = &choice["delta"];
 
-                        // Text content delta — route through think filter to
+                        // Text content delta â€” route through think filter to
                         // strip <think>...</think> tags before they reach the client.
                         if let Some(text) = delta["content"].as_str() {
                             if !text.is_empty() {
@@ -1309,7 +1351,7 @@ impl LlmDriver for OpenAIDriver {
                     sse_lines = sse_line_count,
                     finish = ?finish_reason,
                     buffer_remaining = buffer.len(),
-                    "SSE stream returned empty: 0 content, 0 tokens — likely a silently failed request"
+                    "SSE stream returned empty: 0 content, 0 tokens â€” likely a silently failed request"
                 );
             } else {
                 debug!(
@@ -1449,7 +1491,7 @@ impl LlmDriver for OpenAIDriver {
             // non-zero output_tokens so the agent loop doesn't misclassify
             // this as a "silent failure" and loop unnecessarily.
             if !content.is_empty() && usage.input_tokens == 0 && usage.output_tokens == 0 {
-                debug!("Stream has content but no usage stats — setting synthetic output_tokens=1");
+                debug!("Stream has content but no usage stats â€” setting synthetic output_tokens=1");
                 usage.output_tokens = 1;
             }
 
@@ -1502,7 +1544,7 @@ fn extract_think_tags(text: &str) -> (String, Option<String>) {
                 break;
             }
         } else {
-            // Unclosed <think> tag — treat everything after as thinking
+            // Unclosed <think> tag â€” treat everything after as thinking
             let thought = cleaned[start + "<think>".len()..].trim().to_string();
             if !thought.is_empty() {
                 thinking_parts.push(thought);
@@ -1609,7 +1651,7 @@ fn parse_groq_failed_tool_call(body: &str) -> Option<CompletionResponse> {
             let args = &call_content[brace_pos..];
             (name, args)
         } else {
-            // No args — just a tool name
+            // No args â€” just a tool name
             (call_content.trim(), "{}")
         };
 
@@ -1625,7 +1667,7 @@ fn parse_groq_failed_tool_call(body: &str) -> Option<CompletionResponse> {
     }
 
     if tool_calls.is_empty() {
-        // No tool calls found — the model generated plain text but Groq rejected it.
+        // No tool calls found â€” the model generated plain text but Groq rejected it.
         // Return it as a normal text response instead of failing.
         if !failed.trim().is_empty() {
             warn!("Recovering plain text from Groq failed_generation (no tool calls)");
@@ -1870,9 +1912,132 @@ mod tests {
         let msg: OaiResponseMessage = serde_json::from_str(json).unwrap();
         assert!(msg.content.is_none());
         assert!(msg.reasoning_content.is_none());
+        assert!(msg.reasoning.is_none());
     }
 
-    // ── Azure OpenAI tests ──────────────────────────────────────────
+    // ── Issue #1157: vLLM ≥ 0.19 reasoning field rename ─────────────────
+
+    /// vLLM 0.19+ (PR #33402) returns `reasoning` instead of
+    /// `reasoning_content`. We must accept the new name on ingress.
+    #[test]
+    fn test_oai_response_message_with_vllm_reasoning_field() {
+        let json =
+            r#"{"content": "Answer.", "reasoning": "I weighed A vs B.", "tool_calls": null}"#;
+        let msg: OaiResponseMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.content.as_deref(), Some("Answer."));
+        assert!(msg.reasoning_content.is_none());
+        assert_eq!(msg.reasoning.as_deref(), Some("I weighed A vs B."));
+        // reasoning_text() must surface the new field transparently.
+        assert_eq!(msg.reasoning_text(), Some("I weighed A vs B."));
+    }
+
+    /// If a server sends both fields (during the transition), prefer the
+    /// new `reasoning` name since that's what vLLM 0.19+ writes natively.
+    #[test]
+    fn test_reasoning_text_prefers_new_field() {
+        let json = r#"{"content": null, "reasoning": "new", "reasoning_content": "old"}"#;
+        let msg: OaiResponseMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.reasoning_text(), Some("new"));
+    }
+
+    /// If only the legacy field is set (older vLLM, DeepSeek, Ollama),
+    /// `reasoning_text()` must still return it.
+    #[test]
+    fn test_reasoning_text_falls_back_to_legacy_field() {
+        let json = r#"{"content": null, "reasoning_content": "legacy thinking"}"#;
+        let msg: OaiResponseMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.reasoning_text(), Some("legacy thinking"));
+    }
+
+    /// Outbound assembler must emit BOTH `reasoning` and `reasoning_content`
+    /// when a `Thinking` block carries the `reasoning_content` format hint,
+    /// so the persisted thinking reaches the model regardless of whether
+    /// the upstream server is pre- or post-vLLM 0.19.
+    #[test]
+    fn test_assemble_emits_both_reasoning_fields_for_vllm_compat() {
+        let driver = OpenAIDriver::new(
+            "test".to_string(),
+            "http://localhost:8000/v1".to_string(),
+        );
+        let blocks = vec![
+            ContentBlock::Thinking {
+                thinking: "MARKER-vllm-019".to_string(),
+                signature: None,
+                provider_metadata: Some(serde_json::json!({"format": "reasoning_content"})),
+            },
+            ContentBlock::Text {
+                text: "final".to_string(),
+                provider_metadata: None,
+            },
+        ];
+        let msg = assemble_assistant_message(&blocks, "minimax-m2", &driver);
+        assert_eq!(
+            msg.reasoning_content.as_deref(),
+            Some("MARKER-vllm-019"),
+            "legacy reasoning_content field required for pre-0.19 vLLM and DeepSeek"
+        );
+        assert_eq!(
+            msg.reasoning.as_deref(),
+            Some("MARKER-vllm-019"),
+            "new reasoning field required for vLLM ≥ 0.19 (PR #33402)"
+        );
+
+        // Serialize and confirm the wire shape has both keys at top level.
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["reasoning_content"], "MARKER-vllm-019");
+        assert_eq!(json["reasoning"], "MARKER-vllm-019");
+    }
+
+    /// Non-reasoning models (gpt-4o, claude, …) must NOT carry either
+    /// reasoning field on the wire. Regression guard for the dual-emit
+    /// change in #1157.
+    #[test]
+    fn test_assemble_no_reasoning_fields_for_plain_model() {
+        let driver =
+            OpenAIDriver::new("test".to_string(), "https://api.openai.com/v1".to_string());
+        let blocks = vec![ContentBlock::Text {
+            text: "hi".to_string(),
+            provider_metadata: None,
+        }];
+        let msg = assemble_assistant_message(&blocks, "gpt-4o", &driver);
+        assert!(msg.reasoning_content.is_none());
+        assert!(msg.reasoning.is_none());
+        let json = serde_json::to_value(&msg).unwrap();
+        assert!(json.get("reasoning").is_none());
+        assert!(json.get("reasoning_content").is_none());
+    }
+
+    /// Moonshot/Kimi legacy contract: emit empty `reasoning_content` to
+    /// disable thinking on tool-call multi-turn. Issue #1157 must not
+    /// regress this — `reasoning` stays absent because Moonshot doesn't
+    /// understand the new name.
+    #[test]
+    fn test_assemble_moonshot_keeps_legacy_field_only() {
+        let driver = OpenAIDriver::new(
+            "test".to_string(),
+            "https://api.moonshot.cn/v1".to_string(),
+        );
+        let blocks = vec![
+            ContentBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "search".to_string(),
+                input: serde_json::json!({"q": "x"}),
+                provider_metadata: None,
+            },
+        ];
+        let msg = assemble_assistant_message(&blocks, "kimi-k2", &driver);
+        assert_eq!(
+            msg.reasoning_content.as_deref(),
+            Some(""),
+            "Moonshot Kimi requires empty reasoning_content on tool_calls turns"
+        );
+        assert!(
+            msg.reasoning.is_none(),
+            "Moonshot does not understand the new vLLM `reasoning` field"
+        );
+    }
+
+    // â”€â”€ Azure OpenAI tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_azure_driver_creation() {
@@ -1948,7 +2113,7 @@ mod tests {
         assert_eq!(url, "https://api.moonshot.ai/v1/chat/completions");
     }
 
-    // ── issue #1098: thinking-block round-trip ────────────────────────
+    // â”€â”€ issue #1098: thinking-block round-trip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Inline `<think>` blocks captured on ingress must be re-emitted in
     /// historical assistant turns so MiniMax-style models retain reasoning
@@ -2017,7 +2182,7 @@ mod tests {
     }
 
     /// Without thinking blocks, the outbound message should be a plain
-    /// assistant message — preserve the legacy shape.
+    /// assistant message â€” preserve the legacy shape.
     #[test]
     fn test_assemble_assistant_no_thinking_is_plain() {
         let driver =
@@ -2042,14 +2207,14 @@ mod tests {
         // Step 1: parse server response shape.
         let json = serde_json::json!({
             "content": "Final answer.",
-            "reasoning_content": "I considered options A, B, and C…",
+            "reasoning_content": "I considered options A, B, and Câ€¦",
             "tool_calls": null
         });
         let server_msg: OaiResponseMessage = serde_json::from_value(json).unwrap();
         assert_eq!(server_msg.content.as_deref(), Some("Final answer."));
         assert_eq!(
             server_msg.reasoning_content.as_deref(),
-            Some("I considered options A, B, and C…")
+            Some("I considered options A, B, and Câ€¦")
         );
 
         // Step 2: simulate the driver building blocks (mirrors the live
@@ -2076,7 +2241,7 @@ mod tests {
         // The reasoning_content field must round-trip verbatim.
         assert_eq!(
             outbound.reasoning_content.as_deref(),
-            Some("I considered options A, B, and C…"),
+            Some("I considered options A, B, and Câ€¦"),
             "issue #1098 regression: reasoning was stripped on resubmission"
         );
     }
