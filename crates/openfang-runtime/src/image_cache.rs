@@ -34,11 +34,15 @@ static IMAGE_TMP_SWEEP_ONCE: Once = Once::new();
 
 /// Resolve the directory used for materializing image attachments.
 ///
-/// Lives under `$HOME/.openfang/tmp/images` so it travels with the OpenFang
-/// install. Falls back to the OS temp dir when `$HOME` isn't set (which
-/// shouldn't happen in our deployed daemon but is handled defensively).
+/// Lives under `$HOME/.openfang/tmp/images` (or `%USERPROFILE%\.openfang\tmp\images`
+/// on Windows) so it travels with the OpenFang install. Falls back to the OS
+/// temp dir when neither `$HOME` nor `%USERPROFILE%` is set (which shouldn't
+/// happen in our deployed daemon but is handled defensively).
+///
+/// The `HOME` → `USERPROFILE` order matches the convention used elsewhere in
+/// the kernel (see `crates/openfang-runtime/src/drivers/mod.rs`).
 pub fn image_tmp_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let mut p = PathBuf::from(home);
         p.push(".openfang");
         p.push("tmp");
