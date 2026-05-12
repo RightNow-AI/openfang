@@ -3248,6 +3248,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "lber"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cbcf559624bfd9fe8d488329a8959766335a43a9b8b2cdd6a2c379fca02909a5"
+dependencies = [
+ "bytes",
+ "nom 7.1.3",
+]
+
+[[package]]
+name = "ldap3"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01fe89f5e7cfb7e4701e3a38ff9f00358e026a9aee940355d88ee9d81e5c7503"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
+ "futures-util",
+ "lber",
+ "log",
+ "native-tls",
+ "nom 7.1.3",
+ "percent-encoding",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-stream",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3547,6 +3580,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "minimal-lexical"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
 name = "minisign-verify"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3702,6 +3741,16 @@ dependencies = [
  "lexical-core",
  "memchr",
  "version_check",
+]
+
+[[package]]
+name = "nom"
+version = "7.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
+dependencies = [
+ "memchr",
+ "minimal-lexical",
 ]
 
 [[package]]
@@ -4000,6 +4049,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "openfang-auth"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ldap3",
+ "log",
+ "native-tls",
+ "openfang-types",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "openfang-channels"
 version = "0.6.8"
 dependencies = [
@@ -4154,6 +4223,7 @@ dependencies = [
  "futures",
  "hex",
  "libc",
+ "openfang-auth",
  "openfang-channels",
  "openfang-extensions",
  "openfang-hands",

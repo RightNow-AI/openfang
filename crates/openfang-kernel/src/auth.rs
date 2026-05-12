@@ -2,13 +2,17 @@
 //!
 //! The AuthManager maps platform user identities (Telegram ID, Discord ID, etc.)
 //! to OpenFang users with roles, then enforces permission checks on actions.
+//!
+//! Supports external directory authentication (LDAP, SAML, OIDC) for dynamic
+//! user provisioning and group-based role mapping.
 
 use dashmap::DashMap;
+use openfang_auth::{ExternalAuthProviderTrait, AuthCredentials, create_provider};
 use openfang_types::agent::UserId;
-use openfang_types::config::UserConfig;
+use openfang_types::config::{UserConfig, ExternalAuthConfig};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use std::fmt;
-use tracing::info;
+use tracing::{info, error};
 
 /// User roles with hierarchical permissions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -100,16 +104,42 @@ pub struct AuthManager {
     users: DashMap<UserId, UserIdentity>,
     /// Channel binding index: "channel_type:platform_id" → UserId.
     channel_index: DashMap<String, UserId>,
+    /// External directory authentication providers (LDAP, SAML, OIDC).
+    external_providers: DashMap<String, std::sync::Arc<dyn ExternalAuthProviderTrait>>,
 }
 
 impl AuthManager {
     /// Create a new AuthManager from kernel user configuration.
-    pub fn new(user_configs: &[UserConfig]) -> Self {
+    pub fn new(user_configs: &[UserConfig], external_configs: &[ExternalAuthConfig]) -> Self {
         let manager = Self {
             users: DashMap::new(),
             channel_index: DashMap::new(),
+            external_providers: DashMap::new(),
         };
 
+        // Initialize external auth providers
+        for config in external_configs {
+            match create_provider(config.clone()) {
+                Ok(provider) => {
+                    let provider_name = config.name.clone();
+                    manager.external_providers.insert(provider_name.clone(), std::sync::Arc::from(provider));
+                    info!(
+                        provider = %provider_name,
+                        type = %config.provider_type,
+                        "Initialized external auth provider"
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        provider = %config.name,
+                        error = %e,
+                        "Failed to initialize external auth provider"
+                    );
+                }
+            }
+        }
+
+        // Register static users
         for config in user_configs {
             let user_id = UserId::new();
             let role = UserRole::from_str_role(&config.role);
@@ -149,7 +179,7 @@ impl AuthManager {
 
     /// Get a user's identity by their UserId.
     pub fn get_user(&self, user_id: UserId) -> Option<UserIdentity> {
-        self.users.get(&user_id).map(|r| r.value().clone())
+        self.users.get(&user_id).map(|r| r.clone())
     }
 
     /// Authorize a user for an action.
@@ -184,7 +214,112 @@ impl AuthManager {
 
     /// List all registered users.
     pub fn list_users(&self) -> Vec<UserIdentity> {
-        self.users.iter().map(|r| r.value().clone()).collect()
+        self.users.iter().map(|r| r.clone()).collect()
+    }
+
+    /// Authenticate user via external directory provider.
+    ///
+    /// # Arguments
+    /// * `provider_name` - Name of the external auth provider (e.g., "active-directory")
+    /// * `credentials` - Username and password
+    ///
+    /// # Returns
+    /// * `Ok(UserId)` - User authenticated and provisioned
+    /// * `Err(OpenFangError)` - Authentication failed
+    pub async fn authenticate_external(
+        &self,
+        provider_name: &str,
+        credentials: &AuthCredentials,
+    ) -> Result<UserId, OpenFangError> {
+        // Get the provider
+        let provider = self
+            .external_providers
+            .get(provider_name)
+            .ok_or_else(|| OpenFangError::AuthDenied(format!("Unknown provider: {}", provider_name)))?
+            .clone();
+
+        // Authenticate
+        let auth_result = provider.authenticate(credentials).await.map_err(|e| {
+            OpenFangError::AuthDenied(format!("External auth failed: {}", e))
+        })?;
+
+        // Check if user already exists
+        let user_id = if let Some(existing) = self.users.get(&auth_result.user_id) {
+            existing.value().id
+        } else {
+            // Create new user from directory
+            let role = UserRole::from_str_role(&auth_result.role);
+            let identity = UserIdentity {
+                id: auth_result.user_id,
+                name: auth_result.attributes
+                    .get("name")
+                    .and_then(|v: &serde_json::Value| v.as_str())
+                    .unwrap_or(&auth_result.user_id.to_string())
+                    .to_string(),
+                role,
+            };
+
+            self.users.insert(auth_result.user_id, identity);
+            auth_result.user_id
+        };
+
+        info!(
+            user_id = %user_id,
+            provider = %provider_name,
+            role = %auth_result.role,
+            "External user authenticated"
+        );
+
+        Ok(user_id)
+    }
+
+    /// Sync users from external directory.
+    pub async fn sync_external_users(&self, provider_name: &str) -> Result<usize, OpenFangError> {
+        let provider = self
+            .external_providers
+            .get(provider_name)
+            .ok_or_else(|| OpenFangError::AuthDenied(format!("Unknown provider: {}", provider_name)))?
+            .clone();
+
+        let users = provider.sync_users().await.map_err(|e| {
+            OpenFangError::AuthDenied(format!("Sync failed: {}", e))
+        })?;
+
+        let mut count = 0;
+        for auth_result in users {
+            // Check if user exists
+            if !self.users.contains_key(&auth_result.user_id) {
+                let role = UserRole::from_str_role(&auth_result.role);
+                let identity = UserIdentity {
+                    id: auth_result.user_id,
+                    name: auth_result.attributes
+                        .get("name")
+                        .and_then(|v: &serde_json::Value| v.as_str())
+                        .unwrap_or(&auth_result.user_id.to_string())
+                        .to_string(),
+                    role,
+                };
+
+                self.users.insert(auth_result.user_id, identity);
+                count += 1;
+            }
+        }
+
+        info!(
+            provider = %provider_name,
+            synced = count,
+            "External user sync completed"
+        );
+
+        Ok(count)
+    }
+
+    /// Get list of configured external providers.
+    pub fn list_external_providers(&self) -> Vec<String> {
+        self.external_providers
+            .iter()
+            .map(|r| r.key().clone())
+            .collect()
     }
 }
 
@@ -227,14 +362,14 @@ mod tests {
 
     #[test]
     fn test_user_registration() {
-        let manager = AuthManager::new(&test_configs());
+        let manager = AuthManager::new(&test_configs(), &[]);
         assert!(manager.is_enabled());
         assert_eq!(manager.user_count(), 3);
     }
 
     #[test]
     fn test_identify_from_channel() {
-        let manager = AuthManager::new(&test_configs());
+        let manager = AuthManager::new(&test_configs(), &[]);
 
         // Alice on Telegram
         let owner_tg = manager.identify("telegram", "123456");
@@ -253,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_owner_can_do_everything() {
-        let manager = AuthManager::new(&test_configs());
+        let manager = AuthManager::new(&test_configs(), &[]);
         let owner_id = manager.identify("telegram", "123456").unwrap();
 
         assert!(manager.authorize(owner_id, &Action::ChatWithAgent).is_ok());
@@ -265,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_user_limited_access() {
-        let manager = AuthManager::new(&test_configs());
+        let manager = AuthManager::new(&test_configs(), &[]);
         let guest_id = manager.identify("telegram", "999999").unwrap();
 
         // User can chat and view config
@@ -280,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_viewer_read_only() {
-        let manager = AuthManager::new(&test_configs());
+        let manager = AuthManager::new(&test_configs(), &[]);
         let users = manager.list_users();
         let viewer = users.iter().find(|u| u.name == "ReadOnly").unwrap();
 
@@ -292,14 +427,14 @@ mod tests {
 
     #[test]
     fn test_unknown_user_denied() {
-        let manager = AuthManager::new(&test_configs());
+        let manager = AuthManager::new(&test_configs(), &[]);
         let fake_id = UserId::new();
         assert!(manager.authorize(fake_id, &Action::ChatWithAgent).is_err());
     }
 
     #[test]
     fn test_no_users_means_disabled() {
-        let manager = AuthManager::new(&[]);
+        let manager = AuthManager::new(&[], &[]);
         assert!(!manager.is_enabled());
         assert_eq!(manager.user_count(), 0);
     }

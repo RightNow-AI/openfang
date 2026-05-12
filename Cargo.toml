@@ -4,6 +4,7 @@ members = [
     "crates/openfang-types",
     "crates/openfang-memory",
     "crates/openfang-runtime",
+    "crates/openfang-auth",
     "crates/openfang-wire",
     "crates/openfang-api",
     "crates/openfang-kernel",

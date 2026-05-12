@@ -48,3 +48,6 @@ Thumbs.db
 
 # Personal deploy scripts
 scripts/deploy-remote.sh
+
+# Stakpak session files
+.stakpak/session*

@@ -1275,6 +1275,9 @@ pub struct KernelConfig {
     /// Dashboard authentication (username/password login).
     #[serde(default)]
     pub auth: AuthConfig,
+    /// External directory authentication providers (LDAP, SAML, OIDC).
+    #[serde(default)]
+    pub external_auth_providers: Vec<ExternalAuthConfig>,
     /// Directory for auto-loading workflow JSON files on startup.
     /// Defaults to `~/.openfang/workflows`. Set to empty string to disable.
     #[serde(default)]
@@ -1344,6 +1347,138 @@ impl Default for AuthConfig {
             password_hash: String::new(),
             session_ttl_hours: 168,
         }
+    }
+}
+
+/// External directory authentication provider configuration.
+///
+/// Supports LDAP, SAML, and OIDC providers for enterprise identity integration.
+/// Users are automatically provisioned on first authentication based on
+/// directory group membership mapped to OpenFang RBAC roles.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ExternalAuthConfig {
+    /// Provider type: "ldap", "saml", or "oidc".
+    pub provider_type: String,
+    /// Human-readable name for this provider.
+    pub name: String,
+    /// Connection endpoint (URI for LDAP, discovery URL for OIDC, SSO URL for SAML).
+    pub uri: String,
+    /// Service account bind DN (LDAP) or client ID (OIDC/SAML).
+    pub bind_dn: String,
+    /// Environment variable name for bind password/secret.
+    pub bind_password_env: Option<String>,
+    /// Base DN for user searches (LDAP) or entity ID (SAML).
+    pub base_dn: String,
+    /// User search filter with {username} placeholder.
+    #[serde(default)]
+    pub user_filter: Option<String>,
+    /// Attribute mappings for user profile extraction.
+    #[serde(default)]
+    pub attribute_mapping: AttributeMapping,
+    /// Role mappings from directory groups to OpenFang roles.
+    #[serde(default)]
+    pub role_mappings: Vec<RoleMappingRule>,
+    /// Connection security settings.
+    #[serde(default)]
+    pub connection: ConnectionConfig,
+}
+
+/// User attribute mapping configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AttributeMapping {
+    /// Attribute name for user ID (e.g., "sAMAccountName", "uid").
+    pub user_id_attr: String,
+    /// Attribute name for display name (e.g., "displayName", "cn").
+    pub name_attr: String,
+    /// Attribute name for email (e.g., "mail", "email").
+    pub email_attr: String,
+    /// Attribute name for group membership (e.g., "memberOf", "groups").
+    pub group_attr: String,
+    /// Custom user filter template with {username} placeholder.
+    #[serde(default)]
+    pub user_filter: Option<String>,
+    /// Custom user DN template with {username} or {user_id} placeholders.
+    #[serde(default)]
+    pub user_dn_template: Option<String>,
+}
+
+/// Role mapping rule for directory group → OpenFang role.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleMappingRule {
+    /// LDAP group DN pattern (supports * wildcard).
+    pub group_pattern: String,
+    /// OpenFang role to assign (owner, admin, user, viewer).
+    pub role: String,
+}
+
+/// LDAP connection security configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConnectionConfig {
+    /// Connection timeout in seconds.
+    #[serde(default = "default_timeout")]
+    pub timeout_secs: u64,
+    /// Enable TLS/SSL (LDAPS or StartTLS).
+    #[serde(default = "default_true")]
+    pub tls_enabled: bool,
+    /// Path to CA certificate for self-signed server certificates.
+    pub ca_cert_path: Option<String>,
+    /// Use StartTLS instead of LDAPS.
+    #[serde(default)]
+    pub start_tls: Option<bool>,
+    /// Disable TLS certificate verification (NOT for production).
+    #[serde(default)]
+    pub disable_tls_verify: Option<bool>,
+}
+
+fn default_timeout() -> u64 {
+    30
+}
+
+impl ExternalAuthConfig {
+    /// Create a new LDAP provider configuration.
+    pub fn new_ldap(
+        name: &str,
+        uri: &str,
+        bind_dn: &str,
+        base_dn: &str,
+        bind_password_env: &str,
+    ) -> Self {
+        Self {
+            provider_type: "ldap".to_string(),
+            name: name.to_string(),
+            uri: uri.to_string(),
+            bind_dn: bind_dn.to_string(),
+            bind_password_env: Some(bind_password_env.to_string()),
+            base_dn: base_dn.to_string(),
+            user_filter: Some("(&(objectClass=user)(sAMAccountName={username}))".to_string()),
+            attribute_mapping: AttributeMapping {
+                user_id_attr: "sAMAccountName".to_string(),
+                name_attr: "displayName".to_string(),
+                email_attr: "mail".to_string(),
+                group_attr: "memberOf".to_string(),
+                user_filter: None,
+                user_dn_template: None,
+            },
+            role_mappings: Vec::new(),
+            connection: ConnectionConfig {
+                timeout_secs: 30,
+                tls_enabled: true,
+                ca_cert_path: None,
+                start_tls: Some(false),
+                disable_tls_verify: Some(false),
+            },
+        }
+    }
+
+    /// Add a role mapping rule.
+    pub fn add_role_mapping(&mut self, group_pattern: &str, role: &str) {
+        self.role_mappings.push(RoleMappingRule {
+            group_pattern: group_pattern.to_string(),
+            role: role.to_string(),
+        });
     }
 }
 
@@ -1537,6 +1672,7 @@ impl Default for KernelConfig {
             provider_api_keys: HashMap::new(),
             oauth: OAuthConfig::default(),
             auth: AuthConfig::default(),
+            external_auth_providers: Vec::new(),
             workflows_dir: None,
             heartbeat: HeartbeatSettings::default(),
             skills: HashMap::new(),
@@ -1658,6 +1794,10 @@ impl std::fmt::Debug for KernelConfig {
                 &format!("{} mapping(s)", self.provider_api_keys.len()),
             )
             .field("auth", &format!("enabled={}", self.auth.enabled))
+            .field(
+                "external_auth_providers",
+                &format!("{} provider(s)", self.external_auth_providers.len()),
+            )
             .field("skills", &format!("{} skill config(s)", self.skills.len()))
             .finish()
     }
