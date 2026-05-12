@@ -1748,7 +1748,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(msg.thread_id, Some("7".to_string()));
-        assert!(msg.metadata.get("target_agent_name").is_none());
+        assert!(!msg.metadata.contains_key("target_agent_name"));
     }
 
     #[tokio::test]
@@ -1782,7 +1782,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(msg.thread_id, None);
-        assert!(msg.metadata.get("target_agent_name").is_none());
+        assert!(!msg.metadata.contains_key("target_agent_name"));
     }
 
     #[tokio::test]
