@@ -312,6 +312,12 @@ tr:hover td { background: var(--surface2); }
 
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
+/* Issue #1026: live indicator for agents currently calling the LLM */
+@keyframes agent-inferencing-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 0 0 var(--accent); }
+  50% { transform: scale(1.25); opacity: 0.85; box-shadow: 0 0 0 4px rgba(255, 92, 0, 0); }
+}
+
 .message.user {
   flex-direction: row-reverse;
 }

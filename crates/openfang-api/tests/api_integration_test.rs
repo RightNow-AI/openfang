@@ -306,6 +306,86 @@ async fn test_spawn_list_kill_agent() {
     assert_eq!(agents[0]["name"], "assistant");
 }
 
+/// Regression test for issue #1026: GET /api/agents returns `is_inferencing`
+/// reflecting whether the agent has an in-flight LLM task. This drives the
+/// live dashboard indicator that shows which agents are calling the LLM.
+#[tokio::test]
+async fn test_list_agents_includes_inferencing_flag() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    // Spawn a test agent.
+    let resp = client
+        .post(format!("{}/api/agents", server.base_url))
+        .json(&serde_json::json!({"manifest_toml": TEST_MANIFEST}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let agent_id_str = body["agent_id"].as_str().unwrap().to_string();
+    let agent_id: openfang_types::agent::AgentId = agent_id_str.parse().unwrap();
+
+    // Baseline: idle agent must report is_inferencing = false.
+    let resp = client
+        .get(format!("{}/api/agents", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let agents: Vec<serde_json::Value> = resp.json().await.unwrap();
+    let test_agent = agents
+        .iter()
+        .find(|a| a["id"] == agent_id_str)
+        .expect("spawned agent should appear in list");
+    assert_eq!(
+        test_agent["is_inferencing"], false,
+        "freshly spawned agent should not be inferencing"
+    );
+
+    // Simulate an in-flight LLM call by inserting a real AbortHandle into
+    // the kernel's running_tasks map. This is exactly what the agent loop
+    // does when it starts processing a message.
+    let handle = tokio::spawn(async {
+        // Long-lived task we will abort at end of test.
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    });
+    server
+        .state
+        .kernel
+        .running_tasks
+        .insert(agent_id, handle.abort_handle());
+
+    // Now list_agents should report is_inferencing = true for that agent.
+    let resp = client
+        .get(format!("{}/api/agents", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let agents: Vec<serde_json::Value> = resp.json().await.unwrap();
+    let test_agent = agents
+        .iter()
+        .find(|a| a["id"] == agent_id_str)
+        .expect("spawned agent should still appear in list");
+    assert_eq!(
+        test_agent["is_inferencing"], true,
+        "agent with an entry in running_tasks must be flagged is_inferencing"
+    );
+
+    // Other agents (the default assistant) must NOT be flagged.
+    if let Some(other) = agents.iter().find(|a| a["id"] != agent_id_str) {
+        assert_eq!(
+            other["is_inferencing"], false,
+            "agents without a running task must not be flagged"
+        );
+    }
+
+    // Cleanup so the spawned future does not outlive the test.
+    server.state.kernel.running_tasks.remove(&agent_id);
+    handle.abort();
+}
+
 #[tokio::test]
 async fn test_agent_session_empty() {
     let server = start_test_server().await;
