@@ -8,9 +8,26 @@ use crate::{
 use dashmap::DashMap;
 use openfang_types::agent::AgentId;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use tracing::{info, warn};
 use uuid::Uuid;
+
+/// Callback signature invoked on every successful hand load / reload.
+///
+/// Arguments: `(hand_id, sha256_hex_of_hand_toml)`. The kernel wires this
+/// into the Merkle audit chain so reload events leave a tamper-evident
+/// record (issue #1172). The callback must be cheap and non-blocking; it
+/// runs inline on the loader thread.
+pub type HandAuditCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+/// Compute the SHA-256 hex digest of raw HAND.toml content.
+fn hand_toml_sha256(toml_content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(toml_content.as_bytes());
+    hex::encode(hasher.finalize())
+}
 
 // ─── Settings availability types ────────────────────────────────────────────
 
@@ -41,6 +58,10 @@ pub struct HandRegistry {
     definitions: DashMap<String, HandDefinition>,
     /// Active hand instances, keyed by instance UUID.
     instances: DashMap<Uuid, HandInstance>,
+    /// Optional callback invoked on every successful HAND.toml load with
+    /// the computed SHA-256 of the file content. Wired by the kernel into
+    /// the Merkle audit chain (issue #1172).
+    audit_callback: RwLock<Option<HandAuditCallback>>,
 }
 
 impl HandRegistry {
@@ -49,7 +70,35 @@ impl HandRegistry {
         Self {
             definitions: DashMap::new(),
             instances: DashMap::new(),
+            audit_callback: RwLock::new(None),
         }
+    }
+
+    /// Install a callback invoked on every successful HAND.toml load /
+    /// reload with the file's SHA-256. The kernel wires this to
+    /// `AuditLog::record(AuditAction::ConfigChange, ...)` so reload events
+    /// leave a tamper-evident audit record (issue #1172).
+    pub fn set_audit_callback(&self, callback: HandAuditCallback) {
+        let mut guard = self
+            .audit_callback
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        *guard = Some(callback);
+    }
+
+    /// Compute SHA-256 of the given HAND.toml content and invoke the audit
+    /// callback if one is registered. Returns the hex digest for callers
+    /// that want to log or compare it.
+    fn emit_hand_loaded_audit(&self, hand_id: &str, toml_content: &str) -> String {
+        let hash = hand_toml_sha256(toml_content);
+        let guard = self
+            .audit_callback
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(cb) = guard.as_ref() {
+            cb(hand_id, &hash);
+        }
+        hash
     }
 
     /// Persist active hand state to disk so it survives restarts.
@@ -112,7 +161,8 @@ impl HandRegistry {
         for (id, toml_content, skill_content) in bundled {
             match bundled::parse_bundled(id, toml_content, skill_content) {
                 Ok(def) => {
-                    info!(hand = %def.id, name = %def.name, "Loaded bundled hand");
+                    let hash = self.emit_hand_loaded_audit(&def.id, toml_content);
+                    info!(hand = %def.id, name = %def.name, sha256 = %hash, "Loaded bundled hand");
                     self.definitions.insert(def.id.clone(), def);
                     count += 1;
                 }
@@ -173,7 +223,8 @@ impl HandRegistry {
             match bundled::parse_bundled("custom", &contents, &skill_content) {
                 Ok(def) => {
                     let hand_id = def.id.clone();
-                    info!(hand = %hand_id, path = %path.display(), "Loaded workspace hand");
+                    let hash = self.emit_hand_loaded_audit(&hand_id, &contents);
+                    info!(hand = %hand_id, path = %path.display(), sha256 = %hash, "Loaded workspace hand");
                     self.definitions.insert(hand_id, def);
                     count += 1;
                 }
@@ -204,7 +255,8 @@ impl HandRegistry {
             )));
         }
 
-        info!(hand = %def.id, name = %def.name, path = %path.display(), "Installed hand from path");
+        let hash = self.emit_hand_loaded_audit(&def.id, &toml_content);
+        info!(hand = %def.id, name = %def.name, path = %path.display(), sha256 = %hash, "Installed hand from path");
         self.definitions.insert(def.id.clone(), def.clone());
 
         // Persist the hand to the user's data dir so it survives daemon
@@ -251,7 +303,8 @@ impl HandRegistry {
             )));
         }
 
-        info!(hand = %def.id, name = %def.name, "Installed hand from content");
+        let hash = self.emit_hand_loaded_audit(&def.id, toml_content);
+        info!(hand = %def.id, name = %def.name, sha256 = %hash, "Installed hand from content");
         self.definitions.insert(def.id.clone(), def.clone());
         Ok(def)
     }
@@ -269,7 +322,8 @@ impl HandRegistry {
         let def = bundled::parse_bundled("custom", toml_content, skill_content)?;
         let existed = self.definitions.contains_key(&def.id);
         let verb = if existed { "Updated" } else { "Installed" };
-        info!(hand = %def.id, name = %def.name, "{verb} hand from content");
+        let hash = self.emit_hand_loaded_audit(&def.id, toml_content);
+        info!(hand = %def.id, name = %def.name, sha256 = %hash, "{verb} hand from content");
         self.definitions.insert(def.id.clone(), def.clone());
         Ok(def)
     }
@@ -1143,6 +1197,114 @@ metrics = []
         reg.activate("test-hand", HashMap::new(), None).unwrap();
         let err = reg.activate("test-hand", HashMap::new(), None).unwrap_err();
         assert!(matches!(err, HandError::AlreadyActive(_)));
+    }
+
+    /// Issue #1172: HAND.toml SHA-256 must be emitted to the audit
+    /// callback on every successful load / reload.
+    #[test]
+    fn audit_callback_records_hand_toml_hash_on_load() {
+        use std::sync::Mutex;
+
+        let captured: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&captured);
+
+        let reg = HandRegistry::new();
+        reg.set_audit_callback(Arc::new(move |hand_id: &str, hash: &str| {
+            sink.lock()
+                .unwrap()
+                .push((hand_id.to_string(), hash.to_string()));
+        }));
+
+        let toml_str = r#"
+id = "audit-hand"
+name = "Audit Hand"
+description = "Used to verify audit-trail wiring"
+category = "other"
+tools = []
+
+[agent]
+name = "audit-agent"
+description = "audit"
+system_prompt = "audit."
+"#;
+        // Precompute the expected hash so the test fails loudly if the
+        // registry ever changes how it digests the TOML content.
+        let expected_hash = {
+            let mut h = Sha256::new();
+            h.update(toml_str.as_bytes());
+            hex::encode(h.finalize())
+        };
+
+        let def = reg.install_from_content(toml_str, "").unwrap();
+        assert_eq!(def.id, "audit-hand");
+
+        let events = captured.lock().unwrap().clone();
+        assert_eq!(
+            events.len(),
+            1,
+            "exactly one audit event should be emitted per load"
+        );
+        assert_eq!(events[0].0, "audit-hand", "hand id propagated to callback");
+        assert_eq!(
+            events[0].1, expected_hash,
+            "callback received SHA-256 of the HAND.toml content"
+        );
+        assert_eq!(events[0].1.len(), 64, "SHA-256 hex is 64 chars");
+    }
+
+    /// Issue #1172: reloading the same HAND.toml via upsert must emit a
+    /// fresh audit event so the chain records when the swap took effect.
+    /// A content change must surface a different hash.
+    #[test]
+    fn audit_callback_fires_on_reload_with_new_hash() {
+        use std::sync::Mutex;
+
+        let captured: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&captured);
+
+        let reg = HandRegistry::new();
+        reg.set_audit_callback(Arc::new(move |hand_id: &str, hash: &str| {
+            sink.lock()
+                .unwrap()
+                .push((hand_id.to_string(), hash.to_string()));
+        }));
+
+        let v1 = r#"
+id = "reload-hand"
+name = "Reload Hand v1"
+description = "v1"
+category = "other"
+tools = []
+
+[agent]
+name = "reload-agent"
+description = "reload"
+system_prompt = "v1."
+"#;
+        let v2 = r#"
+id = "reload-hand"
+name = "Reload Hand v2"
+description = "v2"
+category = "other"
+tools = []
+
+[agent]
+name = "reload-agent"
+description = "reload"
+system_prompt = "v2 — schedule changed."
+"#;
+
+        reg.upsert_from_content(v1, "").unwrap();
+        reg.upsert_from_content(v2, "").unwrap();
+
+        let events = captured.lock().unwrap().clone();
+        assert_eq!(events.len(), 2, "one event per upsert (load + reload)");
+        assert_eq!(events[0].0, "reload-hand");
+        assert_eq!(events[1].0, "reload-hand");
+        assert_ne!(
+            events[0].1, events[1].1,
+            "different HAND.toml content must yield different SHA-256"
+        );
     }
 
     /// Integration test for issue #809: `hand config` round-trip.

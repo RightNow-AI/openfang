@@ -1223,6 +1223,41 @@ impl OpenFangKernel {
             self_handle: OnceLock::new(),
         };
 
+        // Wire HAND.toml load events into the Merkle audit chain so reload
+        // events (and future installs) leave a tamper-evident record of
+        // which manifest hash was active at any point in time. Issue #1172.
+        //
+        // The bundled + workspace hands were loaded before the kernel struct
+        // existed, so we backfill those hashes now and install a callback
+        // for every subsequent install/upsert/reload.
+        {
+            let audit_log_initial = Arc::clone(&kernel.audit_log);
+            for (hand_id, toml_content, _skill) in openfang_hands::bundled::bundled_hands() {
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(toml_content.as_bytes());
+                let hash = hex::encode(hasher.finalize());
+                audit_log_initial.record(
+                    "kernel",
+                    openfang_runtime::audit::AuditAction::ConfigChange,
+                    format!("HAND.toml load hand={hand_id} sha256={hash}"),
+                    "ok",
+                );
+            }
+
+            let audit_log_for_cb = Arc::clone(&kernel.audit_log);
+            kernel.hand_registry.set_audit_callback(Arc::new(
+                move |hand_id: &str, hash: &str| {
+                    audit_log_for_cb.record(
+                        "kernel",
+                        openfang_runtime::audit::AuditAction::ConfigChange,
+                        format!("HAND.toml reload hand={hand_id} sha256={hash}"),
+                        "ok",
+                    );
+                },
+            ));
+        }
+
         // Restore persisted agents from SQLite
         match kernel.memory.load_all_agents() {
             Ok(agents) => {
