@@ -290,6 +290,7 @@ mod tests {
                     content: big_result.clone(),
                     is_error: false,
                 }]),
+                ..Default::default()
             },
             Message {
                 role: openfang_types::message::Role::User,
@@ -299,6 +300,7 @@ mod tests {
                     content: big_result,
                     is_error: false,
                 }]),
+                ..Default::default()
             },
         ];
 
@@ -350,6 +352,7 @@ mod tests {
                 content: big_chinese,
                 is_error: false,
             }]),
+            ..Default::default()
         }];
         // Must not panic on multi-byte content
         let compacted = apply_context_guard(&mut messages, &budget, &[]);

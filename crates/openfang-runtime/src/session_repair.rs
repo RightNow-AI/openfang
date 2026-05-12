@@ -118,6 +118,7 @@ pub fn validate_and_repair_with_stats(messages: &[Message]) -> (Vec<Message>, Re
         cleaned.push(Message {
             role: msg.role,
             content: new_content,
+            ..Default::default()
         });
     }
 
@@ -356,6 +357,7 @@ fn reorder_tool_results(messages: &mut Vec<Message>) -> usize {
                     Message {
                         role: Role::User,
                         content: MessageContent::Blocks(blocks),
+                        ..Default::default()
                     },
                 );
             }
@@ -456,6 +458,7 @@ fn insert_synthetic_results(messages: &mut Vec<Message>) -> usize {
                 Message {
                     role: Role::User,
                     content: MessageContent::Blocks(blocks),
+                    ..Default::default()
                 },
             );
         }
@@ -770,6 +773,7 @@ mod tests {
                     content: "some result".to_string(),
                     is_error: false,
                 }]),
+                ..Default::default()
             },
             Message::assistant("Done"),
         ];
@@ -804,6 +808,7 @@ mod tests {
             Message {
                 role: Role::User,
                 content: MessageContent::Text(String::new()),
+                ..Default::default()
             },
             Message::assistant("Hi"),
         ];
@@ -823,6 +828,7 @@ mod tests {
                     input: serde_json::json!({"query": "rust"}),
                     provider_metadata: None,
                 }]),
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -832,6 +838,7 @@ mod tests {
                     content: "Results found".to_string(),
                     is_error: false,
                 }]),
+                ..Default::default()
             },
             Message::assistant("Here are the results"),
         ];
@@ -855,6 +862,7 @@ mod tests {
                     input: serde_json::json!({"query": "rust"}),
                     provider_metadata: None,
                 }]),
+                ..Default::default()
             },
             Message::user("While you search, I have another question"),
             Message {
@@ -865,6 +873,7 @@ mod tests {
                     content: "Search results".to_string(),
                     is_error: false,
                 }]),
+                ..Default::default()
             },
             Message::assistant("Here are results"),
         ];
@@ -909,6 +918,7 @@ mod tests {
                     input: serde_json::json!({"path": "/etc/hosts"}),
                     provider_metadata: None,
                 }]),
+                ..Default::default()
             },
             Message::assistant("I tried to read the file"),
         ];
@@ -947,6 +957,7 @@ mod tests {
                     input: serde_json::json!({}),
                     provider_metadata: None,
                 }]),
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -956,6 +967,7 @@ mod tests {
                     content: "First result".to_string(),
                     is_error: false,
                 }]),
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -965,6 +977,7 @@ mod tests {
                     content: "Duplicate result".to_string(),
                     is_error: false,
                 }]),
+                ..Default::default()
             },
             Message::assistant("Done"),
         ];
@@ -1014,6 +1027,7 @@ mod tests {
                     input: serde_json::json!({"key": "fact1", "value": "hello"}),
                     provider_metadata: None,
                 }]),
+                ..Default::default()
             },
             // Matching ToolResult for the first call.
             Message {
@@ -1024,6 +1038,7 @@ mod tests {
                     content: "stored".to_string(),
                     is_error: false,
                 }]),
+                ..Default::default()
             },
             // Second turn: assistant calls memory_store again with the SAME id
             // because Moonshot reuses the `function_name:index` format.
@@ -1035,6 +1050,7 @@ mod tests {
                     input: serde_json::json!({"key": "fact2", "value": "world"}),
                     provider_metadata: None,
                 }]),
+                ..Default::default()
             },
             // No matching ToolResult for the second call (e.g. lost during
             // compaction or interrupted mid-execution).
@@ -1201,11 +1217,13 @@ mod tests {
                     content: "lost".to_string(),
                     is_error: false,
                 }]),
+                ..Default::default()
             },
             Message::user("World"),
             Message {
                 role: Role::User,
                 content: MessageContent::Text(String::new()),
+                ..Default::default()
             },
             Message::assistant("Hi"),
         ];
@@ -1228,6 +1246,7 @@ mod tests {
                     text: String::new(),
                     provider_metadata: None,
                 }]),
+                ..Default::default()
             },
             Message::user("Never mind"),
             Message::assistant("OK"),
@@ -1274,6 +1293,7 @@ mod tests {
                         provider_metadata: None,
                     },
                 ]),
+                ..Default::default()
             },
             // Only tu-a has a result, tu-b is missing
             Message {
@@ -1284,6 +1304,7 @@ mod tests {
                     content: "search result".to_string(),
                     is_error: false,
                 }]),
+                ..Default::default()
             },
             // Orphaned result from a non-existent tool use
             Message {
@@ -1294,11 +1315,13 @@ mod tests {
                     content: "ghost result".to_string(),
                     is_error: false,
                 }]),
+                ..Default::default()
             },
             // Empty message
             Message {
                 role: Role::User,
                 content: MessageContent::Text(String::new()),
+                ..Default::default()
             },
             Message::assistant("Done"),
         ];
@@ -1350,6 +1373,7 @@ mod tests {
                         is_error: false,
                     },
                 ]),
+                ..Default::default()
             },
             Message::assistant("Hi"),
         ];

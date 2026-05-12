@@ -457,6 +457,7 @@ mod tests {
             messages: vec![Message {
                 role: Role::User,
                 content: MessageContent::text("Hello"),
+                ..Default::default()
             }],
             tools: vec![],
             max_tokens: 1024,

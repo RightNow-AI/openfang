@@ -785,6 +785,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: MessageContent::Text("Hello".to_string()),
+            ..Default::default()
         }];
         let (bedrock_msgs, system) = convert_messages(&messages, &None);
         assert_eq!(bedrock_msgs.len(), 1);
@@ -797,6 +798,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::System,
             content: MessageContent::Text("Be helpful".to_string()),
+            ..Default::default()
         }];
         let (bedrock_msgs, system) = convert_messages(&messages, &None);
         assert!(bedrock_msgs.is_empty());
@@ -809,6 +811,7 @@ mod tests {
         let messages = vec![Message {
             role: Role::User,
             content: MessageContent::Text("Hi".to_string()),
+            ..Default::default()
         }];
         let (_, system) = convert_messages(&messages, &Some("You are an AI".to_string()));
         assert!(system.is_some());

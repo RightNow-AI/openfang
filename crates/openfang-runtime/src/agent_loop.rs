@@ -820,10 +820,12 @@ pub async fn run_agent_loop(
                 session.messages.push(Message {
                     role: Role::Assistant,
                     content: MessageContent::Blocks(assistant_blocks.clone()),
+                    ..Default::default()
                 });
                 messages.push(Message {
                     role: Role::Assistant,
                     content: MessageContent::Blocks(assistant_blocks),
+                    ..Default::default()
                 });
 
                 // Build allowed tool names list for capability enforcement
@@ -1042,6 +1044,7 @@ pub async fn run_agent_loop(
                 let tool_results_msg = Message {
                     role: Role::User,
                     content: MessageContent::Blocks(tool_result_blocks.clone()),
+                    ..Default::default()
                 };
                 session.messages.push(tool_results_msg.clone());
                 messages.push(tool_results_msg);
@@ -2028,10 +2031,12 @@ pub async fn run_agent_loop_streaming(
                 session.messages.push(Message {
                     role: Role::Assistant,
                     content: MessageContent::Blocks(assistant_blocks.clone()),
+                    ..Default::default()
                 });
                 messages.push(Message {
                     role: Role::Assistant,
                     content: MessageContent::Blocks(assistant_blocks),
+                    ..Default::default()
                 });
 
                 let allowed_tool_names: Vec<String> =
@@ -2262,6 +2267,7 @@ pub async fn run_agent_loop_streaming(
                 let tool_results_msg = Message {
                     role: Role::User,
                     content: MessageContent::Blocks(tool_result_blocks.clone()),
+                    ..Default::default()
                 };
                 session.messages.push(tool_results_msg.clone());
                 messages.push(tool_results_msg);

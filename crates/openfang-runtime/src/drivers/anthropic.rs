@@ -910,6 +910,7 @@ mod tests {
                 input: serde_json::Value::String(r#"{"query": "test"}"#.to_string()),
                 provider_metadata: None,
             }]),
+            ..Default::default()
         };
         let api_msg = convert_message(&msg);
         if let ApiContent::Blocks(blocks) = api_msg.content {
@@ -972,6 +973,7 @@ mod tests {
         let assistant_msg = Message {
             role: Role::Assistant,
             content: MessageContent::Blocks(response.content.clone()),
+            ..Default::default()
         };
         let api_msg = convert_message(&assistant_msg);
         let blocks = match api_msg.content {
@@ -1028,6 +1030,7 @@ mod tests {
                     provider_metadata: None,
                 },
             ]),
+            ..Default::default()
         };
         let api_msg = convert_message(&assistant_msg);
         let blocks = match api_msg.content {
@@ -1106,6 +1109,7 @@ mod tests {
         let assistant_msg = Message {
             role: Role::Assistant,
             content: MessageContent::Blocks(response.content.clone()),
+            ..Default::default()
         };
         let api_msg = convert_message(&assistant_msg);
         let blocks = match api_msg.content {
@@ -1167,6 +1171,7 @@ mod tests {
                     provider_metadata: None,
                 },
             ]),
+            ..Default::default()
         };
         let api_msg = convert_message(&assistant_msg);
         let blocks = match api_msg.content {
