@@ -473,7 +473,7 @@ function chatPage() {
           if (self.currentAgent && OpenFangAPI.isWsConnected()) {
             OpenFangAPI.wsSend({ type: 'command', command: 'context', args: '' });
           } else {
-            self.messages.push({ id: ++msgId, role: 'system', text: 'Not connected. Connect to an agent first.', meta: '', tools: [] });
+            self.messages.push({ id: ++msgId, role: 'system', text: 'Not connected (' + (OpenFangAPI.getConnectionState ? OpenFangAPI.getConnectionState() : 'unknown') + '). Pick an agent or check that your session is still valid.', meta: '', tools: [] });
             self.scrollToBottom();
           }
           break;
@@ -481,7 +481,7 @@ function chatPage() {
           if (self.currentAgent && OpenFangAPI.isWsConnected()) {
             OpenFangAPI.wsSend({ type: 'command', command: 'verbose', args: cmdArgs });
           } else {
-            self.messages.push({ id: ++msgId, role: 'system', text: 'Not connected. Connect to an agent first.', meta: '', tools: [] });
+            self.messages.push({ id: ++msgId, role: 'system', text: 'Not connected (' + (OpenFangAPI.getConnectionState ? OpenFangAPI.getConnectionState() : 'unknown') + '). Pick an agent or check that your session is still valid.', meta: '', tools: [] });
             self.scrollToBottom();
           }
           break;
@@ -489,7 +489,7 @@ function chatPage() {
           if (self.currentAgent && OpenFangAPI.isWsConnected()) {
             OpenFangAPI.wsSend({ type: 'command', command: 'queue', args: '' });
           } else {
-            self.messages.push({ id: ++msgId, role: 'system', text: 'Not connected.', meta: '', tools: [] });
+            self.messages.push({ id: ++msgId, role: 'system', text: 'Not connected (' + (OpenFangAPI.getConnectionState ? OpenFangAPI.getConnectionState() : 'unknown') + ').', meta: '', tools: [] });
             self.scrollToBottom();
           }
           break;

@@ -216,7 +216,7 @@ pub async fn auth(
 
     // Check session cookie (dashboard login sessions)
     if auth_state.auth_enabled {
-        if let Some(token) = extract_session_cookie(&request) {
+        if let Some(token) = crate::session_auth::extract_session_cookie(request.headers()) {
             if crate::session_auth::verify_session_token(&token, &auth_state.session_secret)
                 .is_some()
             {
@@ -240,21 +240,6 @@ pub async fn auth(
             serde_json::json!({"error": error_msg}).to_string(),
         ))
         .unwrap_or_default()
-}
-
-/// Extract the `openfang_session` cookie value from a request.
-fn extract_session_cookie(request: &Request<Body>) -> Option<String> {
-    request
-        .headers()
-        .get("cookie")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|cookies| {
-            cookies.split(';').find_map(|c| {
-                c.trim()
-                    .strip_prefix("openfang_session=")
-                    .map(|v| v.to_string())
-            })
-        })
 }
 
 /// Security headers middleware — applied to ALL API responses.

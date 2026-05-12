@@ -17,6 +17,25 @@ pub fn create_session_token(username: &str, secret: &str, ttl_hours: u64) -> Str
     base64::engine::general_purpose::STANDARD.encode(format!("{payload}:{signature}"))
 }
 
+/// Extract the `openfang_session` cookie value from a `Cookie` header string.
+///
+/// Returns `None` if the header is absent or the cookie is not present.
+/// Used by both the HTTP auth middleware and the WebSocket upgrade handler so
+/// that browser sessions established via `sessionLogin()` are honored on both
+/// surfaces (issue #1085).
+pub fn extract_session_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|c| {
+                c.trim()
+                    .strip_prefix("openfang_session=")
+                    .map(|v| v.to_string())
+            })
+        })
+}
+
 /// Verify a session token. Returns the username if valid and not expired.
 pub fn verify_session_token(token: &str, secret: &str) -> Option<String> {
     use base64::Engine;
@@ -140,5 +159,37 @@ mod tests {
     fn test_verify_malformed_argon2_hash() {
         // Starts with $argon2 but is not a valid PHC string.
         assert!(!verify_password("x", "$argon2id$garbage"));
+    }
+
+    #[test]
+    fn test_extract_session_cookie_present() {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert(
+            "cookie",
+            "foo=bar; openfang_session=abc.def.ghi; baz=qux"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(extract_session_cookie(&h).as_deref(), Some("abc.def.ghi"));
+    }
+
+    #[test]
+    fn test_extract_session_cookie_absent() {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("cookie", "foo=bar; baz=qux".parse().unwrap());
+        assert_eq!(extract_session_cookie(&h), None);
+    }
+
+    #[test]
+    fn test_extract_session_cookie_no_header() {
+        let h = axum::http::HeaderMap::new();
+        assert_eq!(extract_session_cookie(&h), None);
+    }
+
+    #[test]
+    fn test_extract_session_cookie_only_value() {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("cookie", "openfang_session=lonely".parse().unwrap());
+        assert_eq!(extract_session_cookie(&h).as_deref(), Some("lonely"));
     }
 }
