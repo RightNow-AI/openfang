@@ -1399,16 +1399,18 @@ fn resolve_directory_path_for_create(
     // Walk up to find the nearest existing ancestor, canonicalize it, then
     // re-append the missing tail.
     let mut existing: PathBuf = candidate.clone();
-    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
     while !existing.exists() {
-        let Some(parent) = existing.parent() else {
-            return Err("Invalid path: no existing ancestor".to_string());
+        let parent = match existing.parent() {
+            Some(p) => p.to_path_buf(),
+            None => return Err("Invalid path: no existing ancestor".to_string()),
         };
-        let Some(name) = existing.file_name() else {
-            return Err("Invalid path: no filename component".to_string());
+        let name = match existing.file_name() {
+            Some(n) => n.to_os_string(),
+            None => return Err("Invalid path: no filename component".to_string()),
         };
         tail.push(name);
-        existing = parent.to_path_buf();
+        existing = parent;
     }
 
     let canon_existing = existing

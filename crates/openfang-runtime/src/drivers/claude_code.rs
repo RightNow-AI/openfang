@@ -186,6 +186,7 @@ impl ClaudeCodeDriver {
                     ContentBlock::ToolUse { .. }
                     | ContentBlock::ToolResult { .. }
                     | ContentBlock::Thinking { .. }
+                    | ContentBlock::RedactedThinking { .. }
                     | ContentBlock::Unknown => None,
                 })
                 .collect::<Vec<_>>()
@@ -792,6 +793,7 @@ mod tests {
                         data: fake_b64,
                     },
                 ]),
+                ..Default::default()
             }],
             tools: vec![],
             max_tokens: 1024,
@@ -824,6 +826,7 @@ mod tests {
                     media_type: "image/jpeg".to_string(),
                     data: "Zm9v".to_string(),
                 }]),
+                ..Default::default()
             }],
             tools: vec![],
             max_tokens: 1024,

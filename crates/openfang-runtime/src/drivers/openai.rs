@@ -776,6 +776,7 @@ impl LlmDriver for OpenAIDriver {
                 }
             }
 
+            let already_has_reasoning = choice.message.reasoning_text().is_some();
             if let Some(text) = choice.message.content {
                 if !text.is_empty() {
                     // Extract <think>...</think> blocks that some local models
@@ -785,7 +786,7 @@ impl LlmDriver for OpenAIDriver {
                         // Only add if we didn't already get a reasoning field
                         // (either legacy `reasoning_content` or new vLLM 0.19+
                         // `reasoning`). Issue #1157.
-                        if choice.message.reasoning_text().is_none() {
+                        if !already_has_reasoning {
                             // Mark the format so we re-emit as inline `<think>`
                             // tags on the next turn (MiniMax/M2.5 style).
                             content.push(ContentBlock::Thinking {
