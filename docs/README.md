@@ -10,6 +10,7 @@ Welcome to the OpenFang documentation. OpenFang is the open-source Agent Operati
 |-------|-------------|
 | [Getting Started](getting-started.md) | Installation, first agent, first chat session |
 | [Configuration](configuration.md) | Complete `config.toml` reference with every field |
+| [Global Rules](global-rules.md) | `~/.openfang/RULES.md` — per-user authoritative overlay loaded every turn |
 | [CLI Reference](cli-reference.md) | Every command and subcommand with examples |
 | [Troubleshooting](troubleshooting.md) | Common issues, FAQ, diagnostics |
 
@@ -86,6 +87,7 @@ openfang init && openfang start
 | Path | Description |
 |------|-------------|
 | `~/.openfang/config.toml` | Main configuration file |
+| `~/.openfang/RULES.md` | Per-user authoritative overlay (see [global-rules.md](global-rules.md)) |
 | `~/.openfang/data/openfang.db` | SQLite database |
 | `~/.openfang/skills/` | Installed skills |
 | `~/.openfang/daemon.json` | Daemon PID and port info |

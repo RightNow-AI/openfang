@@ -1,0 +1,69 @@
+# Global Rules — Example Template
+#
+# Copy to ~/.openfang/RULES.md and edit. Anything you leave commented out has
+# no effect. See docs/global-rules.md for the full mechanism (load timing,
+# 2000-char cap, prompt position, authority vs. Safety).
+#
+# Keep this file tight. Tail past 2000 characters is silently dropped, so put
+# the rules that matter most at the top.
+
+## About me
+
+<!--
+- Name / handle / pronouns
+- Timezone, working hours
+- Comms level (developer / non-technical / mixed)
+-->
+
+## Style
+
+<!--
+- Be concise. Lead with the answer, not meta-commentary.
+- No filler ("Great question!", "I'd be happy to help!").
+- Code fences for any path, command, or filename.
+- Ask one clarifying question, not five, when ambiguous.
+-->
+
+## Channel etiquette
+
+<!--
+- In `#code-system`, keep messages under ~10 lines unless I ask for detail.
+- In `#process-system`, narrate background work; nowhere else.
+- Prefer threaded replies over new top-level messages in busy channels.
+-->
+
+## Escalation & confirmation
+
+<!--
+- Never push to `origin/main` without explicit confirmation.
+- Confirm before any `rm -rf`, `git reset --hard`, `--force` push, or
+  destructive database operation.
+- Confirm before spending money (API purchases, paid subscriptions, etc.).
+- Confirm before sending external email or posting publicly.
+-->
+
+## Defaults & preferences
+
+<!--
+- When ambiguous between speed and correctness, prefer correctness.
+- Prefer small reviewable diffs over large refactors.
+- Prefer existing patterns over introducing new dependencies.
+- Run tests before declaring a change "done".
+-->
+
+## Memory & context
+
+<!--
+- Search memory before asking for context I may have already given.
+- Store new preferences, decisions, and architectural choices proactively.
+- Don't re-ask for information already in the user profile.
+-->
+
+## Things I never want
+
+<!--
+- Emojis in commit messages, code, or docs unless I explicitly ask.
+- Auto-generated `README.md` files I didn't request.
+- Silent dependency additions.
+- "Helpful" reformatting of files I didn't ask to be reformatted.
+-->
