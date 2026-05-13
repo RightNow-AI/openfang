@@ -1675,6 +1675,114 @@ fn openfang_home_dir() -> PathBuf {
         .join(".openfang")
 }
 
+/// Maximum length (in chars) of `RULES.md` content injected into prompts.
+///
+/// Matches the cap used for `AGENTS.md`. Content beyond this is truncated.
+pub const RULES_MD_MAX_CHARS: usize = 2000;
+
+/// Read the global user-authored rules file from `~/.openfang/RULES.md`.
+///
+/// Returns `None` when the file is missing, unreadable, or empty after trim.
+/// Content is truncated to [`RULES_MD_MAX_CHARS`] characters. Errors are
+/// swallowed silently — a missing or broken rules file must never break the
+/// prompt build.
+///
+/// Re-read on every prompt assembly so user edits land on the next turn
+/// without a daemon bounce (mirrors `context.md` semantics).
+pub fn read_global_rules() -> Option<String> {
+    let path = openfang_home_dir().join("RULES.md");
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.chars().count() > RULES_MD_MAX_CHARS {
+        Some(trimmed.chars().take(RULES_MD_MAX_CHARS).collect())
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+#[cfg(test)]
+mod global_rules_tests {
+    use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Serialize env-var mutation across tests in this module. `cargo test`
+    /// runs tests in parallel and `OPENFANG_HOME` is process-global.
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Helper: point `OPENFANG_HOME` at a unique tempdir for the duration of
+    /// the test. Holds `env_lock` so concurrent tests can't clobber each
+    /// other's env var.
+    struct HomeGuard {
+        _dir: tempfile::TempDir,
+        prev: Option<String>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl HomeGuard {
+        fn new() -> (Self, PathBuf) {
+            let lock = env_lock();
+            let dir = tempfile::tempdir().expect("tempdir");
+            let prev = std::env::var("OPENFANG_HOME").ok();
+            std::env::set_var("OPENFANG_HOME", dir.path());
+            let path = dir.path().to_path_buf();
+            (
+                Self {
+                    _dir: dir,
+                    prev,
+                    _lock: lock,
+                },
+                path,
+            )
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var("OPENFANG_HOME", v),
+                None => std::env::remove_var("OPENFANG_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn returns_none_when_file_missing() {
+        let (_guard, _home) = HomeGuard::new();
+        assert!(read_global_rules().is_none());
+    }
+
+    #[test]
+    fn returns_none_when_file_empty() {
+        let (_guard, home) = HomeGuard::new();
+        std::fs::write(home.join("RULES.md"), "   \n\t\n").unwrap();
+        assert!(read_global_rules().is_none());
+    }
+
+    #[test]
+    fn returns_trimmed_content_when_present() {
+        let (_guard, home) = HomeGuard::new();
+        std::fs::write(home.join("RULES.md"), "\n  hello rules  \n").unwrap();
+        assert_eq!(read_global_rules().as_deref(), Some("hello rules"));
+    }
+
+    #[test]
+    fn truncates_oversized_content() {
+        let (_guard, home) = HomeGuard::new();
+        let big = "a".repeat(RULES_MD_MAX_CHARS + 500);
+        std::fs::write(home.join("RULES.md"), &big).unwrap();
+        let got = read_global_rules().expect("some");
+        assert_eq!(got.chars().count(), RULES_MD_MAX_CHARS);
+    }
+}
+
 /// Default LLM model configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
