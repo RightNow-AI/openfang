@@ -215,6 +215,18 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
         }
     }
 
+    // Section 14.5 — Global RULES.md (workspace-level rules + template index).
+    // Re-read per turn by the kernel from `~/.openfang/RULES.md` so edits take
+    // effect immediately. Truncated at load time to `RULES_MD_MAX_CHARS`.
+    // These rules OVERRIDE earlier guidance in this prompt EXCEPT the Safety
+    // section, which is non-negotiable.
+    if let Some(ref rules) = ctx.rules_md {
+        let trimmed = rules.trim();
+        if !trimmed.is_empty() {
+            sections.push(build_rules_section(trimmed));
+        }
+    }
+
     // Section 15 — Live agent context (`context.md`). Re-read per turn so
     // external writers (e.g. cron jobs refreshing live data) show up on the
     // very next message. See issue #843.
@@ -483,6 +495,23 @@ fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)]
          Delegate tasks to specialized agents when appropriate.",
     );
     out
+}
+
+/// Build the global RULES.md section (Section 14.5).
+///
+/// RULES.md is workspace-level user-authored guidance (conventions, template
+/// index for orchestrators, project-wide policies). It is reloaded per-turn so
+/// edits take effect on the very next message. The framing makes RULES.md
+/// authoritative over earlier guidance in this prompt, with one carveout: the
+/// Safety section above is non-negotiable.
+fn build_rules_section(rules: &str) -> String {
+    format!(
+        "## Global Rules (RULES.md)\n\
+         The following rules are loaded from `~/.openfang/RULES.md` and reloaded \
+         every turn. They OVERRIDE earlier guidance in this system prompt where \
+         they conflict, EXCEPT the Safety section above, which is non-negotiable.\n\n\
+         {rules}"
+    )
 }
 
 /// Static safety section.
@@ -974,6 +1003,58 @@ mod tests {
         ctx.context_md = Some("   \n\n   ".to_string());
         let prompt = build_system_prompt(&ctx);
         assert!(!prompt.contains("## Live Context"));
+    }
+
+    #[test]
+    fn test_rules_md_section_included() {
+        let mut ctx = basic_ctx();
+        ctx.rules_md = Some("- Always use tabs.\n- Commit messages in lowercase.".to_string());
+        let prompt = build_system_prompt(&ctx);
+        assert!(prompt.contains("## Global Rules (RULES.md)"));
+        assert!(prompt.contains("Always use tabs."));
+        assert!(prompt.contains("OVERRIDE earlier guidance"));
+        assert!(prompt.contains("Safety section above"));
+    }
+
+    #[test]
+    fn test_rules_md_section_omitted_when_none_or_blank() {
+        let mut ctx = basic_ctx();
+        ctx.rules_md = None;
+        let prompt = build_system_prompt(&ctx);
+        assert!(!prompt.contains("## Global Rules"));
+
+        ctx.rules_md = Some("   \n\n  ".to_string());
+        let prompt = build_system_prompt(&ctx);
+        assert!(!prompt.contains("## Global Rules"));
+    }
+
+    #[test]
+    fn test_rules_md_ordering_after_safety_before_live_context() {
+        let mut ctx = basic_ctx();
+        ctx.rules_md = Some("workspace rule body".to_string());
+        ctx.context_md = Some("live data body".to_string());
+        let prompt = build_system_prompt(&ctx);
+        let safety_pos = prompt.find("## Safety").unwrap();
+        let rules_pos = prompt.find("## Global Rules").unwrap();
+        let live_pos = prompt.find("## Live Context").unwrap();
+        assert!(safety_pos < rules_pos, "RULES.md must come after Safety");
+        assert!(
+            rules_pos < live_pos,
+            "RULES.md must come before Live Context"
+        );
+    }
+
+    #[test]
+    fn test_rules_md_present_for_subagents() {
+        // Subagents still inherit workspace rules (they're spawned to do work
+        // in the same workspace). The orchestration template index in RULES.md
+        // is irrelevant for them, but the rules themselves apply.
+        let mut ctx = basic_ctx();
+        ctx.is_subagent = true;
+        ctx.rules_md = Some("inherited rule".to_string());
+        let prompt = build_system_prompt(&ctx);
+        assert!(prompt.contains("## Global Rules"));
+        assert!(prompt.contains("inherited rule"));
     }
 
     #[test]
