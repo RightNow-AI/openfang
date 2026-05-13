@@ -2278,6 +2278,9 @@ impl OpenFangKernel {
                 context_md: manifest.workspace.as_ref().and_then(|w| {
                     openfang_runtime::agent_context::load_context_md(w, manifest.cache_context)
                 }),
+                // Re-read RULES.md per turn so edits land on the next message.
+                // Tail-loaded as authoritative guidance; truncated by the loader.
+                rules_md: openfang_types::config::read_global_rules(),
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -2859,6 +2862,8 @@ impl OpenFangKernel {
                 context_md: manifest.workspace.as_ref().and_then(|w| {
                     openfang_runtime::agent_context::load_context_md(w, manifest.cache_context)
                 }),
+                // Re-read RULES.md per turn (tail-loaded authoritative guidance).
+                rules_md: openfang_types::config::read_global_rules(),
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
