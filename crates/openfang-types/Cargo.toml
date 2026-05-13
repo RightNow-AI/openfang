@@ -22,3 +22,4 @@ bitflags = "2"
 
 [dev-dependencies]
 rmp-serde = { workspace = true }
+tempfile = { workspace = true }
