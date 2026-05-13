@@ -66,6 +66,12 @@ pub struct PromptContext {
     /// Read per-turn by the kernel so external writers (cron jobs, integrations)
     /// are reflected in the next LLM call. See issue #843.
     pub context_md: Option<String>,
+    /// Global `RULES.md` content (workspace-level rules and template index).
+    ///
+    /// Reloaded per-turn from disk so edits take effect on the next LLM call
+    /// without requiring an agent restart. Truncated to `RULES_MD_MAX_CHARS`
+    /// at load time. See `openfang_types::config::read_global_rules`.
+    pub rules_md: Option<String>,
 }
 
 /// Build the complete system prompt from a `PromptContext`.
