@@ -27,6 +27,8 @@ pub enum Capability {
     ToolInvoke(String),
     /// Invoke any tool (dangerous, requires explicit grant).
     ToolAll,
+    /// Subscribe to MCP resource updates matching the given server/URI pattern.
+    McpSubscribe(String),
 
     // -- LLM --
     /// Query models matching the pattern.
@@ -118,6 +120,9 @@ pub fn capability_matches(granted: &Capability, required: &Capability) -> bool {
         }
         (Capability::ToolInvoke(granted_id), Capability::ToolInvoke(required_id)) => {
             granted_id == required_id || granted_id == "*"
+        }
+        (Capability::McpSubscribe(pattern), Capability::McpSubscribe(resource)) => {
+            glob_matches(pattern, resource)
         }
         (Capability::LlmQuery(pattern), Capability::LlmQuery(model)) => {
             glob_matches(pattern, model)
@@ -244,6 +249,18 @@ mod tests {
         assert!(capability_matches(
             &Capability::ToolAll,
             &Capability::ToolInvoke("web_search".to_string()),
+        ));
+    }
+
+    #[test]
+    fn test_mcp_subscribe_matches_resource_pattern() {
+        assert!(capability_matches(
+            &Capability::McpSubscribe("github:*".to_string()),
+            &Capability::McpSubscribe("github:repo://RightNow-AI/openfang".to_string()),
+        ));
+        assert!(!capability_matches(
+            &Capability::McpSubscribe("gmail:*".to_string()),
+            &Capability::McpSubscribe("github:repo://RightNow-AI/openfang".to_string()),
         ));
     }
 

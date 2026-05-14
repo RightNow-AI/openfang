@@ -409,6 +409,9 @@ fn describe_event(event: &Event) -> String {
         EventPayload::Network(ne) => {
             format!("Network event: {:?}", ne)
         }
+        EventPayload::Mcp(mcp) => {
+            format!("MCP event: {:?}", mcp)
+        }
         EventPayload::System(se) => match se {
             SystemEvent::KernelStarted => "Kernel started".to_string(),
             SystemEvent::KernelStopping => "Kernel stopping".to_string(),

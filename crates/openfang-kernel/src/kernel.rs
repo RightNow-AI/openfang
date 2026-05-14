@@ -5835,6 +5835,8 @@ impl OpenFangKernel {
                 timeout_secs: server_config.timeout_secs,
                 env: server_config.env.clone(),
                 headers: server_config.headers.clone(),
+                allow_push_events: server_config.allow_push_events,
+                push_queue_size: server_config.push_queue_size,
             };
 
             match McpConnection::connect(mcp_config).await {
@@ -5945,6 +5947,8 @@ impl OpenFangKernel {
                 timeout_secs: server_config.timeout_secs,
                 env: server_config.env.clone(),
                 headers: server_config.headers.clone(),
+                allow_push_events: server_config.allow_push_events,
+                push_queue_size: server_config.push_queue_size,
             };
 
             self.extension_health.register(&server_config.name);
@@ -6065,6 +6069,8 @@ impl OpenFangKernel {
             timeout_secs: server_config.timeout_secs,
             env: server_config.env.clone(),
             headers: server_config.headers.clone(),
+            allow_push_events: server_config.allow_push_events,
+            push_queue_size: server_config.push_queue_size,
         };
 
         match McpConnection::connect(mcp_config).await {
@@ -9187,6 +9193,8 @@ mod tests {
                 timeout_secs: 30,
                 env: vec!["OPENAI_API_KEY".to_string()],
                 headers: vec![],
+                allow_push_events: false,
+                push_queue_size: 256,
             }],
             ..KernelConfig::default()
         };

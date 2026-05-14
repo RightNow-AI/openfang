@@ -39,10 +39,20 @@ pub struct McpServerConfig {
     /// or any custom headers required by a remote MCP server.
     #[serde(default)]
     pub headers: Vec<String>,
+    /// Allow server-initiated MCP notifications to enter the event bus.
+    #[serde(default)]
+    pub allow_push_events: bool,
+    /// Maximum queued push notifications before older events are dropped.
+    #[serde(default = "default_push_queue_size")]
+    pub push_queue_size: usize,
 }
 
 fn default_timeout() -> u64 {
     60
+}
+
+fn default_push_queue_size() -> usize {
+    256
 }
 
 /// Transport type for MCP server connections.
@@ -486,6 +496,8 @@ mod tests {
             timeout_secs: 30,
             env: vec!["GITHUB_PERSONAL_ACCESS_TOKEN".to_string()],
             headers: vec![],
+            allow_push_events: false,
+            push_queue_size: default_push_queue_size(),
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -511,6 +523,8 @@ mod tests {
             timeout_secs: 60,
             env: vec![],
             headers: vec![],
+            allow_push_events: false,
+            push_queue_size: default_push_queue_size(),
         };
         let json = serde_json::to_string(&sse_config).unwrap();
         let back: McpServerConfig = serde_json::from_str(&json).unwrap();
@@ -528,9 +542,13 @@ mod tests {
             timeout_secs: 120,
             env: vec![],
             headers: vec!["Authorization: Bearer test-token-456".to_string()],
+            allow_push_events: true,
+            push_queue_size: 512,
         };
         let json = serde_json::to_string(&http_config).unwrap();
         let back: McpServerConfig = serde_json::from_str(&json).unwrap();
+        assert!(back.allow_push_events);
+        assert_eq!(back.push_queue_size, 512);
         match back.transport {
             McpTransport::Http { url } => {
                 assert_eq!(url, "https://mcp.atlassian.com/v1/mcp")
