@@ -4,6 +4,7 @@
 //! calling the LLM, executing tool calls, and saving the conversation.
 
 use crate::auth_cooldown::{CooldownVerdict, ProviderCooldown};
+use crate::bridge_auth::TokenIssuer;
 use crate::context_budget::{apply_context_guard, truncate_tool_result_dynamic, ContextBudget};
 use crate::context_overflow::{recover_from_overflow, RecoveryStage};
 use crate::embedding::EmbeddingDriver;
@@ -557,6 +558,7 @@ pub async fn run_agent_loop(
             Some(provider_name),
             None,
             &manifest.fallback_models,
+            kernel.as_ref().and_then(|k| k.token_issuer()),
         )
         .await?;
 
@@ -1159,6 +1161,7 @@ async fn call_with_retry(
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
     fallback_models: &[FallbackModel],
+    token_issuer: Option<Arc<dyn TokenIssuer>>,
 ) -> OpenFangResult<crate::llm_driver::CompletionResponse> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
@@ -1269,11 +1272,12 @@ async fn call_with_retry(
                             skip_permissions: true,
                             subprocess_timeout_secs: None,
                         };
-                        // Phase C1: fallback driver does not yet receive the
-                        // daemon's bridge `TokenIssuer`. C2 will plumb it via a
-                        // new `KernelHandle::token_issuer()` accessor so fallback
-                        // sessions get the hardened bridge auth.
-                        let fb_driver = match crate::drivers::create_driver(&fb_config, None) {
+                        // Fallback driver inherits the daemon's bridge
+                        // `TokenIssuer` (plumbed in from the caller via the
+                        // `token_issuer` arg, which the agent loop sources
+                        // from `KernelHandle::token_issuer()`) so these
+                        // sessions stay on the hardened bridge auth path.
+                        let fb_driver = match crate::drivers::create_driver(&fb_config, token_issuer.clone()) {
                             Ok(d) => d,
                             Err(driver_err) => {
                                 warn!(
@@ -1348,6 +1352,7 @@ async fn stream_with_retry(
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
     fallback_models: &[FallbackModel],
+    token_issuer: Option<Arc<dyn TokenIssuer>>,
 ) -> OpenFangResult<crate::llm_driver::CompletionResponse> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
@@ -1457,11 +1462,12 @@ async fn stream_with_retry(
                             skip_permissions: true,
                             subprocess_timeout_secs: None,
                         };
-                        // Phase C1: fallback driver does not yet receive the
-                        // daemon's bridge `TokenIssuer`. C2 will plumb it via a
-                        // new `KernelHandle::token_issuer()` accessor so fallback
-                        // sessions get the hardened bridge auth.
-                        let fb_driver = match crate::drivers::create_driver(&fb_config, None) {
+                        // Fallback driver inherits the daemon's bridge
+                        // `TokenIssuer` (plumbed in from the caller via the
+                        // `token_issuer` arg, which the agent loop sources
+                        // from `KernelHandle::token_issuer()`) so these
+                        // sessions stay on the hardened bridge auth path.
+                        let fb_driver = match crate::drivers::create_driver(&fb_config, token_issuer.clone()) {
                             Ok(d) => d,
                             Err(driver_err) => {
                                 warn!(
@@ -1810,6 +1816,7 @@ pub async fn run_agent_loop_streaming(
             Some(provider_name),
             None,
             &manifest.fallback_models,
+            kernel.as_ref().and_then(|k| k.token_issuer()),
         )
         .await?;
 

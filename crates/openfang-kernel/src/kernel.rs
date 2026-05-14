@@ -7199,6 +7199,10 @@ async fn cron_fan_out_targets(
 
 #[async_trait]
 impl KernelHandle for OpenFangKernel {
+    fn token_issuer(&self) -> Option<Arc<dyn TokenIssuer>> {
+        OpenFangKernel::token_issuer(self)
+    }
+
     async fn spawn_agent(
         &self,
         manifest_toml: &str,

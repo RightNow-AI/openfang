@@ -809,6 +809,23 @@ pub async fn run_daemon(
 
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
+
+    // Phase C2: construct the bridge `TokenIssuer` (an `Arc<BridgeAuthority>`)
+    // and hand it to the kernel before background agents start. From here on,
+    // `resolve_driver` and agent-loop fallback paths thread the issuer into
+    // every new Claude Code driver, swapping the legacy UUID env-var for the
+    // daemon-issued, single-use, fingerprint-tracked bridge token.
+    //
+    // Unix-only: `BridgeAuthority` lives in `bridge_auth` which is gated to
+    // unix targets along with the rest of the bridge IPC plumbing. On
+    // non-unix builds the kernel keeps its `token_issuer` slot empty and
+    // drivers fall back to the legacy UUID path.
+    #[cfg(unix)]
+    {
+        let bridge_authority = crate::bridge_auth::BridgeAuthority::new();
+        kernel.set_token_issuer(bridge_authority);
+    }
+
     kernel.start_background_agents();
 
     // Config file hot-reload watcher (polls every 30 seconds)
