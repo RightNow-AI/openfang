@@ -821,10 +821,11 @@ pub async fn run_daemon(
     // non-unix builds the kernel keeps its `token_issuer` slot empty and
     // drivers fall back to the legacy UUID path.
     #[cfg(unix)]
-    {
-        let bridge_authority = crate::bridge_auth::BridgeAuthority::new();
-        kernel.set_token_issuer(bridge_authority);
-    }
+    let bridge_authority = {
+        let authority = crate::bridge_auth::BridgeAuthority::new();
+        kernel.set_token_issuer(authority.clone());
+        authority
+    };
 
     kernel.start_background_agents();
 
@@ -879,7 +880,12 @@ pub async fn run_daemon(
         );
     }
     #[cfg(unix)]
-    let _bridge_ipc = match crate::bridge_ipc::BridgeIpcServer::start(kernel.clone()).await {
+    let _bridge_ipc = match crate::bridge_ipc::BridgeIpcServer::start(
+        kernel.clone(),
+        bridge_authority.clone(),
+    )
+    .await
+    {
         Ok(h) => {
             // Publish discovery env vars so subprocess drivers (Claude Code,
             // future Codex-style) can find the socket and the bridge binary.
