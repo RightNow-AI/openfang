@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod bridge_auth;
 pub mod capability;
 pub mod commands;
 pub mod comms;
