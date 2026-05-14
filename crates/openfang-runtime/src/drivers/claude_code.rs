@@ -8,12 +8,15 @@
 //! Tracks active subprocess PIDs and enforces message timeouts to prevent
 //! hung CLI processes from blocking agents indefinitely.
 
+use crate::bridge_auth::{SpawnGuard, TokenIssuer};
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
 use dashmap::DashMap;
+use openfang_types::agent::AgentId;
 use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tracing::{debug, info, warn};
@@ -115,6 +118,21 @@ pub struct ClaudeCodeDriver {
     active_pids: Arc<DashMap<String, u32>>,
     /// Message timeout in seconds. CLI subprocesses that exceed this are killed.
     message_timeout_secs: u64,
+    /// Optional daemon-side token issuer for per-spawn bridge auth (ANAI-31).
+    ///
+    /// When `Some`, `try_build_bridge_mcp_config` requests a fresh
+    /// `SpawnGuard` from the issuer and emits the guard's token over
+    /// `OPENFANG_BRIDGE_TOKEN`. The guard is stashed in the returned
+    /// `BridgeMcpConfig` so its `Drop` (which evicts the token from the
+    /// authority's spawn table) fires when the per-spawn config drops —
+    /// which itself outlives the `claude` subprocess.
+    ///
+    /// When `None`, the driver falls back to the legacy ANAI-30 UUID path:
+    /// a random token is generated and emitted, but the daemon does not
+    /// know about it. Useful for dev builds wired without the bridge
+    /// daemon and for tests; production daemon wiring will always populate
+    /// this field via [`Self::with_token_issuer`] in Phase C.
+    token_issuer: Option<Arc<dyn TokenIssuer>>,
 }
 
 impl ClaudeCodeDriver {
@@ -139,7 +157,18 @@ impl ClaudeCodeDriver {
             skip_permissions,
             active_pids: Arc::new(DashMap::new()),
             message_timeout_secs: DEFAULT_MESSAGE_TIMEOUT_SECS,
+            token_issuer: None,
         }
+    }
+
+    /// Attach a per-spawn bridge `TokenIssuer`. Builder-style so the wiring
+    /// site in `crates/openfang-runtime/src/drivers/mod.rs` (Phase C) can
+    /// install the daemon's `Arc<BridgeAuthority>` after construction
+    /// without breaking the existing constructor signatures or the four
+    /// other driver-build call sites.
+    pub fn with_token_issuer(mut self, issuer: Arc<dyn TokenIssuer>) -> Self {
+        self.token_issuer = Some(issuer);
+        self
     }
 
     /// Create a new Claude Code driver with a custom timeout.
@@ -303,6 +332,12 @@ impl ClaudeCodeDriver {
 /// lifetime bounds the file's lifetime, which bounds the token's lifetime.
 struct BridgeMcpConfig {
     config_path: PathBuf,
+    /// Per-spawn token guard. `Drop` evicts the token from the daemon's
+    /// `BridgeAuthority` spawn table and zeroizes the in-memory `Token`
+    /// bytes. `None` on the legacy ANAI-30 path (random UUID, no daemon
+    /// registration). Underscore-prefixed in field name semantically —
+    /// existence-only; we never read it.
+    _guard: Option<SpawnGuard>,
 }
 
 impl BridgeMcpConfig {
@@ -364,62 +399,109 @@ fn build_bridge_mcp_config_value(
     serde_json::Value::Object(root)
 }
 
-/// Generate a per-spawn random token. ANAI-30 uses a random UUID; the
-/// daemon currently treats any non-empty token as authenticated. ANAI-31
-/// will replace this with a daemon-issued token tied to the caller's
-/// identity in an in-memory table.
-fn generate_bridge_token() -> String {
+/// Legacy ANAI-30 fallback: per-spawn random UUID token.
+///
+/// Only used when the driver has no `token_issuer` attached (dev builds
+/// without daemon bridge wiring, plus the test suite). The daemon-issued
+/// path goes through `TokenIssuer::issue` and emits a fresh
+/// `openfang_types::bridge_auth::Token` instead. Production wiring
+/// installs an issuer in Phase C — at that point this fallback no longer
+/// fires in daemon builds.
+fn generate_legacy_bridge_token() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// Build the per-spawn `--mcp-config` JSON for a CC invocation, if the
-/// daemon has published bridge wiring discovery and the request carries
-/// a caller identity. Returns `None` when bridge wiring is unavailable —
-/// CC is then spawned without an OpenFang MCP server, exactly as before
-/// step 4. Logs at `info` level on first wire and `debug` per-spawn so
-/// operators can see whether a given run was bridge-enabled.
-fn try_build_bridge_mcp_config(caller_agent_id: Option<&str>) -> Option<BridgeMcpConfig> {
-    // Gate first — cheapest check, and when off we want zero side effects:
-    // no temp file, no token generation, no log line beyond trace level.
-    if !bridge_enabled() {
-        return None;
-    }
-    let agent_id = caller_agent_id?;
-    let socket = std::env::var(BRIDGE_SOCKET_ENV).ok()?;
-    let bridge_bin = std::env::var(BRIDGE_BIN_ENV).ok()?;
-    let token = generate_bridge_token();
-
-    let cfg = build_bridge_mcp_config_value(&socket, &bridge_bin, agent_id, &token);
-
-    // Place the config next to the socket so cleanup is colocated and the
-    // bridge socket dir already exists with the right permissions.
-    let socket_dir = std::path::Path::new(&socket).parent()?.to_path_buf();
-    let path = socket_dir.join(format!("cc-mcp-{}.json", uuid::Uuid::new_v4()));
-
-    let serialized = serde_json::to_string(&cfg).ok()?;
-    if let Err(e) = std::fs::write(&path, serialized) {
-        warn!(error = %e, path = %path.display(), "failed to write CC mcp-config");
-        return None;
-    }
-
-    // 0600 — file contains a per-spawn auth token. No other uid should read it.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(&path) {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o600);
-            let _ = std::fs::set_permissions(&path, perms);
+impl ClaudeCodeDriver {
+    /// Build the per-spawn `--mcp-config` JSON for a CC invocation, if the
+    /// daemon has published bridge wiring discovery and the request carries
+    /// a caller identity. Returns `None` when bridge wiring is unavailable —
+    /// CC is then spawned without an OpenFang MCP server, exactly as before
+    /// step 4. Logs at `info` level on first wire and `debug` per-spawn so
+    /// operators can see whether a given run was bridge-enabled.
+    ///
+    /// Token sourcing:
+    /// - If `self.token_issuer` is `Some`, the token is daemon-issued via
+    ///   `TokenIssuer::issue`. The returned [`SpawnGuard`] is stashed in
+    ///   the returned `BridgeMcpConfig` so its `Drop` evicts the entry
+    ///   from the daemon's spawn table when the config drops.
+    /// - If `self.token_issuer` is `None` (dev builds / tests), the token
+    ///   is a random UUID. The daemon, in that build, treats any
+    ///   non-empty token as authenticated — this is the ANAI-30 surface
+    ///   that ANAI-31 replaces in production.
+    fn try_build_bridge_mcp_config(
+        &self,
+        caller_agent_id: Option<&str>,
+    ) -> Option<BridgeMcpConfig> {
+        // Gate first — cheapest check, and when off we want zero side effects:
+        // no temp file, no token generation, no log line beyond trace level.
+        if !bridge_enabled() {
+            return None;
         }
+        let agent_id_str = caller_agent_id?;
+        let socket = std::env::var(BRIDGE_SOCKET_ENV).ok()?;
+        let bridge_bin = std::env::var(BRIDGE_BIN_ENV).ok()?;
+
+        // Daemon-issued token path (production): ask the authority for a
+        // fresh spawn slot. If the caller's agent_id string fails to parse
+        // as a UUID, refuse to wire the bridge — that's a programmer error
+        // upstream and we shouldn't silently fall through to a random
+        // token that the daemon can't tie back to anything.
+        let (token_hex, guard) = match self.token_issuer.as_ref() {
+            Some(issuer) => {
+                let parsed = match AgentId::from_str(agent_id_str) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            agent_id = %agent_id_str,
+                            "bridge token issuer present but caller_agent_id is not a valid UUID; \
+                             refusing to wire bridge (programmer error upstream)"
+                        );
+                        return None;
+                    }
+                };
+                let g = issuer.issue(parsed);
+                (g.token().to_hex(), Some(g))
+            }
+            None => (generate_legacy_bridge_token(), None),
+        };
+
+        let cfg = build_bridge_mcp_config_value(&socket, &bridge_bin, agent_id_str, &token_hex);
+
+        // Place the config next to the socket so cleanup is colocated and the
+        // bridge socket dir already exists with the right permissions.
+        let socket_dir = std::path::Path::new(&socket).parent()?.to_path_buf();
+        let path = socket_dir.join(format!("cc-mcp-{}.json", uuid::Uuid::new_v4()));
+
+        let serialized = serde_json::to_string(&cfg).ok()?;
+        if let Err(e) = std::fs::write(&path, serialized) {
+            warn!(error = %e, path = %path.display(), "failed to write CC mcp-config");
+            return None;
+        }
+
+        // 0600 — file contains a per-spawn auth token. No other uid should read it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(&path) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o600);
+                let _ = std::fs::set_permissions(&path, perms);
+            }
+        }
+
+        debug!(
+            agent_id = %agent_id_str,
+            config = %path.display(),
+            fingerprint = %guard.as_ref().map(|g| g.fingerprint()).unwrap_or_else(|| "<legacy>".into()),
+            "wired CC --mcp-config for OpenFang bridge"
+        );
+
+        Some(BridgeMcpConfig {
+            config_path: path,
+            _guard: guard,
+        })
     }
-
-    debug!(
-        agent_id = %agent_id,
-        config = %path.display(),
-        "wired CC --mcp-config for OpenFang bridge"
-    );
-
-    Some(BridgeMcpConfig { config_path: path })
 }
 
 /// JSON output from `claude -p --output-format json`.
@@ -523,7 +605,7 @@ impl LlmDriver for ClaudeCodeDriver {
         // the request carries a caller identity. The guard lives for the
         // remainder of the call; on drop it removes the temp config file.
         let _bridge_cfg =
-            try_build_bridge_mcp_config(request.caller_agent_id.as_deref()).map(|cfg| {
+            self.try_build_bridge_mcp_config(request.caller_agent_id.as_deref()).map(|cfg| {
                 cmd.arg("--mcp-config").arg(cfg.path());
                 // `--strict-mcp-config` makes CC ignore any user/global MCP
                 // config that might otherwise merge in — we want exactly
@@ -762,7 +844,7 @@ impl LlmDriver for ClaudeCodeDriver {
         // alive for the rest of the streaming function so the per-spawn
         // config file outlives the CC subprocess.
         let _bridge_cfg =
-            try_build_bridge_mcp_config(request.caller_agent_id.as_deref()).map(|cfg| {
+            self.try_build_bridge_mcp_config(request.caller_agent_id.as_deref()).map(|cfg| {
                 cmd.arg("--mcp-config").arg(cfg.path());
                 cmd.arg("--strict-mcp-config");
                 // Optional --debug — see complete() for rationale.
@@ -1079,6 +1161,7 @@ mod tests {
             temperature: 0.7,
             system: None,
             thinking: None,
+            caller_agent_id: None,
         };
 
         let prompt = ClaudeCodeDriver::build_prompt(&request);
@@ -1112,6 +1195,7 @@ mod tests {
             temperature: 0.7,
             system: None,
             thinking: None,
+            caller_agent_id: None,
         };
 
         let prompt = ClaudeCodeDriver::build_prompt(&request);
@@ -1262,6 +1346,7 @@ mod tests {
         {
             let _guard = BridgeMcpConfig {
                 config_path: path.clone(),
+                _guard: None,
             };
             assert!(path.exists(), "file present while guard held");
         }
@@ -1300,7 +1385,8 @@ mod tests {
         // race with apply_env_filter tests; the shape test covers the
         // construction path. This test owns the gate behavior only.
         std::env::remove_var(BRIDGE_ENABLED_ENV);
-        let cfg = try_build_bridge_mcp_config(Some("agent-x"));
+        let driver = ClaudeCodeDriver::new(None, true);
+        let cfg = driver.try_build_bridge_mcp_config(Some("agent-x"));
         assert!(cfg.is_none(), "gate off → None regardless of other env");
 
         // Restore.
