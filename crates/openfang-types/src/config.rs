@@ -1430,6 +1430,9 @@ pub struct McpServerConfigEntry {
     /// Maximum queued push notifications before older events are dropped.
     #[serde(default = "default_mcp_push_queue_size")]
     pub push_queue_size: usize,
+    /// Maximum server-initiated notifications accepted per minute.
+    #[serde(default = "default_mcp_push_rate_limit_per_minute")]
+    pub push_rate_limit_per_minute: u32,
 }
 
 fn default_mcp_timeout() -> u64 {
@@ -1438,6 +1441,10 @@ fn default_mcp_timeout() -> u64 {
 
 fn default_mcp_push_queue_size() -> usize {
     256
+}
+
+fn default_mcp_push_rate_limit_per_minute() -> u32 {
+    600
 }
 
 /// Transport configuration for an MCP server.

@@ -208,6 +208,7 @@ impl IntegrationRegistry {
                     headers: Vec::new(),
                     allow_push_events: false,
                     push_queue_size: 256,
+                    push_rate_limit_per_minute: 600,
                 })
             })
             .collect()

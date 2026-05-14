@@ -5878,6 +5878,7 @@ impl OpenFangKernel {
                 headers: server_config.headers.clone(),
                 allow_push_events: server_config.allow_push_events,
                 push_queue_size: server_config.push_queue_size,
+                push_rate_limit_per_minute: server_config.push_rate_limit_per_minute,
             };
 
             match McpConnection::connect_with_notifications(mcp_config, notification_tx).await {
@@ -5993,6 +5994,7 @@ impl OpenFangKernel {
                 headers: server_config.headers.clone(),
                 allow_push_events: server_config.allow_push_events,
                 push_queue_size: server_config.push_queue_size,
+                push_rate_limit_per_minute: server_config.push_rate_limit_per_minute,
             };
 
             self.extension_health.register(&server_config.name);
@@ -6123,6 +6125,7 @@ impl OpenFangKernel {
             headers: server_config.headers.clone(),
             allow_push_events: server_config.allow_push_events,
             push_queue_size: server_config.push_queue_size,
+            push_rate_limit_per_minute: server_config.push_rate_limit_per_minute,
         };
 
         let (notification_tx, notification_rx) = self.mcp_notification_channel(
@@ -9326,6 +9329,7 @@ mod tests {
                 headers: vec![],
                 allow_push_events: false,
                 push_queue_size: 256,
+                push_rate_limit_per_minute: 600,
             }],
             ..KernelConfig::default()
         };

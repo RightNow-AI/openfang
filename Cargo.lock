@@ -4230,6 +4230,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "futures",
+ "governor",
  "hex",
  "http",
  "openfang-memory",
