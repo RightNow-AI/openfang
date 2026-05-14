@@ -108,6 +108,8 @@ pub struct OpenFangKernel {
     /// Resource URIs subscribed per MCP server, replayed after reconnect.
     pub mcp_subscriptions:
         tokio::sync::RwLock<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+    /// Cached agent fan-out targets for MCP list-change notifications.
+    mcp_fanout_targets: std::sync::RwLock<std::collections::HashMap<String, Vec<AgentId>>>,
     /// MCP tool definitions cache (populated after connections are established).
     pub mcp_tools: std::sync::Mutex<Vec<ToolDefinition>>,
     /// A2A task store for tracking task lifecycle.
@@ -1193,6 +1195,7 @@ impl OpenFangKernel {
             running_tasks: dashmap::DashMap::new(),
             mcp_connections: tokio::sync::Mutex::new(Vec::new()),
             mcp_subscriptions: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            mcp_fanout_targets: std::sync::RwLock::new(std::collections::HashMap::new()),
             mcp_tools: std::sync::Mutex::new(Vec::new()),
             a2a_task_store: openfang_runtime::a2a::A2aTaskStore::default(),
             a2a_external_agents: std::sync::Mutex::new(Vec::new()),
@@ -1747,6 +1750,7 @@ impl OpenFangKernel {
         self.registry
             .register(entry.clone())
             .map_err(KernelError::OpenFang)?;
+        self.rebuild_mcp_fanout_targets();
 
         // Update parent's children list
         if let Some(parent_id) = parent {
@@ -3472,6 +3476,7 @@ impl OpenFangKernel {
         self.registry
             .update_mcp_servers(agent_id, servers.clone())
             .map_err(KernelError::OpenFang)?;
+        self.rebuild_mcp_fanout_targets();
 
         if let Some(entry) = self.registry.get(agent_id) {
             let _ = self.memory.save_agent(&entry);
@@ -3728,6 +3733,7 @@ impl OpenFangKernel {
         self.capabilities.revoke_all(agent_id);
         self.event_bus.unsubscribe_agent(agent_id);
         self.triggers.remove_agent_triggers(agent_id);
+        self.rebuild_mcp_fanout_targets();
 
         // Remove cron jobs so they don't linger as orphans (#504)
         let cron_removed = self.cron_scheduler.remove_agent_jobs(agent_id);
@@ -5828,14 +5834,86 @@ impl OpenFangKernel {
                 let Some(kernel) = kernel.upgrade() else {
                     break;
                 };
-                let event = Event::new(
-                    AgentId::from_string("system:mcp"),
-                    EventTarget::Broadcast,
-                    EventPayload::Mcp(mcp_event),
-                );
-                kernel.publish_event(event).await;
+                kernel.publish_mcp_event(mcp_event).await;
             }
         });
+    }
+
+    async fn publish_mcp_event(&self, mcp_event: McpEvent) {
+        if let McpEvent::ToolListChanged { server } = &mcp_event {
+            let agent_targets = self.agents_for_mcp_server(server);
+            if agent_targets.is_empty() {
+                let event = Event::new(
+                    AgentId::from_string("system:mcp"),
+                    EventTarget::System,
+                    EventPayload::Mcp(mcp_event),
+                );
+                self.event_bus.publish(event).await;
+                return;
+            }
+
+            for agent_id in agent_targets {
+                let event = Event::new(
+                    AgentId::from_string("system:mcp"),
+                    EventTarget::Agent(agent_id),
+                    EventPayload::Mcp(mcp_event.clone()),
+                );
+                self.publish_event(event).await;
+            }
+            return;
+        }
+
+        let event = Event::new(
+            AgentId::from_string("system:mcp"),
+            EventTarget::Broadcast,
+            EventPayload::Mcp(mcp_event),
+        );
+        self.publish_event(event).await;
+    }
+
+    fn agents_for_mcp_server(&self, server: &str) -> Vec<AgentId> {
+        let normalized_server = openfang_runtime::mcp::normalize_name(server);
+        self.mcp_fanout_targets
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&normalized_server)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn rebuild_mcp_fanout_targets(&self) {
+        let known_servers: Vec<String> = self
+            .effective_mcp_servers
+            .read()
+            .map(|servers| {
+                servers
+                    .iter()
+                    .map(|server| openfang_runtime::mcp::normalize_name(&server.name))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut targets: std::collections::HashMap<String, Vec<AgentId>> =
+            std::collections::HashMap::new();
+        for entry in self.registry.list() {
+            if entry.manifest.mcp_servers.is_empty() {
+                for server in &known_servers {
+                    targets.entry(server.clone()).or_default().push(entry.id);
+                }
+            } else {
+                for server in &entry.manifest.mcp_servers {
+                    targets
+                        .entry(openfang_runtime::mcp::normalize_name(server))
+                        .or_default()
+                        .push(entry.id);
+                }
+            }
+        }
+
+        *self
+            .mcp_fanout_targets
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = targets;
     }
 
     async fn record_mcp_subscription(&self, server: &str, uri: &str) {
@@ -5883,6 +5961,7 @@ impl OpenFangKernel {
             .read()
             .map(|s| s.clone())
             .unwrap_or_default();
+        self.rebuild_mcp_fanout_targets();
 
         for server_config in &servers {
             let transport = match &server_config.transport {
@@ -6012,6 +6091,7 @@ impl OpenFangKernel {
         if let Ok(mut effective) = self.effective_mcp_servers.write() {
             *effective = new_configs;
         }
+        self.rebuild_mcp_fanout_targets();
 
         // 5. Connect new servers
         let mut connected_count = 0;
@@ -6191,14 +6271,10 @@ impl OpenFangKernel {
                     self.spawn_mcp_notification_bridge(receiver);
                 }
                 self.mcp_connections.lock().await.push(conn);
-                let event = Event::new(
-                    AgentId::from_string("system:mcp"),
-                    EventTarget::Broadcast,
-                    EventPayload::Mcp(McpEvent::ConnectionReconnected {
-                        server: id.to_string(),
-                    }),
-                );
-                self.publish_event(event).await;
+                self.publish_mcp_event(McpEvent::ConnectionReconnected {
+                    server: id.to_string(),
+                })
+                .await;
                 Ok(tool_count)
             }
             Err(e) => {
