@@ -486,6 +486,11 @@ pub async fn execute_tool(
         // Canvas / A2UI tool
         "canvas_present" => tool_canvas_present(input, workspace_root).await,
 
+        // MCP subscription control tool.
+        "mcp_subscribe_resource" => {
+            tool_mcp_subscribe_resource(input, kernel, caller_agent_id).await
+        }
+
         other => {
             // Fallback 1: MCP tools (mcp_{server}_{tool} prefix)
             if mcp::is_mcp_tool(other) {
@@ -651,6 +656,19 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "max_results": { "type": "integer", "description": "Maximum number of results to return (default: 5, max: 20)" }
                 },
                 "required": ["query"]
+            }),
+        },
+        // --- MCP control tools ---
+        ToolDefinition {
+            name: "mcp_subscribe_resource".to_string(),
+            description: "Subscribe to server-initiated updates for an MCP resource URI. Requires an mcp_subscribe capability grant for the server and URI.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "uri": { "type": "string", "description": "The MCP resource URI to subscribe to" },
+                    "server": { "type": "string", "description": "Optional MCP server name; required when more than one server is connected" }
+                },
+                "required": ["uri"]
             }),
         },
         // --- Shell tool ---
@@ -2000,6 +2018,26 @@ async fn tool_event_publish(
         .unwrap_or(serde_json::json!({}));
     kh.publish_event(event_type, payload).await?;
     Ok(format!("Event '{event_type}' published successfully."))
+}
+
+async fn tool_mcp_subscribe_resource(
+    input: &serde_json::Value,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
+) -> Result<String, String> {
+    let kh = require_kernel(kernel)?;
+    let agent_id = caller_agent_id.ok_or("Missing caller agent ID")?;
+    let uri = input["uri"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or("Missing 'uri' parameter")?;
+    let server = input["server"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    kh.mcp_subscribe_resource(agent_id, server, uri).await
 }
 
 // ---------------------------------------------------------------------------
@@ -3770,6 +3808,7 @@ mod tests {
         assert!(names.contains(&"task_complete"));
         assert!(names.contains(&"task_list"));
         assert!(names.contains(&"event_publish"));
+        assert!(names.contains(&"mcp_subscribe_resource"));
         // 5 new Phase 3 tools
         assert!(names.contains(&"schedule_create"));
         assert!(names.contains(&"schedule_list"));

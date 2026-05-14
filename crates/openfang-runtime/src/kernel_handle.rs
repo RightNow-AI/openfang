@@ -86,6 +86,17 @@ pub trait KernelHandle: Send + Sync {
         payload: serde_json::Value,
     ) -> Result<(), String>;
 
+    /// Subscribe the calling agent to server-initiated MCP resource updates.
+    async fn mcp_subscribe_resource(
+        &self,
+        agent_id: &str,
+        server: Option<&str>,
+        uri: &str,
+    ) -> Result<String, String> {
+        let _ = (agent_id, server, uri);
+        Err("MCP resource subscription not available".to_string())
+    }
+
     /// Add an entity to the knowledge graph.
     async fn knowledge_add_entity(
         &self,

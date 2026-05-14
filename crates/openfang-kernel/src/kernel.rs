@@ -6853,6 +6853,9 @@ fn manifest_to_capabilities(manifest: &AgentManifest) -> Vec<Capability> {
             if !manifest.capabilities.memory_write.is_empty() {
                 merged.memory_write = manifest.capabilities.memory_write.clone();
             }
+            if !manifest.capabilities.mcp_subscribe.is_empty() {
+                merged.mcp_subscribe = manifest.capabilities.mcp_subscribe.clone();
+            }
             if manifest.capabilities.ofp_discover {
                 merged.ofp_discover = true;
             }
@@ -6878,6 +6881,9 @@ fn manifest_to_capabilities(manifest: &AgentManifest) -> Vec<Capability> {
     }
     for scope in &effective_caps.memory_write {
         caps.push(Capability::MemoryWrite(scope.clone()));
+    }
+    for resource in &effective_caps.mcp_subscribe {
+        caps.push(Capability::McpSubscribe(resource.clone()));
     }
     if effective_caps.agent_spawn {
         caps.push(Capability::AgentSpawn);
@@ -7411,6 +7417,61 @@ impl KernelHandle for OpenFangKernel {
         );
         OpenFangKernel::publish_event(self, event).await;
         Ok(())
+    }
+
+    async fn mcp_subscribe_resource(
+        &self,
+        agent_id: &str,
+        server: Option<&str>,
+        uri: &str,
+    ) -> Result<String, String> {
+        let agent_id: AgentId = agent_id
+            .parse()
+            .map_err(|_| format!("Invalid agent ID: {agent_id}"))?;
+        let uri = uri.trim();
+        if uri.is_empty() {
+            return Err("MCP resource URI is required".to_string());
+        }
+
+        let server_name = {
+            let conns = self.mcp_connections.lock().await;
+            match server.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(requested) => conns
+                    .iter()
+                    .find(|conn| {
+                        conn.name() == requested
+                            || openfang_runtime::mcp::normalize_name(conn.name())
+                                == openfang_runtime::mcp::normalize_name(requested)
+                    })
+                    .map(|conn| conn.name().to_string())
+                    .ok_or_else(|| format!("MCP server '{requested}' not connected"))?,
+                None if conns.len() == 1 => conns[0].name().to_string(),
+                None if conns.is_empty() => return Err("No MCP servers are connected".to_string()),
+                None => {
+                    return Err(
+                        "Multiple MCP servers are connected; provide the 'server' argument"
+                            .to_string(),
+                    )
+                }
+            }
+        };
+
+        let resource = format!("{server_name}:{uri}");
+        self.capabilities
+            .check(agent_id, &Capability::McpSubscribe(resource.clone()))
+            .require()
+            .map_err(|e| e.to_string())?;
+
+        let mut conns = self.mcp_connections.lock().await;
+        let conn = conns
+            .iter_mut()
+            .find(|conn| conn.name() == server_name)
+            .ok_or_else(|| format!("MCP server '{server_name}' not connected"))?;
+        conn.subscribe_resource(uri).await?;
+
+        Ok(format!(
+            "Subscribed to MCP resource '{uri}' on '{server_name}'"
+        ))
     }
 
     async fn knowledge_add_entity(
@@ -8046,12 +8107,14 @@ mod tests {
             max_history_messages: None,
         };
         manifest.capabilities.tools = vec!["file_read".to_string(), "web_fetch".to_string()];
+        manifest.capabilities.mcp_subscribe = vec!["github:repo://*".to_string()];
         manifest.capabilities.agent_spawn = true;
 
         let caps = manifest_to_capabilities(&manifest);
         assert!(caps.contains(&Capability::ToolInvoke("file_read".to_string())));
+        assert!(caps.contains(&Capability::McpSubscribe("github:repo://*".to_string())));
         assert!(caps.contains(&Capability::AgentSpawn));
-        assert_eq!(caps.len(), 3); // 2 tools + agent_spawn
+        assert_eq!(caps.len(), 4); // 2 tools + mcp_subscribe + agent_spawn
     }
 
     /// Regression for #1087: when the user edits any field in agent.toml
