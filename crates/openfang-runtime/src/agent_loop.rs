@@ -537,6 +537,16 @@ pub async fn run_agent_loop(
             system: Some(system_prompt.clone()),
             thinking: None,
             caller_agent_id: Some(agent_id_str.clone()),
+            // Per-agent allowlist for the bridge subprocess: the names of
+            // every tool this agent is currently permitted to invoke,
+            // derived from the kernel-resolved `available_tools` (sourced
+            // from `agent.toml`'s `[capabilities]`/`[exec_policy]`).
+            // Subprocess drivers thread this into `OPENFANG_BRIDGE_ALLOWED`
+            // so the bridge's advertised surface matches the agent's
+            // permissions instead of falling back to the static default.
+            allowed_tools: Some(
+                available_tools.iter().map(|t| t.name.clone()).collect(),
+            ),
         };
 
         // Notify phase: Thinking
@@ -1788,6 +1798,16 @@ pub async fn run_agent_loop_streaming(
             system: Some(system_prompt.clone()),
             thinking: None,
             caller_agent_id: Some(agent_id_str.clone()),
+            // Per-agent allowlist for the bridge subprocess: the names of
+            // every tool this agent is currently permitted to invoke,
+            // derived from the kernel-resolved `available_tools` (sourced
+            // from `agent.toml`'s `[capabilities]`/`[exec_policy]`).
+            // Subprocess drivers thread this into `OPENFANG_BRIDGE_ALLOWED`
+            // so the bridge's advertised surface matches the agent's
+            // permissions instead of falling back to the static default.
+            allowed_tools: Some(
+                available_tools.iter().map(|t| t.name.clone()).collect(),
+            ),
         };
 
         // Notify phase: on first iteration emit Streaming; on subsequent

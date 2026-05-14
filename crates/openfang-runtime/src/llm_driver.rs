@@ -76,6 +76,25 @@ pub struct CompletionRequest {
     /// per-spawn token, but the field stays in place as the integration
     /// point.
     pub caller_agent_id: Option<String>,
+    /// Per-agent tool allowlist for the bridge subprocess, if any.
+    ///
+    /// Sourced from the agent's resolved `available_tools` (which in turn
+    /// derive from `agent.toml`'s `[capabilities].tools` and the kernel's
+    /// capability gating). When `Some`, subprocess-style drivers that wire
+    /// the OpenFang MCP bridge emit this list as `OPENFANG_BRIDGE_ALLOWED`
+    /// on the bridge child's environment, narrowing the bridge's
+    /// advertised + dispatchable tool surface to the intersection of
+    /// (a) what `built_in_tools()` knows about and (b) what *this agent*
+    /// is permitted to call.
+    ///
+    /// When `None`, the bridge falls back to its built-in `DEFAULT_ALLOWED`
+    /// slice — the legacy ANAI-30 behavior. Non-subprocess drivers ignore
+    /// this field entirely; the bridge is not in their request path.
+    ///
+    /// The source of truth remains `agent.toml`. This field is the
+    /// transport plumb that makes the bridge honor what the rest of the
+    /// system already decided.
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// A response from an LLM completion.
@@ -340,6 +359,7 @@ mod tests {
             system: None,
             thinking: None,
             caller_agent_id: None,
+            allowed_tools: None,
         };
 
         let response = driver.stream(request, tx).await.unwrap();

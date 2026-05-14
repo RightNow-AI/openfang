@@ -470,6 +470,7 @@ async fn summarize_messages(
         ),
         thinking: None,
         caller_agent_id: None,
+        allowed_tools: None,
     };
 
     // Retry logic for transient failures
@@ -590,6 +591,7 @@ async fn summarize_in_chunks(
         ),
         thinking: None,
         caller_agent_id: None,
+        allowed_tools: None,
     };
 
     match driver.complete(merge_request).await {

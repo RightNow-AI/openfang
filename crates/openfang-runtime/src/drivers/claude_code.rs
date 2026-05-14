@@ -32,6 +32,11 @@ const BRIDGE_SOCKET_ENV: &str = "OPENFANG_BRIDGE_SOCKET";
 const BRIDGE_BIN_ENV: &str = "OPENFANG_BRIDGE_BIN";
 const BRIDGE_TOKEN_ENV: &str = "OPENFANG_BRIDGE_TOKEN";
 const BRIDGE_AGENT_ID_ENV: &str = "OPENFANG_BRIDGE_AGENT_ID";
+/// Optional comma-separated tool allowlist sent to the bridge subprocess.
+/// Sourced per-spawn from the calling agent's `available_tools` via
+/// `CompletionRequest::allowed_tools`. Absent (env not set) → bridge
+/// falls back to its hard-coded `DEFAULT_ALLOWED`.
+const BRIDGE_ALLOWED_ENV: &str = "OPENFANG_BRIDGE_ALLOWED";
 
 /// Master kill-switch for the OpenFang MCP bridge. Default off. When unset
 /// or not in {`1`, `true`}, `try_build_bridge_mcp_config` returns `None` and
@@ -307,6 +312,7 @@ impl ClaudeCodeDriver {
         cmd.env_remove(BRIDGE_BIN_ENV);
         cmd.env_remove(BRIDGE_TOKEN_ENV);
         cmd.env_remove(BRIDGE_AGENT_ID_ENV);
+        cmd.env_remove(BRIDGE_ALLOWED_ENV);
         // Remove any env var with a sensitive suffix, unless it's CLAUDE_*
         for (key, _) in std::env::vars() {
             if key.starts_with("CLAUDE_") {
@@ -365,6 +371,7 @@ fn build_bridge_mcp_config_value(
     bridge_bin: &str,
     agent_id: &str,
     token: &str,
+    allowed_tools: Option<&[String]>,
 ) -> serde_json::Value {
     let mut env_map = serde_json::Map::new();
     env_map.insert(
@@ -379,6 +386,25 @@ fn build_bridge_mcp_config_value(
         BRIDGE_AGENT_ID_ENV.into(),
         serde_json::Value::String(agent_id.to_string()),
     );
+    // Per-agent allowlist override for the bridge subprocess. When the
+    // caller supplies a tool list (sourced from `agent.toml` →
+    // `available_tools` → `CompletionRequest::allowed_tools`), emit it
+    // as a comma-separated `OPENFANG_BRIDGE_ALLOWED` env entry; the
+    // bridge then narrows its advertised + dispatchable surface to the
+    // intersection with `built_in_tools()`. Absent (None), the bridge
+    // falls back to its hard-coded `DEFAULT_ALLOWED`.
+    //
+    // Empty list is meaningful: it means "no bridge tools permitted."
+    // We still emit the env var (as the empty string) so the bridge's
+    // empty-after-trim handling produces an explicit zero-tool surface
+    // instead of silently falling back to the default.
+    if let Some(tools) = allowed_tools {
+        let joined = tools.join(",");
+        env_map.insert(
+            BRIDGE_ALLOWED_ENV.into(),
+            serde_json::Value::String(joined),
+        );
+    }
 
     let mut server_entry = serde_json::Map::new();
     server_entry.insert(
@@ -431,6 +457,7 @@ impl ClaudeCodeDriver {
     fn try_build_bridge_mcp_config(
         &self,
         caller_agent_id: Option<&str>,
+        allowed_tools: Option<&[String]>,
     ) -> Option<BridgeMcpConfig> {
         // Gate first — cheapest check, and when off we want zero side effects:
         // no temp file, no token generation, no log line beyond trace level.
@@ -466,7 +493,13 @@ impl ClaudeCodeDriver {
             None => (generate_legacy_bridge_token(), None),
         };
 
-        let cfg = build_bridge_mcp_config_value(&socket, &bridge_bin, agent_id_str, &token_hex);
+        let cfg = build_bridge_mcp_config_value(
+            &socket,
+            &bridge_bin,
+            agent_id_str,
+            &token_hex,
+            allowed_tools,
+        );
 
         // Place the config next to the socket so cleanup is colocated and the
         // bridge socket dir already exists with the right permissions.
@@ -605,7 +638,10 @@ impl LlmDriver for ClaudeCodeDriver {
         // the request carries a caller identity. The guard lives for the
         // remainder of the call; on drop it removes the temp config file.
         let _bridge_cfg =
-            self.try_build_bridge_mcp_config(request.caller_agent_id.as_deref()).map(|cfg| {
+            self.try_build_bridge_mcp_config(
+                request.caller_agent_id.as_deref(),
+                request.allowed_tools.as_deref(),
+            ).map(|cfg| {
                 cmd.arg("--mcp-config").arg(cfg.path());
                 // `--strict-mcp-config` makes CC ignore any user/global MCP
                 // config that might otherwise merge in — we want exactly
@@ -844,7 +880,10 @@ impl LlmDriver for ClaudeCodeDriver {
         // alive for the rest of the streaming function so the per-spawn
         // config file outlives the CC subprocess.
         let _bridge_cfg =
-            self.try_build_bridge_mcp_config(request.caller_agent_id.as_deref()).map(|cfg| {
+            self.try_build_bridge_mcp_config(
+                request.caller_agent_id.as_deref(),
+                request.allowed_tools.as_deref(),
+            ).map(|cfg| {
                 cmd.arg("--mcp-config").arg(cfg.path());
                 cmd.arg("--strict-mcp-config");
                 // Optional --debug — see complete() for rationale.
@@ -1125,6 +1164,7 @@ mod tests {
             system: Some("You are helpful.".to_string()),
             thinking: None,
             caller_agent_id: None,
+            allowed_tools: None,
         };
 
         let prompt = ClaudeCodeDriver::build_prompt(&request);
@@ -1162,6 +1202,7 @@ mod tests {
             system: None,
             thinking: None,
             caller_agent_id: None,
+            allowed_tools: None,
         };
 
         let prompt = ClaudeCodeDriver::build_prompt(&request);
@@ -1196,6 +1237,7 @@ mod tests {
             system: None,
             thinking: None,
             caller_agent_id: None,
+            allowed_tools: None,
         };
 
         let prompt = ClaudeCodeDriver::build_prompt(&request);
@@ -1267,7 +1309,7 @@ mod tests {
 
     #[test]
     fn test_apply_env_filter_strips_bridge_discovery_vars() {
-        // Verifies the filter removes the four bridge-discovery vars so a
+        // Verifies the filter removes every bridge-discovery var so a
         // CC subprocess can't accidentally inherit them. The bridge gets
         // these via `--mcp-config`'s `env` map only.
         let mut cmd = tokio::process::Command::new("/bin/true");
@@ -1275,11 +1317,12 @@ mod tests {
         cmd.env(BRIDGE_BIN_ENV, "/usr/local/bin/should-not-survive");
         cmd.env(BRIDGE_TOKEN_ENV, "should-not-survive");
         cmd.env(BRIDGE_AGENT_ID_ENV, "should-not-survive");
+        cmd.env(BRIDGE_ALLOWED_ENV, "file_read,agent_send");
 
         ClaudeCodeDriver::apply_env_filter(&mut cmd);
 
         // tokio's Command exposes its env via std::process::Command::get_envs()
-        // through deref. Walk it; any of the four bridge vars present means
+        // through deref. Walk it; any of the bridge vars present means
         // the filter is broken.
         let std_cmd = cmd.as_std();
         for (key, value) in std_cmd.get_envs() {
@@ -1288,7 +1331,11 @@ mod tests {
             let key_str = key.to_string_lossy();
             if matches!(
                 key_str.as_ref(),
-                BRIDGE_SOCKET_ENV | BRIDGE_BIN_ENV | BRIDGE_TOKEN_ENV | BRIDGE_AGENT_ID_ENV
+                BRIDGE_SOCKET_ENV
+                    | BRIDGE_BIN_ENV
+                    | BRIDGE_TOKEN_ENV
+                    | BRIDGE_AGENT_ID_ENV
+                    | BRIDGE_ALLOWED_ENV
             ) {
                 assert!(
                     value.is_none(),
@@ -1305,6 +1352,7 @@ mod tests {
             "/usr/local/bin/openfang-mcp-bridge",
             "agent-uuid-1234",
             "tok-abc",
+            None,
         );
 
         // mcpServers.openfang.{command,args,env} all present with the
@@ -1321,8 +1369,9 @@ mod tests {
             "args must be a JSON array"
         );
 
-        // env carries exactly the three discovery vars. No more, no less —
-        // any extras would leak unintended state into the bridge process.
+        // env carries exactly the three discovery vars when no per-agent
+        // allowlist is supplied. No more, no less — any extras would leak
+        // unintended state into the bridge process.
         let env = server
             .pointer("/env")
             .and_then(|v| v.as_object())
@@ -1331,6 +1380,56 @@ mod tests {
         assert_eq!(env.get(BRIDGE_SOCKET_ENV).and_then(|v| v.as_str()), Some("/home/user/.openfang/run/bridge.sock"));
         assert_eq!(env.get(BRIDGE_TOKEN_ENV).and_then(|v| v.as_str()), Some("tok-abc"));
         assert_eq!(env.get(BRIDGE_AGENT_ID_ENV).and_then(|v| v.as_str()), Some("agent-uuid-1234"));
+        assert!(
+            env.get(BRIDGE_ALLOWED_ENV).is_none(),
+            "no allowlist supplied → OPENFANG_BRIDGE_ALLOWED must be absent so the bridge \
+             falls back to its hard-coded DEFAULT_ALLOWED"
+        );
+    }
+
+    #[test]
+    fn test_build_bridge_mcp_config_emits_allowed_tools() {
+        // When the caller supplies a per-agent allowlist, it lands in the
+        // env map as a comma-separated OPENFANG_BRIDGE_ALLOWED entry. This
+        // is the channel that lets the bridge's tool surface track each
+        // agent's `agent.toml` capabilities instead of the static default.
+        let cfg = build_bridge_mcp_config_value(
+            "/sock",
+            "/bin",
+            "agent-uuid",
+            "tok",
+            Some(&[
+                "file_read".to_string(),
+                "agent_send".to_string(),
+                "channel_send".to_string(),
+            ]),
+        );
+        let env = cfg
+            .pointer("/mcpServers/openfang/env")
+            .and_then(|v| v.as_object())
+            .expect("env object missing");
+        assert_eq!(env.len(), 4, "env must add OPENFANG_BRIDGE_ALLOWED");
+        assert_eq!(
+            env.get(BRIDGE_ALLOWED_ENV).and_then(|v| v.as_str()),
+            Some("file_read,agent_send,channel_send"),
+        );
+    }
+
+    #[test]
+    fn test_build_bridge_mcp_config_emits_empty_allowed_tools_explicitly() {
+        // Empty list means "no bridge tools permitted" — emit the env var
+        // as the empty string so the bridge's parser produces a zero-tool
+        // surface instead of silently falling back to DEFAULT_ALLOWED.
+        let cfg = build_bridge_mcp_config_value("/sock", "/bin", "agent-uuid", "tok", Some(&[]));
+        let env = cfg
+            .pointer("/mcpServers/openfang/env")
+            .and_then(|v| v.as_object())
+            .expect("env object missing");
+        assert_eq!(
+            env.get(BRIDGE_ALLOWED_ENV).and_then(|v| v.as_str()),
+            Some(""),
+            "empty allowlist must still emit the env var (empty string), not be absent"
+        );
     }
 
     #[test]
@@ -1386,7 +1485,7 @@ mod tests {
         // construction path. This test owns the gate behavior only.
         std::env::remove_var(BRIDGE_ENABLED_ENV);
         let driver = ClaudeCodeDriver::new(None, true);
-        let cfg = driver.try_build_bridge_mcp_config(Some("agent-x"));
+        let cfg = driver.try_build_bridge_mcp_config(Some("agent-x"), None);
         assert!(cfg.is_none(), "gate off → None regardless of other env");
 
         // Restore.

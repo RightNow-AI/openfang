@@ -7965,6 +7965,7 @@ pub async fn test_provider(
                 system: None,
                 thinking: None,
                 caller_agent_id: None,
+                allowed_tools: None,
             };
             match driver.complete(test_req).await {
                 Ok(_) => {

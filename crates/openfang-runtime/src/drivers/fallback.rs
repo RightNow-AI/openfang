@@ -162,6 +162,7 @@ mod tests {
             system: None,
             thinking: None,
             caller_agent_id: None,
+            allowed_tools: None,
         }
     }
 
