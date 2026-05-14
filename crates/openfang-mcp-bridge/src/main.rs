@@ -82,9 +82,17 @@ const AGENT_ID_ENV_VAR: &str = "OPENFANG_BRIDGE_AGENT_ID";
 const ALLOWED_ENV_VAR: &str = "OPENFANG_BRIDGE_ALLOWED";
 
 /// Default tool allowlist when [`ALLOWED_ENV_VAR`] is unset. Mirrors the
-/// daemon's `bridge_ipc::ALLOWED_TOOLS`.
+/// daemon's `bridge_ipc::ALLOWED_TOOLS`. Tracks the bridge's `built_in_tools`
+/// surface so a bridge spawned without per-agent gating (legacy/dev path)
+/// still advertises everything it's capable of dispatching.
 #[cfg(unix)]
-const DEFAULT_ALLOWED: &[&str] = &["file_read", "file_list", "agent_list", "channel_send"];
+const DEFAULT_ALLOWED: &[&str] = &[
+    "file_read",
+    "file_list",
+    "agent_list",
+    "channel_send",
+    "agent_send",
+];
 
 #[cfg(unix)]
 #[tokio::main]

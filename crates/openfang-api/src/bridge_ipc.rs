@@ -51,19 +51,27 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
-/// Tools the bridge IPC server is willing to dispatch in the ANAI-30
-/// validation slice. Anything outside this set is rejected at the
-/// protocol layer (i.e. it never reaches `execute_tool`). ANAI-31 will
-/// replace this static allowlist with per-agent capability lookups
-/// driven by `agent.toml`.
+/// Tools the bridge IPC server is willing to dispatch. Anything outside
+/// this set is rejected at the protocol layer (i.e. it never reaches
+/// `execute_tool`). This is the daemon-side ceiling on the bridge surface
+/// — the bridge subprocess's `built_in_tools` and per-spawn
+/// `OPENFANG_BRIDGE_ALLOWED` are the layers that narrow it further per
+/// agent (sourced from `agent.toml`).
 ///
-/// The chosen four exercise the full diversity of tool dependencies:
+/// Coverage exercises the full diversity of tool dependencies:
 /// - `file_read` / `file_list` — workspace-scoped, no kernel needed
 /// - `agent_list` — requires [`KernelHandle::list_agents`]
 /// - `channel_send` — requires [`KernelHandle::send_channel_message`],
 ///   one of the OpenFang-only capabilities a CC subprocess wouldn't
 ///   otherwise have
-pub const ALLOWED_TOOLS: &[&str] = &["file_read", "file_list", "agent_list", "channel_send"];
+/// - `agent_send` — inter-agent messaging via the kernel
+pub const ALLOWED_TOOLS: &[&str] = &[
+    "file_read",
+    "file_list",
+    "agent_list",
+    "channel_send",
+    "agent_send",
+];
 
 /// Daemon-version string sent in [`HelloAck::Ok`].
 fn daemon_version() -> String {

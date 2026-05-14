@@ -115,11 +115,15 @@ pub enum ToolDispatchError {
 /// runtime-free by design (see crate-level docs). If the runtime's schemas
 /// drift, update both sides.
 ///
-/// The set is intentionally limited to the ANAI-30 validation slice:
+/// Current surface:
 /// - `file_read`, `file_list` — workspace-scoped, no kernel dependency
 /// - `agent_list` — exercises `KernelHandle::list_agents`
 /// - `channel_send` — exercises `KernelHandle::send_channel_message`,
 ///   one of the OpenFang-only capabilities a bare CC subprocess lacks
+/// - `agent_send` — inter-agent messaging; first tool added past the
+///   ANAI-30 slice. Per-agent gating via `OPENFANG_BRIDGE_ALLOWED`
+///   (sourced from each agent's `agent.toml` capabilities) decides
+///   whether any given bridge instance actually advertises it.
 pub fn built_in_tools() -> Vec<Tool> {
     use serde_json::json;
 
@@ -178,6 +182,24 @@ pub fn built_in_tools() -> Vec<Tool> {
                 "required": ["channel", "recipient"]
             })),
         ),
+        // Mirrors `openfang_runtime::tool_runner` → `agent_send`. Kept in
+        // sync with that schema by hand; the bridge crate is runtime-free
+        // by design and can't import the source. Per-agent gating via
+        // `OPENFANG_BRIDGE_ALLOWED` decides whether this tool is actually
+        // advertised + dispatchable for any given bridge instance.
+        Tool::new(
+            "agent_send",
+            "Send a message to another agent and receive their response. \
+             Accepts UUID or agent name. Use agent_find first to discover agents.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": { "type": "string", "description": "The target agent's UUID or name" },
+                    "message": { "type": "string", "description": "The message to send to the agent" }
+                },
+                "required": ["agent_id", "message"]
+            })),
+        ),
     ]
 }
 
@@ -217,7 +239,8 @@ impl ServerHandler for Bridge {
             .with_instructions(
                 "OpenFang MCP bridge. Exposes OpenFang's tool surface to MCP clients, \
                  scoped to a single parent agent's identity and capabilities. \
-                 ANAI-30 surface: file_read, file_list, agent_list, channel_send."
+                 Per-agent gating via OPENFANG_BRIDGE_ALLOWED narrows the advertised \
+                 set to the calling agent's agent.toml capabilities."
                     .to_string(),
             )
     }
@@ -305,12 +328,20 @@ mod tests {
     }
 
     #[test]
-    fn built_in_tools_has_anai30_slice() {
+    fn built_in_tools_surface() {
         let tools = built_in_tools();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
         assert_eq!(
             names,
-            vec!["file_read", "file_list", "agent_list", "channel_send"]
+            vec![
+                "file_read",
+                "file_list",
+                "agent_list",
+                "channel_send",
+                "agent_send",
+            ],
+            "surface drift — update both this test and the runtime tool_runner \
+             schema when adding or removing built-in bridge tools"
         );
     }
 
@@ -319,8 +350,8 @@ mod tests {
         let bridge = Bridge::new(Arc::new(StubDispatcher {
             agent: "a".into(),
             // Dispatcher permits only file_read of the built-in slice;
-            // agent_send is unknown to the bridge and must be ignored.
-            allowed: vec!["file_read".into(), "agent_send".into()],
+            // shell_exec is unknown to the bridge and must be ignored.
+            allowed: vec!["file_read".into(), "shell_exec".into()],
             canned: DispatchOk {
                 content: String::new(),
                 is_error: false,
