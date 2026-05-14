@@ -804,28 +804,25 @@ pub async fn run_daemon(
     kernel: OpenFangKernel,
     listen_addr: &str,
     daemon_info_path: Option<&Path>,
+    #[cfg(unix)] bridge_authority: Arc<crate::bridge_auth::BridgeAuthority>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = listen_addr.parse()?;
 
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
-    // Phase C2: construct the bridge `TokenIssuer` (an `Arc<BridgeAuthority>`)
-    // and hand it to the kernel before background agents start. From here on,
-    // `resolve_driver` and agent-loop fallback paths thread the issuer into
-    // every new Claude Code driver, swapping the legacy UUID env-var for the
-    // daemon-issued, single-use, fingerprint-tracked bridge token.
+    // Phase E: the daemon constructs `BridgeAuthority` *before* booting the
+    // kernel and threads it into `boot_with_config_and_issuer`, so the
+    // kernel's `token_issuer` slot is populated atomically with the boot
+    // driver chain. The old C2 wiring (build kernel → wrap in Arc →
+    // `set_token_issuer`) left a window in which boot-time `create_driver`
+    // calls used `None`, baking long-lived legacy-UUID drivers into
+    // autostart/persisted agents. That window is now closed.
     //
     // Unix-only: `BridgeAuthority` lives in `bridge_auth` which is gated to
     // unix targets along with the rest of the bridge IPC plumbing. On
-    // non-unix builds the kernel keeps its `token_issuer` slot empty and
-    // drivers fall back to the legacy UUID path.
-    #[cfg(unix)]
-    let bridge_authority = {
-        let authority = crate::bridge_auth::BridgeAuthority::new();
-        kernel.set_token_issuer(authority.clone());
-        authority
-    };
+    // non-unix builds no authority is constructed and the kernel keeps its
+    // `token_issuer` slot empty.
 
     kernel.start_background_agents();
 

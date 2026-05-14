@@ -1566,7 +1566,23 @@ fn cmd_start(config: Option<PathBuf>, yolo: bool) {
             kernel_config.approval.auto_approve = true;
             kernel_config.approval.apply_shorthands();
         }
-        let kernel = match OpenFangKernel::boot_with_config(kernel_config) {
+        // Phase E: construct the bridge token issuer (unix only) *before*
+        // booting the kernel so boot-time `create_driver` calls in
+        // `boot_with_config_and_issuer` see the live authority. Threaded
+        // straight through to `run_daemon` afterwards, where it plugs into
+        // the IPC handshake validator.
+        #[cfg(unix)]
+        let bridge_authority = openfang_api::bridge_auth::BridgeAuthority::new();
+
+        #[cfg(unix)]
+        let kernel_issuer = Some(bridge_authority.as_token_issuer());
+        #[cfg(not(unix))]
+        let kernel_issuer = None;
+
+        let kernel = match OpenFangKernel::boot_with_config_and_issuer(
+            kernel_config,
+            kernel_issuer,
+        ) {
             Ok(k) => k,
             Err(e) => {
                 boot_kernel_error(&e);
@@ -1602,8 +1618,14 @@ fn cmd_start(config: Option<PathBuf>, yolo: bool) {
         ui::hint("Press Ctrl+C to stop the daemon");
         ui::blank();
 
-        if let Err(e) =
-            openfang_api::server::run_daemon(kernel, &listen_addr, Some(&daemon_info_path)).await
+        if let Err(e) = openfang_api::server::run_daemon(
+            kernel,
+            &listen_addr,
+            Some(&daemon_info_path),
+            #[cfg(unix)]
+            bridge_authority,
+        )
+        .await
         {
             ui::error(&format!("Daemon error: {e}"));
             std::process::exit(1);

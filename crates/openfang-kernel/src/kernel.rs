@@ -181,12 +181,13 @@ pub struct OpenFangKernel {
     agent_msg_locks: dashmap::DashMap<AgentId, Arc<tokio::sync::Mutex<()>>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
-    /// Bridge token issuer — set by the daemon (`openfang-api::server.rs`) after
-    /// the kernel is wrapped in `Arc`. Threaded into `drivers::create_driver` so
-    /// the Claude Code driver mints per-spawn, short-lived bridge tokens
-    /// registered with the IPC dispatcher. `None` until `set_token_issuer` runs;
-    /// `None` keeps the legacy ANAI-30 UUID path (dev builds, non-unix targets,
-    /// tests that build a kernel without the bridge daemon).
+    /// Bridge token issuer — populated by the daemon at boot via
+    /// `boot_with_config_and_issuer` (ANAI-31 phase E). Threaded into
+    /// `drivers::create_driver` so the Claude Code driver mints per-spawn,
+    /// short-lived bridge tokens registered with the IPC dispatcher. `None`
+    /// for non-daemon callers and non-unix targets, which keeps the legacy
+    /// ANAI-30 UUID path. The `set_token_issuer` setter is retained for
+    /// late-install scenarios but is unused by the live daemon path.
     token_issuer: std::sync::RwLock<Option<Arc<dyn TokenIssuer>>>,
 }
 
@@ -595,7 +596,30 @@ impl OpenFangKernel {
     }
 
     /// Boot the kernel with an explicit configuration.
-    pub fn boot_with_config(mut config: KernelConfig) -> KernelResult<Self> {
+    ///
+    /// Equivalent to [`boot_with_config_and_issuer`] with `token_issuer = None`.
+    /// Retained for non-daemon callers (tests, CLI one-shots, desktop embeds)
+    /// that do not construct a bridge `TokenIssuer`. The daemon path
+    /// (`openfang-cli::main` → `run_daemon`) calls the issuer-aware entrypoint
+    /// directly so boot-time drivers are wired through the hardened token
+    /// path. See ANAI-31 phase E.
+    pub fn boot_with_config(config: KernelConfig) -> KernelResult<Self> {
+        Self::boot_with_config_and_issuer(config, None)
+    }
+
+    /// Boot the kernel with an explicit configuration and an optional
+    /// bridge token issuer.
+    ///
+    /// Daemon entrypoint. The issuer (an `Arc<BridgeAuthority>` on unix; `None`
+    /// elsewhere) is populated into `self.token_issuer` **before** the boot
+    /// driver chain is constructed, so the three boot-time `create_driver`
+    /// sites can mint hardened bridge tokens for the Claude Code driver
+    /// instead of falling back to the legacy ANAI-30 UUID path. Closes the
+    /// boot-time loophole that survived phases C1/C2/D.
+    pub fn boot_with_config_and_issuer(
+        mut config: KernelConfig,
+        token_issuer: Option<Arc<dyn TokenIssuer>>,
+    ) -> KernelResult<Self> {
         if rustls::crypto::ring::default_provider()
             .install_default()
             .is_err()
@@ -707,11 +731,11 @@ impl OpenFangKernel {
         };
         // Primary driver failure is non-fatal: the dashboard should remain accessible
         // even if the LLM provider is misconfigured. Users can fix config via dashboard.
-        // Boot path runs before `set_token_issuer` (called from
-        // `openfang-api::server.rs` after `Arc::new(kernel)`), so the issuer is
-        // necessarily `None` here. Boot-time drivers therefore use the legacy
-        // ANAI-30 UUID path; resolve_driver below picks up the issuer post-boot.
-        let primary_result = drivers::create_driver(&driver_config, None);
+        // Phase E: the daemon entrypoint hands us the `BridgeAuthority` here so
+        // boot-time drivers get the same hardened token path as post-boot
+        // resolves. Non-daemon callers (tests, desktop embeds) pass `None` and
+        // boot-time drivers stay on the legacy UUID lane.
+        let primary_result = drivers::create_driver(&driver_config, token_issuer.clone());
         let mut driver_chain: Vec<Arc<dyn LlmDriver>> = Vec::new();
 
         match &primary_result {
@@ -735,7 +759,7 @@ impl OpenFangKernel {
                         // is replacing the *provider*, not the timeout policy.
                         subprocess_timeout_secs: config.default_model.subprocess_timeout_secs,
                     };
-                    match drivers::create_driver(&auto_config, None) {
+                    match drivers::create_driver(&auto_config, token_issuer.clone()) {
                         Ok(d) => {
                             info!(
                                 provider = %provider,
@@ -784,7 +808,7 @@ impl OpenFangKernel {
                 skip_permissions: true,
                 subprocess_timeout_secs: fb.subprocess_timeout_secs,
             };
-            match drivers::create_driver(&fb_config, None) {
+            match drivers::create_driver(&fb_config, token_issuer.clone()) {
                 Ok(d) => {
                     info!(
                         provider = %fb.provider,
@@ -1232,7 +1256,11 @@ impl OpenFangKernel {
             fallback_providers_override: std::sync::RwLock::new(None),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
-            token_issuer: std::sync::RwLock::new(None),
+            // Phase E: the daemon hands us its `BridgeAuthority` at boot so
+            // post-boot `resolve_driver` and agent-loop fallback paths see the
+            // issuer immediately, without depending on a later
+            // `set_token_issuer` call. Non-daemon callers pass `None`.
+            token_issuer: std::sync::RwLock::new(token_issuer),
         };
 
         // Wire HAND.toml load events into the Merkle audit chain so reload
@@ -9450,5 +9478,86 @@ system_prompt = "You are a test agent."
         let contents = std::fs::read_to_string(user_workspace.path().join("pre-existing.txt"))
             .expect("read pre-existing");
         assert_eq!(contents, "hello", "must not overwrite user files");
+    }
+
+    /// Phase E: `boot_with_config_and_issuer` populates the kernel's
+    /// `token_issuer` slot *before* the boot driver chain is built, so
+    /// post-boot accessors (and any boot-time `create_driver` call) see the
+    /// issuer immediately. Without this wiring, autostart/persisted agents
+    /// whose drivers were built at boot would forever emit legacy UUID
+    /// tokens rather than authority-issued hardened tokens.
+    #[test]
+    fn boot_with_config_and_issuer_populates_token_issuer_slot() {
+        use openfang_runtime::bridge_auth::{SpawnGuard, TokenIssuer};
+        use openfang_types::agent::AgentId;
+        use openfang_types::bridge_auth::Token;
+
+        struct FakeIssuer;
+        impl TokenIssuer for FakeIssuer {
+            fn issue(&self, _agent_id: AgentId) -> SpawnGuard {
+                // Unused in this test — default config uses a non-claude
+                // provider so `create_driver` never reaches the issuer path.
+                // If it ever did, `SpawnGuard::new` is still a safe
+                // construction; the panic below would surface a misuse.
+                unreachable!("FakeIssuer::issue should not be called during boot")
+            }
+            fn revoke(&self, _token: &Token) {
+                // No-op — the fake holds no spawn table.
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-kernel-phase-e-test");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+
+        let issuer: Arc<dyn TokenIssuer> = Arc::new(FakeIssuer);
+        let kernel =
+            OpenFangKernel::boot_with_config_and_issuer(config, Some(issuer.clone()))
+                .expect("kernel boots with issuer");
+
+        assert!(
+            kernel.token_issuer().is_some(),
+            "boot_with_config_and_issuer must populate the token_issuer slot before boot completes"
+        );
+
+        // Same `Arc` identity round-trip — proves we stored the exact issuer
+        // the daemon handed us, not a fresh one constructed elsewhere.
+        let stored = kernel.token_issuer().unwrap();
+        assert!(
+            Arc::ptr_eq(&stored, &issuer),
+            "kernel must store the daemon-provided issuer, not a substitute"
+        );
+
+        kernel.shutdown();
+    }
+
+    /// Phase E back-compat: the wrapper `boot_with_config` still works for
+    /// non-daemon callers (tests, CLI one-shots, desktop embeds) and leaves
+    /// the `token_issuer` slot empty.
+    #[test]
+    fn boot_with_config_leaves_token_issuer_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-kernel-phase-e-noissuer");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        assert!(
+            kernel.token_issuer().is_none(),
+            "boot_with_config (no issuer) must leave the token_issuer slot empty"
+        );
+
+        kernel.shutdown();
     }
 }

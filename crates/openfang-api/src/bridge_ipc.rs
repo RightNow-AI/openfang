@@ -195,13 +195,14 @@ impl Drop for BridgeIpcServer {
 ///   connection.
 /// - `agent_id == None` is the **legacy path**: the token is non-empty but
 ///   not in 64-hex form, so it can't be a daemon-issued token. We accept it
-///   for back-compat with drivers built before [`TokenIssuer`] wiring
-///   reached every spawn site (the daemon's boot-time `create_driver`
-///   calls in `boot_with_config` still emit legacy UUIDs because they run
-///   before `set_token_issuer`). In this mode the bridge's claimed
-///   `agent_id` is taken at face value — same trust model as ANAI-30. The
-///   legacy lane is closed in the next phase by fixing boot ordering and
-///   then making `authenticate_hello` strict.
+///   for back-compat with non-unix builds and any caller that constructs a
+///   kernel via `boot_with_config` (no issuer) — tests, desktop embeds, CLI
+///   one-shots. Phase E closed the daemon-side boot ordering loophole, so on
+///   a unix daemon every spawn site now sees an issuer and well-formed hex
+///   tokens are the norm. In this legacy mode the bridge's claimed `agent_id`
+///   is taken at face value — same trust model as ANAI-30. A future strict
+///   mode can reject this arm outright once all supported deployments are on
+///   the hardened path.
 ///
 /// `token_fingerprint` is the first 32 bits of the resolved token, suitable
 /// for log correlation. `None` on the legacy path.

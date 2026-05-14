@@ -102,6 +102,15 @@ impl BridgeAuthority {
             .len()
     }
 
+    /// Cast an `Arc<BridgeAuthority>` into the trait-object form
+    /// `Arc<dyn TokenIssuer>`. Ergonomic helper for callers in
+    /// `openfang-cli` / `openfang-api::server` that need to hand the issuer
+    /// to `OpenFangKernel::boot_with_config_and_issuer` without naming the
+    /// `TokenIssuer` trait themselves. ANAI-31 phase E.
+    pub fn as_token_issuer(self: &Arc<Self>) -> Arc<dyn TokenIssuer> {
+        self.clone() as Arc<dyn TokenIssuer>
+    }
+
     /// Upgrade the stashed `Weak<Self>` into the `Arc<dyn TokenIssuer>` that
     /// each [`SpawnGuard`] holds. Panics if the authority has been dropped
     /// while a method on it is still running — impossible in practice, since
