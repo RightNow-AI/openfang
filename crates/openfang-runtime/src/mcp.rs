@@ -289,6 +289,7 @@ impl OpenFangMcpClient {
     }
 }
 
+#[allow(clippy::manual_async_fn)]
 impl ClientHandler for OpenFangMcpClient {
     fn on_resource_updated(
         &self,
@@ -484,7 +485,7 @@ impl McpConnection {
             .client
             .peer_info()
             .map(|info| info.capabilities.clone())
-            .unwrap_or_else(ServerCapabilities::default);
+            .unwrap_or_default();
 
         if !server_supports_resource_subscribe(&server_capabilities) {
             return Err(format!(
