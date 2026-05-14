@@ -1269,7 +1269,11 @@ async fn call_with_retry(
                             skip_permissions: true,
                             subprocess_timeout_secs: None,
                         };
-                        let fb_driver = match crate::drivers::create_driver(&fb_config) {
+                        // Phase C1: fallback driver does not yet receive the
+                        // daemon's bridge `TokenIssuer`. C2 will plumb it via a
+                        // new `KernelHandle::token_issuer()` accessor so fallback
+                        // sessions get the hardened bridge auth.
+                        let fb_driver = match crate::drivers::create_driver(&fb_config, None) {
                             Ok(d) => d,
                             Err(driver_err) => {
                                 warn!(
@@ -1453,7 +1457,11 @@ async fn stream_with_retry(
                             skip_permissions: true,
                             subprocess_timeout_secs: None,
                         };
-                        let fb_driver = match crate::drivers::create_driver(&fb_config) {
+                        // Phase C1: fallback driver does not yet receive the
+                        // daemon's bridge `TokenIssuer`. C2 will plumb it via a
+                        // new `KernelHandle::token_issuer()` accessor so fallback
+                        // sessions get the hardened bridge auth.
+                        let fb_driver = match crate::drivers::create_driver(&fb_config, None) {
                             Ok(d) => d,
                             Err(driver_err) => {
                                 warn!(

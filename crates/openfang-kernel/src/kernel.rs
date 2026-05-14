@@ -18,6 +18,7 @@ use openfang_runtime::agent_loop::{
     run_agent_loop, run_agent_loop_streaming, strip_provider_prefix, AgentLoopResult,
 };
 use openfang_runtime::audit::AuditLog;
+use openfang_runtime::bridge_auth::TokenIssuer;
 use openfang_runtime::drivers;
 use openfang_runtime::kernel_handle::{self, KernelHandle};
 use openfang_runtime::llm_driver::{
@@ -180,6 +181,13 @@ pub struct OpenFangKernel {
     agent_msg_locks: dashmap::DashMap<AgentId, Arc<tokio::sync::Mutex<()>>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
+    /// Bridge token issuer — set by the daemon (`openfang-api::server.rs`) after
+    /// the kernel is wrapped in `Arc`. Threaded into `drivers::create_driver` so
+    /// the Claude Code driver mints per-spawn, short-lived bridge tokens
+    /// registered with the IPC dispatcher. `None` until `set_token_issuer` runs;
+    /// `None` keeps the legacy ANAI-30 UUID path (dev builds, non-unix targets,
+    /// tests that build a kernel without the bridge daemon).
+    token_issuer: std::sync::RwLock<Option<Arc<dyn TokenIssuer>>>,
 }
 
 /// Bounded in-memory delivery receipt tracker.
@@ -699,7 +707,11 @@ impl OpenFangKernel {
         };
         // Primary driver failure is non-fatal: the dashboard should remain accessible
         // even if the LLM provider is misconfigured. Users can fix config via dashboard.
-        let primary_result = drivers::create_driver(&driver_config);
+        // Boot path runs before `set_token_issuer` (called from
+        // `openfang-api::server.rs` after `Arc::new(kernel)`), so the issuer is
+        // necessarily `None` here. Boot-time drivers therefore use the legacy
+        // ANAI-30 UUID path; resolve_driver below picks up the issuer post-boot.
+        let primary_result = drivers::create_driver(&driver_config, None);
         let mut driver_chain: Vec<Arc<dyn LlmDriver>> = Vec::new();
 
         match &primary_result {
@@ -723,7 +735,7 @@ impl OpenFangKernel {
                         // is replacing the *provider*, not the timeout policy.
                         subprocess_timeout_secs: config.default_model.subprocess_timeout_secs,
                     };
-                    match drivers::create_driver(&auto_config) {
+                    match drivers::create_driver(&auto_config, None) {
                         Ok(d) => {
                             info!(
                                 provider = %provider,
@@ -772,7 +784,7 @@ impl OpenFangKernel {
                 skip_permissions: true,
                 subprocess_timeout_secs: fb.subprocess_timeout_secs,
             };
-            match drivers::create_driver(&fb_config) {
+            match drivers::create_driver(&fb_config, None) {
                 Ok(d) => {
                     info!(
                         provider = %fb.provider,
@@ -1220,6 +1232,7 @@ impl OpenFangKernel {
             fallback_providers_override: std::sync::RwLock::new(None),
             agent_msg_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
+            token_issuer: std::sync::RwLock::new(None),
         };
 
         // Wire HAND.toml load events into the Merkle audit chain so reload
@@ -4072,6 +4085,27 @@ impl OpenFangKernel {
         let _ = self.self_handle.set(Arc::downgrade(self));
     }
 
+    /// Install the daemon's bridge token issuer. Called once at boot by
+    /// `openfang-api::server.rs` after constructing the `Arc<BridgeAuthority>`.
+    /// Idempotent at the field level — last writer wins, but no production
+    /// caller writes more than once.
+    pub fn set_token_issuer(&self, issuer: Arc<dyn TokenIssuer>) {
+        if let Ok(mut slot) = self.token_issuer.write() {
+            *slot = Some(issuer);
+        }
+    }
+
+    /// Snapshot of the current bridge token issuer, if any. Cheap clone of an
+    /// `Arc`. Consumed by `drivers::create_driver` to hand the issuer to the
+    /// Claude Code driver, and (Phase C2) by `KernelHandle::token_issuer` so
+    /// the agent loop's fallback paths can mint hardened tokens too.
+    pub fn token_issuer(&self) -> Option<Arc<dyn TokenIssuer>> {
+        self.token_issuer
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
     // ─── Agent Binding management ──────────────────────────────────────
 
     /// List all agent bindings.
@@ -5656,7 +5690,7 @@ impl OpenFangKernel {
                 subprocess_timeout_secs: primary_timeout,
             };
 
-            match drivers::create_driver(&driver_config) {
+            match drivers::create_driver(&driver_config, self.token_issuer()) {
                 Ok(d) => d,
                 Err(e) => {
                     // If fresh driver creation fails (e.g. key not yet set for this
@@ -5740,7 +5774,7 @@ impl OpenFangKernel {
                     None
                 },
             };
-            match drivers::create_driver(&config) {
+            match drivers::create_driver(&config, self.token_issuer()) {
                 Ok(d) => chain.push((d, strip_provider_prefix(&fb_model_name, &fb_provider))),
                 Err(e) => {
                     warn!("Fallback driver '{}' failed to init: {e}", fb_provider);
@@ -5775,7 +5809,7 @@ impl OpenFangKernel {
                 skip_permissions: true,
                 subprocess_timeout_secs: fb.subprocess_timeout_secs,
             };
-            match drivers::create_driver(&fb_config) {
+            match drivers::create_driver(&fb_config, self.token_issuer()) {
                 Ok(d) => {
                     chain.push((d, strip_provider_prefix(&fb.model, &fb.provider)));
                 }

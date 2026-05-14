@@ -7950,7 +7950,10 @@ pub async fn test_provider(
         subprocess_timeout_secs: None,
     };
 
-    match openfang_runtime::drivers::create_driver(&driver_config) {
+    // Phase C1: model-test endpoint runs a one-shot probe and does not spawn an
+    // agent loop, so the bridge token issuer is not needed here. Pass `None` to
+    // exercise the legacy UUID path; no MCP bridge config is built for this call.
+    match openfang_runtime::drivers::create_driver(&driver_config, None) {
         Ok(driver) => {
             // Send a minimal completion request to test connectivity
             let test_req = openfang_runtime::llm_driver::CompletionRequest {
