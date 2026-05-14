@@ -5797,6 +5797,43 @@ impl OpenFangKernel {
         Ok(primary)
     }
 
+    fn mcp_notification_channel(
+        &self,
+        allow_push_events: bool,
+        push_queue_size: usize,
+    ) -> (
+        Option<openfang_runtime::mcp::McpNotificationSender>,
+        Option<openfang_runtime::mcp::McpNotificationReceiver>,
+    ) {
+        if !allow_push_events {
+            return (None, None);
+        }
+
+        let (tx, rx) = openfang_runtime::mcp::mcp_notification_channel(push_queue_size);
+        (Some(tx), Some(rx))
+    }
+
+    fn spawn_mcp_notification_bridge(
+        self: &Arc<Self>,
+        receiver: openfang_runtime::mcp::McpNotificationReceiver,
+    ) {
+        let kernel = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                let mcp_event = receiver.recv().await;
+                let Some(kernel) = kernel.upgrade() else {
+                    break;
+                };
+                let event = Event::new(
+                    AgentId::from_string("system:mcp"),
+                    EventTarget::Broadcast,
+                    EventPayload::Mcp(mcp_event),
+                );
+                kernel.publish_event(event).await;
+            }
+        });
+    }
+
     /// Connect to all configured MCP servers and cache their tool definitions.
     async fn connect_mcp_servers(self: &Arc<Self>) {
         use openfang_runtime::mcp::{McpConnection, McpServerConfig, McpTransport};
@@ -5829,6 +5866,10 @@ impl OpenFangKernel {
                 }
             }
 
+            let (notification_tx, notification_rx) = self.mcp_notification_channel(
+                server_config.allow_push_events,
+                server_config.push_queue_size,
+            );
             let mcp_config = McpServerConfig {
                 name: server_config.name.clone(),
                 transport,
@@ -5839,7 +5880,7 @@ impl OpenFangKernel {
                 push_queue_size: server_config.push_queue_size,
             };
 
-            match McpConnection::connect(mcp_config).await {
+            match McpConnection::connect_with_notifications(mcp_config, notification_tx).await {
                 Ok(conn) => {
                     let tool_count = conn.tools().len();
                     // Cache tool definitions
@@ -5854,6 +5895,9 @@ impl OpenFangKernel {
                     // Update extension health if this is an extension-provided server
                     self.extension_health
                         .report_ok(&server_config.name, tool_count);
+                    if let Some(receiver) = notification_rx {
+                        self.spawn_mcp_notification_bridge(receiver);
+                    }
                     self.mcp_connections.lock().await.push(conn);
                 }
                 Err(e) => {
@@ -5953,7 +5997,12 @@ impl OpenFangKernel {
 
             self.extension_health.register(&server_config.name);
 
-            match McpConnection::connect(mcp_config).await {
+            let (notification_tx, notification_rx) = self.mcp_notification_channel(
+                server_config.allow_push_events,
+                server_config.push_queue_size,
+            );
+
+            match McpConnection::connect_with_notifications(mcp_config, notification_tx).await {
                 Ok(conn) => {
                     let tool_count = conn.tools().len();
                     if let Ok(mut tools) = self.mcp_tools.lock() {
@@ -5966,6 +6015,9 @@ impl OpenFangKernel {
                         tools = tool_count,
                         "Extension MCP server connected (hot-reload)"
                     );
+                    if let Some(receiver) = notification_rx {
+                        self.spawn_mcp_notification_bridge(receiver);
+                    }
                     self.mcp_connections.lock().await.push(conn);
                     connected_count += 1;
                 }
@@ -6073,7 +6125,12 @@ impl OpenFangKernel {
             push_queue_size: server_config.push_queue_size,
         };
 
-        match McpConnection::connect(mcp_config).await {
+        let (notification_tx, notification_rx) = self.mcp_notification_channel(
+            server_config.allow_push_events,
+            server_config.push_queue_size,
+        );
+
+        match McpConnection::connect_with_notifications(mcp_config, notification_tx).await {
             Ok(conn) => {
                 let tool_count = conn.tools().len();
                 if let Ok(mut tools) = self.mcp_tools.lock() {
@@ -6085,6 +6142,17 @@ impl OpenFangKernel {
                     tools = tool_count,
                     "Extension MCP server reconnected"
                 );
+                if let Some(receiver) = notification_rx {
+                    self.spawn_mcp_notification_bridge(receiver);
+                }
+                let event = Event::new(
+                    AgentId::from_string("system:mcp"),
+                    EventTarget::Broadcast,
+                    EventPayload::Mcp(McpEvent::ConnectionReconnected {
+                        server: id.to_string(),
+                    }),
+                );
+                self.publish_event(event).await;
                 self.mcp_connections.lock().await.push(conn);
                 Ok(tool_count)
             }
