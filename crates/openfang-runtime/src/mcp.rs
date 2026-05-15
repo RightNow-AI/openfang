@@ -7,14 +7,23 @@
 //!
 //! All MCP tools are namespaced with `mcp_{server}_{tool}` to prevent collisions.
 
+use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use http::{HeaderName, HeaderValue};
+use openfang_types::event::McpEvent;
 use openfang_types::tool::ToolDefinition;
-use rmcp::model::{CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation};
-use rmcp::service::RunningService;
-use rmcp::{RoleClient, ServiceExt};
+use rmcp::model::{
+    CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation,
+    ResourceUpdatedNotificationParam, ServerCapabilities,
+};
+use rmcp::service::{MaybeSendFuture, NotificationContext, RunningService};
+use rmcp::{ClientHandler, RoleClient, ServiceExt};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use tracing::{debug, info};
+use std::collections::{HashMap, VecDeque};
+use std::future::Future;
+use std::num::NonZeroU32;
+use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
+use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
 // Configuration types
@@ -39,10 +48,27 @@ pub struct McpServerConfig {
     /// or any custom headers required by a remote MCP server.
     #[serde(default)]
     pub headers: Vec<String>,
+    /// Allow server-initiated MCP notifications to enter the event bus.
+    #[serde(default)]
+    pub allow_push_events: bool,
+    /// Maximum queued push notifications before older events are dropped.
+    #[serde(default = "default_push_queue_size")]
+    pub push_queue_size: usize,
+    /// Maximum server-initiated notifications accepted per minute.
+    #[serde(default = "default_push_rate_limit_per_minute")]
+    pub push_rate_limit_per_minute: u32,
 }
 
 fn default_timeout() -> u64 {
     60
+}
+
+fn default_push_queue_size() -> usize {
+    256
+}
+
+fn default_push_rate_limit_per_minute() -> u32 {
+    600
 }
 
 /// Transport type for MCP server connections.
@@ -81,7 +107,239 @@ pub struct McpConnection {
     original_names: HashMap<String, String>,
     /// The rmcp client handle — type-erased because the concrete type
     /// depends on which transport was used (stdio vs HTTP).
-    client: RunningService<RoleClient, ClientInfo>,
+    client: RunningService<RoleClient, OpenFangMcpClient>,
+}
+
+/// Create a bounded queue for MCP push notifications.
+///
+/// When the queue is full, the oldest queued notifications are dropped and a
+/// `NotificationDropped` event is enqueued ahead of the newest event.
+pub fn mcp_notification_channel(
+    capacity: usize,
+) -> (McpNotificationSender, McpNotificationReceiver) {
+    let inner = Arc::new(McpNotificationChannelInner {
+        queue: Mutex::new(VecDeque::new()),
+        notify: Notify::new(),
+        capacity: capacity.max(2),
+    });
+
+    (
+        McpNotificationSender {
+            inner: Arc::clone(&inner),
+        },
+        McpNotificationReceiver { inner },
+    )
+}
+
+#[derive(Clone)]
+pub struct McpNotificationSender {
+    inner: Arc<McpNotificationChannelInner>,
+}
+
+pub struct McpNotificationReceiver {
+    inner: Arc<McpNotificationChannelInner>,
+}
+
+struct McpNotificationChannelInner {
+    queue: Mutex<VecDeque<McpEvent>>,
+    notify: Notify,
+    capacity: usize,
+}
+
+impl McpNotificationSender {
+    pub fn push(&self, event: McpEvent) {
+        let dropped_event = {
+            let mut queue = self
+                .inner
+                .queue
+                .lock()
+                .expect("MCP notification queue poisoned");
+            let required_slots = if queue.len() >= self.inner.capacity {
+                2
+            } else {
+                1
+            };
+            let overflow = queue
+                .len()
+                .saturating_add(required_slots)
+                .saturating_sub(self.inner.capacity);
+            let mut dropped_count = 0;
+
+            for _ in 0..overflow {
+                if queue.pop_front().is_some() {
+                    dropped_count += 1;
+                }
+            }
+
+            let dropped_event = if dropped_count > 0 {
+                Some(McpEvent::NotificationDropped {
+                    server: mcp_event_server(&event).to_string(),
+                    kind: mcp_event_kind(&event).to_string(),
+                    dropped_count,
+                })
+            } else {
+                None
+            };
+
+            if let Some(dropped) = dropped_event.clone() {
+                queue.push_back(dropped);
+            }
+            queue.push_back(event);
+            dropped_event
+        };
+
+        if let Some(McpEvent::NotificationDropped {
+            server,
+            kind,
+            dropped_count,
+        }) = dropped_event
+        {
+            warn!(
+                server = %server,
+                kind = %kind,
+                dropped_count,
+                "MCP notification queue dropped older events"
+            );
+        }
+
+        self.inner.notify.notify_waiters();
+    }
+}
+
+impl McpNotificationReceiver {
+    pub async fn recv(&self) -> McpEvent {
+        loop {
+            if let Some(event) = self.try_recv() {
+                return event;
+            }
+            self.inner.notify.notified().await;
+        }
+    }
+
+    pub fn try_recv(&self) -> Option<McpEvent> {
+        self.inner
+            .queue
+            .lock()
+            .expect("MCP notification queue poisoned")
+            .pop_front()
+    }
+}
+
+#[derive(Clone)]
+struct OpenFangMcpClient {
+    info: ClientInfo,
+    server_name: String,
+    allow_push_events: bool,
+    notification_tx: Option<McpNotificationSender>,
+    rate_limiter: Option<Arc<DefaultDirectRateLimiter>>,
+}
+
+impl OpenFangMcpClient {
+    fn new(
+        server_name: String,
+        allow_push_events: bool,
+        push_rate_limit_per_minute: u32,
+        notification_tx: Option<McpNotificationSender>,
+    ) -> Self {
+        let rate_limiter = NonZeroU32::new(push_rate_limit_per_minute)
+            .map(|limit| Arc::new(RateLimiter::direct(Quota::per_minute(limit))));
+        Self {
+            info: ClientInfo::new(
+                ClientCapabilities::default(),
+                Implementation::new("openfang", env!("CARGO_PKG_VERSION")),
+            ),
+            server_name,
+            allow_push_events,
+            notification_tx,
+            rate_limiter,
+        }
+    }
+
+    fn dispatch(&self, event: McpEvent) {
+        if !self.allow_push_events {
+            debug!(
+                server = %self.server_name,
+                kind = mcp_event_kind(&event),
+                "MCP push notification ignored because allow_push_events is false"
+            );
+            return;
+        }
+
+        let Some(tx) = &self.notification_tx else {
+            return;
+        };
+
+        if let Some(limiter) = &self.rate_limiter {
+            if limiter.check().is_err() {
+                tx.push(McpEvent::NotificationDropped {
+                    server: mcp_event_server(&event).to_string(),
+                    kind: mcp_event_kind(&event).to_string(),
+                    dropped_count: 1,
+                });
+                warn!(
+                    server = %self.server_name,
+                    kind = mcp_event_kind(&event),
+                    "MCP push notification dropped by rate limit"
+                );
+                return;
+            }
+        }
+
+        tx.push(event);
+    }
+}
+
+#[allow(clippy::manual_async_fn)]
+impl ClientHandler for OpenFangMcpClient {
+    fn on_resource_updated(
+        &self,
+        params: ResourceUpdatedNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
+        async move {
+            self.dispatch(McpEvent::ResourceUpdated {
+                server: self.server_name.clone(),
+                uri: params.uri,
+            });
+        }
+    }
+
+    fn on_resource_list_changed(
+        &self,
+        _context: NotificationContext<RoleClient>,
+    ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
+        async move {
+            self.dispatch(McpEvent::ResourceListChanged {
+                server: self.server_name.clone(),
+            });
+        }
+    }
+
+    fn on_tool_list_changed(
+        &self,
+        _context: NotificationContext<RoleClient>,
+    ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
+        async move {
+            self.dispatch(McpEvent::ToolListChanged {
+                server: self.server_name.clone(),
+            });
+        }
+    }
+
+    fn on_prompt_list_changed(
+        &self,
+        _context: NotificationContext<RoleClient>,
+    ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
+        async move {
+            self.dispatch(McpEvent::PromptListChanged {
+                server: self.server_name.clone(),
+            });
+        }
+    }
+
+    fn get_info(&self) -> ClientInfo {
+        self.info.clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -91,17 +349,26 @@ pub struct McpConnection {
 impl McpConnection {
     /// Connect to an MCP server, perform handshake, and discover tools.
     pub async fn connect(config: McpServerConfig) -> Result<Self, String> {
-        let client_info = ClientInfo::new(
-            ClientCapabilities::default(),
-            Implementation::new("openfang", env!("CARGO_PKG_VERSION")),
-        );
+        Self::connect_with_notifications(config, None).await
+    }
 
+    /// Connect to an MCP server with a push-notification queue.
+    pub async fn connect_with_notifications(
+        config: McpServerConfig,
+        notification_tx: Option<McpNotificationSender>,
+    ) -> Result<Self, String> {
+        let client_handler = OpenFangMcpClient::new(
+            config.name.clone(),
+            config.allow_push_events,
+            config.push_rate_limit_per_minute,
+            notification_tx,
+        );
         let client = match &config.transport {
             McpTransport::Stdio { command, args } => {
-                Self::connect_stdio(command, args, &config.env, client_info).await?
+                Self::connect_stdio(command, args, &config.env, client_handler).await?
             }
             McpTransport::Sse { url } | McpTransport::Http { url } => {
-                Self::connect_http(url, &config.headers, client_info).await?
+                Self::connect_http(url, &config.headers, client_handler).await?
             }
         };
 
@@ -211,6 +478,28 @@ impl McpConnection {
         &self.config.name
     }
 
+    /// Subscribe to server notifications for a resource URI.
+    pub async fn subscribe_resource(&self, uri: impl Into<String>) -> Result<(), String> {
+        let uri = uri.into();
+        let server_capabilities = self
+            .client
+            .peer_info()
+            .map(|info| info.capabilities.clone())
+            .unwrap_or_default();
+
+        if !server_supports_resource_subscribe(&server_capabilities) {
+            return Err(format!(
+                "MCP server '{}' does not advertise resource subscription support",
+                self.config.name
+            ));
+        }
+
+        self.client
+            .subscribe(rmcp::model::SubscribeRequestParams::new(uri))
+            .await
+            .map_err(|e| format!("MCP resource subscribe failed: {e}"))
+    }
+
     // -- Transport constructors -----------------------------------------------
 
     /// Connect using stdio transport (subprocess).
@@ -218,8 +507,8 @@ impl McpConnection {
         command: &str,
         args: &[String],
         env_whitelist: &[String],
-        client_info: ClientInfo,
-    ) -> Result<RunningService<RoleClient, ClientInfo>, String> {
+        client_handler: OpenFangMcpClient,
+    ) -> Result<RunningService<RoleClient, OpenFangMcpClient>, String> {
         use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
         use tokio::process::Command;
 
@@ -272,7 +561,7 @@ impl McpConnection {
         }))
         .map_err(|e| format!("Failed to spawn MCP server '{cmd_str}': {e}"))?;
 
-        let client = client_info
+        let client = client_handler
             .serve(transport)
             .await
             .map_err(|e| format!("MCP stdio handshake failed: {e}"))?;
@@ -288,8 +577,8 @@ impl McpConnection {
     async fn connect_http(
         url: &str,
         headers: &[String],
-        client_info: ClientInfo,
-    ) -> Result<RunningService<RoleClient, ClientInfo>, String> {
+        client_handler: OpenFangMcpClient,
+    ) -> Result<RunningService<RoleClient, OpenFangMcpClient>, String> {
         use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
         use rmcp::transport::StreamableHttpClientTransport;
 
@@ -317,7 +606,7 @@ impl McpConnection {
 
         let transport = StreamableHttpClientTransport::from_config(config);
 
-        let client = client_info
+        let client = client_handler
             .serve(transport)
             .await
             .map_err(|e| format!("MCP HTTP connection failed: {e}"))?;
@@ -390,6 +679,36 @@ pub fn extract_mcp_server_from_known<'a>(
 fn strip_mcp_prefix<'a>(server: &str, tool_name: &'a str) -> Option<&'a str> {
     let prefix = format!("mcp_{}_", normalize_name(server));
     tool_name.strip_prefix(&prefix)
+}
+
+fn server_supports_resource_subscribe(capabilities: &ServerCapabilities) -> bool {
+    capabilities
+        .resources
+        .as_ref()
+        .and_then(|resources| resources.subscribe)
+        .unwrap_or(false)
+}
+
+fn mcp_event_server(event: &McpEvent) -> &str {
+    match event {
+        McpEvent::ResourceUpdated { server, .. }
+        | McpEvent::ResourceListChanged { server }
+        | McpEvent::ToolListChanged { server }
+        | McpEvent::PromptListChanged { server }
+        | McpEvent::ConnectionReconnected { server }
+        | McpEvent::NotificationDropped { server, .. } => server,
+    }
+}
+
+fn mcp_event_kind(event: &McpEvent) -> &'static str {
+    match event {
+        McpEvent::ResourceUpdated { .. } => "resource_updated",
+        McpEvent::ResourceListChanged { .. } => "resource_list_changed",
+        McpEvent::ToolListChanged { .. } => "tool_list_changed",
+        McpEvent::PromptListChanged { .. } => "prompt_list_changed",
+        McpEvent::ConnectionReconnected { .. } => "connection_reconnected",
+        McpEvent::NotificationDropped { .. } => "notification_dropped",
+    }
 }
 
 /// Normalize a name for use in tool namespacing (lowercase, replace hyphens).
@@ -486,6 +805,9 @@ mod tests {
             timeout_secs: 30,
             env: vec!["GITHUB_PERSONAL_ACCESS_TOKEN".to_string()],
             headers: vec![],
+            allow_push_events: false,
+            push_queue_size: default_push_queue_size(),
+            push_rate_limit_per_minute: default_push_rate_limit_per_minute(),
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -511,6 +833,9 @@ mod tests {
             timeout_secs: 60,
             env: vec![],
             headers: vec![],
+            allow_push_events: false,
+            push_queue_size: default_push_queue_size(),
+            push_rate_limit_per_minute: default_push_rate_limit_per_minute(),
         };
         let json = serde_json::to_string(&sse_config).unwrap();
         let back: McpServerConfig = serde_json::from_str(&json).unwrap();
@@ -528,14 +853,115 @@ mod tests {
             timeout_secs: 120,
             env: vec![],
             headers: vec!["Authorization: Bearer test-token-456".to_string()],
+            allow_push_events: true,
+            push_queue_size: 512,
+            push_rate_limit_per_minute: 120,
         };
         let json = serde_json::to_string(&http_config).unwrap();
         let back: McpServerConfig = serde_json::from_str(&json).unwrap();
+        assert!(back.allow_push_events);
+        assert_eq!(back.push_queue_size, 512);
+        assert_eq!(back.push_rate_limit_per_minute, 120);
         match back.transport {
             McpTransport::Http { url } => {
                 assert_eq!(url, "https://mcp.atlassian.com/v1/mcp")
             }
             _ => panic!("Expected Http transport"),
+        }
+    }
+
+    #[test]
+    fn test_server_supports_resource_subscribe() {
+        let mut capabilities = ServerCapabilities::default();
+        assert!(!server_supports_resource_subscribe(&capabilities));
+
+        capabilities.resources = Some(rmcp::model::ResourcesCapability {
+            subscribe: Some(true),
+            list_changed: None,
+        });
+        assert!(server_supports_resource_subscribe(&capabilities));
+    }
+
+    #[test]
+    fn test_mcp_notification_queue_drops_oldest() {
+        let (tx, rx) = mcp_notification_channel(2);
+
+        tx.push(McpEvent::ResourceListChanged {
+            server: "test".to_string(),
+        });
+        tx.push(McpEvent::ToolListChanged {
+            server: "test".to_string(),
+        });
+        tx.push(McpEvent::PromptListChanged {
+            server: "test".to_string(),
+        });
+
+        match rx.try_recv() {
+            Some(McpEvent::NotificationDropped {
+                server,
+                kind,
+                dropped_count,
+            }) => {
+                assert_eq!(server, "test");
+                assert_eq!(kind, "prompt_list_changed");
+                assert_eq!(dropped_count, 2);
+            }
+            other => panic!("expected NotificationDropped, got {other:?}"),
+        }
+        match rx.try_recv() {
+            Some(McpEvent::PromptListChanged { server }) => assert_eq!(server, "test"),
+            other => panic!("expected PromptListChanged, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_none());
+    }
+
+    #[test]
+    fn test_openfang_mcp_client_gates_push_events() {
+        let (tx, rx) = mcp_notification_channel(4);
+        let client = OpenFangMcpClient::new("test".to_string(), false, 600, Some(tx.clone()));
+
+        client.dispatch(McpEvent::ToolListChanged {
+            server: "test".to_string(),
+        });
+        assert!(rx.try_recv().is_none());
+
+        let client = OpenFangMcpClient::new("test".to_string(), true, 600, Some(tx));
+        client.dispatch(McpEvent::ToolListChanged {
+            server: "test".to_string(),
+        });
+        match rx.try_recv() {
+            Some(McpEvent::ToolListChanged { server }) => assert_eq!(server, "test"),
+            other => panic!("expected ToolListChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_openfang_mcp_client_rate_limits_push_events() {
+        let (tx, rx) = mcp_notification_channel(4);
+        let client = OpenFangMcpClient::new("test".to_string(), true, 1, Some(tx));
+
+        client.dispatch(McpEvent::ResourceListChanged {
+            server: "test".to_string(),
+        });
+        client.dispatch(McpEvent::ToolListChanged {
+            server: "test".to_string(),
+        });
+
+        match rx.try_recv() {
+            Some(McpEvent::ResourceListChanged { server }) => assert_eq!(server, "test"),
+            other => panic!("expected ResourceListChanged, got {other:?}"),
+        }
+        match rx.try_recv() {
+            Some(McpEvent::NotificationDropped {
+                server,
+                kind,
+                dropped_count,
+            }) => {
+                assert_eq!(server, "test");
+                assert_eq!(kind, "tool_list_changed");
+                assert_eq!(dropped_count, 1);
+            }
+            other => panic!("expected NotificationDropped, got {other:?}"),
         }
     }
 }

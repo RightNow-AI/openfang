@@ -80,6 +80,8 @@ pub enum EventPayload {
     Lifecycle(LifecycleEvent),
     /// Network event (remote agent activity).
     Network(NetworkEvent),
+    /// MCP server-initiated notification.
+    Mcp(McpEvent),
     /// System event (health, resources).
     System(SystemEvent),
     /// User-defined payload.
@@ -218,6 +220,48 @@ pub enum NetworkEvent {
         service: String,
         /// The peers that provide the service.
         providers: Vec<String>,
+    },
+}
+
+/// MCP server-initiated event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event")]
+pub enum McpEvent {
+    /// A subscribed resource changed.
+    ResourceUpdated {
+        /// MCP server name from config.
+        server: String,
+        /// Resource URI reported by the server.
+        uri: String,
+    },
+    /// A server's resource list changed.
+    ResourceListChanged {
+        /// MCP server name from config.
+        server: String,
+    },
+    /// A server's tool list changed.
+    ToolListChanged {
+        /// MCP server name from config.
+        server: String,
+    },
+    /// A server's prompt list changed.
+    PromptListChanged {
+        /// MCP server name from config.
+        server: String,
+    },
+    /// A connection was re-established and subscriptions were replayed.
+    ConnectionReconnected {
+        /// MCP server name from config.
+        server: String,
+    },
+    /// A notification was dropped due to queue pressure.
+    NotificationDropped {
+        /// MCP server name from config.
+        server: String,
+        /// Notification kind that was dropped.
+        kind: String,
+        /// Number of dropped notifications observed.
+        dropped_count: u64,
     },
 }
 
@@ -402,5 +446,28 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let deserialized: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.ttl, Some(Duration::from_millis(60_000)));
+    }
+
+    #[test]
+    fn test_mcp_event_serialization() {
+        let agent_id = AgentId::new();
+        let event = Event::new(
+            agent_id,
+            EventTarget::Agent(AgentId::new()),
+            EventPayload::Mcp(McpEvent::ResourceUpdated {
+                server: "github".to_string(),
+                uri: "repo://RightNow-AI/openfang".to_string(),
+            }),
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        match deserialized.payload {
+            EventPayload::Mcp(McpEvent::ResourceUpdated { server, uri }) => {
+                assert_eq!(server, "github");
+                assert_eq!(uri, "repo://RightNow-AI/openfang");
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
     }
 }

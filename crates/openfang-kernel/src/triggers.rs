@@ -282,6 +282,12 @@ impl TriggerEngine {
                 continue;
             }
 
+            if let openfang_types::event::EventTarget::Agent(target_agent) = &event.target {
+                if trigger.agent_id != *target_agent {
+                    continue;
+                }
+            }
+
             // Check max fires
             if trigger.max_fires > 0 && trigger.fire_count >= trigger.max_fires {
                 trigger.enabled = false;
@@ -408,6 +414,9 @@ fn describe_event(event: &Event) -> String {
         },
         EventPayload::Network(ne) => {
             format!("Network event: {:?}", ne)
+        }
+        EventPayload::Mcp(mcp) => {
+            format!("MCP event: {:?}", mcp)
         }
         EventPayload::System(se) => match se {
             SystemEvent::KernelStarted => "Kernel started".to_string(),
@@ -568,6 +577,37 @@ mod tests {
         assert_eq!(engine.evaluate(&event).len(), 1);
         // Third should not
         assert_eq!(engine.evaluate(&event).len(), 0);
+    }
+
+    #[test]
+    fn test_agent_target_only_evaluates_matching_agent_triggers() {
+        let engine = TriggerEngine::new();
+        let target_agent = AgentId::new();
+        let other_agent = AgentId::new();
+        engine.register(
+            target_agent,
+            TriggerPattern::All,
+            "Target: {{event}}".to_string(),
+            0,
+        );
+        engine.register(
+            other_agent,
+            TriggerPattern::All,
+            "Other: {{event}}".to_string(),
+            0,
+        );
+
+        let event = Event::new(
+            AgentId::new(),
+            EventTarget::Agent(target_agent),
+            EventPayload::System(SystemEvent::HealthCheck {
+                status: "ok".to_string(),
+            }),
+        );
+
+        let matches = engine.evaluate(&event);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].0, target_agent);
     }
 
     #[test]

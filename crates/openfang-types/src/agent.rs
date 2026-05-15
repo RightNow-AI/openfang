@@ -361,6 +361,7 @@ impl ToolProfile {
                 vec!["self.*".into()]
             },
             memory_write: vec!["self.*".into()],
+            mcp_subscribe: vec![],
             ofp_discover: false,
             ofp_connect: vec![],
         }
@@ -589,6 +590,9 @@ pub struct ManifestCapabilities {
     /// Memory write scopes.
     #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
     pub memory_write: Vec<String>,
+    /// MCP resource subscription scopes, formatted as "server:uri".
+    #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
+    pub mcp_subscribe: Vec<String>,
     /// Whether this agent can spawn sub-agents.
     pub agent_spawn: bool,
     /// Agent message patterns (e.g., ["*"] or ["agent-name"]).

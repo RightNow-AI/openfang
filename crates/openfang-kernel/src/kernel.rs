@@ -105,6 +105,11 @@ pub struct OpenFangKernel {
     pub running_tasks: dashmap::DashMap<AgentId, tokio::task::AbortHandle>,
     /// MCP server connections (lazily initialized at start_background_agents).
     pub mcp_connections: tokio::sync::Mutex<Vec<openfang_runtime::mcp::McpConnection>>,
+    /// Resource URIs subscribed per MCP server, replayed after reconnect.
+    pub mcp_subscriptions:
+        tokio::sync::RwLock<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+    /// Cached agent fan-out targets for MCP list-change notifications.
+    mcp_fanout_targets: std::sync::RwLock<std::collections::HashMap<String, Vec<AgentId>>>,
     /// MCP tool definitions cache (populated after connections are established).
     pub mcp_tools: std::sync::Mutex<Vec<ToolDefinition>>,
     /// A2A task store for tracking task lifecycle.
@@ -1189,6 +1194,8 @@ impl OpenFangKernel {
             skill_config_overrides: std::sync::RwLock::new(None),
             running_tasks: dashmap::DashMap::new(),
             mcp_connections: tokio::sync::Mutex::new(Vec::new()),
+            mcp_subscriptions: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            mcp_fanout_targets: std::sync::RwLock::new(std::collections::HashMap::new()),
             mcp_tools: std::sync::Mutex::new(Vec::new()),
             a2a_task_store: openfang_runtime::a2a::A2aTaskStore::default(),
             a2a_external_agents: std::sync::Mutex::new(Vec::new()),
@@ -1743,6 +1750,7 @@ impl OpenFangKernel {
         self.registry
             .register(entry.clone())
             .map_err(KernelError::OpenFang)?;
+        self.rebuild_mcp_fanout_targets();
 
         // Update parent's children list
         if let Some(parent_id) = parent {
@@ -3468,6 +3476,7 @@ impl OpenFangKernel {
         self.registry
             .update_mcp_servers(agent_id, servers.clone())
             .map_err(KernelError::OpenFang)?;
+        self.rebuild_mcp_fanout_targets();
 
         if let Some(entry) = self.registry.get(agent_id) {
             let _ = self.memory.save_agent(&entry);
@@ -3724,6 +3733,7 @@ impl OpenFangKernel {
         self.capabilities.revoke_all(agent_id);
         self.event_bus.unsubscribe_agent(agent_id);
         self.triggers.remove_agent_triggers(agent_id);
+        self.rebuild_mcp_fanout_targets();
 
         // Remove cron jobs so they don't linger as orphans (#504)
         let cron_removed = self.cron_scheduler.remove_agent_jobs(agent_id);
@@ -5797,6 +5807,150 @@ impl OpenFangKernel {
         Ok(primary)
     }
 
+    fn mcp_notification_channel(
+        &self,
+        allow_push_events: bool,
+        push_queue_size: usize,
+    ) -> (
+        Option<openfang_runtime::mcp::McpNotificationSender>,
+        Option<openfang_runtime::mcp::McpNotificationReceiver>,
+    ) {
+        if !allow_push_events {
+            return (None, None);
+        }
+
+        let (tx, rx) = openfang_runtime::mcp::mcp_notification_channel(push_queue_size);
+        (Some(tx), Some(rx))
+    }
+
+    fn spawn_mcp_notification_bridge(
+        self: &Arc<Self>,
+        receiver: openfang_runtime::mcp::McpNotificationReceiver,
+    ) {
+        let kernel = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                let mcp_event = receiver.recv().await;
+                let Some(kernel) = kernel.upgrade() else {
+                    break;
+                };
+                kernel.publish_mcp_event(mcp_event).await;
+            }
+        });
+    }
+
+    async fn publish_mcp_event(&self, mcp_event: McpEvent) {
+        if let McpEvent::ToolListChanged { server } = &mcp_event {
+            let agent_targets = self.agents_for_mcp_server(server);
+            if agent_targets.is_empty() {
+                let event = Event::new(
+                    AgentId::from_string("system:mcp"),
+                    EventTarget::System,
+                    EventPayload::Mcp(mcp_event),
+                );
+                self.event_bus.publish(event).await;
+                return;
+            }
+
+            for agent_id in agent_targets {
+                let event = Event::new(
+                    AgentId::from_string("system:mcp"),
+                    EventTarget::Agent(agent_id),
+                    EventPayload::Mcp(mcp_event.clone()),
+                );
+                self.publish_event(event).await;
+            }
+            return;
+        }
+
+        let event = Event::new(
+            AgentId::from_string("system:mcp"),
+            EventTarget::Broadcast,
+            EventPayload::Mcp(mcp_event),
+        );
+        self.publish_event(event).await;
+    }
+
+    fn agents_for_mcp_server(&self, server: &str) -> Vec<AgentId> {
+        let normalized_server = openfang_runtime::mcp::normalize_name(server);
+        self.mcp_fanout_targets
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&normalized_server)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn rebuild_mcp_fanout_targets(&self) {
+        let known_servers: Vec<String> = self
+            .effective_mcp_servers
+            .read()
+            .map(|servers| {
+                servers
+                    .iter()
+                    .map(|server| openfang_runtime::mcp::normalize_name(&server.name))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut targets: std::collections::HashMap<String, Vec<AgentId>> =
+            std::collections::HashMap::new();
+        for entry in self.registry.list() {
+            if entry.manifest.mcp_servers.is_empty() {
+                for server in &known_servers {
+                    targets.entry(server.clone()).or_default().push(entry.id);
+                }
+            } else {
+                for server in &entry.manifest.mcp_servers {
+                    targets
+                        .entry(openfang_runtime::mcp::normalize_name(server))
+                        .or_default()
+                        .push(entry.id);
+                }
+            }
+        }
+
+        *self
+            .mcp_fanout_targets
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = targets;
+    }
+
+    async fn record_mcp_subscription(&self, server: &str, uri: &str) {
+        self.mcp_subscriptions
+            .write()
+            .await
+            .entry(server.to_string())
+            .or_default()
+            .insert(uri.to_string());
+    }
+
+    async fn replay_mcp_subscriptions(&self, conn: &openfang_runtime::mcp::McpConnection) -> usize {
+        let server = conn.name().to_string();
+        let uris: Vec<String> = self
+            .mcp_subscriptions
+            .read()
+            .await
+            .get(&server)
+            .map(|uris| uris.iter().cloned().collect())
+            .unwrap_or_default();
+
+        let mut replayed = 0;
+        for uri in uris {
+            match conn.subscribe_resource(uri.clone()).await {
+                Ok(()) => replayed += 1,
+                Err(e) => warn!(
+                    server = %server,
+                    uri = %uri,
+                    error = %e,
+                    "Failed to replay MCP resource subscription after reconnect"
+                ),
+            }
+        }
+
+        replayed
+    }
+
     /// Connect to all configured MCP servers and cache their tool definitions.
     async fn connect_mcp_servers(self: &Arc<Self>) {
         use openfang_runtime::mcp::{McpConnection, McpServerConfig, McpTransport};
@@ -5807,6 +5961,7 @@ impl OpenFangKernel {
             .read()
             .map(|s| s.clone())
             .unwrap_or_default();
+        self.rebuild_mcp_fanout_targets();
 
         for server_config in &servers {
             let transport = match &server_config.transport {
@@ -5829,15 +5984,22 @@ impl OpenFangKernel {
                 }
             }
 
+            let (notification_tx, notification_rx) = self.mcp_notification_channel(
+                server_config.allow_push_events,
+                server_config.push_queue_size,
+            );
             let mcp_config = McpServerConfig {
                 name: server_config.name.clone(),
                 transport,
                 timeout_secs: server_config.timeout_secs,
                 env: server_config.env.clone(),
                 headers: server_config.headers.clone(),
+                allow_push_events: server_config.allow_push_events,
+                push_queue_size: server_config.push_queue_size,
+                push_rate_limit_per_minute: server_config.push_rate_limit_per_minute,
             };
 
-            match McpConnection::connect(mcp_config).await {
+            match McpConnection::connect_with_notifications(mcp_config, notification_tx).await {
                 Ok(conn) => {
                     let tool_count = conn.tools().len();
                     // Cache tool definitions
@@ -5852,6 +6014,9 @@ impl OpenFangKernel {
                     // Update extension health if this is an extension-provided server
                     self.extension_health
                         .report_ok(&server_config.name, tool_count);
+                    if let Some(receiver) = notification_rx {
+                        self.spawn_mcp_notification_bridge(receiver);
+                    }
                     self.mcp_connections.lock().await.push(conn);
                 }
                 Err(e) => {
@@ -5926,6 +6091,7 @@ impl OpenFangKernel {
         if let Ok(mut effective) = self.effective_mcp_servers.write() {
             *effective = new_configs;
         }
+        self.rebuild_mcp_fanout_targets();
 
         // 5. Connect new servers
         let mut connected_count = 0;
@@ -5945,11 +6111,19 @@ impl OpenFangKernel {
                 timeout_secs: server_config.timeout_secs,
                 env: server_config.env.clone(),
                 headers: server_config.headers.clone(),
+                allow_push_events: server_config.allow_push_events,
+                push_queue_size: server_config.push_queue_size,
+                push_rate_limit_per_minute: server_config.push_rate_limit_per_minute,
             };
 
             self.extension_health.register(&server_config.name);
 
-            match McpConnection::connect(mcp_config).await {
+            let (notification_tx, notification_rx) = self.mcp_notification_channel(
+                server_config.allow_push_events,
+                server_config.push_queue_size,
+            );
+
+            match McpConnection::connect_with_notifications(mcp_config, notification_tx).await {
                 Ok(conn) => {
                     let tool_count = conn.tools().len();
                     if let Ok(mut tools) = self.mcp_tools.lock() {
@@ -5962,6 +6136,9 @@ impl OpenFangKernel {
                         tools = tool_count,
                         "Extension MCP server connected (hot-reload)"
                     );
+                    if let Some(receiver) = notification_rx {
+                        self.spawn_mcp_notification_bridge(receiver);
+                    }
                     self.mcp_connections.lock().await.push(conn);
                     connected_count += 1;
                 }
@@ -6001,6 +6178,7 @@ impl OpenFangKernel {
                 }
             }
             for name in &removed {
+                self.mcp_subscriptions.write().await.remove(name);
                 self.extension_health.unregister(name);
                 info!(server = %name, "Extension MCP server disconnected (removed)");
             }
@@ -6065,11 +6243,20 @@ impl OpenFangKernel {
             timeout_secs: server_config.timeout_secs,
             env: server_config.env.clone(),
             headers: server_config.headers.clone(),
+            allow_push_events: server_config.allow_push_events,
+            push_queue_size: server_config.push_queue_size,
+            push_rate_limit_per_minute: server_config.push_rate_limit_per_minute,
         };
 
-        match McpConnection::connect(mcp_config).await {
+        let (notification_tx, notification_rx) = self.mcp_notification_channel(
+            server_config.allow_push_events,
+            server_config.push_queue_size,
+        );
+
+        match McpConnection::connect_with_notifications(mcp_config, notification_tx).await {
             Ok(conn) => {
                 let tool_count = conn.tools().len();
+                let replayed_subscriptions = self.replay_mcp_subscriptions(&conn).await;
                 if let Ok(mut tools) = self.mcp_tools.lock() {
                     tools.extend(conn.tools().iter().cloned());
                 }
@@ -6077,9 +6264,17 @@ impl OpenFangKernel {
                 info!(
                     server = %id,
                     tools = tool_count,
+                    replayed_subscriptions,
                     "Extension MCP server reconnected"
                 );
+                if let Some(receiver) = notification_rx {
+                    self.spawn_mcp_notification_bridge(receiver);
+                }
                 self.mcp_connections.lock().await.push(conn);
+                self.publish_mcp_event(McpEvent::ConnectionReconnected {
+                    server: id.to_string(),
+                })
+                .await;
                 Ok(tool_count)
             }
             Err(e) => {
@@ -6779,6 +6974,9 @@ fn manifest_to_capabilities(manifest: &AgentManifest) -> Vec<Capability> {
             if !manifest.capabilities.memory_write.is_empty() {
                 merged.memory_write = manifest.capabilities.memory_write.clone();
             }
+            if !manifest.capabilities.mcp_subscribe.is_empty() {
+                merged.mcp_subscribe = manifest.capabilities.mcp_subscribe.clone();
+            }
             if manifest.capabilities.ofp_discover {
                 merged.ofp_discover = true;
             }
@@ -6804,6 +7002,9 @@ fn manifest_to_capabilities(manifest: &AgentManifest) -> Vec<Capability> {
     }
     for scope in &effective_caps.memory_write {
         caps.push(Capability::MemoryWrite(scope.clone()));
+    }
+    for resource in &effective_caps.mcp_subscribe {
+        caps.push(Capability::McpSubscribe(resource.clone()));
     }
     if effective_caps.agent_spawn {
         caps.push(Capability::AgentSpawn);
@@ -7337,6 +7538,64 @@ impl KernelHandle for OpenFangKernel {
         );
         OpenFangKernel::publish_event(self, event).await;
         Ok(())
+    }
+
+    async fn mcp_subscribe_resource(
+        &self,
+        agent_id: &str,
+        server: Option<&str>,
+        uri: &str,
+    ) -> Result<String, String> {
+        let agent_id: AgentId = agent_id
+            .parse()
+            .map_err(|_| format!("Invalid agent ID: {agent_id}"))?;
+        let uri = uri.trim();
+        if uri.is_empty() {
+            return Err("MCP resource URI is required".to_string());
+        }
+
+        let server_name = {
+            let conns = self.mcp_connections.lock().await;
+            match server.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(requested) => conns
+                    .iter()
+                    .find(|conn| {
+                        conn.name() == requested
+                            || openfang_runtime::mcp::normalize_name(conn.name())
+                                == openfang_runtime::mcp::normalize_name(requested)
+                    })
+                    .map(|conn| conn.name().to_string())
+                    .ok_or_else(|| format!("MCP server '{requested}' not connected"))?,
+                None if conns.len() == 1 => conns[0].name().to_string(),
+                None if conns.is_empty() => return Err("No MCP servers are connected".to_string()),
+                None => {
+                    return Err(
+                        "Multiple MCP servers are connected; provide the 'server' argument"
+                            .to_string(),
+                    )
+                }
+            }
+        };
+
+        let resource = format!("{server_name}:{uri}");
+        self.capabilities
+            .check(agent_id, &Capability::McpSubscribe(resource.clone()))
+            .require()
+            .map_err(|e| e.to_string())?;
+
+        {
+            let conns = self.mcp_connections.lock().await;
+            let conn = conns
+                .iter()
+                .find(|conn| conn.name() == server_name)
+                .ok_or_else(|| format!("MCP server '{server_name}' not connected"))?;
+            conn.subscribe_resource(uri).await?;
+        }
+        self.record_mcp_subscription(&server_name, uri).await;
+
+        Ok(format!(
+            "Subscribed to MCP resource '{uri}' on '{server_name}'"
+        ))
     }
 
     async fn knowledge_add_entity(
@@ -7972,12 +8231,14 @@ mod tests {
             max_history_messages: None,
         };
         manifest.capabilities.tools = vec!["file_read".to_string(), "web_fetch".to_string()];
+        manifest.capabilities.mcp_subscribe = vec!["github:repo://*".to_string()];
         manifest.capabilities.agent_spawn = true;
 
         let caps = manifest_to_capabilities(&manifest);
         assert!(caps.contains(&Capability::ToolInvoke("file_read".to_string())));
+        assert!(caps.contains(&Capability::McpSubscribe("github:repo://*".to_string())));
         assert!(caps.contains(&Capability::AgentSpawn));
-        assert_eq!(caps.len(), 3); // 2 tools + agent_spawn
+        assert_eq!(caps.len(), 4); // 2 tools + mcp_subscribe + agent_spawn
     }
 
     /// Regression for #1087: when the user edits any field in agent.toml
@@ -9187,6 +9448,9 @@ mod tests {
                 timeout_secs: 30,
                 env: vec!["OPENAI_API_KEY".to_string()],
                 headers: vec![],
+                allow_push_events: false,
+                push_queue_size: 256,
+                push_rate_limit_per_minute: 600,
             }],
             ..KernelConfig::default()
         };
