@@ -94,6 +94,10 @@ const DEFAULT_ALLOWED: &[&str] = &[
     "agent_list",
     "channel_send",
     "agent_send",
+    "agent_spawn",
+    "agent_kill",
+    "agent_activate",
+    "agent_find",
 ];
 
 #[cfg(unix)]

@@ -73,6 +73,10 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "agent_list",
     "channel_send",
     "agent_send",
+    "agent_spawn",
+    "agent_kill",
+    "agent_activate",
+    "agent_find",
 ];
 
 /// Subset of [`ALLOWED_TOOLS`] that operates on the agent's workspace

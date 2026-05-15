@@ -233,6 +233,69 @@ pub fn built_in_tools() -> Vec<Tool> {
                 "required": ["agent_id", "message"]
             })),
         ),
+        // Mirrors `openfang_runtime::tool_runner` → `agent_spawn`. High-
+        // capability tool (creates new agents). Gated per-agent via
+        // agent.toml; daemon-side Gate 2 enforces.
+        Tool::new(
+            "agent_spawn",
+            "Spawn a new agent from a TOML manifest. Returns the new agent's ID and name.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "manifest_toml": {
+                        "type": "string",
+                        "description": "The agent manifest in TOML format (must include name, module, [model], and [capabilities])"
+                    }
+                },
+                "required": ["manifest_toml"]
+            })),
+        ),
+        // Mirrors `openfang_runtime::tool_runner` → `agent_kill`. High-
+        // capability tool (terminates another agent). Gated per-agent.
+        Tool::new(
+            "agent_kill",
+            "Kill (terminate) another agent by its ID.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": { "type": "string", "description": "The agent's UUID to kill" }
+                },
+                "required": ["agent_id"]
+            })),
+        ),
+        // Mirrors `openfang_runtime::tool_runner` → `agent_activate`. Wakes
+        // a Suspended/Crashed/Created agent. Terminated agents cannot be
+        // revived.
+        Tool::new(
+            "agent_activate",
+            "Activate (wake up) an inactive agent so it can receive messages \
+             and process events. Use this when agent_list shows an agent in a \
+             Suspended, Crashed, or Created state and you want to delegate work \
+             to it via agent_send. Terminated agents cannot be revived.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "The target agent's UUID or human-readable name"
+                    }
+                },
+                "required": ["agent_id"]
+            })),
+        ),
+        // Mirrors `openfang_runtime::tool_runner` → `agent_find`. Read-only
+        // discovery; pairs with agent_send.
+        Tool::new(
+            "agent_find",
+            "Discover agents by name, tag, tool, or description. Use to find specialists before delegating work.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query (matches agent name, tags, tools, description)" }
+                },
+                "required": ["query"]
+            })),
+        ),
     ]
 }
 
@@ -374,6 +437,10 @@ mod tests {
                 "agent_list",
                 "channel_send",
                 "agent_send",
+                "agent_spawn",
+                "agent_kill",
+                "agent_activate",
+                "agent_find",
             ],
             "surface drift — update both this test and the runtime tool_runner \
              schema when adding or removing built-in bridge tools"
