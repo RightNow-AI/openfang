@@ -344,6 +344,33 @@ pub fn built_in_tools() -> Vec<Tool> {
                 "required": ["command"]
             })),
         ),
+        // Mirrors `openfang_runtime::tool_runner` → `apply_patch`. Workspace-
+        // scoped via the daemon-side `FS_SANDBOXED_TOOLS` gate in `bridge_ipc`
+        // — `tool_apply_patch` resolves every patch-embedded path against
+        // `workspace_root`, so the no-workspace fail-closed gate is critical
+        // (same sibling-leak surface as `file_write`).
+        //
+        // Why this is bridged: serves as a surgical-edit alternative to
+        // whole-file `file_write` rewrites for CC subprocesses that lack
+        // CC's native `Edit` tool. A native `string_edit` follow-up may
+        // replace this as the primary edit ergonomic; for now, apply_patch
+        // is the closest thing we have to Edit's emit-cost profile.
+        Tool::new(
+            "apply_patch",
+            "Apply a multi-hunk diff patch to add, update, move, or delete files. \
+             Use this for targeted edits instead of full file overwrites. Paths in \
+             the patch are resolved relative to the agent workspace.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "patch": {
+                        "type": "string",
+                        "description": "The patch in *** Begin Patch / *** End Patch format. Use *** Add File:, *** Update File:, *** Delete File: markers. Hunks use @@ headers with space (context), - (remove), + (add) prefixed lines."
+                    }
+                },
+                "required": ["patch"]
+            })),
+        ),
         // Mirrors `openfang_runtime::tool_runner` → `web_search`. Pure-net,
         // no FS sandbox. Multi-provider (Tavily → Brave → Perplexity → DDG
         // fallback chain) configured via the daemon's `WebToolsContext`.
@@ -509,6 +536,7 @@ mod tests {
                 "memory_recall",
                 "agent_find",
                 "shell_exec",
+                "apply_patch",
                 "web_search",
             ],
             "surface drift — update both this test and the runtime tool_runner \

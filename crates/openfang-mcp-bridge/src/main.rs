@@ -102,6 +102,7 @@ const DEFAULT_ALLOWED: &[&str] = &[
     "agent_find",
     "shell_exec",
     "web_search",
+    "apply_patch",
 ];
 
 #[cfg(unix)]

@@ -81,6 +81,7 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "agent_find",
     "shell_exec",
     "web_search",
+    "apply_patch",
 ];
 
 /// Subset of [`ALLOWED_TOOLS`] that operates on the agent's workspace
@@ -101,7 +102,13 @@ pub const ALLOWED_TOOLS: &[&str] = &[
 /// (`~/.openfang`), where `secrets.env` and the GCP service-account JSON
 /// live — same sibling-leak surface the file tools had pre-D-fix. Refusing
 /// the call when no workspace is registered keeps that closed.
-const FS_SANDBOXED_TOOLS: &[&str] = &["file_read", "file_list", "file_write", "shell_exec"];
+/// `apply_patch` is included for the same reason: `tool_apply_patch`
+/// resolves every patch-embedded path (Add / Update / Delete) against
+/// `workspace_root`. Without a registered workspace, those paths fall
+/// through to the daemon CWD and an attacker-crafted patch could touch
+/// `secrets.env` or any sibling workspace. Fail-closed gate.
+const FS_SANDBOXED_TOOLS: &[&str] =
+    &["file_read", "file_list", "file_write", "shell_exec", "apply_patch"];
 
 /// Daemon-version string sent in [`HelloAck::Ok`].
 fn daemon_version() -> String {
@@ -918,6 +925,32 @@ mod tests {
         assert!(
             ALLOWED_TOOLS.contains(&"shell_exec"),
             "shell_exec must be on the bridge allowlist post-13a"
+        );
+    }
+
+    #[test]
+    fn allowlist_contains_apply_patch() {
+        // 13e: apply_patch reachable through the bridge as a surgical-edit
+        // alternative to whole-file `file_write` rewrites. Mitigates the
+        // token + drift cost of the missing CC `Edit` tool while we wait on a
+        // native `string_edit` follow-up. Name-locked so a refactor can't
+        // silently drop it.
+        assert!(
+            ALLOWED_TOOLS.contains(&"apply_patch"),
+            "apply_patch must be on the bridge allowlist post-13e"
+        );
+    }
+
+    #[test]
+    fn apply_patch_is_workspace_sandboxed() {
+        // tool_apply_patch resolves every patch-embedded path against
+        // workspace_root. Without sandbox membership a no-workspace agent
+        // could ship a patch whose Add/Update/Delete targets fall through to
+        // the daemon CWD (`~/.openfang`) — sibling-workspace + secrets leak.
+        // Fail-closed gate.
+        assert!(
+            FS_SANDBOXED_TOOLS.contains(&"apply_patch"),
+            "apply_patch must require a registered workspace"
         );
     }
 
