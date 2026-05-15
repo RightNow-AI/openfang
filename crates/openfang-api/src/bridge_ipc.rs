@@ -80,6 +80,7 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "agent_activate",
     "agent_find",
     "shell_exec",
+    "web_search",
 ];
 
 /// Subset of [`ALLOWED_TOOLS`] that operates on the agent's workspace
@@ -893,6 +894,18 @@ mod tests {
         assert!(
             err.contains("unknown bridge token"),
             "expected unknown-token rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn allowlist_contains_web_search() {
+        // 13d: native CC `WebSearch` is denied by the 13a deny set; restore
+        // it through the bridge so researcher agents (medical, business)
+        // keep their primary research surface. Zero new plumbing — kernel
+        // `web_ctx` is already passed to `execute_tool` at this call site.
+        assert!(
+            ALLOWED_TOOLS.contains(&"web_search"),
+            "web_search must be on the bridge allowlist post-13a"
         );
     }
 
