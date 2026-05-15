@@ -349,6 +349,10 @@ async fn dispatch_call(
     kernel: &Arc<OpenFangKernel>,
     authenticated_agent_id: Option<&AgentId>,
 ) -> CallResult {
+    // --- Gate 1: static bridge-surface allowlist ----------------------------
+    // The hard ceiling on what the bridge will ever dispatch. Independent of
+    // any agent's per-agent surface; an unknown tool never reaches identity
+    // resolution.
     if !ALLOWED_TOOLS.iter().any(|t| *t == call.tool_name) {
         return CallResult::Error {
             message: format!(
@@ -358,13 +362,124 @@ async fn dispatch_call(
         };
     }
 
-    // Snapshot the skill registry before crossing the await — its read
-    // guard is !Send and execute_tool spans `.await` points internally.
-    let skill_snapshot = kernel
-        .skill_registry
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .snapshot();
+    // --- Identity resolution (fail-closed) ---------------------------------
+    // Hardened path: handshake-bound AgentId from BridgeAuthority. Legacy
+    // path: parse the bridge's self-claimed `call.agent_id`. Either way we
+    // require a *registered* AgentId before proceeding — string identifiers
+    // and unknown agents never feed authorization. Closes the ANAI-30
+    // "trust the claimed string" loophole: a parseable but unregistered id
+    // (random UUID-shaped value) now rejects instead of falling through.
+    let resolved_agent_id: AgentId = match authenticated_agent_id {
+        Some(authed) => {
+            let authed_str = authed.to_string();
+            if authed_str != call.agent_id {
+                warn!(
+                    request_id = call.request_id,
+                    tool = %call.tool_name,
+                    claimed = %call.agent_id,
+                    authenticated = %authed_str,
+                    "bridge IPC: claimed agent_id disagrees with authenticated identity; \
+                     using authenticated identity"
+                );
+            }
+            *authed
+        }
+        None => match call.agent_id.parse::<AgentId>() {
+            Ok(aid) => aid,
+            Err(_) => {
+                warn!(
+                    request_id = call.request_id,
+                    tool = %call.tool_name,
+                    claimed = %call.agent_id,
+                    "bridge IPC: rejecting call — legacy lane and claimed agent_id \
+                     does not parse as AgentId"
+                );
+                return CallResult::Error {
+                    message: "unresolvable agent identity for bridge call".to_string(),
+                };
+            }
+        },
+    };
+    let resolved_agent_id_string = resolved_agent_id.to_string();
+
+    // Registry entry is the source of truth for capabilities and workspace.
+    // Missing entry → fail closed (spoofed AgentId, dead spawn, etc.).
+    let entry = match kernel.registry.get(resolved_agent_id) {
+        Some(e) => e,
+        None => {
+            warn!(
+                request_id = call.request_id,
+                tool = %call.tool_name,
+                agent = %resolved_agent_id_string,
+                "bridge IPC: rejecting call — no registry entry for resolved agent"
+            );
+            return CallResult::Error {
+                message: format!(
+                    "agent '{resolved_agent_id_string}' has no registry entry; refusing call"
+                ),
+            };
+        }
+    };
+
+    // --- Workspace-aware skill snapshot ------------------------------------
+    // Mirrors the agent_loop pattern (kernel.rs:2192-2210): bundled + global
+    // + workspace skills, in that override order. We reuse this snapshot for
+    // BOTH the per-agent permission gate below AND `execute_tool` later — so
+    // the permission decision and the runtime see the same tool universe.
+    let workspace_path: Option<PathBuf> = entry.manifest.workspace.clone();
+    let skill_snapshot = {
+        let mut snapshot = kernel
+            .skill_registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot();
+        if let Some(ref workspace) = workspace_path {
+            let ws_skills = workspace.join("skills");
+            if ws_skills.exists() {
+                if let Err(e) = snapshot.load_workspace_skills(&ws_skills) {
+                    warn!(
+                        agent = %resolved_agent_id_string,
+                        error = %e,
+                        "bridge IPC: failed to load workspace skills for permission gate"
+                    );
+                }
+            }
+        }
+        snapshot
+    };
+
+    // --- Gate 2: per-agent execute-time permission gate (ANAI C) -----------
+    // Belt-and-suspenders with the advertise-time `OPENFANG_BRIDGE_ALLOWED`
+    // env var the bridge subprocess was spawned with. Uses the same kernel
+    // resolver agent_loop uses to build the env (kernel.rs:2214) against
+    // the same registry entry — so the two gates can't drift. Any tool not
+    // in this agent's resolved surface (capabilities.tools narrowed by
+    // profile, allowlist, blocklist, skills, mcp_servers, mode filter) is
+    // rejected here with a logged trace, even if it survived gate 1.
+    //
+    // Runs *before* the workspace sandbox gate so a denied call never
+    // touches the filesystem lookup.
+    let permitted: Vec<openfang_types::tool::ToolDefinition> = {
+        let resolved =
+            kernel.available_tools_with_registry(resolved_agent_id, Some(&skill_snapshot));
+        entry.mode.filter_tools(resolved)
+    };
+    if !permitted.iter().any(|t| t.name == call.tool_name) {
+        warn!(
+            request_id = call.request_id,
+            tool = %call.tool_name,
+            agent = %resolved_agent_id_string,
+            mode = ?entry.mode,
+            permitted_count = permitted.len(),
+            "bridge IPC: rejecting tool not in agent's permitted set"
+        );
+        return CallResult::Error {
+            message: format!(
+                "tool '{}' not permitted for this agent",
+                call.tool_name
+            ),
+        };
+    }
 
     // Build the kernel handle. Cloning the Arc is cheap; the cast to
     // `dyn KernelHandle` is the same upcast the HTTP /mcp endpoint
@@ -379,49 +494,7 @@ async fn dispatch_call(
     let allowed_tools_owned: Vec<String> =
         ALLOWED_TOOLS.iter().map(|s| (*s).to_string()).collect();
 
-    // Identity selection:
-    // - Hardened path (`authenticated_agent_id == Some`): use the agent_id
-    //   the [`BridgeAuthority`] resolved from the handshake token. The
-    //   bridge's claimed `CallRequest::agent_id` is *ignored* for
-    //   authorization; we only `warn!` if it disagrees with the resolved
-    //   identity, since the disagreement is either a bug in the bridge or
-    //   a spoofing attempt.
-    // - Legacy path (`authenticated_agent_id == None`): no daemon-issued
-    //   token was presented, so we fall back to the ANAI-30 behavior of
-    //   trusting the bridge's claimed agent_id. This lane closes in the
-    //   next phase once every spawn site issues a real token.
-    let resolved_agent_id_string: String = match authenticated_agent_id {
-        Some(authed) => {
-            let authed_str = authed.to_string();
-            if authed_str != call.agent_id {
-                warn!(
-                    request_id = call.request_id,
-                    tool = %call.tool_name,
-                    claimed = %call.agent_id,
-                    authenticated = %authed_str,
-                    "bridge IPC: claimed agent_id disagrees with authenticated identity; \
-                     using authenticated identity"
-                );
-            }
-            authed_str
-        }
-        None => call.agent_id.clone(),
-    };
-
-    // Workspace lookup for sandbox scoping. Authenticated identity wins
-    // (it's what the daemon issued the token for); the legacy lane parses
-    // the bridge's self-claimed `call.agent_id` only when no token-bound
-    // identity is available. Either way, we resolve to a real `AgentId`
-    // before touching the registry — string identifiers never feed the
-    // workspace lookup.
-    let resolved_agent_id_for_lookup: Option<AgentId> = match authenticated_agent_id {
-        Some(authed) => Some(*authed),
-        None => call.agent_id.parse::<AgentId>().ok(),
-    };
-    let workspace_path: Option<PathBuf> = resolved_agent_id_for_lookup
-        .and_then(|aid| kernel.registry.get(aid))
-        .and_then(|entry| entry.manifest.workspace.clone());
-
+    // --- Gate 3: workspace sandbox for filesystem tools (D-fix) ------------
     // Fail-closed for filesystem tools without a workspace. The runtime's
     // `resolve_file_path` falls through to a path-traversal-only check
     // when `workspace_root` is `None`, which is insufficient — absolute

@@ -6209,7 +6209,7 @@ impl OpenFangKernel {
     /// snapshot (which already includes global + workspace skills with correct
     /// override priority). When `None`, falls back to `self.skill_registry`
     /// (global-only, for diagnostic/non-agent callers).
-    fn available_tools_with_registry(
+    pub fn available_tools_with_registry(
         &self,
         agent_id: AgentId,
         skill_snapshot: Option<&openfang_skills::registry::SkillRegistry>,
