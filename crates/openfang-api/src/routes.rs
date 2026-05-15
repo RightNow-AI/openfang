@@ -7056,6 +7056,46 @@ pub async fn mcp_http(
             }));
         }
 
+        // ── Workspace sandbox for filesystem tools ───────────────────────
+        //
+        // Mirrors the bridge IPC fix: filesystem-touching tools must be
+        // scoped to a real agent workspace. The HTTP endpoint has no
+        // ambient agent identity (it sits behind dashboard auth, not
+        // bridge-token auth), so the caller must opt in by supplying
+        // `_agent_id` in `arguments`. We look up the workspace and pass
+        // it to `execute_tool`; if the resolved agent has no workspace
+        // or the caller didn't supply an id, we refuse the FS call
+        // rather than fall through to the unscoped legacy path. Kernel-
+        // level tools (agent_list, channel_send, etc.) continue to work
+        // without an `_agent_id` since they don't touch the filesystem.
+        const FS_SANDBOXED_TOOLS: &[&str] = &[
+            "file_read",
+            "file_list",
+            "file_write",
+            "create_directory",
+        ];
+        let agent_id_opt: Option<openfang_types::agent::AgentId> = arguments
+            .get("_agent_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok());
+        let workspace_path: Option<std::path::PathBuf> = agent_id_opt
+            .and_then(|aid| state.kernel.registry.get(aid))
+            .and_then(|entry| entry.manifest.workspace.clone());
+        if FS_SANDBOXED_TOOLS.contains(&tool_name) && workspace_path.is_none() {
+            return Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request.get("id").cloned(),
+                "error": {
+                    "code": -32602,
+                    "message": format!(
+                        "tool '{tool_name}' requires an agent workspace; \
+                         pass `_agent_id` in arguments to scope the call. \
+                         Refusing to dispatch against an unscoped filesystem."
+                    )
+                }
+            }));
+        }
+
         // Snapshot skill registry before async call (RwLockReadGuard is !Send)
         let skill_snapshot = state
             .kernel
@@ -7067,19 +7107,20 @@ pub async fn mcp_http(
         // Execute the tool via the kernel's tool runner
         let kernel_handle: Arc<dyn openfang_runtime::kernel_handle::KernelHandle> =
             state.kernel.clone() as Arc<dyn openfang_runtime::kernel_handle::KernelHandle>;
+        let agent_id_string: Option<String> = agent_id_opt.as_ref().map(|a| a.to_string());
         let result = openfang_runtime::tool_runner::execute_tool(
             "mcp-http",
             tool_name,
             &arguments,
             Some(&kernel_handle),
             None,
-            None,
+            agent_id_string.as_deref(),
             Some(&skill_snapshot),
             Some(&state.kernel.mcp_connections),
             Some(&state.kernel.web_ctx),
             Some(&state.kernel.browser_ctx),
             None,
-            None,
+            workspace_path.as_deref(),
             Some(&state.kernel.media_engine),
             None, // exec_policy
             if state.kernel.config.tts.enabled {

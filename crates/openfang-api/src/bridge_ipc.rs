@@ -45,7 +45,7 @@ use openfang_mcp_bridge::protocol::{
 };
 use openfang_types::agent::AgentId;
 use openfang_types::bridge_auth::Token;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Notify;
@@ -72,6 +72,20 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "channel_send",
     "agent_send",
 ];
+
+/// Subset of [`ALLOWED_TOOLS`] that operates on the agent's workspace
+/// filesystem. These tools MUST be invoked with a sandbox-scoping
+/// `workspace_root` — see the sandbox check in [`dispatch_call`].
+///
+/// History: prior to D-fix, the bridge passed `workspace_root: None` to
+/// `execute_tool`, which fell through `resolve_file_path`'s "legacy"
+/// branch and resolved paths against the daemon CWD (`~/.openfang`). That
+/// let any agent with `file_read`/`file_list` advertised on its surface
+/// read every sibling workspace plus `secrets.env` and the GCP service-
+/// account JSON sitting at the openfang root. The fix below scopes every
+/// FS call to the *authenticated* agent's workspace and refuses the call
+/// outright when no workspace is registered.
+const FS_SANDBOXED_TOOLS: &[&str] = &["file_read", "file_list"];
 
 /// Daemon-version string sent in [`HelloAck::Ok`].
 fn daemon_version() -> String {
@@ -394,6 +408,43 @@ async fn dispatch_call(
         None => call.agent_id.clone(),
     };
 
+    // Workspace lookup for sandbox scoping. Authenticated identity wins
+    // (it's what the daemon issued the token for); the legacy lane parses
+    // the bridge's self-claimed `call.agent_id` only when no token-bound
+    // identity is available. Either way, we resolve to a real `AgentId`
+    // before touching the registry — string identifiers never feed the
+    // workspace lookup.
+    let resolved_agent_id_for_lookup: Option<AgentId> = match authenticated_agent_id {
+        Some(authed) => Some(*authed),
+        None => call.agent_id.parse::<AgentId>().ok(),
+    };
+    let workspace_path: Option<PathBuf> = resolved_agent_id_for_lookup
+        .and_then(|aid| kernel.registry.get(aid))
+        .and_then(|entry| entry.manifest.workspace.clone());
+
+    // Fail-closed for filesystem tools without a workspace. The runtime's
+    // `resolve_file_path` falls through to a path-traversal-only check
+    // when `workspace_root` is `None`, which is insufficient — absolute
+    // paths bypass it and relative paths resolve against the daemon CWD.
+    // Refusing the call here keeps the leak closed even if some future
+    // call path forgets to pass workspace_root.
+    if FS_SANDBOXED_TOOLS.contains(&call.tool_name.as_str()) && workspace_path.is_none() {
+        warn!(
+            request_id = call.request_id,
+            tool = %call.tool_name,
+            agent = %resolved_agent_id_string,
+            "bridge IPC: refusing filesystem tool — no workspace registered for agent"
+        );
+        return CallResult::Error {
+            message: format!(
+                "tool '{}' requires an agent workspace, but no workspace is registered \
+                 for agent '{}' — refusing to fall back to an unscoped filesystem view",
+                call.tool_name, resolved_agent_id_string
+            ),
+        };
+    }
+    let workspace_root_arg: Option<&Path> = workspace_path.as_deref();
+
     let result = openfang_runtime::tool_runner::execute_tool(
         &format!("bridge-{}", call.request_id),
         &call.tool_name,
@@ -405,8 +456,8 @@ async fn dispatch_call(
         Some(&kernel.mcp_connections),
         Some(&kernel.web_ctx),
         Some(&kernel.browser_ctx),
-        None, // allowed_env_vars — unused by the four allowlisted tools
-        None, // workspace_root — file_read/file_list use input-relative paths
+        None, // allowed_env_vars — unused by the five allowlisted tools
+        workspace_root_arg, // scoped to the authenticated agent's workspace; gated above
         Some(&kernel.media_engine),
         None, // exec_policy — shell tools not in allowlist
         if kernel.config.tts.enabled {
