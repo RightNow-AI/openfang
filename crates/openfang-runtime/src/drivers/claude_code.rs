@@ -107,20 +107,69 @@ const BRIDGE_MCP_SERVER_NAME: &str = "openfang";
 ///   `web_fetch` is the gated replacement.
 /// - `Glob`/`Grep` — filesystem read, denied for symmetry: any FS-read path
 ///   must go through the bridge's sandboxed `file_read`/`file_list`.
+/// - `BashOutput`/`KillShell`/`KillBash` — read stdout / kill backgrounded
+///   `Bash`. Inert today (Bash is denied) but locked down as defense in
+///   depth: if a future CC release introduces a separate path to background
+///   shells, these adjuncts must not become live.
+/// - `SlashCommand` — invokes CC's skill substrate, a parallel curation
+///   surface. OpenFang's skill curation is the canonical path; deny CC's.
+/// - `EnterWorktree`/`ExitWorktree` — creates a git worktree on disk
+///   outside the agent workspace, a direct FS-escape primitive. A native
+///   workspace-aware worktree tool is on the follow-up backlog; until then,
+///   no worktree creation through CC.
+/// - `NotebookRead` — symmetry with `NotebookEdit`. Not advertised in the
+///   current CC version we target, but pre-denied for forward-compat: if
+///   a future CC ships it, the deny is already in place.
+/// - `CronCreate`/`CronDelete`/`CronList` — CC-side scheduling control
+///   plane (Anthropic-hosted Routines). Per the OpenFang-First Principle,
+///   scheduling is owned by OF's cron / orchestrator. No parallel plane.
+/// - `ScheduleWakeup` — same class as Cron*: lets CC self-pace dynamic
+///   loops outside OF's orchestration. Denied.
+/// - `RemoteTrigger` — directly manages Anthropic-hosted scheduled jobs
+///   via `claude.ai/v1/code/triggers`. Same OpenFang-First rationale.
+/// - `Monitor` — long-running shell streamer. Executes arbitrary shell
+///   commands, bypassing `shell_exec`'s `exec_policy` gating. This is
+///   `Bash`-with-streaming; denied for the same reason as `Bash`.
+/// - `PushNotification` — bypasses OF's channel routing for user-facing
+///   notifications. Soft policy gap rather than security; denied to keep
+///   comms on the canonical path.
 ///
-/// Deliberately NOT denied: `TodoWrite`, `Task` (subagent) — agent-internal
-/// control flow with no escape surface to the host system.
+/// Deliberately NOT denied: `TodoWrite`, `Task` (subagent), `Skill`,
+/// `AskUserQuestion`, `EnterPlanMode`/`ExitPlanMode`, `TaskOutput`/
+/// `TaskStop`, `ToolSearch` — agent-internal control flow / UX with no
+/// escape surface to the host system.
 const CC_NATIVE_DENY: &[&str] = &[
+    // Shell execution + adjuncts
     "Bash",
+    "BashOutput",
+    "KillShell",
+    "KillBash",
+    "Monitor",
+    // Filesystem read/write
     "Read",
     "Write",
     "Edit",
     "MultiEdit",
     "NotebookEdit",
-    "WebFetch",
-    "WebSearch",
+    "NotebookRead",
     "Glob",
     "Grep",
+    // Worktree (FS escape)
+    "EnterWorktree",
+    "ExitWorktree",
+    // Network
+    "WebFetch",
+    "WebSearch",
+    // Skill / command substrate
+    "SlashCommand",
+    // Scheduling / remote control plane (OpenFang-First)
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "ScheduleWakeup",
+    "RemoteTrigger",
+    // Comms routing
+    "PushNotification",
 ];
 
 /// Environment variable names (and suffixes) to strip from the subprocess
@@ -1685,12 +1734,78 @@ mod tests {
 
         // Agent-internal control flow must NOT be denied — denying these
         // would break legitimate agent loops with no security upside.
-        for must_allow in ["TodoWrite", "Task"] {
+        for must_allow in [
+            "TodoWrite",
+            "Task",
+            "Skill",
+            "AskUserQuestion",
+            "EnterPlanMode",
+            "ExitPlanMode",
+            "TaskOutput",
+            "TaskStop",
+            "ToolSearch",
+        ] {
             assert!(
                 !CC_NATIVE_DENY.contains(&must_allow),
                 "{must_allow} must NOT be denied (agent-internal control flow)"
             );
         }
+    }
+
+    #[test]
+    fn test_cc_native_deny_covers_audit_gaps() {
+        // Commit 18: the deny-set audit closed gaps in five categories.
+        // Pin each addition so a future refactor that drops one needs a
+        // deliberate change with this test as the canary.
+
+        // Bash adjuncts — inert today (Bash is denied) but locked down
+        // as defense in depth against future CC backgrounding paths.
+        for must_deny in ["BashOutput", "KillShell", "KillBash", "Monitor"] {
+            assert!(
+                CC_NATIVE_DENY.contains(&must_deny),
+                "{must_deny} must be denied (Bash adjunct / shell streamer)"
+            );
+        }
+
+        // Worktree creation — direct FS-escape primitive.
+        for must_deny in ["EnterWorktree", "ExitWorktree"] {
+            assert!(
+                CC_NATIVE_DENY.contains(&must_deny),
+                "{must_deny} must be denied (FS escape via git worktree)"
+            );
+        }
+
+        // Notebook read — symmetry with NotebookEdit + forward-compat.
+        assert!(
+            CC_NATIVE_DENY.contains(&"NotebookRead"),
+            "NotebookRead must be denied (forward-compat with NotebookEdit)"
+        );
+
+        // SlashCommand — parallel skill substrate; OF's is canonical.
+        assert!(
+            CC_NATIVE_DENY.contains(&"SlashCommand"),
+            "SlashCommand must be denied (parallel skill curation surface)"
+        );
+
+        // Scheduling / remote control plane — OpenFang-First.
+        for must_deny in [
+            "CronCreate",
+            "CronDelete",
+            "CronList",
+            "ScheduleWakeup",
+            "RemoteTrigger",
+        ] {
+            assert!(
+                CC_NATIVE_DENY.contains(&must_deny),
+                "{must_deny} must be denied (OpenFang-First: scheduling owned by OF)"
+            );
+        }
+
+        // Comms routing — keep on canonical OF path.
+        assert!(
+            CC_NATIVE_DENY.contains(&"PushNotification"),
+            "PushNotification must be denied (OF channel routing is canonical)"
+        );
     }
 
     #[test]
