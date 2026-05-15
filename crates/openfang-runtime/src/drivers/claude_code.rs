@@ -79,6 +79,50 @@ fn bridge_debug_enabled() -> bool {
 /// namespace each tool as `mcp__<this>__<toolname>`.
 const BRIDGE_MCP_SERVER_NAME: &str = "openfang";
 
+/// Native Claude Code tools that OpenFang denies by policy when the bridge
+/// is wired. Anything that touches the filesystem, executes commands, or
+/// fetches the web is funneled through the OpenFang bridge instead, where
+/// it can be RBAC-gated per-agent via `agent.toml` capabilities.
+///
+/// Mechanism: emitted into a per-spawn `settings.json` and passed to CC via
+/// `claude --settings <file>`. Per Anthropic's settings documentation,
+/// `permissions.deny` rules are enforced even when
+/// `--dangerously-skip-permissions` is set — that flag only bypasses
+/// allow/ask prompts, not security-critical denies. So the daemon keeps the
+/// non-interactive YOLO flag (required because there is no TTY to answer
+/// prompts) while still authoritatively blocking the native tool surface.
+///
+/// Naming uses bare tool names (e.g. `"Bash"`, not `"Bash(*)"`), which
+/// blanket-denies the tool with no specifier. The MCP namespace
+/// (`mcp__openfang__*`) lives in a separate pattern space and is untouched —
+/// that's the point: replace the native surface with the gated bridge
+/// surface.
+///
+/// Inclusions:
+/// - `Bash` — shell execution. `shell_exec` (commit 13b) is the gated
+///   replacement.
+/// - `Read`/`Write`/`Edit`/`MultiEdit`/`NotebookEdit` — filesystem mutation.
+///   Bridge's `file_read`/`file_write` are the gated replacements.
+/// - `WebFetch`/`WebSearch` — outbound network from the model. Bridge's
+///   `web_fetch` is the gated replacement.
+/// - `Glob`/`Grep` — filesystem read, denied for symmetry: any FS-read path
+///   must go through the bridge's sandboxed `file_read`/`file_list`.
+///
+/// Deliberately NOT denied: `TodoWrite`, `Task` (subagent) — agent-internal
+/// control flow with no escape surface to the host system.
+const CC_NATIVE_DENY: &[&str] = &[
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "WebFetch",
+    "WebSearch",
+    "Glob",
+    "Grep",
+];
+
 /// Environment variable names (and suffixes) to strip from the subprocess
 /// to prevent leaking API keys from other providers. We keep the full env
 /// intact (so Node.js, NVM, SSL, proxies, etc. all work) and only remove
@@ -437,6 +481,112 @@ fn generate_legacy_bridge_token() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// Per-spawn CC settings file. Holds the path to a `settings.json` that CC
+/// reads via `--settings <path>` and removes it on drop.
+///
+/// Lifetime mirrors `BridgeMcpConfig`: the file lives next to the daemon's
+/// bridge socket (under `<home>/run/`) for the duration of a single CC
+/// invocation. Per-spawn rather than per-agent because settings are static
+/// policy and a fresh write per spawn means zero stale-state surface and
+/// zero concurrency concerns when an agent spawns multiple CC subprocesses.
+struct CcSettingsFile {
+    path: PathBuf,
+}
+
+impl CcSettingsFile {
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for CcSettingsFile {
+    fn drop(&mut self) {
+        // Best-effort cleanup; the file contains no secrets — only a static
+        // deny set — so staleness is harmless if removal fails.
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Build the per-spawn CC `settings.json` JSON document. Pure — no env
+/// reads, no filesystem writes — so it's tractable to test in isolation.
+///
+/// Wire shape matches what `claude --settings <file>` accepts: a top-level
+/// `permissions` object with a `deny` array of tool-name patterns. We emit
+/// nothing else; merging precedence in CC is additive for permissions
+/// arrays, so this layers cleanly over any user/managed settings without
+/// clobbering them. Deny is monotone — adding entries can only further
+/// restrict the surface — so it's safe to merge.
+fn build_cc_settings_value(deny: &[&str]) -> serde_json::Value {
+    let deny_arr = serde_json::Value::Array(
+        deny.iter()
+            .map(|s| serde_json::Value::String((*s).into()))
+            .collect(),
+    );
+    let mut perms = serde_json::Map::new();
+    perms.insert("deny".into(), deny_arr);
+    let mut root = serde_json::Map::new();
+    root.insert("permissions".into(), serde_json::Value::Object(perms));
+    serde_json::Value::Object(root)
+}
+
+/// Materialize a per-spawn CC settings file containing the OpenFang deny
+/// set, returning an RAII handle that removes the file on drop.
+///
+/// Gated on `bridge_enabled()` so the deny set is only injected when
+/// OpenFang is in authoritative control of this CC subprocess. Without the
+/// bridge wired, the agent has no `mcp__openfang__*` surface to fall back
+/// on, so denying the native surface would yield a useless agent. Either
+/// both (gated bridge + denied native) or neither — the two halves of the
+/// "OpenFang is the RBAC layer" claim travel together.
+///
+/// Returns `None` if the bridge gate is off, the socket dir can't be
+/// located, or the write fails. CC then spawns without `--settings`, which
+/// is the pre-13a behavior (native tools open). The warn log on write
+/// failure makes that regression observable rather than silent.
+///
+/// Co-located with the bridge config under the same socket dir so cleanup
+/// is uniform: one directory, one removal pattern, one set of permissions.
+fn try_materialize_cc_settings(caller_agent_id: Option<&str>) -> Option<CcSettingsFile> {
+    // Same gate as the bridge config — the two are policy-coupled (see
+    // function-level docstring) and must turn on or off together.
+    if !bridge_enabled() {
+        return None;
+    }
+
+    let socket = std::env::var(BRIDGE_SOCKET_ENV).ok()?;
+    let socket_dir = std::path::Path::new(&socket).parent()?.to_path_buf();
+    let path = socket_dir.join(format!("cc-settings-{}.json", uuid::Uuid::new_v4()));
+
+    let cfg = build_cc_settings_value(CC_NATIVE_DENY);
+    let serialized = serde_json::to_string(&cfg).ok()?;
+    if let Err(e) = std::fs::write(&path, serialized) {
+        warn!(error = %e, path = %path.display(), "failed to write CC --settings file");
+        return None;
+    }
+
+    // 0600 for symmetry with the bridge config. The file contains no
+    // secrets, but a uniform permission model is easier to audit than
+    // exceptions per artifact type.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o600);
+            let _ = std::fs::set_permissions(&path, perms);
+        }
+    }
+
+    debug!(
+        agent_id = %caller_agent_id.unwrap_or("<none>"),
+        settings = %path.display(),
+        deny_count = CC_NATIVE_DENY.len(),
+        "materialized CC --settings deny set"
+    );
+
+    Some(CcSettingsFile { path })
+}
+
 impl ClaudeCodeDriver {
     /// Build the per-spawn `--mcp-config` JSON for a CC invocation, if the
     /// daemon has published bridge wiring discovery and the request carries
@@ -659,6 +809,18 @@ impl LlmDriver for ClaudeCodeDriver {
         let bridge_wired = _bridge_cfg.is_some();
         let bridge_debug = bridge_wired && bridge_debug_enabled();
 
+        // Inject the per-spawn settings.json that denies CC's native FS,
+        // shell, and web tools. Guard kept alive for the remainder of the
+        // call; on drop it removes the temp settings file. Gated on
+        // `bridge_enabled()` inside `try_materialize_cc_settings` so it
+        // co-travels with the bridge wiring above — either both or neither.
+        let _cc_settings =
+            try_materialize_cc_settings(request.caller_agent_id.as_deref()).map(|s| {
+                cmd.arg("--settings").arg(s.path());
+                s
+            });
+        let native_deny_wired = _cc_settings.is_some();
+
         Self::apply_env_filter(&mut cmd);
 
         // Inject HOME so the CLI can find its credentials (~/.claude/) when
@@ -671,7 +833,7 @@ impl LlmDriver for ClaudeCodeDriver {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, bridge_wired, "Spawning Claude Code CLI");
+        debug!(cli = %self.cli_path, skip_permissions = self.skip_permissions, bridge_wired, native_deny_wired, "Spawning Claude Code CLI");
 
         // Spawn child process instead of cmd.output() so we can track PID and timeout
         let mut child = cmd.spawn().map_err(|e| {
@@ -895,6 +1057,16 @@ impl LlmDriver for ClaudeCodeDriver {
         let bridge_wired = _bridge_cfg.is_some();
         let bridge_debug = bridge_wired && bridge_debug_enabled();
 
+        // Native-tool deny via per-spawn `--settings` (see `complete()` for
+        // full rationale). Guard kept alive for the rest of the streaming
+        // function so the settings file outlives the CC subprocess.
+        let _cc_settings =
+            try_materialize_cc_settings(request.caller_agent_id.as_deref()).map(|s| {
+                cmd.arg("--settings").arg(s.path());
+                s
+            });
+        let native_deny_wired = _cc_settings.is_some();
+
         Self::apply_env_filter(&mut cmd);
 
         // Same HOME and stdin hygiene as the non-streaming path.
@@ -905,7 +1077,7 @@ impl LlmDriver for ClaudeCodeDriver {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        debug!(cli = %self.cli_path, bridge_wired, "Spawning Claude Code CLI (streaming)");
+        debug!(cli = %self.cli_path, bridge_wired, native_deny_wired, "Spawning Claude Code CLI (streaming)");
 
         let mut child = cmd.spawn().map_err(|e| {
             LlmError::Http(format!(
@@ -1447,6 +1619,92 @@ mod tests {
                 config_path: path.clone(),
                 _guard: None,
             };
+            assert!(path.exists(), "file present while guard held");
+        }
+
+        assert!(!path.exists(), "file must be removed when guard drops");
+    }
+
+    #[test]
+    fn test_build_cc_settings_shape() {
+        // The wire shape CC's `--settings` accepts: top-level `permissions`
+        // object with a `deny` array of bare tool-name strings. No other
+        // keys are emitted — we want minimal surface that merges cleanly
+        // with any user/managed settings without subtracting from them.
+        let cfg = build_cc_settings_value(CC_NATIVE_DENY);
+        let root = cfg.as_object().expect("root must be a JSON object");
+        assert_eq!(root.len(), 1, "root must contain only `permissions`");
+
+        let perms = cfg
+            .pointer("/permissions")
+            .and_then(|v| v.as_object())
+            .expect("permissions object missing");
+        assert_eq!(perms.len(), 1, "permissions must contain only `deny`");
+
+        let deny = cfg
+            .pointer("/permissions/deny")
+            .and_then(|v| v.as_array())
+            .expect("deny array missing");
+        assert_eq!(deny.len(), CC_NATIVE_DENY.len());
+        // Bare tool names — no specifier in parens — so the deny is
+        // blanket, not pattern-scoped. CC treats `"Bash"` as the whole tool.
+        for entry in deny {
+            let s = entry.as_str().expect("deny entries must be strings");
+            assert!(
+                !s.contains('(') && !s.contains(')'),
+                "{s:?} must be a bare tool name, not a specifier pattern"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cc_native_deny_includes_glob_grep() {
+        // Glob and Grep are included for symmetry: any FS-read path goes
+        // through the bridge's sandboxed `file_read`/`file_list` rather
+        // than CC's native readers. This test pins that decision so a
+        // future refactor that drops them needs a deliberate change.
+        assert!(CC_NATIVE_DENY.contains(&"Glob"), "Glob must be denied");
+        assert!(CC_NATIVE_DENY.contains(&"Grep"), "Grep must be denied");
+
+        // Core dangerous tools — the load-bearing reason for this commit.
+        for must_deny in [
+            "Bash",
+            "Read",
+            "Write",
+            "Edit",
+            "MultiEdit",
+            "NotebookEdit",
+            "WebFetch",
+            "WebSearch",
+        ] {
+            assert!(
+                CC_NATIVE_DENY.contains(&must_deny),
+                "{must_deny} must be denied"
+            );
+        }
+
+        // Agent-internal control flow must NOT be denied — denying these
+        // would break legitimate agent loops with no security upside.
+        for must_allow in ["TodoWrite", "Task"] {
+            assert!(
+                !CC_NATIVE_DENY.contains(&must_allow),
+                "{must_allow} must NOT be denied (agent-internal control flow)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cc_settings_file_drop_removes_file() {
+        // CcSettingsFile is a per-spawn artifact; on drop, the file must
+        // vanish so successive runs don't accumulate stale settings
+        // sidecars under the socket dir.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cc-settings-test.json");
+        std::fs::write(&path, "{}").expect("seed file");
+        assert!(path.exists());
+
+        {
+            let _guard = CcSettingsFile { path: path.clone() };
             assert!(path.exists(), "file present while guard held");
         }
 

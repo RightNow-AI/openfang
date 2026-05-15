@@ -213,10 +213,21 @@ pub struct DriverConfig {
     /// Skip interactive permission prompts (Claude Code provider only).
     ///
     /// When `true`, adds `--dangerously-skip-permissions` to the spawned
-    /// `claude` CLI.  Defaults to `true` because OpenFang runs as a daemon
+    /// `claude` CLI. Defaults to `true` because OpenFang runs as a daemon
     /// with no interactive terminal, so permission prompts would block
-    /// indefinitely.  OpenFang's own capability / RBAC layer already
-    /// restricts what agents can do, making this safe.
+    /// indefinitely.
+    ///
+    /// Safety basis: the CC driver injects a per-spawn `settings.json` via
+    /// `claude --settings <file>` containing a `permissions.deny` set that
+    /// blocks CC's native FS, shell, and web tools (see `CC_NATIVE_DENY` in
+    /// `drivers/claude_code.rs`). Per Anthropic's settings documentation,
+    /// `permissions.deny` rules are enforced even when
+    /// `--dangerously-skip-permissions` is set — that flag bypasses only
+    /// allow/ask prompts, not security-critical denies. Native tools are
+    /// replaced by the gated `mcp__openfang__*` bridge surface, which is
+    /// RBAC-checked per-agent against `agent.toml` capabilities. Skipping
+    /// permission prompts is therefore safe: there is no ungated tool the
+    /// model can reach to do harm.
     #[serde(default = "default_skip_permissions")]
     pub skip_permissions: bool,
 
