@@ -323,6 +323,44 @@ pub fn built_in_tools() -> Vec<Tool> {
                 "required": ["query"]
             })),
         ),
+        // Mirrors `openfang_runtime::tool_runner` → `shell_exec`. Daemon-side
+        // `bridge_ipc` enforces workspace cwd sandbox + `exec_policy` (Full /
+        // Allowlist / Denylist / None) from the calling agent's agent.toml.
+        // The bridge advertises the tool unconditionally; per-agent capability
+        // gating via `OPENFANG_BRIDGE_ALLOWED` decides whether any given bridge
+        // instance actually exposes it, and Gate 2 in `bridge_ipc` rejects
+        // commands that fall outside the agent's exec_policy.
+        Tool::new(
+            "shell_exec",
+            "Execute a shell command and return its output. Runs in the agent's \
+             workspace directory; commands are subject to the agent's exec_policy \
+             (Full / Allowlist / Denylist / None) as declared in agent.toml.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "The command to execute" },
+                    "timeout_seconds": { "type": "integer", "description": "Timeout in seconds (default: 30)" }
+                },
+                "required": ["command"]
+            })),
+        ),
+        // Mirrors `openfang_runtime::tool_runner` → `web_search`. Pure-net,
+        // no FS sandbox. Multi-provider (Tavily → Brave → Perplexity → DDG
+        // fallback chain) configured via the daemon's `WebToolsContext`.
+        Tool::new(
+            "web_search",
+            "Search the web using multiple providers (Tavily, Brave, Perplexity, \
+             DuckDuckGo) with automatic fallback. Returns structured results with \
+             titles, URLs, and snippets.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "The search query" },
+                    "max_results": { "type": "integer", "description": "Maximum number of results to return (default: 5, max: 20)" }
+                },
+                "required": ["query"]
+            })),
+        ),
     ]
 }
 
@@ -470,6 +508,8 @@ mod tests {
                 "memory_store",
                 "memory_recall",
                 "agent_find",
+                "shell_exec",
+                "web_search",
             ],
             "surface drift — update both this test and the runtime tool_runner \
              schema when adding or removing built-in bridge tools"
@@ -481,8 +521,8 @@ mod tests {
         let bridge = Bridge::new(Arc::new(StubDispatcher {
             agent: "a".into(),
             // Dispatcher permits only file_read of the built-in slice;
-            // shell_exec is unknown to the bridge and must be ignored.
-            allowed: vec!["file_read".into(), "shell_exec".into()],
+            // not_a_real_tool is unknown to the bridge and must be ignored.
+            allowed: vec!["file_read".into(), "not_a_real_tool".into()],
             canned: DispatchOk {
                 content: String::new(),
                 is_error: false,

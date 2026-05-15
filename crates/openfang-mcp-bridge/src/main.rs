@@ -100,6 +100,8 @@ const DEFAULT_ALLOWED: &[&str] = &[
     "memory_recall",
     "agent_activate",
     "agent_find",
+    "shell_exec",
+    "web_search",
 ];
 
 #[cfg(unix)]
