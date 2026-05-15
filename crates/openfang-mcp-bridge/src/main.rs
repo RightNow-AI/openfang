@@ -89,6 +89,8 @@ const ALLOWED_ENV_VAR: &str = "OPENFANG_BRIDGE_ALLOWED";
 const DEFAULT_ALLOWED: &[&str] = &[
     "file_read",
     "file_list",
+    "file_write",
+    "web_fetch",
     "agent_list",
     "channel_send",
     "agent_send",

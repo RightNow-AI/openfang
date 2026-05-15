@@ -157,6 +157,39 @@ pub fn built_in_tools() -> Vec<Tool> {
                 "required": ["path"]
             })),
         ),
+        // Mirrors `openfang_runtime::tool_runner` → `file_write`. Workspace-
+        // scoped via the daemon-side `FS_SANDBOXED_TOOLS` gate in `bridge_ipc`.
+        Tool::new(
+            "file_write",
+            "Write content to a file. Paths are relative to the agent workspace.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The file path to write to" },
+                    "content": { "type": "string", "description": "The content to write" }
+                },
+                "required": ["path", "content"]
+            })),
+        ),
+        // Mirrors `openfang_runtime::tool_runner` → `web_fetch`. No FS touch,
+        // so it does not appear in `FS_SANDBOXED_TOOLS`; SSRF protection lives
+        // in the runtime implementation.
+        Tool::new(
+            "web_fetch",
+            "Fetch a URL with SSRF protection. Supports GET/POST/PUT/PATCH/DELETE. \
+             For GET, HTML is converted to Markdown. For other methods, returns raw \
+             response body.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "The URL to fetch (http/https only)" },
+                    "method": { "type": "string", "enum": ["GET","POST","PUT","PATCH","DELETE"], "description": "HTTP method (default: GET)" },
+                    "headers": { "type": "object", "description": "Custom HTTP headers as key-value pairs" },
+                    "body": { "type": "string", "description": "Request body for POST/PUT/PATCH" }
+                },
+                "required": ["url"]
+            })),
+        ),
         Tool::new(
             "agent_list",
             "List all currently running agents with their IDs, names, states, and models.",
@@ -336,6 +369,8 @@ mod tests {
             vec![
                 "file_read",
                 "file_list",
+                "file_write",
+                "web_fetch",
                 "agent_list",
                 "channel_send",
                 "agent_send",

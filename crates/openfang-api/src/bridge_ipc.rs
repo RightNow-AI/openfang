@@ -68,6 +68,8 @@ use tracing::{debug, error, info, warn};
 pub const ALLOWED_TOOLS: &[&str] = &[
     "file_read",
     "file_list",
+    "file_write",
+    "web_fetch",
     "agent_list",
     "channel_send",
     "agent_send",
@@ -85,7 +87,7 @@ pub const ALLOWED_TOOLS: &[&str] = &[
 /// account JSON sitting at the openfang root. The fix below scopes every
 /// FS call to the *authenticated* agent's workspace and refuses the call
 /// outright when no workspace is registered.
-const FS_SANDBOXED_TOOLS: &[&str] = &["file_read", "file_list"];
+const FS_SANDBOXED_TOOLS: &[&str] = &["file_read", "file_list", "file_write"];
 
 /// Daemon-version string sent in [`HelloAck::Ok`].
 fn daemon_version() -> String {
