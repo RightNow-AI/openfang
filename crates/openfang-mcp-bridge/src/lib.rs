@@ -124,6 +124,32 @@ pub enum ToolDispatchError {
 ///   ANAI-30 slice. Per-agent gating via `OPENFANG_BRIDGE_ALLOWED`
 ///   (sourced from each agent's `agent.toml` capabilities) decides
 ///   whether any given bridge instance actually advertises it.
+/// Default tool allowlist used by `main.rs` when [`OPENFANG_BRIDGE_ALLOWED`]
+/// is unset (legacy/dev path). Lives in the library — not in `main.rs` — so
+/// the bridge_ipc drift-catcher test in `openfang-api` can assert three-way
+/// correspondence between this set, [`built_in_tools`], and the daemon-side
+/// `bridge_ipc::ALLOWED_TOOLS`. Three files, one truth.
+///
+/// [`OPENFANG_BRIDGE_ALLOWED`]: ../../openfang_mcp_bridge/index.html
+pub const DEFAULT_ALLOWED: &[&str] = &[
+    "file_read",
+    "file_list",
+    "file_write",
+    "web_fetch",
+    "agent_list",
+    "channel_send",
+    "agent_send",
+    "agent_spawn",
+    "agent_kill",
+    "memory_store",
+    "memory_recall",
+    "agent_activate",
+    "agent_find",
+    "shell_exec",
+    "web_search",
+    "apply_patch",
+];
+
 pub fn built_in_tools() -> Vec<Tool> {
     use serde_json::json;
 

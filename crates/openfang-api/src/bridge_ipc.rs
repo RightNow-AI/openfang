@@ -941,6 +941,78 @@ mod tests {
         );
     }
 
+    /// **Drift-catcher: three-way correspondence.**
+    ///
+    /// Three lists must agree on the bridge tool surface:
+    ///
+    /// 1. `openfang_api::bridge_ipc::ALLOWED_TOOLS` — daemon-side dispatch
+    ///    allowlist (the call-time gate).
+    /// 2. `openfang_mcp_bridge::built_in_tools()` — MCP advertise surface
+    ///    (what CC actually sees in `tools/list`).
+    /// 3. `openfang_mcp_bridge::DEFAULT_ALLOWED` — bridge process default
+    ///    when `OPENFANG_BRIDGE_ALLOWED` is unset (legacy/dev path).
+    ///
+    /// Lesson from 13b/13d: a tool can be daemon-dispatchable (in
+    /// `ALLOWED_TOOLS`) but invisible to CC because someone forgot to add it
+    /// to `built_in_tools()`. The smoke tests fire the IPC path directly and
+    /// never hit `tools/list`, so the gap shipped silently in two commits in
+    /// a row. This test fails loudly if any of the three sets drifts.
+    ///
+    /// If you're here because this test failed: a bridge tool add or
+    /// remove must touch **all three files** — `crates/openfang-api/src/
+    /// bridge_ipc.rs` (`ALLOWED_TOOLS`), `crates/openfang-mcp-bridge/src/
+    /// lib.rs` (`built_in_tools` + `DEFAULT_ALLOWED`). Update both before
+    /// landing the commit.
+    #[test]
+    fn allowlist_three_way_correspondence() {
+        use openfang_mcp_bridge::{DEFAULT_ALLOWED, built_in_tools};
+        use std::collections::BTreeSet;
+
+        let daemon_set: BTreeSet<&str> = ALLOWED_TOOLS.iter().copied().collect();
+        let advertise_set: BTreeSet<String> = built_in_tools()
+            .iter()
+            .map(|t| t.name.as_ref().to_string())
+            .collect();
+        let advertise_borrowed: BTreeSet<&str> =
+            advertise_set.iter().map(|s| s.as_str()).collect();
+        let default_set: BTreeSet<&str> = DEFAULT_ALLOWED.iter().copied().collect();
+
+        assert_eq!(
+            daemon_set, advertise_borrowed,
+            "drift: ALLOWED_TOOLS (daemon dispatch) ≠ built_in_tools() (MCP advertise). \
+             daemon-only: {:?}, advertise-only: {:?}",
+            daemon_set.difference(&advertise_borrowed).collect::<Vec<_>>(),
+            advertise_borrowed.difference(&daemon_set).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            daemon_set, default_set,
+            "drift: ALLOWED_TOOLS (daemon dispatch) ≠ DEFAULT_ALLOWED (bridge default). \
+             daemon-only: {:?}, default-only: {:?}",
+            daemon_set.difference(&default_set).collect::<Vec<_>>(),
+            default_set.difference(&daemon_set).collect::<Vec<_>>(),
+        );
+    }
+
+    /// Pins the tool-surface cardinality at 16. Bumps to this number are
+    /// expected when a new bridge tool lands — update intentionally, in
+    /// lockstep with the three sets exercised by
+    /// [`allowlist_three_way_correspondence`].
+    #[test]
+    fn allowlist_count_is_sixteen() {
+        use openfang_mcp_bridge::{DEFAULT_ALLOWED, built_in_tools};
+        assert_eq!(ALLOWED_TOOLS.len(), 16, "ALLOWED_TOOLS surface cardinality");
+        assert_eq!(
+            built_in_tools().len(),
+            16,
+            "built_in_tools() advertise surface cardinality"
+        );
+        assert_eq!(
+            DEFAULT_ALLOWED.len(),
+            16,
+            "DEFAULT_ALLOWED bridge-default cardinality"
+        );
+    }
+
     #[test]
     fn apply_patch_is_workspace_sandboxed() {
         // tool_apply_patch resolves every patch-embedded path against

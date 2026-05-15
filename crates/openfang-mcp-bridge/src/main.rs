@@ -56,7 +56,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result, anyhow, bail};
 #[cfg(unix)]
 use openfang_mcp_bridge::{
-    Bridge, DispatchOk, ToolDispatchError, ToolDispatcher,
+    Bridge, DEFAULT_ALLOWED, DispatchOk, ToolDispatchError, ToolDispatcher,
     protocol::{
         CallRequest, CallResult, Frame, Hello, HelloAck, PROTOCOL_VERSION, SOCKET_ENV_VAR,
         TOKEN_ENV_VAR, codec,
@@ -80,30 +80,6 @@ const AGENT_ID_ENV_VAR: &str = "OPENFANG_BRIDGE_AGENT_ID";
 /// is the ANAI-30 four-tool slice.
 #[cfg(unix)]
 const ALLOWED_ENV_VAR: &str = "OPENFANG_BRIDGE_ALLOWED";
-
-/// Default tool allowlist when [`ALLOWED_ENV_VAR`] is unset. Mirrors the
-/// daemon's `bridge_ipc::ALLOWED_TOOLS`. Tracks the bridge's `built_in_tools`
-/// surface so a bridge spawned without per-agent gating (legacy/dev path)
-/// still advertises everything it's capable of dispatching.
-#[cfg(unix)]
-const DEFAULT_ALLOWED: &[&str] = &[
-    "file_read",
-    "file_list",
-    "file_write",
-    "web_fetch",
-    "agent_list",
-    "channel_send",
-    "agent_send",
-    "agent_spawn",
-    "agent_kill",
-    "memory_store",
-    "memory_recall",
-    "agent_activate",
-    "agent_find",
-    "shell_exec",
-    "web_search",
-    "apply_patch",
-];
 
 #[cfg(unix)]
 #[tokio::main]
