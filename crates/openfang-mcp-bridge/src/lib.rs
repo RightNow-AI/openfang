@@ -283,6 +283,33 @@ pub fn built_in_tools() -> Vec<Tool> {
                 "required": ["agent_id"]
             })),
         ),
+        // Mirrors `openfang_runtime::tool_runner` → `memory_store`. Kernel-
+        // managed shared memory; no FS sandbox needed (kernel scopes writes).
+        Tool::new(
+            "memory_store",
+            "Store a value in shared memory accessible by all agents. Use for cross-agent coordination and data sharing.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "The storage key" },
+                    "value": { "type": "string", "description": "The value to store (JSON-encode objects/arrays, or pass a plain string)" }
+                },
+                "required": ["key", "value"]
+            })),
+        ),
+        // Mirrors `openfang_runtime::tool_runner` → `memory_recall`. Read-only
+        // companion to memory_store.
+        Tool::new(
+            "memory_recall",
+            "Recall a value from shared memory by key.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "The storage key to recall" }
+                },
+                "required": ["key"]
+            })),
+        ),
         // Mirrors `openfang_runtime::tool_runner` → `agent_find`. Read-only
         // discovery; pairs with agent_send.
         Tool::new(
@@ -440,6 +467,8 @@ mod tests {
                 "agent_spawn",
                 "agent_kill",
                 "agent_activate",
+                "memory_store",
+                "memory_recall",
                 "agent_find",
             ],
             "surface drift — update both this test and the runtime tool_runner \

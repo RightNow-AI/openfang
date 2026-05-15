@@ -75,6 +75,8 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "agent_send",
     "agent_spawn",
     "agent_kill",
+    "memory_store",
+    "memory_recall",
     "agent_activate",
     "agent_find",
 ];
