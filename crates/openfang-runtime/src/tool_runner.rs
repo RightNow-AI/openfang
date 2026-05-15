@@ -263,6 +263,7 @@ pub async fn execute_tool(
                 if let Err(reason) =
                     crate::subprocess_sandbox::validate_command_allowlist(command, policy)
                 {
+                    let reason = reason.trim_end_matches('.');
                     return ToolResult {
                         tool_use_id: tool_use_id.to_string(),
                         content: format!(
@@ -3382,6 +3383,7 @@ async fn tool_process_start(
     if let Some(policy) = exec_policy {
         if let Err(reason) = crate::subprocess_sandbox::validate_command_allowlist(command, policy)
         {
+            let reason = reason.trim_end_matches('.');
             return Err(format!(
                 "process_start blocked: {reason}. Current exec_policy.mode = '{:?}'. \
                  To allow this command, add it to exec_policy.allowed_commands or \
