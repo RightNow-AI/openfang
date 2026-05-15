@@ -79,6 +79,7 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "memory_recall",
     "agent_activate",
     "agent_find",
+    "shell_exec",
 ];
 
 /// Subset of [`ALLOWED_TOOLS`] that operates on the agent's workspace
@@ -93,7 +94,13 @@ pub const ALLOWED_TOOLS: &[&str] = &[
 /// account JSON sitting at the openfang root. The fix below scopes every
 /// FS call to the *authenticated* agent's workspace and refuses the call
 /// outright when no workspace is registered.
-const FS_SANDBOXED_TOOLS: &[&str] = &["file_read", "file_list", "file_write"];
+/// `shell_exec` is included here because the command runs with
+/// `current_dir(workspace_root)` (tool_runner.rs:1704-1707). Without a
+/// registered workspace the shell would default to the daemon CWD
+/// (`~/.openfang`), where `secrets.env` and the GCP service-account JSON
+/// live — same sibling-leak surface the file tools had pre-D-fix. Refusing
+/// the call when no workspace is registered keeps that closed.
+const FS_SANDBOXED_TOOLS: &[&str] = &["file_read", "file_list", "file_write", "shell_exec"];
 
 /// Daemon-version string sent in [`HelloAck::Ok`].
 fn daemon_version() -> String {
@@ -526,6 +533,23 @@ async fn dispatch_call(
     }
     let workspace_root_arg: Option<&Path> = workspace_path.as_deref();
 
+    // shell_exec needs both `exec_policy` (allowlist / full / deny decision)
+    // and `allowed_env_vars` (hand-granted env passthrough — see
+    // agent_loop.rs:320 for the mirror of this metadata lookup). Every other
+    // bridge tool ignores both, so this is cheap to compute unconditionally.
+    let effective_exec_policy = entry.manifest.exec_policy.as_ref();
+    let hand_allowed_env: Vec<String> = entry
+        .manifest
+        .metadata
+        .get("hand_allowed_env")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let allowed_env_arg: Option<&[String]> = if hand_allowed_env.is_empty() {
+        None
+    } else {
+        Some(&hand_allowed_env)
+    };
+
     let result = openfang_runtime::tool_runner::execute_tool(
         &format!("bridge-{}", call.request_id),
         &call.tool_name,
@@ -537,10 +561,10 @@ async fn dispatch_call(
         Some(&kernel.mcp_connections),
         Some(&kernel.web_ctx),
         Some(&kernel.browser_ctx),
-        None, // allowed_env_vars — unused by the five allowlisted tools
+        allowed_env_arg,
         workspace_root_arg, // scoped to the authenticated agent's workspace; gated above
         Some(&kernel.media_engine),
-        None, // exec_policy — shell tools not in allowlist
+        effective_exec_policy,
         if kernel.config.tts.enabled {
             Some(&kernel.tts_engine)
         } else {
@@ -690,7 +714,7 @@ mod tests {
             &Frame::Call(CallRequest {
                 request_id: 1,
                 agent_id: "test-agent".into(),
-                tool_name: "shell_exec".into(), // deliberately not on the list
+                tool_name: "definitely_not_a_real_tool".into(), // deliberately not on the list
                 args: serde_json::json!({"cmd": "rm -rf /"}),
             }),
         )
@@ -869,6 +893,29 @@ mod tests {
         assert!(
             err.contains("unknown bridge token"),
             "expected unknown-token rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn allowlist_contains_shell_exec() {
+        // 13b: shell_exec reachable through the bridge so CC subprocesses
+        // operating under the 13a native-deny set still have a path to the
+        // shell (gated, sandboxed, exec_policy-enforced). Locking this in by
+        // name so a refactor of `ALLOWED_TOOLS` doesn't silently drop it.
+        assert!(
+            ALLOWED_TOOLS.contains(&"shell_exec"),
+            "shell_exec must be on the bridge allowlist post-13a"
+        );
+    }
+
+    #[test]
+    fn shell_exec_is_workspace_sandboxed() {
+        // shell_exec uses workspace_root as cwd (tool_runner.rs:1704-1707).
+        // Without sandbox membership, a no-workspace agent would shell out
+        // in `~/.openfang` and see secrets.env. Fail-closed gate.
+        assert!(
+            FS_SANDBOXED_TOOLS.contains(&"shell_exec"),
+            "shell_exec must require a registered workspace"
         );
     }
 
