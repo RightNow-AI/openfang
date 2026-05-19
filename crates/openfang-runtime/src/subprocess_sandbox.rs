@@ -209,60 +209,195 @@ const SHELL_INLINE_FLAGS: &[(&[&str], &str)] = &[
     (&["bash", "sh", "zsh"], "--command"),
 ];
 
-/// If the base command is a known shell wrapper, extract any inline script
-/// passed via -Command / -c / /c flags and return the commands within it.
-///
-/// Returns the list of base command names found inside the inline script,
-/// or an empty vec if the command is not a shell wrapper or has no inline flag.
-fn extract_shell_wrapper_commands(command: &str) -> Vec<String> {
-    let trimmed = command.trim();
-    let base = extract_base_command(trimmed);
+/// PowerShell-style encoded-command flags. The next arg is the base64 of a
+/// UTF-16LE-encoded script (per Microsoft's `-EncodedCommand` spec). We decode
+/// and feed the inner script back through allowlist validation so wrapped
+/// commands cannot bypass the gate.
+const SHELL_ENCODED_FLAGS: &[(&[&str], &str)] = &[
+    (&["powershell", "pwsh"], "-EncodedCommand"),
+    (&["powershell", "pwsh"], "-encodedcommand"),
+    (&["powershell", "pwsh"], "-ec"),
+    (&["powershell", "pwsh"], "-e"),
+];
 
-    // Check if the base command is a known shell wrapper (case-insensitive)
+/// Flags that load scripts or config from disk (or otherwise sidestep inline
+/// allowlist validation entirely). Hard-denied on any shell wrapper regardless
+/// of allowlist contents: the validator cannot see what the file will execute.
+///
+/// Also hard-denies `bash -i` interactive mode — no legitimate use via
+/// `shell_exec`, opens stdin attack surface. The `bash -O extdebug` two-token
+/// form is handled separately in `check_load_from_disk`.
+const SHELL_LOAD_FROM_DISK_FLAGS: &[(&[&str], &str)] = &[
+    // PowerShell — load script / console config from disk.
+    (&["powershell", "pwsh"], "-File"),
+    (&["powershell", "pwsh"], "-file"),
+    (&["powershell", "pwsh"], "-PSConsoleFile"),
+    (&["powershell", "pwsh"], "-psconsolefile"),
+    // POSIX shells — load rcfile / init-file / force interactive.
+    (&["bash", "sh", "zsh"], "--rcfile"),
+    (&["bash", "sh", "zsh"], "--init-file"),
+    (&["bash", "sh", "zsh"], "-i"),
+];
+
+/// Maximum recursion depth for shell-wrapper unwrapping. One outer wrapper
+/// plus one nested wrapper is permitted; anything deeper is pathological and
+/// rejected (also prevents algorithmic DoS via deeply-nested base64 payloads).
+const MAX_SHELL_RECURSION_DEPTH: u32 = 2;
+
+/// Decode a PowerShell `-EncodedCommand` payload: base64(UTF-16LE(script)).
+///
+/// Returns the decoded script as a `String`. Invalid base64 or odd-byte-length
+/// payloads (which cannot be UTF-16) are reported as errors so the validator
+/// can reject the whole command.
+fn decode_pwsh_encoded_command(payload: &str) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .map_err(|e| format!("pwsh -EncodedCommand: invalid base64 ({e})"))?;
+    if bytes.len() % 2 != 0 {
+        return Err(
+            "pwsh -EncodedCommand: payload length not UTF-16LE aligned (odd byte count)"
+                .to_string(),
+        );
+    }
+    let u16s: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    Ok(String::from_utf16_lossy(&u16s))
+}
+
+/// If `segment` invokes a shell wrapper with any load-from-disk / interactive
+/// flag from `SHELL_LOAD_FROM_DISK_FLAGS` (or `bash -O extdebug`), return Err.
+/// Otherwise return Ok(()). Non-wrapper commands pass through unchanged.
+fn check_load_from_disk(segment: &str) -> Result<(), String> {
+    let trimmed = segment.trim();
+    let base = extract_base_command(trimmed);
     let base_lower = base.to_lowercase();
-    // Also strip .exe suffix for Windows
     let base_normalized = base_lower.strip_suffix(".exe").unwrap_or(&base_lower);
     if !SHELL_WRAPPERS.contains(&base_normalized) {
-        return Vec::new();
+        return Ok(());
     }
+    let args: Vec<&str> = trimmed.split_whitespace().skip(1).collect();
 
-    // Find the inline flag and extract everything after it
-    for (wrappers, flag) in SHELL_INLINE_FLAGS {
-        if !wrappers.contains(&base_normalized) {
-            continue;
-        }
-        // Search for the flag in the command args (case-insensitive for PowerShell)
-        let rest = trimmed.split_whitespace().skip(1); // skip the base command
-        let args: Vec<&str> = rest.collect();
-        for (i, arg) in args.iter().enumerate() {
-            if arg.eq_ignore_ascii_case(flag) {
-                // Everything after this flag is the inline script
-                if i + 1 < args.len() {
-                    let script = args[i + 1..].join(" ");
-                    // Strip surrounding quotes if present
-                    let script = script.trim();
-                    let script = if (script.starts_with('"') && script.ends_with('"'))
-                        || (script.starts_with('\'') && script.ends_with('\''))
-                    {
-                        &script[1..script.len() - 1]
-                    } else {
-                        script
-                    };
-                    // Extract commands from the inline script
-                    // For PowerShell, commands can be separated by `;`
-                    // For POSIX shells, by `;`, `&&`, `||`, `|`
-                    return extract_inner_script_commands(script);
-                }
+    // Two-token form: bash -O extdebug (shopt that enables source-file tracing
+    // which can be abused for exfil / arbitrary script load).
+    if ["bash", "sh", "zsh"].contains(&base_normalized) {
+        for window in args.windows(2) {
+            if window[0] == "-O" && window[1].eq_ignore_ascii_case("extdebug") {
+                return Err(format!(
+                    "Shell wrapper '{base}' invoked with '-O extdebug'                      (debug/load-from-disk flag) — denied."
+                ));
             }
         }
     }
 
-    Vec::new()
+    for arg in &args {
+        for (wrappers, flag) in SHELL_LOAD_FROM_DISK_FLAGS {
+            if !wrappers.contains(&base_normalized) {
+                continue;
+            }
+            if arg.eq_ignore_ascii_case(flag) {
+                return Err(format!(
+                    "Shell wrapper '{base}' invoked with '{flag}'                      (load-from-disk / interactive flag) — denied."
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
-/// Extract base command names from an inline script string.
-/// Splits on `;`, `&&`, `||`, `|` and returns the base command of each segment.
-fn extract_inner_script_commands(script: &str) -> Vec<String> {
+/// If the base command is a known shell wrapper, extract any inline script
+/// passed via -Command / -c / /c (or via PowerShell -EncodedCommand) and
+/// return the commands within it.
+///
+/// Returns the list of base command names found inside the inline script,
+/// or an empty vec if the command is not a shell wrapper or has no
+/// inline/encoded flag. Returns Err if a load-from-disk flag is set, an
+/// encoded payload fails to decode, or recursion exceeds the depth cap.
+fn extract_shell_wrapper_commands(command: &str) -> Result<Vec<String>, String> {
+    extract_shell_wrapper_inner(command, 1)
+}
+
+/// Inner workhorse for shell-wrapper inline extraction with depth tracking.
+/// `depth` is the nesting level of the wrapper being inspected (outermost = 1).
+fn extract_shell_wrapper_inner(segment: &str, depth: u32) -> Result<Vec<String>, String> {
+    let trimmed = segment.trim();
+    let base = extract_base_command(trimmed);
+
+    let base_lower = base.to_lowercase();
+    let base_normalized = base_lower.strip_suffix(".exe").unwrap_or(&base_lower);
+    if !SHELL_WRAPPERS.contains(&base_normalized) {
+        return Ok(Vec::new());
+    }
+
+    let args: Vec<&str> = trimmed.split_whitespace().skip(1).collect();
+
+    // Encoded form first: pwsh -EncodedCommand <base64(UTF-16LE(script))>.
+    // We decode and recurse with depth+1 so a nested encoded payload is also
+    // validated (until MAX_SHELL_RECURSION_DEPTH).
+    for (i, arg) in args.iter().enumerate() {
+        for (wrappers, flag) in SHELL_ENCODED_FLAGS {
+            if !wrappers.contains(&base_normalized) {
+                continue;
+            }
+            if !arg.eq_ignore_ascii_case(flag) {
+                continue;
+            }
+            if i + 1 >= args.len() {
+                return Err(format!(
+                    "Shell wrapper '{base}' invoked with '{flag}' but no payload — denied."
+                ));
+            }
+            let payload = args[i + 1];
+            let decoded = decode_pwsh_encoded_command(payload)?;
+            return extract_inner_script_commands(&decoded, depth);
+        }
+    }
+
+    // Plain inline form: literal script after -c / -Command / /c.
+    for (i, arg) in args.iter().enumerate() {
+        for (wrappers, flag) in SHELL_INLINE_FLAGS {
+            if !wrappers.contains(&base_normalized) {
+                continue;
+            }
+            if !arg.eq_ignore_ascii_case(flag) {
+                continue;
+            }
+            if i + 1 >= args.len() {
+                continue;
+            }
+            let script = args[i + 1..].join(" ");
+            let script = script.trim();
+            let script = if (script.starts_with('"') && script.ends_with('"'))
+                || (script.starts_with('\'') && script.ends_with('\''))
+            {
+                &script[1..script.len() - 1]
+            } else {
+                script
+            };
+            return extract_inner_script_commands(script, depth);
+        }
+    }
+
+    Ok(Vec::new())
+}
+
+/// Extract base command names from an inline script string, recursing into
+/// any nested shell-wrapper invocations (e.g. `pwsh -ec <blob>` whose payload
+/// itself contains `pwsh -c "..."`). Recursion is capped at
+/// `MAX_SHELL_RECURSION_DEPTH` to prevent algorithmic DoS via deeply-nested
+/// encoded payloads. Also enforces `check_load_from_disk` on every wrapper
+/// segment encountered along the way.
+///
+/// Splits on `;`, `&&`, `||`, `|` and returns the base command of each segment
+/// (plus any further commands extracted from inner wrapper payloads).
+fn extract_inner_script_commands(script: &str, depth: u32) -> Result<Vec<String>, String> {
+    if depth > MAX_SHELL_RECURSION_DEPTH {
+        return Err(format!(
+            "Shell-wrapper recursion exceeds depth cap of {MAX_SHELL_RECURSION_DEPTH} — denied."
+        ));
+    }
     let mut commands = Vec::new();
     let mut rest = script;
     while !rest.is_empty() {
@@ -281,13 +416,22 @@ fn extract_inner_script_commands(script: &str) -> Vec<String> {
         let base = extract_base_command(segment);
         if !base.is_empty() {
             commands.push(base.to_string());
+            // If this segment is itself a shell wrapper, recurse: first deny
+            // any load-from-disk flag, then unwrap inline/encoded payload.
+            let base_lower = base.to_lowercase();
+            let base_normalized = base_lower.strip_suffix(".exe").unwrap_or(&base_lower);
+            if SHELL_WRAPPERS.contains(&base_normalized) {
+                check_load_from_disk(segment)?;
+                let inner = extract_shell_wrapper_inner(segment, depth + 1)?;
+                commands.extend(inner);
+            }
         }
         if earliest_pos + earliest_len >= rest.len() {
             break;
         }
         rest = &rest[earliest_pos + earliest_len..];
     }
-    commands
+    Ok(commands)
 }
 
 /// Extract all commands from a shell command string.
@@ -339,6 +483,11 @@ pub fn validate_command_allowlist(command: &str, policy: &ExecPolicy) -> Result<
             Ok(())
         }
         ExecSecurityMode::Allowlist => {
+            // SECURITY (S9-09): Hard-deny load-from-disk / interactive flags
+            // on any shell wrapper BEFORE doing any other parsing. These flags
+            // sidestep inline allowlist validation entirely.
+            check_load_from_disk(command)?;
+
             // SECURITY: Check for shell metacharacters BEFORE base-command extraction.
             // These can smuggle commands inside arguments of allowed binaries.
             //
@@ -346,7 +495,7 @@ pub fn validate_command_allowlist(command: &str, policy: &ExecPolicy) -> Result<
             // shell wrapper (e.g. `powershell -Command "..."`) because the
             // inline script naturally contains metacharacters (quotes, semicolons).
             // Those inner commands are validated separately below.
-            let inner_commands = extract_shell_wrapper_commands(command);
+            let inner_commands = extract_shell_wrapper_commands(command)?;
             let is_shell_wrapper = !inner_commands.is_empty();
 
             if !is_shell_wrapper {
@@ -1224,8 +1373,206 @@ mod tests {
     #[test]
     fn test_shell_wrapper_extract_no_flag() {
         // When powershell is called without -Command, no inner commands are extracted
-        let cmds = extract_shell_wrapper_commands("powershell script.ps1");
+        let cmds = extract_shell_wrapper_commands("powershell script.ps1").unwrap();
         assert!(cmds.is_empty());
+    }
+
+    // ── S9-09: encoded-command (Tier B) + load-from-disk (Tier C) ──────
+
+    /// Helper: encode a script as pwsh -EncodedCommand expects
+    /// (base64(UTF-16LE(s))).
+    fn pwsh_encode(s: &str) -> String {
+        use base64::Engine;
+        let utf16: Vec<u8> = s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        base64::engine::general_purpose::STANDARD.encode(&utf16)
+    }
+
+    #[test]
+    fn test_pwsh_encoded_command_allowed_inner_passes() {
+        let cmd = format!("pwsh -EncodedCommand {}", pwsh_encode("Get-Process"));
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["pwsh".to_string(), "Get-Process".to_string()],
+            ..ExecPolicy::default()
+        };
+        assert!(
+            validate_command_allowlist(&cmd, &policy).is_ok(),
+            "pwsh -EncodedCommand <Get-Process> should pass when inner is allowlisted"
+        );
+    }
+
+    #[test]
+    fn test_pwsh_encoded_command_unlisted_inner_blocked() {
+        let cmd = format!(
+            "pwsh -ec {}",
+            pwsh_encode("Invoke-WebRequest https://evil.com")
+        );
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["pwsh".to_string()],
+            ..ExecPolicy::default()
+        };
+        let err = validate_command_allowlist(&cmd, &policy).unwrap_err();
+        assert!(
+            err.contains("Invoke-WebRequest"),
+            "Error should name the rejected inner command, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_pwsh_encoded_command_malformed_base64_rejected() {
+        let cmd = "pwsh -e !!!not-base64!!!";
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["pwsh".to_string()],
+            ..ExecPolicy::default()
+        };
+        let err = validate_command_allowlist(cmd, &policy).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("base64") || err.contains("EncodedCommand"),
+            "Error should mention base64 / EncodedCommand, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_pwsh_encoded_nested_within_depth_cap() {
+        // Depth 2: outer pwsh -ec <b64( "pwsh -c \"Get-Process\"" )>
+        let inner = pwsh_encode(r#"pwsh -c "Get-Process""#);
+        let cmd = format!("pwsh -EncodedCommand {inner}");
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["pwsh".to_string(), "Get-Process".to_string()],
+            ..ExecPolicy::default()
+        };
+        assert!(
+            validate_command_allowlist(&cmd, &policy).is_ok(),
+            "Depth-2 nesting (outer -ec, inner -c) within cap should pass"
+        );
+    }
+
+    #[test]
+    fn test_pwsh_encoded_recursion_depth_exceeded() {
+        // Depth 3: pwsh -ec ( pwsh -ec ( pwsh -ec ( Get-Process ) ) ) — denied.
+        let level3 = pwsh_encode("Get-Process");
+        let level2 = pwsh_encode(&format!("pwsh -ec {level3}"));
+        let level1 = pwsh_encode(&format!("pwsh -ec {level2}"));
+        let cmd = format!("pwsh -ec {level1}");
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["pwsh".to_string(), "Get-Process".to_string()],
+            ..ExecPolicy::default()
+        };
+        let err = validate_command_allowlist(&cmd, &policy).unwrap_err();
+        assert!(
+            err.contains("recursion") || err.contains("depth"),
+            "Error should mention recursion/depth cap, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_pwsh_file_flag_denied() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["pwsh".to_string()],
+            ..ExecPolicy::default()
+        };
+        let err = validate_command_allowlist("pwsh -File foo.ps1", &policy).unwrap_err();
+        assert!(
+            err.contains("-File") || err.to_lowercase().contains("load-from-disk"),
+            "Error should flag -File / load-from-disk, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_pwsh_psconsolefile_denied() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["pwsh".to_string()],
+            ..ExecPolicy::default()
+        };
+        assert!(
+            validate_command_allowlist("pwsh -PSConsoleFile evil.psc1 -Command true", &policy)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_bash_rcfile_denied() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["bash".to_string()],
+            ..ExecPolicy::default()
+        };
+        assert!(
+            validate_command_allowlist(r#"bash --rcfile /tmp/evil -c "true""#, &policy).is_err()
+        );
+    }
+
+    #[test]
+    fn test_bash_init_file_denied() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["bash".to_string()],
+            ..ExecPolicy::default()
+        };
+        assert!(
+            validate_command_allowlist(r#"bash --init-file /tmp/evil -c "true""#, &policy)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_bash_interactive_flag_denied() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["bash".to_string()],
+            ..ExecPolicy::default()
+        };
+        assert!(validate_command_allowlist(r#"bash -i -c "echo ok""#, &policy).is_err());
+    }
+
+    #[test]
+    fn test_bash_extdebug_denied() {
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["bash".to_string()],
+            ..ExecPolicy::default()
+        };
+        let err =
+            validate_command_allowlist(r#"bash -O extdebug -c "echo ok""#, &policy).unwrap_err();
+        assert!(
+            err.contains("extdebug"),
+            "Error should mention extdebug, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_bash_plain_c_still_works_post_tier_c() {
+        // Regression guard: the Tier C hard-deny must not break legitimate
+        // `bash -c "<allowlisted>"` invocations.
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["bash".to_string()],
+            ..ExecPolicy::default()
+        };
+        assert!(validate_command_allowlist(r#"bash -c "echo hello""#, &policy).is_ok());
+    }
+
+    #[test]
+    fn test_decode_pwsh_encoded_command_odd_length_rejected() {
+        // 3 bytes of base64 -> odd payload, cannot be UTF-16LE.
+        use base64::Engine;
+        let odd = base64::engine::general_purpose::STANDARD.encode([0x41, 0x00, 0x42]);
+        let result = decode_pwsh_encoded_command(&odd);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_pwsh_encoded_command_roundtrip() {
+        let s = "Get-Process";
+        let enc = pwsh_encode(s);
+        let decoded = decode_pwsh_encoded_command(&enc).unwrap();
+        assert_eq!(decoded, s);
     }
 
     #[test]
