@@ -180,12 +180,17 @@ impl GeminiEmbeddingDriver {
     pub fn new(config: EmbeddingConfig) -> Result<Self, EmbeddingError> {
         let resource_model = normalize_gemini_model_name(&config.model);
         let dims = infer_dimensions(resource_model.trim_start_matches("models/"));
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| EmbeddingError::Http(e.to_string()))?;
 
         Ok(Self {
             api_key: Zeroizing::new(config.api_key),
             base_url: config.base_url,
             resource_model,
-            client: reqwest::Client::new(),
+            client,
             dims,
             mode: std::sync::atomic::AtomicU8::new(GeminiEmbeddingMode::Batch as u8),
         })
@@ -348,7 +353,10 @@ impl GeminiEmbeddingDriver {
     ) -> Result<T, EmbeddingError> {
         let status = resp.status().as_u16();
         if status != 200 {
-            let body_text = resp.text().await.unwrap_or_default();
+            let body_text = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<body read error: {e}>"));
             return Err(EmbeddingError::Api {
                 status,
                 message: body_text,
