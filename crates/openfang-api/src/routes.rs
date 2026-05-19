@@ -336,6 +336,50 @@ pub fn inject_attachments_into_session(
     }
 }
 
+/// Reject caller-supplied sender identity on unauthenticated HTTP message routes.
+///
+/// **S6-04 tight fix.** The `/api/agents/{id}/message` and `/message/stream`
+/// HTTP routes have no provenance/auth path today (no `BridgeAuthority`
+/// resolve, no per-spawn token, no signed envelope). Any local POST can
+/// therefore claim to be any platform user (e.g. a WhatsApp number,
+/// a Telegram user-id) and the kernel will faithfully thread that identity
+/// into the agent's prompt context, which is then trusted by the LLM as
+/// "this turn came from $sender".
+///
+/// Until the provenance/auth path exists (tracked as **FU-01** in
+/// `_shared/openfang/findings/bridge-v2/followups.md`), the only safe
+/// behaviour is to *refuse* requests that try to assert a sender identity
+/// at all. Channel adapters (Telegram, WhatsApp, Discord, ...) do **not**
+/// call this route — they reach the kernel directly via the channel
+/// router — so this rejection has no effect on legitimate channel flows.
+///
+/// Returns `Some(reason)` when the request must be rejected (400),
+/// `None` when it is safe to forward to the kernel with `sender_id = None`.
+pub(crate) fn reject_unauthenticated_sender_identity(
+    req: &MessageRequest,
+) -> Option<&'static str> {
+    let has_id = req
+        .sender_id
+        .as_ref()
+        .is_some_and(|s| !s.is_empty());
+    let has_name = req
+        .sender_name
+        .as_ref()
+        .is_some_and(|s| !s.is_empty());
+    match (has_id, has_name) {
+        (false, false) => None,
+        (true, false) => Some(
+            "sender_id is not accepted on this route (no provenance/auth path yet — see FU-01)",
+        ),
+        (false, true) => Some(
+            "sender_name is not accepted on this route (no provenance/auth path yet — see FU-01)",
+        ),
+        (true, true) => Some(
+            "sender_id/sender_name are not accepted on this route (no provenance/auth path yet — see FU-01)",
+        ),
+    }
+}
+
 /// POST /api/agents/:id/message — Send a message to an agent.
 pub async fn send_message(
     State(state): State<Arc<AppState>>,
@@ -358,6 +402,18 @@ pub async fn send_message(
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(serde_json::json!({"error": "Message too large (max 64KB)"})),
+        );
+    }
+
+    // SECURITY (S6-04): refuse caller-supplied sender identity on this route.
+    if let Some(reason) = reject_unauthenticated_sender_identity(&req) {
+        tracing::warn!(
+            agent = %id,
+            "Rejected /api/agents/{{id}}/message with caller-supplied sender identity: {reason}"
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": reason})),
         );
     }
 
@@ -391,8 +447,11 @@ pub async fn send_message(
             &req.message,
             Some(kernel_handle),
             content_blocks,
-            req.sender_id,
-            req.sender_name,
+            // SECURITY (S6-04): identity is *never* threaded from this route
+            // until FU-01 (provenance/auth) lands. Validator above guarantees
+            // these are None/empty; pass None explicitly to be defensive.
+            None,
+            None,
         )
         .await
     {
@@ -1548,6 +1607,19 @@ pub async fn send_message_stream(
             .into_response();
     }
 
+    // SECURITY (S6-04): refuse caller-supplied sender identity on this route.
+    if let Some(reason) = reject_unauthenticated_sender_identity(&req) {
+        tracing::warn!(
+            agent = %id,
+            "Rejected /api/agents/{{id}}/message/stream with caller-supplied sender identity: {reason}"
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": reason})),
+        )
+            .into_response();
+    }
+
     let agent_id: AgentId = match id.parse() {
         Ok(id) => id,
         Err(_) => {
@@ -1572,8 +1644,11 @@ pub async fn send_message_stream(
         agent_id,
         &req.message,
         Some(kernel_handle),
-        req.sender_id,
-        req.sender_name,
+        // SECURITY (S6-04): identity is *never* threaded from this route
+        // until FU-01 (provenance/auth) lands. Validator above guarantees
+        // these are None/empty; pass None explicitly to be defensive.
+        None,
+        None,
         None, // SSE streaming doesn't support image attachments yet
     ) {
         Ok(pair) => pair,
@@ -13078,6 +13153,84 @@ mod uninstall_agent_tests {
         assert!(
             home.join("escape").is_dir(),
             "sibling dir outside agents/ must NOT be deleted"
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod s604_validator_tests {
+    use super::*;
+    use crate::types::MessageRequest;
+
+    fn req(sender_id: Option<&str>, sender_name: Option<&str>) -> MessageRequest {
+        MessageRequest {
+            message: "hi".to_string(),
+            attachments: Vec::new(),
+            sender_id: sender_id.map(|s| s.to_string()),
+            sender_name: sender_name.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn s604_no_sender_fields_is_allowed() {
+        assert!(reject_unauthenticated_sender_identity(&req(None, None)).is_none());
+    }
+
+    #[test]
+    fn s604_empty_sender_fields_is_allowed() {
+        // Defensive: clients sending empty strings (deserialized from `""`)
+        // are treated as absence, not as an attempted identity assertion.
+        assert!(reject_unauthenticated_sender_identity(&req(Some(""), Some(""))).is_none());
+    }
+
+    #[test]
+    fn s604_sender_id_alone_is_rejected() {
+        let reason = reject_unauthenticated_sender_identity(&req(Some("+15551234567"), None))
+            .expect("must reject caller-supplied sender_id");
+        assert!(reason.contains("sender_id"));
+        assert!(reason.contains("FU-01"));
+    }
+
+    #[test]
+    fn s604_sender_name_alone_is_rejected() {
+        let reason = reject_unauthenticated_sender_identity(&req(None, Some("Ben")))
+            .expect("must reject caller-supplied sender_name");
+        assert!(reason.contains("sender_name"));
+        assert!(reason.contains("FU-01"));
+    }
+
+    #[test]
+    fn s604_both_fields_rejected_with_combined_message() {
+        let reason =
+            reject_unauthenticated_sender_identity(&req(Some("+15551234567"), Some("Ben")))
+                .expect("must reject when both fields are present");
+        assert!(reason.contains("sender_id"));
+        assert!(reason.contains("sender_name"));
+        assert!(reason.contains("FU-01"));
+    }
+
+    #[test]
+    fn s604_reason_strings_are_stable() {
+        // Stable error strings let CI / clients pattern-match. Changing these
+        // is a breaking change for callers; bump deliberately.
+        assert_eq!(
+            reject_unauthenticated_sender_identity(&req(Some("x"), None)),
+            Some(
+                "sender_id is not accepted on this route (no provenance/auth path yet — see FU-01)"
+            )
+        );
+        assert_eq!(
+            reject_unauthenticated_sender_identity(&req(None, Some("x"))),
+            Some(
+                "sender_name is not accepted on this route (no provenance/auth path yet — see FU-01)"
+            )
+        );
+        assert_eq!(
+            reject_unauthenticated_sender_identity(&req(Some("x"), Some("y"))),
+            Some(
+                "sender_id/sender_name are not accepted on this route (no provenance/auth path yet — see FU-01)"
+            )
         );
     }
 }
