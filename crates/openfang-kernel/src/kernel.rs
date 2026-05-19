@@ -1008,6 +1008,8 @@ impl OpenFangKernel {
                 // Auto-detect embedding provider by checking API key env vars in
                 // priority order.  First match wins.
                 const API_KEY_PROVIDERS: &[(&str, &str)] = &[
+                    ("GEMINI_API_KEY", "gemini"),
+                    ("GOOGLE_API_KEY", "gemini"),
                     ("OPENAI_API_KEY", "openai"),
                     ("GROQ_API_KEY", "groq"),
                     ("MISTRAL_API_KEY", "mistral"),
@@ -1069,8 +1071,8 @@ impl OpenFangKernel {
                         warn!(
                             "No embedding provider available. Memory recall will use text search only. \
                              Configure [memory] embedding_provider in config.toml or set an API key \
-                             (OPENAI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, TOGETHER_API_KEY, \
-                             FIREWORKS_API_KEY, COHERE_API_KEY)."
+                             (GEMINI_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, \
+                             MISTRAL_API_KEY, TOGETHER_API_KEY, FIREWORKS_API_KEY, COHERE_API_KEY)."
                         );
                     }
 
@@ -6857,6 +6859,7 @@ fn apply_budget_defaults(
 fn default_embedding_model_for_provider(provider: &str) -> &'static str {
     match provider {
         "openai" => "text-embedding-3-small",
+        "gemini" | "google" => "gemini-embedding-2-preview",
         "groq" => "nomic-embed-text",
         "mistral" => "mistral-embed",
         "together" => "togethercomputer/m2-bert-80M-8k-retrieval",
