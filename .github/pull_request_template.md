@@ -14,7 +14,7 @@ Run the full gate locally before opening the PR — CI is strict and Windows cli
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings`
 - [ ] `cargo test --workspace`
 - [ ] `cargo audit` (no new vulns; warnings reviewed)
-- [ ] If touching cross-platform code: verify `#[cfg(unix)]` / `#[cfg(windows)]` gates on imports as well as items (Windows clippy fires `-D unused-imports` on imports only used by a gated `main`)
+- [ ] **Windows cross-check:** `scripts/check-windows.sh` (catches `#[cfg(unix)]`-gated import warnings that only fire on Windows CI). First run installs the `x86_64-pc-windows-gnu` rustup target; requires `mingw-w64` (macOS: `brew install mingw-w64`).
 
 ## Testing
 
