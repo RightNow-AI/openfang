@@ -355,17 +355,9 @@ pub fn inject_attachments_into_session(
 ///
 /// Returns `Some(reason)` when the request must be rejected (400),
 /// `None` when it is safe to forward to the kernel with `sender_id = None`.
-pub(crate) fn reject_unauthenticated_sender_identity(
-    req: &MessageRequest,
-) -> Option<&'static str> {
-    let has_id = req
-        .sender_id
-        .as_ref()
-        .is_some_and(|s| !s.is_empty());
-    let has_name = req
-        .sender_name
-        .as_ref()
-        .is_some_and(|s| !s.is_empty());
+pub(crate) fn reject_unauthenticated_sender_identity(req: &MessageRequest) -> Option<&'static str> {
+    let has_id = req.sender_id.as_ref().is_some_and(|s| !s.is_empty());
+    let has_name = req.sender_name.as_ref().is_some_and(|s| !s.is_empty());
     match (has_id, has_name) {
         (false, false) => None,
         (true, false) => Some(
@@ -7146,9 +7138,7 @@ pub async fn mcp_http(
         // Canonical FS-sandbox gate (see
         // `openfang_runtime::tool_runner::FS_SANDBOXED_TOOLS`).
         // Single source of truth across the IPC and HTTP `/mcp` surfaces.
-        use openfang_runtime::agent_tool_context::{
-            AgentExecContext, requires_exec_policy,
-        };
+        use openfang_runtime::agent_tool_context::{requires_exec_policy, AgentExecContext};
         use openfang_runtime::tool_runner::FS_SANDBOXED_TOOLS;
         let agent_id_opt: Option<openfang_types::agent::AgentId> = arguments
             .get("_agent_id")
@@ -7157,8 +7147,7 @@ pub async fn mcp_http(
         // Resolve the registry entry once so both workspace and exec
         // context come from the same manifest snapshot (no TOCTOU between
         // the workspace lookup and the exec_policy lookup).
-        let registry_entry = agent_id_opt
-            .and_then(|aid| state.kernel.registry.get(aid));
+        let registry_entry = agent_id_opt.and_then(|aid| state.kernel.registry.get(aid));
         let workspace_path: Option<std::path::PathBuf> = registry_entry
             .as_ref()
             .and_then(|entry| entry.manifest.workspace.clone());
@@ -7241,10 +7230,8 @@ pub async fn mcp_http(
         // context (resolved above). Falls through to `None, None` only
         // when no `_agent_id` was supplied AND the tool isn't gated by
         // `requires_exec_policy` (which short-circuits above).
-        let allowed_env_arg: Option<&[String]> =
-            exec_ctx.as_ref().and_then(|c| c.allowed_env());
-        let effective_exec_policy =
-            exec_ctx.as_ref().and_then(|c| c.exec_policy_ref());
+        let allowed_env_arg: Option<&[String]> = exec_ctx.as_ref().and_then(|c| c.allowed_env());
+        let effective_exec_policy = exec_ctx.as_ref().and_then(|c| c.exec_policy_ref());
         let result = openfang_runtime::tool_runner::execute_tool(
             "mcp-http",
             tool_name,
@@ -13156,7 +13143,6 @@ mod uninstall_agent_tests {
         );
     }
 }
-
 
 #[cfg(test)]
 mod s604_validator_tests {

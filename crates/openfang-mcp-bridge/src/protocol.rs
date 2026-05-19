@@ -150,10 +150,7 @@ pub mod codec {
     }
 
     /// Write one length-prefixed JSON frame to `w`.
-    pub async fn write_frame<W: AsyncWriteExt + Unpin>(
-        w: &mut W,
-        frame: &Frame,
-    ) -> io::Result<()> {
+    pub async fn write_frame<W: AsyncWriteExt + Unpin>(w: &mut W, frame: &Frame) -> io::Result<()> {
         let bytes = serde_json::to_vec(frame)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("encode: {e}")))?;
         if bytes.len() > MAX_FRAME_BYTES {

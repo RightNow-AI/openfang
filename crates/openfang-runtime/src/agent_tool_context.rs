@@ -124,9 +124,11 @@ mod tests {
     #[test]
     fn manifest_with_exec_policy_propagates() {
         let mut m = AgentManifest::default();
-        let mut policy = ExecPolicy::default();
-        policy.mode = ExecSecurityMode::Allowlist;
-        policy.allowed_commands = vec!["echo".into(), "ls".into()];
+        let policy = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["echo".into(), "ls".into()],
+            ..Default::default()
+        };
         m.exec_policy = Some(policy.clone());
 
         let ctx = AgentExecContext::from_manifest(&m);
@@ -158,10 +160,7 @@ mod tests {
         // as `Some(...)` — it would partially-bind env passthrough on a
         // best-effort basis, which is the inverse of what an operator wants
         // out of a security gate. Treat malformed as "no override".
-        let m = manifest_with_metadata(vec![(
-            "hand_allowed_env",
-            json!("not an array"),
-        )]);
+        let m = manifest_with_metadata(vec![("hand_allowed_env", json!("not an array"))]);
         let ctx = AgentExecContext::from_manifest(&m);
         assert!(ctx.hand_allowed_env.is_empty());
         assert!(ctx.allowed_env().is_none());

@@ -418,9 +418,26 @@ fn unwrap_wrapper_args<'a>(wrapper: &str, args: &'a [&'a str]) -> Result<&'a [&'
         }
         "sudo" => {
             const SUDO_CONSUMING: &[&str] = &[
-                "-u", "-g", "-U", "-D", "-h", "-p", "-r", "-t", "-T", "-C", "--user", "--group",
-                "--other-user", "--chdir", "--host", "--prompt", "--role", "--type",
-                "--command-timeout", "--close-from",
+                "-u",
+                "-g",
+                "-U",
+                "-D",
+                "-h",
+                "-p",
+                "-r",
+                "-t",
+                "-T",
+                "-C",
+                "--user",
+                "--group",
+                "--other-user",
+                "--chdir",
+                "--host",
+                "--prompt",
+                "--role",
+                "--type",
+                "--command-timeout",
+                "--close-from",
             ];
             while i < args.len() {
                 let a = args[i];
@@ -554,7 +571,6 @@ fn extract_wrapper_binary_chain(segment: &str, depth: u32) -> Result<Vec<String>
     }
     Ok(chain)
 }
-
 
 /// If the base command is a known shell wrapper, extract any inline script
 /// passed via -Command / -c / /c (or via PowerShell -EncodedCommand) and
@@ -1822,8 +1838,7 @@ mod tests {
             ..ExecPolicy::default()
         };
         assert!(
-            validate_command_allowlist(r#"bash --init-file /tmp/evil -c "true""#, &policy)
-                .is_err()
+            validate_command_allowlist(r#"bash --init-file /tmp/evil -c "true""#, &policy).is_err()
         );
     }
 
@@ -1891,7 +1906,6 @@ mod tests {
         assert_eq!(cmds[0], "\u{4f60}\u{597d}");
     }
 
-
     // ── S9-08 wrapper-binary recursion & hard-deny ─────────────────────
 
     fn wrapper_policy() -> ExecPolicy {
@@ -1900,8 +1914,14 @@ mod tests {
         ExecPolicy {
             mode: ExecSecurityMode::Allowlist,
             allowed_commands: vec![
-                "env".into(), "sudo".into(), "nice".into(), "nohup".into(),
-                "timeout".into(), "ls".into(), "bash".into(), "python3".into(),
+                "env".into(),
+                "sudo".into(),
+                "nice".into(),
+                "nohup".into(),
+                "timeout".into(),
+                "ls".into(),
+                "bash".into(),
+                "python3".into(),
             ],
             ..ExecPolicy::default()
         }
@@ -2003,8 +2023,8 @@ mod tests {
             allowed_commands: vec!["xargs".into(), "ls".into()],
             ..ExecPolicy::default()
         };
-        let err = validate_command_allowlist("xargs ls", &p)
-            .expect_err("xargs must be hard-denied");
+        let err =
+            validate_command_allowlist("xargs ls", &p).expect_err("xargs must be hard-denied");
         assert!(err.contains("hard-denied"), "got: {err}");
     }
 
@@ -2027,8 +2047,8 @@ mod tests {
             allowed_commands: vec!["strace".into(), "ls".into()],
             ..ExecPolicy::default()
         };
-        let err = validate_command_allowlist("strace ls", &p2)
-            .expect_err("strace must be hard-denied");
+        let err =
+            validate_command_allowlist("strace ls", &p2).expect_err("strace must be hard-denied");
         assert!(err.contains("hard-denied"), "got: {err}");
         // Also via wrapper_policy: same outcome.
         assert!(validate_command_allowlist("strace ls", &p).is_err());
@@ -2039,12 +2059,20 @@ mod tests {
         let p = ExecPolicy {
             mode: ExecSecurityMode::Allowlist,
             allowed_commands: vec![
-                "time".into(), "chroot".into(), "unshare".into(), "setsid".into(),
-                "stdbuf".into(), "flock".into(), "gdb".into(), "ls".into(),
+                "time".into(),
+                "chroot".into(),
+                "unshare".into(),
+                "setsid".into(),
+                "stdbuf".into(),
+                "flock".into(),
+                "gdb".into(),
+                "ls".into(),
             ],
             ..ExecPolicy::default()
         };
-        for w in &["time", "chroot", "unshare", "setsid", "stdbuf", "flock", "gdb"] {
+        for w in &[
+            "time", "chroot", "unshare", "setsid", "stdbuf", "flock", "gdb",
+        ] {
             let cmd = format!("{w} ls");
             let err = validate_command_allowlist(&cmd, &p)
                 .expect_err(&format!("{w} must be hard-denied"));

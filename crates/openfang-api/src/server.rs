@@ -877,81 +877,81 @@ pub async fn run_daemon(
         );
     }
     #[cfg(unix)]
-    let _bridge_ipc = match crate::bridge_ipc::BridgeIpcServer::start(
-        kernel.clone(),
-        bridge_authority.clone(),
-    )
-    .await
-    {
-        Ok(h) => {
-            // Publish discovery env vars so subprocess drivers (Claude Code,
-            // future Codex-style) can find the socket and the bridge binary.
-            // ANAI-30 step 4: the CC driver consults these to wire CC's
-            // `--mcp-config` so each spawned `claude` invocation gets an
-            // MCP server pointed at our daemon.
-            //
-            // SAFETY: setting process env is `unsafe` on edition 2024 because
-            // it's not thread-safe under concurrent readers in other threads.
-            // Here we run before any subprocess driver spawns and before the
-            // axum server accepts connections, so there are no concurrent
-            // env readers.
-            // SAFETY: see comment above — set during single-threaded daemon startup.
-            unsafe {
-                std::env::set_var(
-                    openfang_mcp_bridge::protocol::SOCKET_ENV_VAR,
-                    h.socket_path(),
-                );
-            }
-            // Resolve the bridge binary path: <daemon_exe_dir>/openfang-mcp-bridge
-            // unless the operator has overridden it. Operators can set
-            // OPENFANG_BRIDGE_BIN explicitly (e.g. for non-standard installs
-            // or development cargo builds where the binary lives elsewhere).
-            const BRIDGE_BIN_ENV: &str = "OPENFANG_BRIDGE_BIN";
-            match std::env::var_os(BRIDGE_BIN_ENV) {
-                Some(path) => {
-                    let p = std::path::PathBuf::from(&path);
-                    if p.exists() {
-                        info!(
-                            bridge_bin = %p.display(),
-                            "bridge binary resolved via OPENFANG_BRIDGE_BIN override"
-                        );
-                    } else {
-                        warn!(
-                            bridge_bin = %p.display(),
-                            "OPENFANG_BRIDGE_BIN points at a non-existent path; \
-                             CC bridge wiring will fail until the binary is installed"
-                        );
-                    }
+    let _bridge_ipc =
+        match crate::bridge_ipc::BridgeIpcServer::start(kernel.clone(), bridge_authority.clone())
+            .await
+        {
+            Ok(h) => {
+                // Publish discovery env vars so subprocess drivers (Claude Code,
+                // future Codex-style) can find the socket and the bridge binary.
+                // ANAI-30 step 4: the CC driver consults these to wire CC's
+                // `--mcp-config` so each spawned `claude` invocation gets an
+                // MCP server pointed at our daemon.
+                //
+                // SAFETY: setting process env is `unsafe` on edition 2024 because
+                // it's not thread-safe under concurrent readers in other threads.
+                // Here we run before any subprocess driver spawns and before the
+                // axum server accepts connections, so there are no concurrent
+                // env readers.
+                // SAFETY: see comment above — set during single-threaded daemon startup.
+                unsafe {
+                    std::env::set_var(
+                        openfang_mcp_bridge::protocol::SOCKET_ENV_VAR,
+                        h.socket_path(),
+                    );
                 }
-                None => {
-                    if let Ok(exe) = std::env::current_exe() {
-                        if let Some(dir) = exe.parent() {
-                            let candidate = dir.join("openfang-mcp-bridge");
-                            if candidate.exists() {
-                                // SAFETY: see above.
-                                unsafe { std::env::set_var(BRIDGE_BIN_ENV, &candidate); }
-                                info!(
-                                    bridge_bin = %candidate.display(),
-                                    "bridge binary resolved via boot probe"
-                                );
-                            } else {
-                                warn!(
-                                    expected = %candidate.display(),
-                                    "bridge binary not found next to daemon; \
-                                     set OPENFANG_BRIDGE_BIN to enable CC bridge wiring"
-                                );
+                // Resolve the bridge binary path: <daemon_exe_dir>/openfang-mcp-bridge
+                // unless the operator has overridden it. Operators can set
+                // OPENFANG_BRIDGE_BIN explicitly (e.g. for non-standard installs
+                // or development cargo builds where the binary lives elsewhere).
+                const BRIDGE_BIN_ENV: &str = "OPENFANG_BRIDGE_BIN";
+                match std::env::var_os(BRIDGE_BIN_ENV) {
+                    Some(path) => {
+                        let p = std::path::PathBuf::from(&path);
+                        if p.exists() {
+                            info!(
+                                bridge_bin = %p.display(),
+                                "bridge binary resolved via OPENFANG_BRIDGE_BIN override"
+                            );
+                        } else {
+                            warn!(
+                                bridge_bin = %p.display(),
+                                "OPENFANG_BRIDGE_BIN points at a non-existent path; \
+                                 CC bridge wiring will fail until the binary is installed"
+                            );
+                        }
+                    }
+                    None => {
+                        if let Ok(exe) = std::env::current_exe() {
+                            if let Some(dir) = exe.parent() {
+                                let candidate = dir.join("openfang-mcp-bridge");
+                                if candidate.exists() {
+                                    // SAFETY: see above.
+                                    unsafe {
+                                        std::env::set_var(BRIDGE_BIN_ENV, &candidate);
+                                    }
+                                    info!(
+                                        bridge_bin = %candidate.display(),
+                                        "bridge binary resolved via boot probe"
+                                    );
+                                } else {
+                                    warn!(
+                                        expected = %candidate.display(),
+                                        "bridge binary not found next to daemon; \
+                                         set OPENFANG_BRIDGE_BIN to enable CC bridge wiring"
+                                    );
+                                }
                             }
                         }
                     }
                 }
+                Some(h)
             }
-            Some(h)
-        }
-        Err(e) => {
-            warn!(error = %e, "bridge IPC listener failed to start; MCP bridge unavailable");
-            None
-        }
-    };
+            Err(e) => {
+                warn!(error = %e, "bridge IPC listener failed to start; MCP bridge unavailable");
+                None
+            }
+        };
 
     // Write daemon info file
     if let Some(info_path) = daemon_info_path {

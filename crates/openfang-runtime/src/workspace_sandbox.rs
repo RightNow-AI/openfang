@@ -63,9 +63,7 @@ pub(crate) fn is_sensitive_openfang_path(path: &Path) -> Option<&'static str> {
         "paired_devices.json" => Some("paired-devices"),
         // Tier 3: log exfil / recon
         "daemon.stderr.log" | "daemon.stdout.log" => Some("daemon-log"),
-        s if s.starts_with("daemon.stderr.log.")
-            || s.starts_with("daemon.stdout.log.") =>
-        {
+        s if s.starts_with("daemon.stderr.log.") || s.starts_with("daemon.stdout.log.") => {
             Some("daemon-log")
         }
         _ => None,

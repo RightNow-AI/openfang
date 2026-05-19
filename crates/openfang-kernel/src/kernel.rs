@@ -4129,10 +4129,7 @@ impl OpenFangKernel {
     /// Claude Code driver, and (Phase C2) by `KernelHandle::token_issuer` so
     /// the agent loop's fallback paths can mint hardened tokens too.
     pub fn token_issuer(&self) -> Option<Arc<dyn TokenIssuer>> {
-        self.token_issuer
-            .read()
-            .ok()
-            .and_then(|slot| slot.clone())
+        self.token_issuer.read().ok().and_then(|slot| slot.clone())
     }
 
     // ─── Agent Binding management ──────────────────────────────────────
@@ -9518,9 +9515,8 @@ system_prompt = "You are a test agent."
         };
 
         let issuer: Arc<dyn TokenIssuer> = Arc::new(FakeIssuer);
-        let kernel =
-            OpenFangKernel::boot_with_config_and_issuer(config, Some(issuer.clone()))
-                .expect("kernel boots with issuer");
+        let kernel = OpenFangKernel::boot_with_config_and_issuer(config, Some(issuer.clone()))
+            .expect("kernel boots with issuer");
 
         assert!(
             kernel.token_issuer().is_some(),

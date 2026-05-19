@@ -493,10 +493,7 @@ fn build_bridge_mcp_config_value(
     // instead of silently falling back to the default.
     if let Some(tools) = allowed_tools {
         let joined = tools.join(",");
-        env_map.insert(
-            BRIDGE_ALLOWED_ENV.into(),
-            serde_json::Value::String(joined),
-        );
+        env_map.insert(BRIDGE_ALLOWED_ENV.into(), serde_json::Value::String(joined));
     }
 
     let mut server_entry = serde_json::Map::new();
@@ -836,11 +833,12 @@ impl LlmDriver for ClaudeCodeDriver {
         // env vars (`OPENFANG_BRIDGE_SOCKET` + `OPENFANG_BRIDGE_BIN`) and
         // the request carries a caller identity. The guard lives for the
         // remainder of the call; on drop it removes the temp config file.
-        let _bridge_cfg =
-            self.try_build_bridge_mcp_config(
+        let _bridge_cfg = self
+            .try_build_bridge_mcp_config(
                 request.caller_agent_id.as_deref(),
                 request.allowed_tools.as_deref(),
-            ).map(|cfg| {
+            )
+            .inspect(|cfg| {
                 cmd.arg("--mcp-config").arg(cfg.path());
                 // `--strict-mcp-config` makes CC ignore any user/global MCP
                 // config that might otherwise merge in — we want exactly
@@ -853,7 +851,6 @@ impl LlmDriver for ClaudeCodeDriver {
                 if bridge_debug_enabled() {
                     cmd.arg("--debug");
                 }
-                cfg
             });
         let bridge_wired = _bridge_cfg.is_some();
         let bridge_debug = bridge_wired && bridge_debug_enabled();
@@ -864,9 +861,8 @@ impl LlmDriver for ClaudeCodeDriver {
         // `bridge_enabled()` inside `try_materialize_cc_settings` so it
         // co-travels with the bridge wiring above — either both or neither.
         let _cc_settings =
-            try_materialize_cc_settings(request.caller_agent_id.as_deref()).map(|s| {
+            try_materialize_cc_settings(request.caller_agent_id.as_deref()).inspect(|s| {
                 cmd.arg("--settings").arg(s.path());
-                s
             });
         let native_deny_wired = _cc_settings.is_some();
 
@@ -1090,18 +1086,18 @@ impl LlmDriver for ClaudeCodeDriver {
         // Bridge wiring (see `complete()` for full rationale). Guard kept
         // alive for the rest of the streaming function so the per-spawn
         // config file outlives the CC subprocess.
-        let _bridge_cfg =
-            self.try_build_bridge_mcp_config(
+        let _bridge_cfg = self
+            .try_build_bridge_mcp_config(
                 request.caller_agent_id.as_deref(),
                 request.allowed_tools.as_deref(),
-            ).map(|cfg| {
+            )
+            .inspect(|cfg| {
                 cmd.arg("--mcp-config").arg(cfg.path());
                 cmd.arg("--strict-mcp-config");
                 // Optional --debug — see complete() for rationale.
                 if bridge_debug_enabled() {
                     cmd.arg("--debug");
                 }
-                cfg
             });
         let bridge_wired = _bridge_cfg.is_some();
         let bridge_debug = bridge_wired && bridge_debug_enabled();
@@ -1110,9 +1106,8 @@ impl LlmDriver for ClaudeCodeDriver {
         // full rationale). Guard kept alive for the rest of the streaming
         // function so the settings file outlives the CC subprocess.
         let _cc_settings =
-            try_materialize_cc_settings(request.caller_agent_id.as_deref()).map(|s| {
+            try_materialize_cc_settings(request.caller_agent_id.as_deref()).inspect(|s| {
                 cmd.arg("--settings").arg(s.path());
-                s
             });
         let native_deny_wired = _cc_settings.is_some();
 
@@ -1586,7 +1581,10 @@ mod tests {
             Some("/usr/local/bin/openfang-mcp-bridge")
         );
         assert!(
-            server.pointer("/args").map(|v| v.is_array()).unwrap_or(false),
+            server
+                .pointer("/args")
+                .map(|v| v.is_array())
+                .unwrap_or(false),
             "args must be a JSON array"
         );
 
@@ -1597,10 +1595,23 @@ mod tests {
             .pointer("/env")
             .and_then(|v| v.as_object())
             .expect("env object missing");
-        assert_eq!(env.len(), 3, "env must contain exactly socket/token/agent_id");
-        assert_eq!(env.get(BRIDGE_SOCKET_ENV).and_then(|v| v.as_str()), Some("/home/user/.openfang/run/bridge.sock"));
-        assert_eq!(env.get(BRIDGE_TOKEN_ENV).and_then(|v| v.as_str()), Some("tok-abc"));
-        assert_eq!(env.get(BRIDGE_AGENT_ID_ENV).and_then(|v| v.as_str()), Some("agent-uuid-1234"));
+        assert_eq!(
+            env.len(),
+            3,
+            "env must contain exactly socket/token/agent_id"
+        );
+        assert_eq!(
+            env.get(BRIDGE_SOCKET_ENV).and_then(|v| v.as_str()),
+            Some("/home/user/.openfang/run/bridge.sock")
+        );
+        assert_eq!(
+            env.get(BRIDGE_TOKEN_ENV).and_then(|v| v.as_str()),
+            Some("tok-abc")
+        );
+        assert_eq!(
+            env.get(BRIDGE_AGENT_ID_ENV).and_then(|v| v.as_str()),
+            Some("agent-uuid-1234")
+        );
         assert!(
             env.get(BRIDGE_ALLOWED_ENV).is_none(),
             "no allowlist supplied → OPENFANG_BRIDGE_ALLOWED must be absent so the bridge \

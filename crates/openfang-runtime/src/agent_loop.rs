@@ -544,9 +544,7 @@ pub async fn run_agent_loop(
             // Subprocess drivers thread this into `OPENFANG_BRIDGE_ALLOWED`
             // so the bridge's advertised surface matches the agent's
             // permissions instead of falling back to the static default.
-            allowed_tools: Some(
-                available_tools.iter().map(|t| t.name.clone()).collect(),
-            ),
+            allowed_tools: Some(available_tools.iter().map(|t| t.name.clone()).collect()),
         };
 
         // Notify phase: Thinking
@@ -1287,19 +1285,20 @@ async fn call_with_retry(
                         // `token_issuer` arg, which the agent loop sources
                         // from `KernelHandle::token_issuer()`) so these
                         // sessions stay on the hardened bridge auth path.
-                        let fb_driver = match crate::drivers::create_driver(&fb_config, token_issuer.clone()) {
-                            Ok(d) => d,
-                            Err(driver_err) => {
-                                warn!(
-                                    fallback_index = fb_idx,
-                                    provider = %fb.provider,
-                                    model = %fb.model,
-                                    error = %driver_err,
-                                    "Failed to create fallback driver, skipping"
-                                );
-                                continue;
-                            }
-                        };
+                        let fb_driver =
+                            match crate::drivers::create_driver(&fb_config, token_issuer.clone()) {
+                                Ok(d) => d,
+                                Err(driver_err) => {
+                                    warn!(
+                                        fallback_index = fb_idx,
+                                        provider = %fb.provider,
+                                        model = %fb.model,
+                                        error = %driver_err,
+                                        "Failed to create fallback driver, skipping"
+                                    );
+                                    continue;
+                                }
+                            };
                         let mut fb_request = request.clone();
                         fb_request.model = fb.model.clone();
                         warn!(
@@ -1477,19 +1476,20 @@ async fn stream_with_retry(
                         // `token_issuer` arg, which the agent loop sources
                         // from `KernelHandle::token_issuer()`) so these
                         // sessions stay on the hardened bridge auth path.
-                        let fb_driver = match crate::drivers::create_driver(&fb_config, token_issuer.clone()) {
-                            Ok(d) => d,
-                            Err(driver_err) => {
-                                warn!(
-                                    fallback_index = fb_idx,
-                                    provider = %fb.provider,
-                                    model = %fb.model,
-                                    error = %driver_err,
-                                    "Failed to create fallback stream driver, skipping"
-                                );
-                                continue;
-                            }
-                        };
+                        let fb_driver =
+                            match crate::drivers::create_driver(&fb_config, token_issuer.clone()) {
+                                Ok(d) => d,
+                                Err(driver_err) => {
+                                    warn!(
+                                        fallback_index = fb_idx,
+                                        provider = %fb.provider,
+                                        model = %fb.model,
+                                        error = %driver_err,
+                                        "Failed to create fallback stream driver, skipping"
+                                    );
+                                    continue;
+                                }
+                            };
                         let mut fb_request = request.clone();
                         fb_request.model = fb.model.clone();
                         warn!(
@@ -1805,9 +1805,7 @@ pub async fn run_agent_loop_streaming(
             // Subprocess drivers thread this into `OPENFANG_BRIDGE_ALLOWED`
             // so the bridge's advertised surface matches the agent's
             // permissions instead of falling back to the static default.
-            allowed_tools: Some(
-                available_tools.iter().map(|t| t.name.clone()).collect(),
-            ),
+            allowed_tools: Some(available_tools.iter().map(|t| t.name.clone()).collect()),
         };
 
         // Notify phase: on first iteration emit Streaming; on subsequent

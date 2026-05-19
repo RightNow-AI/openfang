@@ -39,11 +39,7 @@ pub mod protocol;
 
 use std::sync::Arc;
 
-use rmcp::{
-    ErrorData as McpError, ServerHandler,
-    model::*,
-    service::RequestContext,
-};
+use rmcp::{model::*, service::RequestContext, ErrorData as McpError, ServerHandler};
 
 /// Narrow seam between the bridge and the OpenFang runtime.
 ///
@@ -124,6 +120,7 @@ pub enum ToolDispatchError {
 ///   ANAI-30 slice. Per-agent gating via `OPENFANG_BRIDGE_ALLOWED`
 ///   (sourced from each agent's `agent.toml` capabilities) decides
 ///   whether any given bridge instance actually advertises it.
+///
 /// Default tool allowlist used by `main.rs` when [`OPENFANG_BRIDGE_ALLOWED`]
 /// is unset (legacy/dev path). Lives in the library — not in `main.rs` — so
 /// the bridge_ipc drift-catcher tests in `openfang-api` can assert the
@@ -174,11 +171,7 @@ pub const DEFAULT_ALLOWED: &[&str] = &[
 /// Drift-pin: the `bridge_ipc::allowlist_*` tests assert that every entry
 /// here is **present** in `ALLOWED_TOOLS` and `built_in_tools()` and
 /// **absent** from `DEFAULT_ALLOWED`.
-pub const PRIVILEGED_DEFAULT_DENY: &[&str] = &[
-    "agent_spawn",
-    "agent_kill",
-    "agent_activate",
-];
+pub const PRIVILEGED_DEFAULT_DENY: &[&str] = &["agent_spawn", "agent_kill", "agent_activate"];
 
 pub fn built_in_tools() -> Vec<Tool> {
     use serde_json::json;
@@ -543,17 +536,19 @@ impl ServerHandler for Bridge {
                     CallToolResult::success(blocks)
                 })
             }
-            Err(ToolDispatchError::UnknownTool(name)) => Ok(CallToolResult::error(vec![
-                Content::text(format!("unknown tool: {name}")),
-            ])),
-            Err(ToolDispatchError::NotPermitted(name)) => Ok(CallToolResult::error(vec![
-                Content::text(format!("not permitted: {name}")),
-            ])),
-            Err(ToolDispatchError::InvalidArgs { tool, reason }) => {
+            Err(ToolDispatchError::UnknownTool(name)) => {
                 Ok(CallToolResult::error(vec![Content::text(format!(
-                    "invalid args for {tool}: {reason}"
+                    "unknown tool: {name}"
                 ))]))
             }
+            Err(ToolDispatchError::NotPermitted(name)) => {
+                Ok(CallToolResult::error(vec![Content::text(format!(
+                    "not permitted: {name}"
+                ))]))
+            }
+            Err(ToolDispatchError::InvalidArgs { tool, reason }) => Ok(CallToolResult::error(
+                vec![Content::text(format!("invalid args for {tool}: {reason}"))],
+            )),
             Err(ToolDispatchError::Execution(e)) => Ok(CallToolResult::error(vec![Content::text(
                 format!("tool execution failed: {e}"),
             )])),

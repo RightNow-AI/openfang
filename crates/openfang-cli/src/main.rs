@@ -1579,10 +1579,8 @@ fn cmd_start(config: Option<PathBuf>, yolo: bool) {
         #[cfg(not(unix))]
         let kernel_issuer = None;
 
-        let kernel = match OpenFangKernel::boot_with_config_and_issuer(
-            kernel_config,
-            kernel_issuer,
-        ) {
+        let kernel = match OpenFangKernel::boot_with_config_and_issuer(kernel_config, kernel_issuer)
+        {
             Ok(k) => k,
             Err(e) => {
                 boot_kernel_error(&e);

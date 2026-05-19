@@ -58,9 +58,7 @@ impl Token {
     /// Decode from wire form. Rejects malformed or wrong-length input.
     pub fn from_hex(s: &str) -> Result<Self, TokenParseError> {
         let bytes = hex::decode(s).map_err(|_| TokenParseError::Malformed)?;
-        let arr: [u8; TOKEN_LEN] = bytes
-            .try_into()
-            .map_err(|_| TokenParseError::WrongLength)?;
+        let arr: [u8; TOKEN_LEN] = bytes.try_into().map_err(|_| TokenParseError::WrongLength)?;
         Ok(Self(arr))
     }
 

@@ -40,8 +40,8 @@
 use crate::bridge_auth::BridgeAuthority;
 use openfang_kernel::OpenFangKernel;
 use openfang_mcp_bridge::protocol::{
-    CallRequest, CallResponse, CallResult, Frame, Hello, HelloAck, PROTOCOL_VERSION,
-    SOCKET_RELATIVE_PATH, codec,
+    codec, CallRequest, CallResponse, CallResult, Frame, Hello, HelloAck, PROTOCOL_VERSION,
+    SOCKET_RELATIVE_PATH,
 };
 use openfang_types::agent::AgentId;
 use openfang_types::bridge_auth::Token;
@@ -339,7 +339,9 @@ async fn handle_connection(
 
         let result = dispatch_call(&call, &kernel, identity.agent_id.as_ref()).await;
         let result_kind = match &result {
-            CallResult::Ok { is_error: false, .. } => "ok",
+            CallResult::Ok {
+                is_error: false, ..
+            } => "ok",
             CallResult::Ok { is_error: true, .. } => "tool_error",
             CallResult::Error { .. } => "dispatch_error",
         };
@@ -501,10 +503,7 @@ async fn dispatch_call(
             "bridge IPC: rejecting tool not in agent's permitted set"
         );
         return CallResult::Error {
-            message: format!(
-                "tool '{}' not permitted for this agent",
-                call.tool_name
-            ),
+            message: format!("tool '{}' not permitted for this agent", call.tool_name),
         };
     }
 
@@ -518,8 +517,7 @@ async fn dispatch_call(
     // parameter; passing our four-tool set makes the runtime's check
     // belt-and-suspenders with ours. If the two ever drift, the runtime's
     // is authoritative — it sits closer to the actual tool implementations.
-    let allowed_tools_owned: Vec<String> =
-        ALLOWED_TOOLS.iter().map(|s| (*s).to_string()).collect();
+    let allowed_tools_owned: Vec<String> = ALLOWED_TOOLS.iter().map(|s| (*s).to_string()).collect();
 
     // --- Gate 3: workspace sandbox for filesystem tools (D-fix) ------------
     // Fail-closed for filesystem tools without a workspace. The runtime's
@@ -551,9 +549,8 @@ async fn dispatch_call(
     // surfaces apply identical scoping — see S3-01 in the bridge-v2 audit.
     // Every other bridge tool ignores both, so this is cheap to compute
     // unconditionally.
-    let exec_ctx = openfang_runtime::agent_tool_context::AgentExecContext::from_manifest(
-        &entry.manifest,
-    );
+    let exec_ctx =
+        openfang_runtime::agent_tool_context::AgentExecContext::from_manifest(&entry.manifest);
     let effective_exec_policy = exec_ctx.exec_policy_ref();
     let allowed_env_arg: Option<&[String]> = exec_ctx.allowed_env();
 
@@ -878,8 +875,7 @@ mod tests {
             token: guard.token().to_hex(),
             bridge_version: "t".into(),
         };
-        let identity =
-            authenticate_hello(&h, &authority).expect("hardened path should succeed");
+        let identity = authenticate_hello(&h, &authority).expect("hardened path should succeed");
         assert_eq!(identity.agent_id, Some(agent_id));
         assert_eq!(identity.token_fingerprint, Some(guard.fingerprint()));
     }
@@ -970,7 +966,7 @@ mod tests {
     /// `PRIVILEGED_DEFAULT_DENY` and **not** to `DEFAULT_ALLOWED`.
     #[test]
     fn allowlist_surface_correspondence() {
-        use openfang_mcp_bridge::{DEFAULT_ALLOWED, PRIVILEGED_DEFAULT_DENY, built_in_tools};
+        use openfang_mcp_bridge::{built_in_tools, DEFAULT_ALLOWED, PRIVILEGED_DEFAULT_DENY};
         use std::collections::BTreeSet;
 
         let daemon_set: BTreeSet<&str> = ALLOWED_TOOLS.iter().copied().collect();
@@ -978,19 +974,22 @@ mod tests {
             .iter()
             .map(|t| t.name.as_ref().to_string())
             .collect();
-        let advertise_borrowed: BTreeSet<&str> =
-            advertise_set.iter().map(|s| s.as_str()).collect();
+        let advertise_borrowed: BTreeSet<&str> = advertise_set.iter().map(|s| s.as_str()).collect();
         let default_set: BTreeSet<&str> = DEFAULT_ALLOWED.iter().copied().collect();
-        let privileged_set: BTreeSet<&str> =
-            PRIVILEGED_DEFAULT_DENY.iter().copied().collect();
+        let privileged_set: BTreeSet<&str> = PRIVILEGED_DEFAULT_DENY.iter().copied().collect();
 
         // Invariant A — daemon dispatch and MCP advertise must agree.
         assert_eq!(
-            daemon_set, advertise_borrowed,
+            daemon_set,
+            advertise_borrowed,
             "drift: ALLOWED_TOOLS (daemon dispatch) ≠ built_in_tools() (MCP advertise). \
              daemon-only: {:?}, advertise-only: {:?}",
-            daemon_set.difference(&advertise_borrowed).collect::<Vec<_>>(),
-            advertise_borrowed.difference(&daemon_set).collect::<Vec<_>>(),
+            daemon_set
+                .difference(&advertise_borrowed)
+                .collect::<Vec<_>>(),
+            advertise_borrowed
+                .difference(&daemon_set)
+                .collect::<Vec<_>>(),
         );
 
         // Invariant B.1 — every default-tool is daemon-dispatchable.
@@ -1046,7 +1045,7 @@ mod tests {
     /// `PRIVILEGED_DEFAULT_DENY.len()`.
     #[test]
     fn allowlist_cardinality_pin() {
-        use openfang_mcp_bridge::{DEFAULT_ALLOWED, PRIVILEGED_DEFAULT_DENY, built_in_tools};
+        use openfang_mcp_bridge::{built_in_tools, DEFAULT_ALLOWED, PRIVILEGED_DEFAULT_DENY};
         assert_eq!(ALLOWED_TOOLS.len(), 17, "ALLOWED_TOOLS surface cardinality");
         assert_eq!(
             built_in_tools().len(),
@@ -1138,9 +1137,11 @@ mod tests {
             token: "550e8400-e29b-41d4-a716-446655440000".into(),
             bridge_version: "t".into(),
         };
-        let identity =
-            authenticate_hello(&h, &authority).expect("legacy path should succeed");
-        assert!(identity.agent_id.is_none(), "legacy path must not bind agent_id");
+        let identity = authenticate_hello(&h, &authority).expect("legacy path should succeed");
+        assert!(
+            identity.agent_id.is_none(),
+            "legacy path must not bind agent_id"
+        );
         assert!(
             identity.token_fingerprint.is_none(),
             "legacy path has no fingerprint"

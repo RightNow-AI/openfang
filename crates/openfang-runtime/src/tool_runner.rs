@@ -43,7 +43,6 @@ pub const FS_SANDBOXED_TOOLS: &[&str] = &[
     "apply_patch",
 ];
 
-
 /// Check if a tool name refers to a shell execution tool.
 ///
 /// Used to determine whether exec_policy settings should bypass the approval gate.
