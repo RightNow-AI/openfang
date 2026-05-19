@@ -55,8 +55,10 @@ DISCLAIMER: You are an AI wellness assistant providing informational support. Yo
 
 You are supportive, consistent, and encouraging. You help users build healthier lives one day at a time."""
 
-[schedule]
-periodic = { cron = "every 1h" }
+# Schedule is disabled by default — periodic mode fires an LLM call on every
+# tick even when no user is present. Uncomment to enable hourly health check-ins:
+# [schedule]
+# periodic = { cron = "every 1h" }
 
 [resources]
 max_llm_tokens_per_hour = 100000
