@@ -126,9 +126,21 @@ pub enum ToolDispatchError {
 ///   whether any given bridge instance actually advertises it.
 /// Default tool allowlist used by `main.rs` when [`OPENFANG_BRIDGE_ALLOWED`]
 /// is unset (legacy/dev path). Lives in the library — not in `main.rs` — so
-/// the bridge_ipc drift-catcher test in `openfang-api` can assert three-way
-/// correspondence between this set, [`built_in_tools`], and the daemon-side
-/// `bridge_ipc::ALLOWED_TOOLS`. Three files, one truth.
+/// the bridge_ipc drift-catcher tests in `openfang-api` can assert the
+/// surface relationships between this set, [`built_in_tools`], and the
+/// daemon-side `bridge_ipc::ALLOWED_TOOLS`.
+///
+/// **Safe-by-default policy (S7-06 / S4-02):** the default set deliberately
+/// *excludes* the privileged agent-lifecycle tools enumerated by
+/// [`PRIVILEGED_DEFAULT_DENY`] — `agent_spawn`, `agent_kill`,
+/// `agent_activate`. These remain in [`built_in_tools`] and in
+/// `bridge_ipc::ALLOWED_TOOLS` (daemon dispatch) so that agents whose
+/// `agent.toml` grants them can still invoke them: the runtime threads
+/// the manifest-derived allowlist through `OPENFANG_BRIDGE_ALLOWED`
+/// (see `agent_loop.rs`'s `allowed_tools` plumbing). Only the
+/// no-env-var fallback — used in tests, dev shells, and any caller
+/// who forgot to set the var — is downgraded to the non-privileged
+/// subset.
 ///
 /// [`OPENFANG_BRIDGE_ALLOWED`]: ../../openfang_mcp_bridge/index.html
 pub const DEFAULT_ALLOWED: &[&str] = &[
@@ -140,15 +152,32 @@ pub const DEFAULT_ALLOWED: &[&str] = &[
     "agent_list",
     "channel_send",
     "agent_send",
-    "agent_spawn",
-    "agent_kill",
     "memory_store",
     "memory_recall",
-    "agent_activate",
     "agent_find",
     "shell_exec",
     "web_search",
     "apply_patch",
+];
+
+/// Agent-lifecycle tools that are dispatchable by the daemon and advertised
+/// by the bridge, **but excluded from [`DEFAULT_ALLOWED`]** so the
+/// no-env-var fallback path cannot reach them.
+///
+/// Closes S7-06 / S4-02 (bridge-side): in the legacy/dev path
+/// (`OPENFANG_BRIDGE_ALLOWED` unset) an agent's bridge would otherwise be
+/// able to spawn / kill / activate sibling agents regardless of its
+/// manifest. Production callers thread `OPENFANG_BRIDGE_ALLOWED` from the
+/// manifest-derived `available_tools`, so opted-in agents are unaffected;
+/// only the fallback is narrowed.
+///
+/// Drift-pin: the `bridge_ipc::allowlist_*` tests assert that every entry
+/// here is **present** in `ALLOWED_TOOLS` and `built_in_tools()` and
+/// **absent** from `DEFAULT_ALLOWED`.
+pub const PRIVILEGED_DEFAULT_DENY: &[&str] = &[
+    "agent_spawn",
+    "agent_kill",
+    "agent_activate",
 ];
 
 pub fn built_in_tools() -> Vec<Tool> {

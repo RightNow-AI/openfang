@@ -940,31 +940,37 @@ mod tests {
         );
     }
 
-    /// **Drift-catcher: three-way correspondence.**
+    /// **Drift-catcher: surface correspondence + safe-by-default subset.**
     ///
-    /// Three lists must agree on the bridge tool surface:
+    /// Three lists describe the bridge tool surface, with two distinct
+    /// relationships:
     ///
     /// 1. `openfang_api::bridge_ipc::ALLOWED_TOOLS` — daemon-side dispatch
     ///    allowlist (the call-time gate).
     /// 2. `openfang_mcp_bridge::built_in_tools()` — MCP advertise surface
     ///    (what CC actually sees in `tools/list`).
-    /// 3. `openfang_mcp_bridge::DEFAULT_ALLOWED` — bridge process default
-    ///    when `OPENFANG_BRIDGE_ALLOWED` is unset (legacy/dev path).
+    /// 3. `openfang_mcp_bridge::DEFAULT_ALLOWED` — bridge-process default
+    ///    when `OPENFANG_BRIDGE_ALLOWED` is unset (legacy/dev fallback).
     ///
-    /// Lesson from 13b/13d: a tool can be daemon-dispatchable (in
-    /// `ALLOWED_TOOLS`) but invisible to CC because someone forgot to add it
-    /// to `built_in_tools()`. The smoke tests fire the IPC path directly and
-    /// never hit `tools/list`, so the gap shipped silently in two commits in
-    /// a row. This test fails loudly if any of the three sets drifts.
+    /// **Invariant A (equality):** `ALLOWED_TOOLS == built_in_tools()`.
+    /// Lesson from 13b/13d: a tool can be daemon-dispatchable but invisible
+    /// to CC because someone forgot to add it to `built_in_tools()`.
     ///
-    /// If you're here because this test failed: a bridge tool add or
-    /// remove must touch **all three files** — `crates/openfang-api/src/
-    /// bridge_ipc.rs` (`ALLOWED_TOOLS`), `crates/openfang-mcp-bridge/src/
-    /// lib.rs` (`built_in_tools` + `DEFAULT_ALLOWED`). Update both before
-    /// landing the commit.
+    /// **Invariant B (safe-by-default subset, S7-06 / S4-02):**
+    /// `DEFAULT_ALLOWED ⊂ ALLOWED_TOOLS`, with the deliberate exclusion of
+    /// `PRIVILEGED_DEFAULT_DENY` — `agent_spawn`, `agent_kill`,
+    /// `agent_activate`. The runtime threads the manifest-derived allowlist
+    /// through `OPENFANG_BRIDGE_ALLOWED`, so opted-in agents still reach
+    /// these tools; only the no-env-var fallback is narrowed.
+    ///
+    /// If you're here because this test failed: a bridge tool add or remove
+    /// must touch `crates/openfang-api/src/bridge_ipc.rs` (`ALLOWED_TOOLS`)
+    /// and `crates/openfang-mcp-bridge/src/lib.rs` (`built_in_tools` and
+    /// usually `DEFAULT_ALLOWED`). For privileged additions, append to
+    /// `PRIVILEGED_DEFAULT_DENY` and **not** to `DEFAULT_ALLOWED`.
     #[test]
-    fn allowlist_three_way_correspondence() {
-        use openfang_mcp_bridge::{DEFAULT_ALLOWED, built_in_tools};
+    fn allowlist_surface_correspondence() {
+        use openfang_mcp_bridge::{DEFAULT_ALLOWED, PRIVILEGED_DEFAULT_DENY, built_in_tools};
         use std::collections::BTreeSet;
 
         let daemon_set: BTreeSet<&str> = ALLOWED_TOOLS.iter().copied().collect();
@@ -975,7 +981,10 @@ mod tests {
         let advertise_borrowed: BTreeSet<&str> =
             advertise_set.iter().map(|s| s.as_str()).collect();
         let default_set: BTreeSet<&str> = DEFAULT_ALLOWED.iter().copied().collect();
+        let privileged_set: BTreeSet<&str> =
+            PRIVILEGED_DEFAULT_DENY.iter().copied().collect();
 
+        // Invariant A — daemon dispatch and MCP advertise must agree.
         assert_eq!(
             daemon_set, advertise_borrowed,
             "drift: ALLOWED_TOOLS (daemon dispatch) ≠ built_in_tools() (MCP advertise). \
@@ -983,22 +992,61 @@ mod tests {
             daemon_set.difference(&advertise_borrowed).collect::<Vec<_>>(),
             advertise_borrowed.difference(&daemon_set).collect::<Vec<_>>(),
         );
-        assert_eq!(
-            daemon_set, default_set,
-            "drift: ALLOWED_TOOLS (daemon dispatch) ≠ DEFAULT_ALLOWED (bridge default). \
-             daemon-only: {:?}, default-only: {:?}",
-            daemon_set.difference(&default_set).collect::<Vec<_>>(),
-            default_set.difference(&daemon_set).collect::<Vec<_>>(),
+
+        // Invariant B.1 — every default-tool is daemon-dispatchable.
+        let default_extras: Vec<&&str> = default_set.difference(&daemon_set).collect();
+        assert!(
+            default_extras.is_empty(),
+            "drift: DEFAULT_ALLOWED contains tools missing from ALLOWED_TOOLS: {:?}",
+            default_extras,
+        );
+
+        // Invariant B.2 — every privileged tool is daemon-dispatchable.
+        let privileged_extras: Vec<&&str> = privileged_set.difference(&daemon_set).collect();
+        assert!(
+            privileged_extras.is_empty(),
+            "drift: PRIVILEGED_DEFAULT_DENY contains tools missing from ALLOWED_TOOLS: {:?}",
+            privileged_extras,
+        );
+
+        // Invariant B.3 — privileged tools must NOT be in the default
+        // fallback. This is the S7-06 / S4-02 pin: if a future commit
+        // accidentally re-adds `agent_spawn` etc. to DEFAULT_ALLOWED, the
+        // legacy/dev path silently re-grants lifecycle control.
+        let leaked: Vec<&&str> = privileged_set.intersection(&default_set).collect();
+        assert!(
+            leaked.is_empty(),
+            "S7-06/S4-02 regression: PRIVILEGED_DEFAULT_DENY entries leaked into \
+             DEFAULT_ALLOWED: {:?}. Privileged agent-lifecycle tools must reach the \
+             bridge only via manifest-driven OPENFANG_BRIDGE_ALLOWED.",
+            leaked,
+        );
+
+        // Invariant B.4 — the privileged set and the default set together
+        // cover the daemon surface. Catches "added a new tool to
+        // ALLOWED_TOOLS/built_in_tools but forgot to classify it as
+        // default-safe or privileged-deny".
+        let mut union: BTreeSet<&str> = default_set.clone();
+        union.extend(privileged_set.iter().copied());
+        let unclassified: Vec<&&str> = daemon_set.difference(&union).collect();
+        assert!(
+            unclassified.is_empty(),
+            "drift: ALLOWED_TOOLS entries unclassified (neither in DEFAULT_ALLOWED \
+             nor PRIVILEGED_DEFAULT_DENY): {:?}",
+            unclassified,
         );
     }
 
-    /// Pins the tool-surface cardinality at 17. Bumps to this number are
-    /// expected when a new bridge tool lands — update intentionally, in
-    /// lockstep with the three sets exercised by
-    /// [`allowlist_three_way_correspondence`].
+    /// Pins the tool-surface cardinality. Bumps are expected when a new
+    /// bridge tool lands — update intentionally, in lockstep with the sets
+    /// exercised by [`allowlist_surface_correspondence`].
+    ///
+    /// Privileged tools (S7-06 / S4-02) are absent from `DEFAULT_ALLOWED`
+    /// by design, so its cardinality lags `ALLOWED_TOOLS` by exactly
+    /// `PRIVILEGED_DEFAULT_DENY.len()`.
     #[test]
-    fn allowlist_count_is_seventeen() {
-        use openfang_mcp_bridge::{DEFAULT_ALLOWED, built_in_tools};
+    fn allowlist_cardinality_pin() {
+        use openfang_mcp_bridge::{DEFAULT_ALLOWED, PRIVILEGED_DEFAULT_DENY, built_in_tools};
         assert_eq!(ALLOWED_TOOLS.len(), 17, "ALLOWED_TOOLS surface cardinality");
         assert_eq!(
             built_in_tools().len(),
@@ -1006,10 +1054,35 @@ mod tests {
             "built_in_tools() advertise surface cardinality"
         );
         assert_eq!(
-            DEFAULT_ALLOWED.len(),
-            17,
-            "DEFAULT_ALLOWED bridge-default cardinality"
+            PRIVILEGED_DEFAULT_DENY.len(),
+            3,
+            "PRIVILEGED_DEFAULT_DENY cardinality (agent_spawn/agent_kill/agent_activate)"
         );
+        assert_eq!(
+            DEFAULT_ALLOWED.len(),
+            14,
+            "DEFAULT_ALLOWED bridge-default cardinality (17 − 3 privileged)"
+        );
+    }
+
+    /// S7-06 / S4-02 pin — explicit, name-level. The set-level test above
+    /// catches drift generically; this one names the three tools so a
+    /// grep for `agent_spawn` lands on the regression guard.
+    #[test]
+    fn privileged_lifecycle_tools_excluded_from_default() {
+        use openfang_mcp_bridge::{DEFAULT_ALLOWED, PRIVILEGED_DEFAULT_DENY};
+        for tool in ["agent_spawn", "agent_kill", "agent_activate"] {
+            assert!(
+                PRIVILEGED_DEFAULT_DENY.contains(&tool),
+                "{tool} must be in PRIVILEGED_DEFAULT_DENY",
+            );
+            assert!(
+                !DEFAULT_ALLOWED.contains(&tool),
+                "S7-06/S4-02 regression: {tool} re-introduced into DEFAULT_ALLOWED. \
+                 Privileged agent-lifecycle tools must only reach the bridge via \
+                 manifest-derived OPENFANG_BRIDGE_ALLOWED.",
+            );
+        }
     }
 
     #[test]
