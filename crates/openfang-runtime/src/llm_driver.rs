@@ -65,6 +65,36 @@ pub struct CompletionRequest {
     pub system: Option<String>,
     /// Extended thinking configuration (if supported by the model).
     pub thinking: Option<openfang_types::config::ThinkingConfig>,
+    /// Identity of the OpenFang agent issuing this request, if any.
+    ///
+    /// Plumbed through so subprocess-style drivers (Claude Code, Qwen Code,
+    /// future Codex-style) can bind the OpenFang→bridge IPC connection to a
+    /// caller. Currently consumed by [`crate::drivers::claude_code`] to set
+    /// `OPENFANG_BRIDGE_AGENT_ID` on the bridge child it spawns via
+    /// `--mcp-config`. Other drivers ignore it. ANAI-31 will replace the
+    /// in-band agent_id with a server-derived identity bound to the
+    /// per-spawn token, but the field stays in place as the integration
+    /// point.
+    pub caller_agent_id: Option<String>,
+    /// Per-agent tool allowlist for the bridge subprocess, if any.
+    ///
+    /// Sourced from the agent's resolved `available_tools` (which in turn
+    /// derive from `agent.toml`'s `[capabilities].tools` and the kernel's
+    /// capability gating). When `Some`, subprocess-style drivers that wire
+    /// the OpenFang MCP bridge emit this list as `OPENFANG_BRIDGE_ALLOWED`
+    /// on the bridge child's environment, narrowing the bridge's
+    /// advertised + dispatchable tool surface to the intersection of
+    /// (a) what `built_in_tools()` knows about and (b) what *this agent*
+    /// is permitted to call.
+    ///
+    /// When `None`, the bridge falls back to its built-in `DEFAULT_ALLOWED`
+    /// slice — the legacy ANAI-30 behavior. Non-subprocess drivers ignore
+    /// this field entirely; the bridge is not in their request path.
+    ///
+    /// The source of truth remains `agent.toml`. This field is the
+    /// transport plumb that makes the bridge honor what the rest of the
+    /// system already decided.
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// A response from an LLM completion.
@@ -183,10 +213,21 @@ pub struct DriverConfig {
     /// Skip interactive permission prompts (Claude Code provider only).
     ///
     /// When `true`, adds `--dangerously-skip-permissions` to the spawned
-    /// `claude` CLI.  Defaults to `true` because OpenFang runs as a daemon
+    /// `claude` CLI. Defaults to `true` because OpenFang runs as a daemon
     /// with no interactive terminal, so permission prompts would block
-    /// indefinitely.  OpenFang's own capability / RBAC layer already
-    /// restricts what agents can do, making this safe.
+    /// indefinitely.
+    ///
+    /// Safety basis: the CC driver injects a per-spawn `settings.json` via
+    /// `claude --settings <file>` containing a `permissions.deny` set that
+    /// blocks CC's native FS, shell, and web tools (see `CC_NATIVE_DENY` in
+    /// `drivers/claude_code.rs`). Per Anthropic's settings documentation,
+    /// `permissions.deny` rules are enforced even when
+    /// `--dangerously-skip-permissions` is set — that flag bypasses only
+    /// allow/ask prompts, not security-critical denies. Native tools are
+    /// replaced by the gated `mcp__openfang__*` bridge surface, which is
+    /// RBAC-checked per-agent against `agent.toml` capabilities. Skipping
+    /// permission prompts is therefore safe: there is no ungated tool the
+    /// model can reach to do harm.
     #[serde(default = "default_skip_permissions")]
     pub skip_permissions: bool,
 
@@ -328,6 +369,8 @@ mod tests {
             temperature: 0.0,
             system: None,
             thinking: None,
+            caller_agent_id: None,
+            allowed_tools: None,
         };
 
         let response = driver.stream(request, tx).await.unwrap();

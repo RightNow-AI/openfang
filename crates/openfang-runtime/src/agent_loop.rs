@@ -4,6 +4,7 @@
 //! calling the LLM, executing tool calls, and saving the conversation.
 
 use crate::auth_cooldown::{CooldownVerdict, ProviderCooldown};
+use crate::bridge_auth::TokenIssuer;
 use crate::context_budget::{apply_context_guard, truncate_tool_result_dynamic, ContextBudget};
 use crate::context_overflow::{recover_from_overflow, RecoveryStage};
 use crate::embedding::EmbeddingDriver;
@@ -535,6 +536,15 @@ pub async fn run_agent_loop(
             temperature: manifest.model.temperature,
             system: Some(system_prompt.clone()),
             thinking: None,
+            caller_agent_id: Some(agent_id_str.clone()),
+            // Per-agent allowlist for the bridge subprocess: the names of
+            // every tool this agent is currently permitted to invoke,
+            // derived from the kernel-resolved `available_tools` (sourced
+            // from `agent.toml`'s `[capabilities]`/`[exec_policy]`).
+            // Subprocess drivers thread this into `OPENFANG_BRIDGE_ALLOWED`
+            // so the bridge's advertised surface matches the agent's
+            // permissions instead of falling back to the static default.
+            allowed_tools: Some(available_tools.iter().map(|t| t.name.clone()).collect()),
         };
 
         // Notify phase: Thinking
@@ -556,6 +566,7 @@ pub async fn run_agent_loop(
             Some(provider_name),
             None,
             &manifest.fallback_models,
+            kernel.as_ref().and_then(|k| k.token_issuer()),
         )
         .await?;
 
@@ -1158,6 +1169,7 @@ async fn call_with_retry(
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
     fallback_models: &[FallbackModel],
+    token_issuer: Option<Arc<dyn TokenIssuer>>,
 ) -> OpenFangResult<crate::llm_driver::CompletionResponse> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
@@ -1268,19 +1280,25 @@ async fn call_with_retry(
                             skip_permissions: true,
                             subprocess_timeout_secs: None,
                         };
-                        let fb_driver = match crate::drivers::create_driver(&fb_config) {
-                            Ok(d) => d,
-                            Err(driver_err) => {
-                                warn!(
-                                    fallback_index = fb_idx,
-                                    provider = %fb.provider,
-                                    model = %fb.model,
-                                    error = %driver_err,
-                                    "Failed to create fallback driver, skipping"
-                                );
-                                continue;
-                            }
-                        };
+                        // Fallback driver inherits the daemon's bridge
+                        // `TokenIssuer` (plumbed in from the caller via the
+                        // `token_issuer` arg, which the agent loop sources
+                        // from `KernelHandle::token_issuer()`) so these
+                        // sessions stay on the hardened bridge auth path.
+                        let fb_driver =
+                            match crate::drivers::create_driver(&fb_config, token_issuer.clone()) {
+                                Ok(d) => d,
+                                Err(driver_err) => {
+                                    warn!(
+                                        fallback_index = fb_idx,
+                                        provider = %fb.provider,
+                                        model = %fb.model,
+                                        error = %driver_err,
+                                        "Failed to create fallback driver, skipping"
+                                    );
+                                    continue;
+                                }
+                            };
                         let mut fb_request = request.clone();
                         fb_request.model = fb.model.clone();
                         warn!(
@@ -1343,6 +1361,7 @@ async fn stream_with_retry(
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
     fallback_models: &[FallbackModel],
+    token_issuer: Option<Arc<dyn TokenIssuer>>,
 ) -> OpenFangResult<crate::llm_driver::CompletionResponse> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
@@ -1452,19 +1471,25 @@ async fn stream_with_retry(
                             skip_permissions: true,
                             subprocess_timeout_secs: None,
                         };
-                        let fb_driver = match crate::drivers::create_driver(&fb_config) {
-                            Ok(d) => d,
-                            Err(driver_err) => {
-                                warn!(
-                                    fallback_index = fb_idx,
-                                    provider = %fb.provider,
-                                    model = %fb.model,
-                                    error = %driver_err,
-                                    "Failed to create fallback stream driver, skipping"
-                                );
-                                continue;
-                            }
-                        };
+                        // Fallback driver inherits the daemon's bridge
+                        // `TokenIssuer` (plumbed in from the caller via the
+                        // `token_issuer` arg, which the agent loop sources
+                        // from `KernelHandle::token_issuer()`) so these
+                        // sessions stay on the hardened bridge auth path.
+                        let fb_driver =
+                            match crate::drivers::create_driver(&fb_config, token_issuer.clone()) {
+                                Ok(d) => d,
+                                Err(driver_err) => {
+                                    warn!(
+                                        fallback_index = fb_idx,
+                                        provider = %fb.provider,
+                                        model = %fb.model,
+                                        error = %driver_err,
+                                        "Failed to create fallback stream driver, skipping"
+                                    );
+                                    continue;
+                                }
+                            };
                         let mut fb_request = request.clone();
                         fb_request.model = fb.model.clone();
                         warn!(
@@ -1772,6 +1797,15 @@ pub async fn run_agent_loop_streaming(
             temperature: manifest.model.temperature,
             system: Some(system_prompt.clone()),
             thinking: None,
+            caller_agent_id: Some(agent_id_str.clone()),
+            // Per-agent allowlist for the bridge subprocess: the names of
+            // every tool this agent is currently permitted to invoke,
+            // derived from the kernel-resolved `available_tools` (sourced
+            // from `agent.toml`'s `[capabilities]`/`[exec_policy]`).
+            // Subprocess drivers thread this into `OPENFANG_BRIDGE_ALLOWED`
+            // so the bridge's advertised surface matches the agent's
+            // permissions instead of falling back to the static default.
+            allowed_tools: Some(available_tools.iter().map(|t| t.name.clone()).collect()),
         };
 
         // Notify phase: on first iteration emit Streaming; on subsequent
@@ -1800,6 +1834,7 @@ pub async fn run_agent_loop_streaming(
             Some(provider_name),
             None,
             &manifest.fallback_models,
+            kernel.as_ref().and_then(|k| k.token_issuer()),
         )
         .await?;
 
