@@ -7068,12 +7068,10 @@ pub async fn mcp_http(
         // rather than fall through to the unscoped legacy path. Kernel-
         // level tools (agent_list, channel_send, etc.) continue to work
         // without an `_agent_id` since they don't touch the filesystem.
-        const FS_SANDBOXED_TOOLS: &[&str] = &[
-            "file_read",
-            "file_list",
-            "file_write",
-            "create_directory",
-        ];
+        // Canonical FS-sandbox gate (see
+        // `openfang_runtime::tool_runner::FS_SANDBOXED_TOOLS`).
+        // Single source of truth across the IPC and HTTP `/mcp` surfaces.
+        use openfang_runtime::tool_runner::FS_SANDBOXED_TOOLS;
         let agent_id_opt: Option<openfang_types::agent::AgentId> = arguments
             .get("_agent_id")
             .and_then(|v| v.as_str())

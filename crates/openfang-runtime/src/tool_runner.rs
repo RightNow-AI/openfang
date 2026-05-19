@@ -18,6 +18,32 @@ use tracing::{debug, warn};
 /// Maximum inter-agent call depth to prevent infinite recursion (A->B->C->...).
 const MAX_AGENT_CALL_DEPTH: u32 = 5;
 
+/// Tools whose invocation **must** be scoped to the calling agent's
+/// `workspace_root`. Canonical source of truth, consumed by both bridge
+/// surfaces (IPC + HTTP `/mcp`) to decide whether a given call's path
+/// arguments require workspace-rewriting and whether the call should
+/// fail-closed when no workspace is registered.
+///
+/// History: this list was duplicated in `openfang_api::bridge_ipc` and
+/// `openfang_api::routes`, drifted (5 vs 4 tools), and missed
+/// `create_directory` on the IPC side + `shell_exec`/`apply_patch` on the
+/// HTTP side — both real sandbox gaps. Unified here so additions land in
+/// one place.
+///
+/// Membership criteria: the tool touches the filesystem via a path arg
+/// (or, for `shell_exec`, uses `workspace_root` as cwd). Tools that do
+/// not touch the FS (`web_fetch`, `agent_*`, `memory_*`, `web_search`,
+/// `channel_send`) are intentionally absent.
+pub const FS_SANDBOXED_TOOLS: &[&str] = &[
+    "file_read",
+    "file_list",
+    "file_write",
+    "create_directory",
+    "shell_exec",
+    "apply_patch",
+];
+
+
 /// Check if a tool name refers to a shell execution tool.
 ///
 /// Used to determine whether exec_policy settings should bypass the approval gate.

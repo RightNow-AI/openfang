@@ -69,6 +69,7 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "file_read",
     "file_list",
     "file_write",
+    "create_directory",
     "web_fetch",
     "agent_list",
     "channel_send",
@@ -107,8 +108,11 @@ pub const ALLOWED_TOOLS: &[&str] = &[
 /// `workspace_root`. Without a registered workspace, those paths fall
 /// through to the daemon CWD and an attacker-crafted patch could touch
 /// `secrets.env` or any sibling workspace. Fail-closed gate.
-const FS_SANDBOXED_TOOLS: &[&str] =
-    &["file_read", "file_list", "file_write", "shell_exec", "apply_patch"];
+// Canonical FS-sandbox gate lives in `openfang_runtime::tool_runner` so
+// the IPC and HTTP `/mcp` surfaces consult one source. Re-exported under
+// the original module path to keep existing call sites (and tests at
+// :1024,1035 pre-unification) compiling unchanged.
+pub use openfang_runtime::tool_runner::FS_SANDBOXED_TOOLS;
 
 /// Daemon-version string sent in [`HelloAck::Ok`].
 fn daemon_version() -> String {
@@ -993,22 +997,22 @@ mod tests {
         );
     }
 
-    /// Pins the tool-surface cardinality at 16. Bumps to this number are
+    /// Pins the tool-surface cardinality at 17. Bumps to this number are
     /// expected when a new bridge tool lands — update intentionally, in
     /// lockstep with the three sets exercised by
     /// [`allowlist_three_way_correspondence`].
     #[test]
-    fn allowlist_count_is_sixteen() {
+    fn allowlist_count_is_seventeen() {
         use openfang_mcp_bridge::{DEFAULT_ALLOWED, built_in_tools};
-        assert_eq!(ALLOWED_TOOLS.len(), 16, "ALLOWED_TOOLS surface cardinality");
+        assert_eq!(ALLOWED_TOOLS.len(), 17, "ALLOWED_TOOLS surface cardinality");
         assert_eq!(
             built_in_tools().len(),
-            16,
+            17,
             "built_in_tools() advertise surface cardinality"
         );
         assert_eq!(
             DEFAULT_ALLOWED.len(),
-            16,
+            17,
             "DEFAULT_ALLOWED bridge-default cardinality"
         );
     }
@@ -1034,6 +1038,23 @@ mod tests {
         assert!(
             FS_SANDBOXED_TOOLS.contains(&"shell_exec"),
             "shell_exec must require a registered workspace"
+        );
+    }
+
+    /// Belt-and-braces: every tool the FS sandbox gates must also be on
+    /// the daemon-dispatch allowlist. Catches "added an FS tool to
+    /// `FS_SANDBOXED_TOOLS` without wiring it onto the bridge surface"
+    /// (or the inverse: exposed a new FS tool without sandboxing it).
+    #[test]
+    fn fs_sandboxed_tools_subset_of_allowed_tools() {
+        use std::collections::BTreeSet;
+        let allowed: BTreeSet<&str> = ALLOWED_TOOLS.iter().copied().collect();
+        let sandboxed: BTreeSet<&str> = FS_SANDBOXED_TOOLS.iter().copied().collect();
+        let extras: Vec<&&str> = sandboxed.difference(&allowed).collect();
+        assert!(
+            extras.is_empty(),
+            "FS_SANDBOXED_TOOLS contains tools missing from ALLOWED_TOOLS: {:?}",
+            extras
         );
     }
 

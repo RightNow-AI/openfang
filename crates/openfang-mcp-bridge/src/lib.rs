@@ -135,6 +135,7 @@ pub const DEFAULT_ALLOWED: &[&str] = &[
     "file_read",
     "file_list",
     "file_write",
+    "create_directory",
     "web_fetch",
     "agent_list",
     "channel_send",
@@ -195,6 +196,23 @@ pub fn built_in_tools() -> Vec<Tool> {
                     "content": { "type": "string", "description": "The content to write" }
                 },
                 "required": ["path", "content"]
+            })),
+        ),
+        // Mirrors `openfang_runtime::tool_runner` → `create_directory`.
+        // Workspace-scoped via the daemon-side `FS_SANDBOXED_TOOLS` gate.
+        // Idempotent: succeeds if the directory already exists; creates
+        // intermediate parents as needed.
+        Tool::new(
+            "create_directory",
+            "Create a directory (and any missing parent directories) at the given path. \
+             Paths are relative to the agent workspace. Idempotent: succeeds if the \
+             directory already exists.",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The directory path to create" }
+                },
+                "required": ["path"]
             })),
         ),
         // Mirrors `openfang_runtime::tool_runner` → `web_fetch`. No FS touch,
@@ -551,6 +569,7 @@ mod tests {
                 "file_read",
                 "file_list",
                 "file_write",
+                "create_directory",
                 "web_fetch",
                 "agent_list",
                 "channel_send",
