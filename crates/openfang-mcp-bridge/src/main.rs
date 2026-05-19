@@ -64,11 +64,13 @@ use openfang_mcp_bridge::{
 };
 #[cfg(unix)]
 use rmcp::{transport::stdio, ServiceExt};
+#[cfg(unix)]
 use tokio::io::BufReader;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 #[cfg(unix)]
 use tokio::sync::{mpsc, oneshot, Mutex};
+#[cfg(unix)]
 use tracing_subscriber::EnvFilter;
 
 /// Env var carrying the parent agent id. Stub for ANAI-30; ANAI-31 derives
