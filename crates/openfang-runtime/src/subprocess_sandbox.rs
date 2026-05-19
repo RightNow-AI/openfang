@@ -244,6 +244,36 @@ const SHELL_LOAD_FROM_DISK_FLAGS: &[(&[&str], &str)] = &[
 /// rejected (also prevents algorithmic DoS via deeply-nested base64 payloads).
 const MAX_SHELL_RECURSION_DEPTH: u32 = 2;
 
+/// Process-wrapper binaries whose first non-flag positional is the inner
+/// command we should recurse into for allowlist validation. Without this,
+/// `env FOO=bar /bin/evil` validates only `env` and silently executes the
+/// inner unlisted binary. (S9-08.)
+const WRAPPER_BINARIES_RECURSE: &[&str] = &["env", "sudo", "nice", "nohup", "timeout"];
+
+/// Process-wrapper binaries hard-denied in Allowlist mode regardless of
+/// allowlist contents. These are sysadmin / tracing / namespace tools whose
+/// parser surface is too large to trust (`xargs`, `find -exec`, `strace`,
+/// `gdb`, `chroot`, `unshare`, `setsid`, `stdbuf`, `flock`, `time`). They
+/// have no legitimate use through LLM-driven `shell_exec` — refuse outright
+/// even if an operator explicitly allowlists them. (S9-08.)
+const WRAPPER_BINARIES_DENY: &[&str] = &[
+    "xargs", "find", "strace", "gdb", "chroot", "unshare", "setsid", "stdbuf", "flock", "time",
+];
+
+/// Interpreter binaries that, when invoked with an inline-script flag
+/// (`-c` / `-e` / `--eval` / `-p`), run arbitrary user-supplied code in a
+/// language we cannot parse for allowlist validation. Hard-denied in
+/// Allowlist mode. Operators wanting to run scripts can pass a script file
+/// path (a regular path argument, not a command) or switch to Full mode.
+///
+/// Each entry: `(interpreter names, inline-script flags)`. (S9-08.)
+const INLINE_SCRIPT_INTERPRETERS: &[(&[&str], &[&str])] = &[
+    (&["python", "python2", "python3"], &["-c"]),
+    (&["node", "nodejs"], &["-e", "--eval", "-p", "--print"]),
+    (&["perl"], &["-e", "-E"]),
+    (&["ruby"], &["-e"]),
+];
+
 /// Decode a PowerShell `-EncodedCommand` payload: base64(UTF-16LE(script)).
 ///
 /// Returns the decoded script as a `String`. Invalid base64 or odd-byte-length
@@ -306,6 +336,225 @@ fn check_load_from_disk(segment: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Hard-deny check: if the segment's base command is in WRAPPER_BINARIES_DENY,
+/// reject regardless of allowlist contents. (S9-08.)
+fn check_wrapper_binary_deny(segment: &str) -> Result<(), String> {
+    let base = extract_base_command(segment.trim());
+    let base_lower = base.to_lowercase();
+    let base_normalized = base_lower.strip_suffix(".exe").unwrap_or(&base_lower);
+    if WRAPPER_BINARIES_DENY.contains(&base_normalized) {
+        return Err(format!(
+            "Wrapper binary '{base}' is hard-denied in Allowlist mode \
+             (process-tracing / namespace / sentinel-execution tools cannot be validated)."
+        ));
+    }
+    Ok(())
+}
+
+/// Hard-deny check: if the segment's base is an interpreter from
+/// INLINE_SCRIPT_INTERPRETERS and any arg matches its inline-script flag
+/// list, reject. (S9-08.)
+fn check_inline_script_interpreter(segment: &str) -> Result<(), String> {
+    let trimmed = segment.trim();
+    let base = extract_base_command(trimmed);
+    let base_lower = base.to_lowercase();
+    let base_normalized = base_lower.strip_suffix(".exe").unwrap_or(&base_lower);
+    for (interps, flags) in INLINE_SCRIPT_INTERPRETERS {
+        if !interps.contains(&base_normalized) {
+            continue;
+        }
+        for arg in trimmed.split_whitespace().skip(1) {
+            for flag in *flags {
+                if arg.eq_ignore_ascii_case(flag) {
+                    return Err(format!(
+                        "Interpreter '{base}' invoked with inline-script flag '{flag}' \
+                         — denied in Allowlist mode (inline scripts are not parseable for \
+                         validation; pass a script file path instead)."
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Skip the wrapper's own flags and return the slice of args starting at the
+/// inner command, or Err if the inner command is missing / the flag pattern
+/// is unrecognized. Fail-closed: when we can't confidently identify the
+/// inner command, reject the whole invocation. (S9-08.)
+fn unwrap_wrapper_args<'a>(wrapper: &str, args: &'a [&'a str]) -> Result<&'a [&'a str], String> {
+    let mut i = 0;
+    match wrapper {
+        "env" => {
+            while i < args.len() {
+                let a = args[i];
+                if a == "--" {
+                    i += 1;
+                    break;
+                }
+                if a == "-u" || a == "--unset" {
+                    if i + 1 >= args.len() {
+                        return Err("env: dangling -u/--unset flag".to_string());
+                    }
+                    i += 2;
+                    continue;
+                }
+                if a.starts_with("--unset=") {
+                    i += 1;
+                    continue;
+                }
+                if a.starts_with('-') {
+                    i += 1;
+                    continue;
+                }
+                if a.contains('=') {
+                    // KEY=VALUE env var assignment
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+        }
+        "sudo" => {
+            const SUDO_CONSUMING: &[&str] = &[
+                "-u", "-g", "-U", "-D", "-h", "-p", "-r", "-t", "-T", "-C", "--user", "--group",
+                "--other-user", "--chdir", "--host", "--prompt", "--role", "--type",
+                "--command-timeout", "--close-from",
+            ];
+            while i < args.len() {
+                let a = args[i];
+                if a == "--" {
+                    i += 1;
+                    break;
+                }
+                if SUDO_CONSUMING.contains(&a) {
+                    if i + 1 >= args.len() {
+                        return Err(format!("sudo: dangling flag '{a}'"));
+                    }
+                    i += 2;
+                    continue;
+                }
+                if a.starts_with('-') {
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+        }
+        "nice" => {
+            while i < args.len() {
+                let a = args[i];
+                if a == "-n" {
+                    if i + 1 >= args.len() {
+                        return Err("nice: dangling -n flag".to_string());
+                    }
+                    i += 2;
+                    continue;
+                }
+                if a.starts_with("--adjustment=") {
+                    i += 1;
+                    continue;
+                }
+                if a.starts_with('-') {
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+        }
+        "nohup" => {
+            // No flag-consuming behavior; first positional is the inner command.
+        }
+        "timeout" => {
+            const TIMEOUT_CONSUMING: &[&str] = &["-s", "--signal", "-k", "--kill-after"];
+            while i < args.len() {
+                let a = args[i];
+                if TIMEOUT_CONSUMING.contains(&a) {
+                    if i + 1 >= args.len() {
+                        return Err(format!("timeout: dangling flag '{a}'"));
+                    }
+                    i += 2;
+                    continue;
+                }
+                if a.starts_with("--signal=") || a.starts_with("--kill-after=") {
+                    i += 1;
+                    continue;
+                }
+                if a.starts_with('-') {
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+            // First positional is DURATION; skip it. Inner = next positional.
+            if i >= args.len() {
+                return Err("timeout: missing duration".to_string());
+            }
+            i += 1;
+        }
+        _ => return Err(format!("unknown wrapper binary '{wrapper}'")),
+    }
+    if i >= args.len() {
+        return Err(format!(
+            "wrapper binary '{wrapper}' invoked with no inner command — denied."
+        ));
+    }
+    Ok(&args[i..])
+}
+
+/// For a segment whose base is a recursable wrapper binary (env / sudo /
+/// nice / nohup / timeout), unwrap it and return all inner command bases
+/// that must be validated against the allowlist. Recurses into nested
+/// wrappers (both wrapper-binary and shell-wrapper varieties), capped at
+/// `MAX_SHELL_RECURSION_DEPTH`. (S9-08.)
+fn extract_wrapper_binary_chain(segment: &str, depth: u32) -> Result<Vec<String>, String> {
+    if depth > MAX_SHELL_RECURSION_DEPTH {
+        return Err(format!(
+            "Wrapper-binary recursion exceeds depth cap of {MAX_SHELL_RECURSION_DEPTH} — denied."
+        ));
+    }
+    let trimmed = segment.trim();
+    let base = extract_base_command(trimmed);
+    let base_lower = base.to_lowercase();
+    let base_normalized = base_lower.strip_suffix(".exe").unwrap_or(&base_lower);
+
+    if !WRAPPER_BINARIES_RECURSE.contains(&base_normalized) {
+        return Ok(Vec::new());
+    }
+
+    let args: Vec<&str> = trimmed.split_whitespace().skip(1).collect();
+    let inner = unwrap_wrapper_args(base_normalized, &args)?;
+    let inner_segment = inner.join(" ");
+
+    // Hard-deny / load-from-disk checks on the unwrapped inner segment.
+    check_wrapper_binary_deny(&inner_segment)?;
+    check_inline_script_interpreter(&inner_segment)?;
+    check_load_from_disk(&inner_segment)?;
+
+    let mut chain: Vec<String> = Vec::new();
+    let inner_base = extract_base_command(&inner_segment).to_string();
+    if !inner_base.is_empty() {
+        chain.push(inner_base.clone());
+    }
+
+    let inner_base_lower = inner_base.to_lowercase();
+    let inner_base_normalized = inner_base_lower
+        .strip_suffix(".exe")
+        .unwrap_or(&inner_base_lower);
+
+    if SHELL_WRAPPERS.contains(&inner_base_normalized) {
+        // Inner is a shell wrapper (e.g. `sudo bash -c "..."`).
+        let shell_inner = extract_shell_wrapper_inner(&inner_segment, depth + 1)?;
+        chain.extend(shell_inner);
+    } else if WRAPPER_BINARIES_RECURSE.contains(&inner_base_normalized) {
+        // Inner is another wrapper binary (e.g. `sudo env FOO=bar /bin/ls`).
+        let nested = extract_wrapper_binary_chain(&inner_segment, depth + 1)?;
+        chain.extend(nested);
+    }
+    Ok(chain)
+}
+
 
 /// If the base command is a known shell wrapper, extract any inline script
 /// passed via -Command / -c / /c (or via PowerShell -EncodedCommand) and
@@ -412,7 +661,13 @@ fn extract_inner_script_commands(script: &str, depth: u32) -> Result<Vec<String>
                 }
             }
         }
-        let segment = &rest[..earliest_pos];
+        let segment_raw = &rest[..earliest_pos];
+        let segment = segment_raw.trim();
+        // SECURITY (S9-08): apply hard-deny gates inside nested shell-wrapper
+        // scripts too, so `bash -c "xargs ..."` / `bash -c "python -c ..."`
+        // cannot bypass the outer-level checks.
+        check_wrapper_binary_deny(segment)?;
+        check_inline_script_interpreter(segment)?;
         let base = extract_base_command(segment);
         if !base.is_empty() {
             commands.push(base.to_string());
@@ -425,6 +680,12 @@ fn extract_inner_script_commands(script: &str, depth: u32) -> Result<Vec<String>
                 let inner = extract_shell_wrapper_inner(segment, depth + 1)?;
                 commands.extend(inner);
             }
+            // S9-08: also recurse into wrapper-binary inner commands inside
+            // shell scripts (e.g. `bash -c "sudo ls"` must validate `ls`).
+            if WRAPPER_BINARIES_RECURSE.contains(&base_normalized) {
+                let chain = extract_wrapper_binary_chain(segment, depth)?;
+                commands.extend(chain);
+            }
         }
         if earliest_pos + earliest_len >= rest.len() {
             break;
@@ -434,6 +695,37 @@ fn extract_inner_script_commands(script: &str, depth: u32) -> Result<Vec<String>
     Ok(commands)
 }
 
+/// Split a command string into segments by top-level shell separators
+/// (`;`, `&&`, `||`, `|`). Returns trimmed, non-empty segment slices.
+/// Used by `validate_command_allowlist` to apply per-segment S9-08 gates.
+fn extract_all_segments(command: &str) -> Vec<&str> {
+    let mut segs = Vec::new();
+    let mut rest = command;
+    while !rest.is_empty() {
+        let separators: &[&str] = &["&&", "||", "|", ";"];
+        let mut earliest_pos = rest.len();
+        let mut earliest_len = 0;
+        for sep in separators {
+            if let Some(pos) = rest.find(sep) {
+                if pos < earliest_pos {
+                    earliest_pos = pos;
+                    earliest_len = sep.len();
+                }
+            }
+        }
+        let segment = rest[..earliest_pos].trim();
+        if !segment.is_empty() {
+            segs.push(segment);
+        }
+        if earliest_pos + earliest_len >= rest.len() {
+            break;
+        }
+        rest = &rest[earliest_pos + earliest_len..];
+    }
+    segs
+}
+
+#[cfg(test)]
 /// Extract all commands from a shell command string.
 /// Handles pipes (`|`), semicolons (`;`), `&&`, and `||`.
 fn extract_all_commands(command: &str) -> Vec<&str> {
@@ -506,14 +798,28 @@ pub fn validate_command_allowlist(command: &str, policy: &ExecPolicy) -> Result<
                 }
             }
 
-            let base_commands = extract_all_commands(command);
-            for base in &base_commands {
+            // SECURITY (S9-08): per-segment hard-deny gates and wrapper-binary
+            // recursion. Build the full set of base commands that must be in
+            // the allowlist, including binaries reached through env / sudo /
+            // nice / nohup / timeout.
+            let mut all_bases: Vec<String> = Vec::new();
+            for seg in extract_all_segments(command) {
+                check_wrapper_binary_deny(seg)?;
+                check_inline_script_interpreter(seg)?;
+                let base = extract_base_command(seg);
+                if !base.is_empty() {
+                    all_bases.push(base.to_string());
+                }
+                let chain = extract_wrapper_binary_chain(seg, 1)?;
+                all_bases.extend(chain);
+            }
+            for base in &all_bases {
                 // Check safe_bins first
-                if policy.safe_bins.iter().any(|sb| sb == base) {
+                if policy.safe_bins.iter().any(|sb| sb == base.as_str()) {
                     continue;
                 }
                 // Check allowed_commands
-                if policy.allowed_commands.iter().any(|ac| ac == base) {
+                if policy.allowed_commands.iter().any(|ac| ac == base.as_str()) {
                     continue;
                 }
                 return Err(format!(
@@ -1583,5 +1889,258 @@ mod tests {
         let cmds = extract_all_commands(cmd);
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0], "\u{4f60}\u{597d}");
+    }
+
+
+    // ── S9-08 wrapper-binary recursion & hard-deny ─────────────────────
+
+    fn wrapper_policy() -> ExecPolicy {
+        // Allowlist mode with env/sudo/nice/nohup/timeout + a couple of
+        // inner binaries allowlisted, plus shell wrappers for nested cases.
+        ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec![
+                "env".into(), "sudo".into(), "nice".into(), "nohup".into(),
+                "timeout".into(), "ls".into(), "bash".into(), "python3".into(),
+            ],
+            ..ExecPolicy::default()
+        }
+    }
+
+    #[test]
+    fn test_s908_env_allowed_inner_passes() {
+        let p = wrapper_policy();
+        assert!(validate_command_allowlist("env FOO=bar ls -la", &p).is_ok());
+    }
+
+    #[test]
+    fn test_s908_env_unlisted_inner_blocked() {
+        let p = wrapper_policy();
+        let err = validate_command_allowlist("env FOO=bar /bin/evil", &p)
+            .expect_err("inner /bin/evil must be rejected");
+        assert!(err.contains("evil"), "got: {err}");
+    }
+
+    #[test]
+    fn test_s908_env_with_unset_flag() {
+        let p = wrapper_policy();
+        assert!(validate_command_allowlist("env -u HOME ls", &p).is_ok());
+    }
+
+    #[test]
+    fn test_s908_env_double_dash_passes() {
+        let p = wrapper_policy();
+        assert!(validate_command_allowlist("env -- ls", &p).is_ok());
+    }
+
+    #[test]
+    fn test_s908_sudo_unlisted_inner_blocked() {
+        let p = wrapper_policy();
+        let err = validate_command_allowlist("sudo /bin/evil", &p)
+            .expect_err("inner /bin/evil must be rejected");
+        assert!(err.contains("evil"), "got: {err}");
+    }
+
+    #[test]
+    fn test_s908_sudo_with_user_flag_passes() {
+        let p = wrapper_policy();
+        assert!(validate_command_allowlist("sudo -u root ls", &p).is_ok());
+    }
+
+    #[test]
+    fn test_s908_sudo_bash_inner_validates_inner_command() {
+        let p = wrapper_policy();
+        // sudo+bash allowlisted, ls allowlisted → pass.
+        assert!(validate_command_allowlist("sudo bash -c \"ls\"", &p).is_ok());
+        // sudo+bash allowlisted, evil NOT → reject.
+        let err = validate_command_allowlist("sudo bash -c \"evil\"", &p)
+            .expect_err("inner evil must be rejected");
+        assert!(err.contains("evil"), "got: {err}");
+    }
+
+    #[test]
+    fn test_s908_sudo_env_nested_chain() {
+        let p = wrapper_policy();
+        // sudo → env → ls. All allowlisted, should pass.
+        assert!(validate_command_allowlist("sudo env FOO=bar ls", &p).is_ok());
+        // sudo → env → evil. ls swapped to evil, must reject.
+        let err = validate_command_allowlist("sudo env FOO=bar evil", &p)
+            .expect_err("nested inner evil must be rejected");
+        assert!(err.contains("evil"), "got: {err}");
+    }
+
+    #[test]
+    fn test_s908_nice_unlisted_blocked() {
+        let p = wrapper_policy();
+        assert!(validate_command_allowlist("nice -n 10 evil", &p).is_err());
+        assert!(validate_command_allowlist("nice -n 10 ls", &p).is_ok());
+    }
+
+    #[test]
+    fn test_s908_nohup_inner_validated() {
+        let p = wrapper_policy();
+        assert!(validate_command_allowlist("nohup ls", &p).is_ok());
+        assert!(validate_command_allowlist("nohup evil", &p).is_err());
+    }
+
+    #[test]
+    fn test_s908_timeout_skips_duration() {
+        let p = wrapper_policy();
+        assert!(validate_command_allowlist("timeout 5s ls", &p).is_ok());
+        assert!(validate_command_allowlist("timeout 5s evil", &p).is_err());
+    }
+
+    #[test]
+    fn test_s908_timeout_with_signal_flag() {
+        let p = wrapper_policy();
+        assert!(validate_command_allowlist("timeout -s KILL 5s ls", &p).is_ok());
+    }
+
+    #[test]
+    fn test_s908_xargs_hard_denied_even_if_allowlisted() {
+        let p = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["xargs".into(), "ls".into()],
+            ..ExecPolicy::default()
+        };
+        let err = validate_command_allowlist("xargs ls", &p)
+            .expect_err("xargs must be hard-denied");
+        assert!(err.contains("hard-denied"), "got: {err}");
+    }
+
+    #[test]
+    fn test_s908_find_hard_denied() {
+        let p = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["find".into()],
+            ..ExecPolicy::default()
+        };
+        assert!(validate_command_allowlist("find . -name foo", &p).is_err());
+    }
+
+    #[test]
+    fn test_s908_strace_hard_denied() {
+        let p = wrapper_policy();
+        // strace not in allowlist anyway, but ensure error message is the deny one.
+        let p2 = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["strace".into(), "ls".into()],
+            ..ExecPolicy::default()
+        };
+        let err = validate_command_allowlist("strace ls", &p2)
+            .expect_err("strace must be hard-denied");
+        assert!(err.contains("hard-denied"), "got: {err}");
+        // Also via wrapper_policy: same outcome.
+        assert!(validate_command_allowlist("strace ls", &p).is_err());
+    }
+
+    #[test]
+    fn test_s908_time_chroot_unshare_setsid_stdbuf_flock_gdb_denied() {
+        let p = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec![
+                "time".into(), "chroot".into(), "unshare".into(), "setsid".into(),
+                "stdbuf".into(), "flock".into(), "gdb".into(), "ls".into(),
+            ],
+            ..ExecPolicy::default()
+        };
+        for w in &["time", "chroot", "unshare", "setsid", "stdbuf", "flock", "gdb"] {
+            let cmd = format!("{w} ls");
+            let err = validate_command_allowlist(&cmd, &p)
+                .expect_err(&format!("{w} must be hard-denied"));
+            assert!(err.contains("hard-denied"), "{w}: got: {err}");
+        }
+    }
+
+    #[test]
+    fn test_s908_python_dash_c_denied() {
+        let p = wrapper_policy();
+        let err = validate_command_allowlist("python3 -c \"import os\"", &p)
+            .expect_err("python3 -c must be denied");
+        assert!(err.contains("inline-script flag"), "got: {err}");
+    }
+
+    #[test]
+    fn test_s908_python_script_file_passes() {
+        let p = wrapper_policy();
+        // python3 with a script file (no -c) is fine.
+        assert!(validate_command_allowlist("python3 script.py", &p).is_ok());
+    }
+
+    #[test]
+    fn test_s908_node_eval_flags_denied() {
+        let p = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["node".into()],
+            ..ExecPolicy::default()
+        };
+        for flag in &["-e", "--eval", "-p", "--print"] {
+            let cmd = format!("node {flag} foo");
+            assert!(
+                validate_command_allowlist(&cmd, &p).is_err(),
+                "node {flag} should be denied"
+            );
+        }
+    }
+
+    #[test]
+    fn test_s908_perl_dash_e_denied() {
+        let p = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["perl".into()],
+            ..ExecPolicy::default()
+        };
+        assert!(validate_command_allowlist("perl -e foo", &p).is_err());
+        assert!(validate_command_allowlist("perl -E foo", &p).is_err());
+    }
+
+    #[test]
+    fn test_s908_ruby_dash_e_denied() {
+        let p = ExecPolicy {
+            mode: ExecSecurityMode::Allowlist,
+            allowed_commands: vec!["ruby".into()],
+            ..ExecPolicy::default()
+        };
+        assert!(validate_command_allowlist("ruby -e foo", &p).is_err());
+    }
+
+    #[test]
+    fn test_s908_bash_c_sudo_inner_validates() {
+        // bash -c "sudo ls" — bash is shell wrapper, inner script contains
+        // sudo+ls. Must recurse into sudo and validate ls.
+        let p = wrapper_policy();
+        assert!(validate_command_allowlist("bash -c \"sudo ls\"", &p).is_ok());
+        let err = validate_command_allowlist("bash -c \"sudo evil\"", &p)
+            .expect_err("nested sudo evil must be rejected");
+        assert!(err.contains("evil"), "got: {err}");
+    }
+
+    #[test]
+    fn test_s908_bash_c_xargs_inside_denied() {
+        // xargs hard-deny must fire even when nested inside a shell wrapper.
+        let p = wrapper_policy();
+        let err = validate_command_allowlist("bash -c \"xargs ls\"", &p)
+            .expect_err("nested xargs must be denied");
+        assert!(err.contains("hard-denied"), "got: {err}");
+    }
+
+    #[test]
+    fn test_s908_wrapper_recursion_depth_cap() {
+        // sudo → env → sudo → ls is depth 3 in wrapper-binary chain
+        // (extract_wrapper_binary_chain starts at depth 1; nests bump it to
+        // 2, then 3 > MAX_SHELL_RECURSION_DEPTH = 2 → reject).
+        let p = wrapper_policy();
+        let err = validate_command_allowlist("sudo env FOO=bar sudo ls", &p)
+            .expect_err("depth-3 wrapper chain must be rejected");
+        assert!(err.contains("depth cap"), "got: {err}");
+    }
+
+    #[test]
+    fn test_s908_wrapper_without_inner_rejected() {
+        let p = wrapper_policy();
+        // `sudo` with no inner command must reject (fail-closed).
+        assert!(validate_command_allowlist("sudo", &p).is_err());
+        // `env` with only KEY=VALUE assignments and no inner command must reject.
+        assert!(validate_command_allowlist("env FOO=bar", &p).is_err());
     }
 }
