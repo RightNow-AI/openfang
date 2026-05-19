@@ -49,8 +49,10 @@ provider = "default"
 model = "default"
 api_key_env = "GROQ_API_KEY"
 
-[schedule]
-continuous = { check_interval_secs = 120 }
+# Schedule is disabled by default — enabling continuous mode incurs LLM costs
+# on every tick even when idle. Uncomment to activate autonomous orchestration:
+# [schedule]
+# continuous = { check_interval_secs = 3600 }
 
 [resources]
 max_llm_tokens_per_hour = 500000
