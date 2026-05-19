@@ -546,21 +546,16 @@ async fn dispatch_call(
     let workspace_root_arg: Option<&Path> = workspace_path.as_deref();
 
     // shell_exec needs both `exec_policy` (allowlist / full / deny decision)
-    // and `allowed_env_vars` (hand-granted env passthrough — see
-    // agent_loop.rs:320 for the mirror of this metadata lookup). Every other
-    // bridge tool ignores both, so this is cheap to compute unconditionally.
-    let effective_exec_policy = entry.manifest.exec_policy.as_ref();
-    let hand_allowed_env: Vec<String> = entry
-        .manifest
-        .metadata
-        .get("hand_allowed_env")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-    let allowed_env_arg: Option<&[String]> = if hand_allowed_env.is_empty() {
-        None
-    } else {
-        Some(&hand_allowed_env)
-    };
+    // and `allowed_env_vars` (hand-granted env passthrough). Resolution is
+    // shared with the HTTP `/mcp` path via `AgentExecContext` so the two
+    // surfaces apply identical scoping — see S3-01 in the bridge-v2 audit.
+    // Every other bridge tool ignores both, so this is cheap to compute
+    // unconditionally.
+    let exec_ctx = openfang_runtime::agent_tool_context::AgentExecContext::from_manifest(
+        &entry.manifest,
+    );
+    let effective_exec_policy = exec_ctx.exec_policy_ref();
+    let allowed_env_arg: Option<&[String]> = exec_ctx.allowed_env();
 
     let result = openfang_runtime::tool_runner::execute_tool(
         &format!("bridge-{}", call.request_id),

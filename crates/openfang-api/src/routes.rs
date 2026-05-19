@@ -7071,14 +7071,31 @@ pub async fn mcp_http(
         // Canonical FS-sandbox gate (see
         // `openfang_runtime::tool_runner::FS_SANDBOXED_TOOLS`).
         // Single source of truth across the IPC and HTTP `/mcp` surfaces.
+        use openfang_runtime::agent_tool_context::{
+            AgentExecContext, requires_exec_policy,
+        };
         use openfang_runtime::tool_runner::FS_SANDBOXED_TOOLS;
         let agent_id_opt: Option<openfang_types::agent::AgentId> = arguments
             .get("_agent_id")
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse().ok());
-        let workspace_path: Option<std::path::PathBuf> = agent_id_opt
-            .and_then(|aid| state.kernel.registry.get(aid))
+        // Resolve the registry entry once so both workspace and exec
+        // context come from the same manifest snapshot (no TOCTOU between
+        // the workspace lookup and the exec_policy lookup).
+        let registry_entry = agent_id_opt
+            .and_then(|aid| state.kernel.registry.get(aid));
+        let workspace_path: Option<std::path::PathBuf> = registry_entry
+            .as_ref()
             .and_then(|entry| entry.manifest.workspace.clone());
+        // S3-01: resolve per-agent exec_policy + hand_allowed_env via the
+        // shared helper so HTTP `/mcp` applies the SAME scoping the bridge
+        // IPC path applies. Without this, `shell_exec` over HTTP ran with
+        // exec_policy=None (i.e. degraded to the daemon-global policy) and
+        // empty env-passthrough — bypassing every per-agent manifest gate
+        // an operator authored.
+        let exec_ctx: Option<AgentExecContext> = registry_entry
+            .as_ref()
+            .map(|entry| AgentExecContext::from_manifest(&entry.manifest));
         if FS_SANDBOXED_TOOLS.contains(&tool_name) && workspace_path.is_none() {
             return Json(serde_json::json!({
                 "jsonrpc": "2.0",
@@ -7093,6 +7110,45 @@ pub async fn mcp_http(
                 }
             }));
         }
+        // S3-01 fail-loud: tools in EXEC_POLICY_REQUIRED_TOOLS (currently
+        // just `shell_exec`) refuse to dispatch without a manifest-bound
+        // exec_policy. Falling through to `execute_tool` with
+        // `exec_policy = None` degrades to the daemon-global policy —
+        // typically `Full` on developer setups — and silently bypasses
+        // every per-agent gate. Reject with a clear error so misconfigured
+        // callers surface during the security-fix window rather than
+        // running unbounded shells.
+        if requires_exec_policy(tool_name) {
+            let has_policy = exec_ctx
+                .as_ref()
+                .and_then(|c| c.exec_policy_ref())
+                .is_some();
+            if !has_policy {
+                let reason = match agent_id_opt {
+                    None => "no `_agent_id` provided in arguments".to_string(),
+                    Some(aid) => match registry_entry.as_ref() {
+                        None => format!("agent '{aid}' has no registry entry"),
+                        Some(_) => format!(
+                            "agent '{aid}' has no `[exec_policy]` in its \
+                             manifest; refusing to dispatch against the \
+                             daemon-global policy"
+                        ),
+                    },
+                };
+                return Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request.get("id").cloned(),
+                    "error": {
+                        "code": -32602,
+                        "message": format!(
+                            "tool '{tool_name}' requires a manifest-bound \
+                             exec_policy ({reason}). Refusing to dispatch \
+                             without per-agent shell scoping (S3-01)."
+                        )
+                    }
+                }));
+            }
+        }
 
         // Snapshot skill registry before async call (RwLockReadGuard is !Send)
         let skill_snapshot = state
@@ -7106,6 +7162,14 @@ pub async fn mcp_http(
         let kernel_handle: Arc<dyn openfang_runtime::kernel_handle::KernelHandle> =
             state.kernel.clone() as Arc<dyn openfang_runtime::kernel_handle::KernelHandle>;
         let agent_id_string: Option<String> = agent_id_opt.as_ref().map(|a| a.to_string());
+        // S3-01: source allowed_env + exec_policy from the manifest-bound
+        // context (resolved above). Falls through to `None, None` only
+        // when no `_agent_id` was supplied AND the tool isn't gated by
+        // `requires_exec_policy` (which short-circuits above).
+        let allowed_env_arg: Option<&[String]> =
+            exec_ctx.as_ref().and_then(|c| c.allowed_env());
+        let effective_exec_policy =
+            exec_ctx.as_ref().and_then(|c| c.exec_policy_ref());
         let result = openfang_runtime::tool_runner::execute_tool(
             "mcp-http",
             tool_name,
@@ -7117,10 +7181,10 @@ pub async fn mcp_http(
             Some(&state.kernel.mcp_connections),
             Some(&state.kernel.web_ctx),
             Some(&state.kernel.browser_ctx),
-            None,
+            allowed_env_arg,
             workspace_path.as_deref(),
             Some(&state.kernel.media_engine),
-            None, // exec_policy
+            effective_exec_policy,
             if state.kernel.config.tts.enabled {
                 Some(&state.kernel.tts_engine)
             } else {
