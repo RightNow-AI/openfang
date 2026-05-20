@@ -40,6 +40,38 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
 use tracing::{debug, info, warn};
 
+struct AgentThinkingGuard<'a> {
+    registry: &'a AgentRegistry,
+    agent_id: AgentId,
+    active: bool,
+}
+
+impl<'a> AgentThinkingGuard<'a> {
+    fn new(registry: &'a AgentRegistry, agent_id: AgentId) -> KernelResult<Self> {
+        registry
+            .set_state(agent_id, AgentState::Thinking)
+            .map_err(|e| KernelError::OpenFang(OpenFangError::Registry(e.to_string())))?;
+        Ok(Self {
+            registry,
+            agent_id,
+            active: true,
+        })
+    }
+
+    fn finish(mut self, state: AgentState) {
+        self.active = false;
+        let _ = self.registry.set_state(self.agent_id, state);
+    }
+}
+
+impl Drop for AgentThinkingGuard<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.registry.set_state(self.agent_id, AgentState::Running);
+        }
+    }
+}
+
 /// The main OpenFang kernel — coordinates all subsystems.
 /// Stub LLM driver used when no providers are configured.
 /// Returns a helpful error so the dashboard still boots and users can configure providers.
@@ -1915,7 +1947,9 @@ impl OpenFangKernel {
         })?;
 
         if entry.state == AgentState::Thinking {
-            return Err(KernelError::OpenFang(OpenFangError::AgentBusy(agent_id.to_string())));
+            return Err(KernelError::OpenFang(OpenFangError::AgentBusy(
+                agent_id.to_string(),
+            )));
         }
 
         // Enforce quota before running the agent loop
@@ -1924,9 +1958,9 @@ impl OpenFangKernel {
             .map_err(KernelError::OpenFang)?;
 
         // Set state to Thinking and release lock to allow other messages (e.g. status/cancel)
-        // to reach the kernel without hanging the transport layer.
-        self.registry.set_state(agent_id, AgentState::Thinking)
-            .map_err(|e| KernelError::OpenFang(OpenFangError::Registry(e.to_string())))?;
+        // to reach the kernel without hanging the transport layer. The guard clears
+        // Thinking if this future is aborted or dropped while the agent loop is running.
+        let thinking_guard = AgentThinkingGuard::new(&self.registry, agent_id)?;
 
         drop(_guard);
 
@@ -1951,15 +1985,20 @@ impl OpenFangKernel {
                 sender_id,
                 sender_name,
                 Some(&self.config.runtime),
-            ).await
+            )
+            .await
         };
 
         // Re-acquire lock to commit state and results
         let _guard = lock.lock().await;
 
         // Reset state back to Running (or Crashed if it failed)
-        let final_state = if result.is_ok() { AgentState::Running } else { AgentState::Crashed };
-        let _ = self.registry.set_state(agent_id, final_state);
+        let final_state = if result.is_ok() {
+            AgentState::Running
+        } else {
+            AgentState::Crashed
+        };
+        thinking_guard.finish(final_state);
 
         match result {
             Ok(result) => {

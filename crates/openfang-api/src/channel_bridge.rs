@@ -115,19 +115,20 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
     fn queue_max_retries(&self) -> usize {
         std::env::var("OPENFANG_QUEUE_MAX_RETRIES")
             .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| {
-                self.kernel.config.channels.queue_max_retries.unwrap_or(300) as usize
-            })
+            .and_then(|s| s.parse::<u64>().ok())
+            .or(self.kernel.config.channels.queue_max_retries)
+            .filter(|retries| *retries > 0)
+            .and_then(|retries| usize::try_from(retries).ok())
+            .unwrap_or(300)
     }
 
     fn queue_sleep_secs(&self) -> u64 {
         std::env::var("OPENFANG_QUEUE_SLEEP_SECS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| {
-                self.kernel.config.channels.queue_sleep_secs.unwrap_or(2)
-            })
+            .or(self.kernel.config.channels.queue_sleep_secs)
+            .filter(|secs| *secs > 0)
+            .unwrap_or(2)
     }
 
     async fn is_agent_busy(&self, agent_id: AgentId) -> bool {
@@ -169,15 +170,11 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
     }
 
     fn queue_poll_secs(&self) -> u64 {
-        self.kernel
-            .config
-            .channels
-            .queue_poll_secs
-            .or_else(|| {
-                std::env::var("OPENFANG_QUEUE_POLL_SECS")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-            })
+        std::env::var("OPENFANG_QUEUE_POLL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or(self.kernel.config.channels.queue_poll_secs)
+            .filter(|secs| *secs > 0)
             .unwrap_or(30)
     }
 

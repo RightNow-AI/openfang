@@ -66,12 +66,19 @@ fn env_timeout_secs(var: &str) -> Option<u64> {
 /// to `0`. In that case the tool runs with no upper bound, which is what users
 /// on slow local inference (vLLM on old GPUs) want for Hands and inter-agent
 /// delegation (issue #1125).
-fn tool_timeout_for(tool_name: &str, runtime_config: Option<&openfang_types::config::RuntimeConfig>) -> Option<Duration> {
+fn tool_timeout_for(
+    tool_name: &str,
+    runtime_config: Option<&openfang_types::config::RuntimeConfig>,
+) -> Option<Duration> {
     let secs = match tool_name {
         "agent_send" | "agent_spawn" => {
-            runtime_config.map(|c| c.agent_tool_timeout_secs).unwrap_or(env_timeout_secs("OPENFANG_AGENT_TOOL_TIMEOUT_SECS").unwrap_or(AGENT_TOOL_TIMEOUT_SECS))
+            env_timeout_secs("OPENFANG_AGENT_TOOL_TIMEOUT_SECS")
+                .or_else(|| runtime_config.map(|c| c.agent_tool_timeout_secs))
+                .unwrap_or(AGENT_TOOL_TIMEOUT_SECS)
         }
-        _ => env_timeout_secs("OPENFANG_TOOL_TIMEOUT_SECS").unwrap_or(runtime_config.map(|c| c.tool_timeout_secs).unwrap_or(TOOL_TIMEOUT_SECS)),
+        _ => env_timeout_secs("OPENFANG_TOOL_TIMEOUT_SECS")
+            .or_else(|| runtime_config.map(|c| c.tool_timeout_secs))
+            .unwrap_or(TOOL_TIMEOUT_SECS),
     };
     if secs == 0 {
         None
@@ -482,7 +489,13 @@ pub async fn run_agent_loop(
     }
 
     // Use autonomous config max_iterations if set, else default
-    let max_iterations = runtime_config.map(|c| c.max_iterations).or(manifest.autonomous.as_ref().map(|a| a.max_iterations)).unwrap_or(MAX_ITERATIONS);
+    let max_iterations = runtime_config
+        .map(|c| c.max_iterations)
+        .or(manifest.autonomous.as_ref().map(|a| a.max_iterations))
+        .unwrap_or(MAX_ITERATIONS);
+    let max_continuations = runtime_config
+        .map(|c| c.max_continuations)
+        .unwrap_or(MAX_CONTINUATIONS);
 
     // Initialize loop guard — scale circuit breaker for autonomous agents
     let loop_guard_config = {
@@ -1060,7 +1073,7 @@ pub async fn run_agent_loop(
             }
             StopReason::MaxTokens => {
                 consecutive_max_tokens += 1;
-                if consecutive_max_tokens >= MAX_CONTINUATIONS {
+                if consecutive_max_tokens >= max_continuations {
                     // Return partial response instead of continuing forever
                     let text = response.text();
                     let text = if text.trim().is_empty() {
@@ -1700,7 +1713,13 @@ pub async fn run_agent_loop_streaming(
     }
 
     // Use autonomous config max_iterations if set, else default
-    let max_iterations = runtime_config.map(|c| c.max_iterations).or(manifest.autonomous.as_ref().map(|a| a.max_iterations)).unwrap_or(MAX_ITERATIONS);
+    let max_iterations = runtime_config
+        .map(|c| c.max_iterations)
+        .or(manifest.autonomous.as_ref().map(|a| a.max_iterations))
+        .unwrap_or(MAX_ITERATIONS);
+    let max_continuations = runtime_config
+        .map(|c| c.max_continuations)
+        .unwrap_or(MAX_CONTINUATIONS);
 
     // Initialize loop guard — scale circuit breaker for autonomous agents
     let loop_guard_config = {
@@ -2281,7 +2300,7 @@ pub async fn run_agent_loop_streaming(
             }
             StopReason::MaxTokens => {
                 consecutive_max_tokens += 1;
-                if consecutive_max_tokens >= MAX_CONTINUATIONS {
+                if consecutive_max_tokens >= max_continuations {
                     let text = response.text();
                     let text = if text.trim().is_empty() {
                         "[Partial response — token limit reached with no text output.]".to_string()

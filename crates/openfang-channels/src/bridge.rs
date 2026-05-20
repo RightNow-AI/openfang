@@ -842,97 +842,160 @@ async fn process_queued_messages(
     adapter_arc: &Arc<dyn ChannelAdapter>,
     router: &Arc<AgentRouter>,
 ) {
-    let _guard = get_queue_mutex().lock().await;
-    let mut queue = read_queue(handle.as_ref()).await;
-    if queue.is_empty() {
-        return;
-    }
-
-    let mut processed_any = false;
-    for i in 0..queue.len() {
-        let q_msg = &queue[i];
-        if q_msg.message.channel != adapter.channel_type() {
-            continue;
+    let selected = {
+        let _guard = get_queue_mutex().lock().await;
+        let queue = read_queue(handle.as_ref()).await;
+        if queue.is_empty() {
+            return;
         }
 
-        let agent_id = match q_msg.message.target_agent {
-            Some(id) => id,
-            None => {
-                let channel_key = q_msg.message.channel_id().unwrap_or_else(|| q_msg.message.sender.platform_id.clone());
-                match router.resolve_channel_agent(&channel_key).await {
-                    Some(id) => id,
-                    None => {
-                        match handle.find_agent_by_name("assistant").await.ok().flatten() {
+        let mut selected = None;
+        for q_msg in queue.iter() {
+            if q_msg.message.channel != adapter.channel_type() {
+                continue;
+            }
+
+            let agent_id = match q_msg.message.target_agent {
+                Some(id) => id,
+                None => {
+                    let target_agent_name = q_msg
+                        .message
+                        .metadata
+                        .get("target_agent_name")
+                        .and_then(|v| v.as_str());
+                    let routed_by_name = if let Some(name) = target_agent_name {
+                        handle.find_agent_by_name(name).await.ok().flatten()
+                    } else {
+                        None
+                    };
+                    let binding_ctx = binding_context_for(&q_msg.message);
+                    match routed_by_name.or_else(|| {
+                        router.resolve_with_context(
+                            &q_msg.message.channel,
+                            sender_user_id(&q_msg.message),
+                            q_msg.message.sender.openfang_user.as_deref(),
+                            &binding_ctx,
+                        )
+                    }) {
+                        Some(id) => id,
+                        None => match handle.find_agent_by_name("assistant").await.ok().flatten() {
                             Some(id) => id,
-                            None => match handle.list_agents().await.ok().and_then(|a| a.first().map(|(id, _)| *id)) {
+                            None => match handle
+                                .list_agents()
+                                .await
+                                .ok()
+                                .and_then(|a| a.first().map(|(id, _)| *id))
+                            {
                                 Some(id) => id,
                                 None => continue,
-                            }
-                        }
+                            },
+                        },
                     }
                 }
-            }
-        };
+            };
 
-        if handle.is_agent_busy(agent_id).await {
-            continue;
+            if handle.is_agent_busy(agent_id).await {
+                continue;
+            }
+
+            selected = Some((q_msg.clone(), agent_id));
+            break;
         }
 
-        let popped = queue.remove(i);
-        write_queue(handle.as_ref(), &queue).await;
-        
-        drop(_guard);
+        selected
+    };
 
-        let msg = popped.message;
-        let prefixed_text = popped.prefixed_text;
-        let thread_id = msg.thread_id.as_deref();
-        let output_format = popped.output_format;
-        let lifecycle_reactions = popped.lifecycle_reactions;
-        let msg_id = &msg.platform_message_id;
+    let Some((popped, agent_id)) = selected else {
+        return;
+    };
 
-        info!(
-            channel = %adapter.name(),
-            agent_id = %agent_id,
-            "Picking up persistently queued message: {}",
-            openfang_types::truncate_str(&prefixed_text, 64)
-        );
+    let msg = popped.message;
+    let prefixed_text = popped.prefixed_text;
+    let thread_id = msg.thread_id.as_deref();
+    let output_format = popped.output_format;
+    let lifecycle_reactions = popped.lifecycle_reactions;
+    let msg_id = &msg.platform_message_id;
 
-        let _ = adapter.send_typing(&msg.sender).await;
-        if lifecycle_reactions {
-            send_lifecycle_reaction(adapter, &msg.sender, msg_id, AgentPhase::Thinking).await;
-        }
+    info!(
+        channel = %adapter.name(),
+        agent_id = %agent_id,
+        "Picking up persistently queued message: {}",
+        openfang_types::truncate_str(&prefixed_text, 64)
+    );
 
-        let typing_task = spawn_typing_loop(adapter_arc.clone(), msg.sender.clone());
-
-        let result = handle.send_message(agent_id, &prefixed_text).await;
-
-        typing_task.abort();
-
-        match result {
-            Ok(response) => {
-                if lifecycle_reactions {
-                    send_lifecycle_reaction(adapter, &msg.sender, msg_id, AgentPhase::Done).await;
-                }
-                let overrides = handle.channel_overrides(adapter.name()).await;
-                let text_prefixed = maybe_prefix_response(handle, overrides.as_ref(), agent_id, response).await;
-                send_response(adapter, &msg.sender, text_prefixed, thread_id, output_format).await;
-                handle.record_delivery(agent_id, &format!("{:?}", msg.channel), &msg.sender.platform_id, true, None, thread_id).await;
-            }
-            Err(e) => {
-                if lifecycle_reactions {
-                    send_lifecycle_reaction(adapter, &msg.sender, msg_id, AgentPhase::Error).await;
-                }
-                let err_msg = sanitize_agent_error(&e);
-                if !adapter.suppress_error_responses() {
-                    send_response(adapter, &msg.sender, err_msg.clone(), thread_id, output_format).await;
-                }
-                handle.record_delivery(agent_id, &format!("{:?}", msg.channel), &msg.sender.platform_id, false, Some(&err_msg), thread_id).await;
-            }
-        }
-
-        processed_any = true;
-        break;
+    let _ = adapter.send_typing(&msg.sender).await;
+    if lifecycle_reactions {
+        send_lifecycle_reaction(adapter, &msg.sender, msg_id, AgentPhase::Thinking).await;
     }
+
+    let typing_task = spawn_typing_loop(adapter_arc.clone(), msg.sender.clone());
+    let result = handle.send_message(agent_id, &prefixed_text).await;
+    typing_task.abort();
+
+    let should_remove = result.is_ok()
+        || result
+            .as_ref()
+            .err()
+            .map(|e| !is_busy_error(e))
+            .unwrap_or(false);
+
+    if should_remove {
+        let _guard = get_queue_mutex().lock().await;
+        let mut queue = read_queue(handle.as_ref()).await;
+        queue.retain(|q| q.id != popped.id);
+        write_queue(handle.as_ref(), &queue).await;
+    }
+
+    match result {
+        Ok(response) => {
+            if lifecycle_reactions {
+                send_lifecycle_reaction(adapter, &msg.sender, msg_id, AgentPhase::Done).await;
+            }
+            let overrides = handle.channel_overrides(adapter.name()).await;
+            let text_prefixed =
+                maybe_prefix_response(handle, overrides.as_ref(), agent_id, response).await;
+            send_response(adapter, &msg.sender, text_prefixed, thread_id, output_format).await;
+            handle
+                .record_delivery(
+                    agent_id,
+                    &format!("{:?}", msg.channel),
+                    &msg.sender.platform_id,
+                    true,
+                    None,
+                    thread_id,
+                )
+                .await;
+        }
+        Err(e) if is_busy_error(&e) => {
+            if lifecycle_reactions {
+                send_lifecycle_reaction(adapter, &msg.sender, msg_id, AgentPhase::Queued).await;
+            }
+        }
+        Err(e) => {
+            if lifecycle_reactions {
+                send_lifecycle_reaction(adapter, &msg.sender, msg_id, AgentPhase::Error).await;
+            }
+            let err_msg = sanitize_agent_error(&e);
+            if !adapter.suppress_error_responses() {
+                send_response(adapter, &msg.sender, err_msg.clone(), thread_id, output_format)
+                    .await;
+            }
+            handle
+                .record_delivery(
+                    agent_id,
+                    &format!("{:?}", msg.channel),
+                    &msg.sender.platform_id,
+                    false,
+                    Some(&err_msg),
+                    thread_id,
+                )
+                .await;
+        }
+    }
+}
+
+fn is_busy_error(error: &str) -> bool {
+    error.contains("Agent busy") || error.contains("AgentBusy")
 }
 
 async fn send_message_queued(
@@ -944,7 +1007,7 @@ async fn send_message_queued(
     let max_retries = handle.queue_max_retries();
     loop {
         match handle.send_message(agent_id, message).await {
-            Err(e) if e.contains("Agent busy") || e.contains("AgentBusy") => {
+            Err(e) if is_busy_error(&e) => {
                 retries += 1;
                 if retries >= max_retries {
                     return Err("Agent is busy and timed out waiting for the queue.".to_string());
@@ -969,7 +1032,7 @@ async fn send_message_with_blocks_queued(
     let max_retries = handle.queue_max_retries();
     loop {
         match handle.send_message_with_blocks(agent_id, blocks.clone()).await {
-            Err(e) if e.contains("Agent busy") || e.contains("AgentBusy") => {
+            Err(e) if is_busy_error(&e) => {
                 retries += 1;
                 if retries >= max_retries {
                     return Err("Agent is busy and timed out waiting for the queue.".to_string());
@@ -1570,21 +1633,27 @@ async fn dispatch_message(
     if handle.queue_enabled() && handle.is_agent_busy(agent_id).await {
         let _guard = get_queue_mutex().lock().await;
         let mut queue = read_queue(handle.as_ref()).await;
-        
+
         let is_dup = queue.iter().any(|q| {
             q.message.channel == message.channel
                 && q.message.platform_message_id == message.platform_message_id
         });
-        
-        if !is_dup {
-            let position = queue.iter().filter(|q| {
-                let q_aid = q.message.target_agent.unwrap_or(agent_id);
-                q_aid == agent_id
-            }).count() + 1;
 
+        if !is_dup {
+            let position = queue
+                .iter()
+                .filter(|q| {
+                    let q_aid = q.message.target_agent.unwrap_or(agent_id);
+                    q_aid == agent_id
+                })
+                .count()
+                + 1;
+
+            let mut queued_message = message.clone();
+            queued_message.target_agent = Some(agent_id);
             let queued_item = QueuedMessage {
                 id: Uuid::new_v4().to_string(),
-                message: message.clone(),
+                message: queued_message,
                 prefixed_text: prefixed_text.clone(),
                 output_format,
                 lifecycle_reactions,
@@ -1596,14 +1665,15 @@ async fn dispatch_message(
             let notify_msg = format!(
                 "⏳ Agent is currently busy. Your message has been persistently queued (Position #{position}). I will reply as soon as I'm free!"
             );
-            
+
             let _ = adapter.send_typing(&message.sender).await;
             if lifecycle_reactions {
                 send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Queued).await;
             }
-            
+
             send_response(adapter, &message.sender, notify_msg, thread_id, output_format).await;
         }
+        typing_task.abort();
         return;
     }
 
@@ -3171,16 +3241,17 @@ mod tests {
         assert_eq!(q.len(), 0);
 
         let msg = ChannelMessage {
-            channel: openfang_types::config::ChannelType::Telegram,
+            channel: ChannelType::Telegram,
             platform_message_id: "msg_123".to_string(),
             thread_id: None,
-            sender: openfang_types::message::ChannelUser {
+            sender: ChannelUser {
                 platform_id: "user_456".to_string(),
                 display_name: "Test User".to_string(),
                 openfang_user: None,
             },
-            content: openfang_types::message::ChannelContent::Text("Hello".to_string()),
+            content: ChannelContent::Text("Hello".to_string()),
             target_agent: None,
+            timestamp: chrono::Utc::now(),
             is_group: false,
             metadata: std::collections::HashMap::new(),
         };
@@ -3189,7 +3260,7 @@ mod tests {
             id: "uuid_1".to_string(),
             message: msg.clone(),
             prefixed_text: "[From: Test User] Hello".to_string(),
-            output_format: openfang_types::config::OutputFormat::Text,
+            output_format: OutputFormat::PlainText,
             lifecycle_reactions: false,
             created_at: chrono::Utc::now(),
         };
