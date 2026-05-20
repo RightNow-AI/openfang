@@ -104,6 +104,7 @@ provider = "anthropic"
 model = "claude-sonnet-4-20250514"
 api_key_env = "ANTHROPIC_API_KEY"
 # base_url = "https://api.anthropic.com"  # Optional override
+# http_timeout_secs = 600             # timeout for long inference turns
 
 # --- Fallback Providers ---
 [[fallback_providers]]
@@ -159,6 +160,13 @@ max_chars = 50000
 max_response_bytes = 10485760        # 10 MB
 timeout_secs = 30
 readability = true
+ 
+# --- Runtime Limits ---
+[runtime]
+max_iterations = 50                  # Max steps per turn
+tool_timeout_secs = 120              # Max seconds for regular tools
+agent_tool_timeout_secs = 600        # Max seconds for agent_send/agent_spawn
+max_continuations = 5                # Max LLM continuations per turn
 
 # --- MCP Servers ---
 [[mcp_servers]]
@@ -333,6 +341,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 | `model` | string | `"claude-sonnet-4-20250514"` | Model identifier. Aliases like `sonnet`, `haiku`, `gpt-4o`, `gemini-flash` are resolved by the model catalog. |
 | `api_key_env` | string | `"ANTHROPIC_API_KEY"` | Name of the environment variable holding the API key. The actual key is read from this env var at runtime, never stored in config. |
 | `base_url` | string or null | `null` | Override the API base URL. Useful for proxies or self-hosted endpoints. When `null`, the provider's default URL from the model catalog is used. |
+| `http_timeout_secs` | u64 or null | `null` | HTTP client timeout in seconds for long-running inference turns. When `null`, the driver default is used (usually 300s). For long-form generation (long-running agent sessions, etc.), bump this to a larger value (example: 1800 for 30 mins), and ensure any proxy or container configurations are set with an equal or higher timeout value. |
 
 ---
 
@@ -518,11 +527,48 @@ readability = true
 
 ---
 
+### `[runtime]`
+
+Configures execution limits and timeouts for the agent loop and tool execution.
+
+```toml
+[runtime]
+max_iterations = 50
+tool_timeout_secs = 120
+agent_tool_timeout_secs = 600
+max_continuations = 5
+max_agent_call_depth = 5
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_iterations` | u32 | `50` | Maximum number of tool-call iterations per agent turn before forcing a stop. |
+| `tool_timeout_secs` | u64 | `120` | Maximum execution time in seconds for regular tools (filesystem, web, etc.). |
+| `agent_tool_timeout_secs` | u64 | `600` | Maximum execution time in seconds for inter-agent tools (`agent_send`, `agent_spawn`). These involve full remote agent turns and often require significantly longer timeouts (3 hours by default). |
+| `max_continuations` | u32 | `5` | Maximum number of LLM continuations allowed when a model hits its output token limit. |
+| `max_agent_call_depth` | u32 | `5` | Maximum recursion depth for agent-to-agent calls to prevent infinite loops. |
+| `mcp_timeout_secs` | u64 | `30` | Default timeout for MCP tool requests. |
+
+---
+
 ### `[channels]`
 
 All 40 channel adapters are configured under `[channels.<name>]`. Each channel is `Option<T>` -- omitting the section disables the adapter entirely. Including the section header (even empty) enables it with default values.
 
 Every channel config includes a `default_agent` field (optional agent name to route messages to) and an `overrides` sub-table (see [Channel Overrides](#channel-overrides)).
+
+**Global Channel Queue Settings:**
+
+These settings control the asynchronous queuing mechanism that serializes concurrent incoming messages to the same agent when they are in a "Thinking" state, preventing concurrent turns from blocking or causing "Agent busy" errors.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `queue_max_retries` | u64 | `300` | Maximum number of retry attempts for queuing when the agent is busy/thinking before giving up and returning a timeout error. |
+| `queue_sleep_secs` | u64 | `2` | Number of seconds to pause between polling retry attempts. |
+| `queue_enabled` | bool | `true` | Enable SQLite-backed persistent queuing when an agent is busy/thinking. When enabled, incoming messages are saved to SQLite and processed sequentially as soon as the agent becomes free. |
+| `queue_poll_secs` | u64 | `30` | Configurable polling interval in seconds for the background queue processor loop. |
+
+These global settings can also be overridden via the environment variables `OPENFANG_QUEUE_MAX_RETRIES`, `OPENFANG_QUEUE_SLEEP_SECS`, `OPENFANG_QUEUE_ENABLED`, and `OPENFANG_QUEUE_POLL_SECS`.
 
 #### `[channels.telegram]`
 
@@ -1292,6 +1338,7 @@ api_key_env = "GROQ_API_KEY"
 | `model` | string | `""` | Model identifier for this provider. |
 | `api_key_env` | string | `""` | Env var name for the API key. Empty for local providers (ollama, vllm, lmstudio). |
 | `base_url` | string or null | `null` | Base URL override. Uses catalog default if null. |
+| `http_timeout_secs` | u64 or null | `null` | HTTP client timeout in seconds for this fallback. |
 
 ---
 
@@ -1601,3 +1648,33 @@ Configured in agent manifests via `AutonomousConfig`:
 | `max_restarts` | `10` | Maximum automatic restarts before permanent stop. |
 | `heartbeat_interval_secs` | `30` | Seconds between heartbeat health checks. |
 | `heartbeat_channel` | `null` | Channel to send heartbeat status to (e.g., `"telegram"`). |
+
+---
+
+## Local LLM Operations: Cost Estimation
+
+For local hardware setups (such as multi-GPU local inference servers), OpenFang supports power-aware costing models to track token expenditures alongside external cloud API provider costs.
+
+### Cost Estimation Config
+
+To reflect empirical energy usage in your local OpenFang token billing telemetry, you can configure model cost values per million tokens in `custom_models.json` (located in `~/.openfang/custom_models.json` or `/data/custom_models.json` inside Docker):
+
+```json
+[
+  {
+    "id": "qwen2.5-72b-instruct",
+    "display_name": "Local Qwen 2.5 72B (vLLM)",
+    "provider": "vllm",
+    "tier": "local",
+    "context_window": 32768,
+    "max_output_tokens": 4096,
+    "input_cost_per_m": 0.92,
+    "output_cost_per_m": 0.92,
+    "supports_tools": true,
+    "supports_vision": false,
+    "supports_streaming": true
+  }
+]
+```
+
+* **Calculation Basis:** The local model pricing can be calculated by factoring the hosting server's average active wattage draw (e.g. 500W) against your local electricity utility tariff and average generation speed. This provides a ground-truth cost per million tokens for accurate resource accounting.

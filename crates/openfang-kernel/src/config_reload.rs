@@ -516,6 +516,7 @@ mod tests {
             api_key_env: String::new(),
             base_url: None,
             subprocess_timeout_secs: Some(120),
+            http_timeout_secs: None,
         });
         b.fallback_providers.push(FallbackProviderConfig {
             provider: "codex".to_string(),
@@ -524,6 +525,7 @@ mod tests {
             base_url: None,
             // Operator raises the ceiling for slow Codex turns.
             subprocess_timeout_secs: Some(900),
+            http_timeout_secs: None,
         });
         let plan = build_reload_plan(&a, &b);
         assert!(
@@ -548,6 +550,7 @@ mod tests {
             api_key_env: String::new(),
             base_url: None,
             subprocess_timeout_secs: Some(300),
+            http_timeout_secs: None,
         });
         let plan = build_reload_plan(&a, &b);
         assert!(!plan.restart_required);

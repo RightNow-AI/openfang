@@ -491,6 +491,9 @@ pub struct FallbackProviderConfig {
     /// over this field at driver-construction time.
     #[serde(default)]
     pub subprocess_timeout_secs: Option<u64>,
+    /// Global HTTP client timeout in seconds for this fallback.
+    #[serde(default)]
+    pub http_timeout_secs: Option<u64>,
 }
 
 /// Text-to-speech configuration.
@@ -1296,7 +1299,12 @@ pub struct KernelConfig {
     /// github_token = "ghp_..."
     /// default_branch = "develop"
     /// ```
+    /// Agent runtime configuration.
     #[serde(default)]
+    pub runtime: RuntimeConfig,
+    /// Session compaction configuration.
+    #[serde(default)]
+    pub compaction: CompactionConfig,
     pub skills: HashMap<String, HashMap<String, String>>,
 }
 
@@ -1540,6 +1548,8 @@ impl Default for KernelConfig {
             workflows_dir: None,
             heartbeat: HeartbeatSettings::default(),
             skills: HashMap::new(),
+            runtime: RuntimeConfig::default(),
+            compaction: CompactionConfig::default(),
         }
     }
 }
@@ -1696,6 +1706,8 @@ pub struct DefaultModelConfig {
     /// `OPENFANG_SUBPROCESS_TIMEOUT_SECS` env var, if set, wins over this
     /// field at driver-construction time.
     pub subprocess_timeout_secs: Option<u64>,
+    /// Global HTTP client timeout in seconds for the default model.
+    pub http_timeout_secs: Option<u64>,
 }
 
 impl Default for DefaultModelConfig {
@@ -1706,6 +1718,7 @@ impl Default for DefaultModelConfig {
             api_key_env: "ANTHROPIC_API_KEY".to_string(),
             base_url: None,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         }
     }
 }
@@ -1909,6 +1922,16 @@ pub struct ChannelsConfig {
     pub wecom: Option<WeComConfig>,
     /// MQTT pub/sub configuration (None = disabled).
     pub mqtt: Option<MqttConfig>,
+    /// Maximum retries for agent busy queuing.
+    pub queue_max_retries: Option<u64>,
+    /// Sleep duration in seconds between agent busy retries.
+    pub queue_sleep_secs: Option<u64>,
+    /// Enable persistent queueing when an agent is busy.
+    #[serde(default)]
+    pub queue_enabled: Option<bool>,
+    /// Configurable persistent queue polling interval in seconds.
+    #[serde(default)]
+    pub queue_poll_secs: Option<u64>,
 }
 
 /// Telegram channel adapter configuration.
@@ -4334,6 +4357,7 @@ mod tests {
             api_key_env: String::new(),
             base_url: None,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let json = serde_json::to_string(&fb).unwrap();
         let back: FallbackProviderConfig = serde_json::from_str(&json).unwrap();
@@ -4697,5 +4721,96 @@ shell_env_passthrough = ["*"]
 "#;
         let policy: ExecPolicy = toml::from_str(toml_str).unwrap();
         assert_eq!(policy.shell_env_passthrough, vec!["*"]);
+    }
+}
+/// Configuration for session compaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompactionConfig {
+    /// Compact when session message count exceeds this.
+    pub threshold: usize,
+    /// Number of recent messages to keep verbatim (not summarized).
+    pub keep_recent: usize,
+    /// Maximum tokens for the summary generation.
+    pub max_summary_tokens: u32,
+    /// Base ratio of messages to process per chunk (0.0-1.0).
+    pub base_chunk_ratio: f64,
+    /// Minimum chunk ratio (floor for adaptive computation).
+    pub min_chunk_ratio: f64,
+    /// Safety margin multiplier for token estimation inaccuracy.
+    pub safety_margin: f64,
+    /// Overhead tokens reserved for summarization prompt itself.
+    pub summarization_overhead_tokens: u32,
+    /// Maximum input chars per summarization chunk.
+    pub max_chunk_chars: usize,
+    /// Maximum retry attempts for summarization.
+    pub max_retries: u32,
+    /// Trigger compaction when estimated tokens exceed this fraction of context_window_tokens.
+    pub token_threshold_ratio: f64,
+    /// Model context window size in tokens.
+    pub context_window_tokens: usize,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            threshold: 30,
+            keep_recent: 10,
+            max_summary_tokens: 1024,
+            base_chunk_ratio: 0.4,
+            min_chunk_ratio: 0.15,
+            safety_margin: 1.2,
+            summarization_overhead_tokens: 4096,
+            max_chunk_chars: 80_000,
+            max_retries: 3,
+            token_threshold_ratio: 0.7,
+            context_window_tokens: 200_000,
+        }
+    }
+}
+
+/// Configuration for the agent runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RuntimeConfig {
+    /// Maximum iterations per agent turn.
+    pub max_iterations: u32,
+    /// Maximum retries for LLM calls.
+    pub max_retries: u32,
+    /// Base delay for retries in milliseconds.
+    pub base_retry_delay_ms: u64,
+    /// Timeout for local tool execution in seconds.
+    pub tool_timeout_secs: u64,
+    /// Timeout for inter-agent tool calls (A2A) in seconds.
+    pub agent_tool_timeout_secs: u64,
+    /// Maximum model continuations per turn.
+    pub max_continuations: u32,
+    /// Maximum recursion depth for agent-to-agent calls.
+    pub max_agent_call_depth: u32,
+    /// Browser CDP connection timeout in seconds.
+    pub browser_connect_timeout_secs: u64,
+    /// Browser CDP command timeout in seconds.
+    pub browser_command_timeout_secs: u64,
+    /// MCP request timeout in seconds.
+    pub mcp_timeout_secs: u64,
+    /// Maximum character budget for a single tool result (as fraction of context window).
+    pub tool_result_budget_ratio: f64,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: 50,
+            max_retries: 3,
+            base_retry_delay_ms: 1000,
+            tool_timeout_secs: 120,
+            agent_tool_timeout_secs: 600,
+            max_continuations: 5,
+            max_agent_call_depth: 5,
+            browser_connect_timeout_secs: 15,
+            browser_command_timeout_secs: 30,
+            mcp_timeout_secs: 30,
+            tool_result_budget_ratio: 0.3,
+        }
     }
 }

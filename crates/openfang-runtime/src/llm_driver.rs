@@ -210,6 +210,9 @@ pub struct DriverConfig {
     /// opt in to this field individually.
     #[serde(default)]
     pub subprocess_timeout_secs: Option<u64>,
+    /// Global HTTP client timeout in seconds.
+    #[serde(default)]
+    pub http_timeout_secs: Option<u64>,
 }
 
 fn default_skip_permissions() -> bool {

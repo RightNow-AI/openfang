@@ -382,7 +382,8 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .base_url
             .clone()
             .unwrap_or_else(|| OPENAI_BASE_URL.to_string());
-        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
+        let timeout = config.http_timeout_secs.map(std::time::Duration::from_secs);
+        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url, timeout)));
     }
 
     // Claude Code CLI — subprocess-based, no API key needed
@@ -457,7 +458,8 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
                       https://{resource}.openai.azure.com/openai/deployments"
                 .to_string(),
         })?;
-        return Ok(Arc::new(openai::OpenAIDriver::new_azure(api_key, base_url)));
+        let timeout = config.http_timeout_secs.map(std::time::Duration::from_secs);
+        return Ok(Arc::new(openai::OpenAIDriver::new_azure(api_key, base_url, timeout)));
     }
 
     // Vertex AI — uses Google Cloud OAuth with service account credentials.
@@ -546,7 +548,8 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .or_else(|| local_provider_url_from_env(provider))
             .unwrap_or_else(|| defaults.base_url.to_string());
 
-        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
+        let timeout = config.http_timeout_secs.map(std::time::Duration::from_secs);
+        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url, timeout)));
     }
 
     // Unknown provider — if base_url is set, treat as custom OpenAI-compatible.
@@ -558,9 +561,11 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
             std::env::var(&env_var).unwrap_or_default()
         });
+        let timeout = config.http_timeout_secs.map(std::time::Duration::from_secs);
         return Ok(Arc::new(openai::OpenAIDriver::new(
             api_key,
             base_url.clone(),
+            timeout,
         )));
     }
 
@@ -779,6 +784,7 @@ mod tests {
             base_url: Some("http://localhost:9999/v1".to_string()),
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok());
@@ -792,6 +798,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_err());
@@ -913,6 +920,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(
@@ -931,6 +939,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_err());
@@ -948,6 +957,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(
@@ -967,6 +977,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_err());
@@ -984,6 +995,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let result = create_driver(&config);
         assert!(result.is_err());
@@ -1012,6 +1024,7 @@ mod tests {
             base_url: Some("https://api.example.com/v1".to_string()),
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok());
@@ -1040,6 +1053,7 @@ mod tests {
             base_url: Some("https://myresource.openai.azure.com/openai/deployments".to_string()),
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok(), "Azure driver with key + URL should succeed");
@@ -1053,6 +1067,7 @@ mod tests {
             base_url: Some("https://myresource.openai.azure.com/openai/deployments".to_string()),
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let result = create_driver(&config);
         assert!(result.is_err(), "Azure driver without key should error");
@@ -1072,6 +1087,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let result = create_driver(&config);
         assert!(result.is_err(), "Azure driver without URL should error");
@@ -1091,6 +1107,7 @@ mod tests {
             base_url: Some("https://myresource.openai.azure.com/openai/deployments".to_string()),
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(
@@ -1116,6 +1133,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         // Should succeed because api_key is provided
         let driver = create_driver(&config);
@@ -1135,6 +1153,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok(), "claude-code driver should construct");
@@ -1150,6 +1169,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: Some(480),
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(
@@ -1170,6 +1190,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: Some(120),
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         std::env::remove_var("OPENFANG_SUBPROCESS_TIMEOUT_SECS");
@@ -1189,6 +1210,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: Some(420),
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         std::env::remove_var("OPENFANG_SUBPROCESS_TIMEOUT_SECS");
@@ -1279,6 +1301,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(
@@ -1303,6 +1326,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok(), "lmstudio default should construct");

@@ -16,6 +16,8 @@ pub struct ContextBudget {
     /// Total context window size in tokens.
     pub context_window_tokens: usize,
     /// Estimated characters per token for tool results (denser content).
+    /// Maximum character budget for a single tool result (as fraction of context window).
+    pub tool_result_budget_ratio: f64,
     pub tool_chars_per_token: f64,
     /// Estimated characters per token for general content.
     pub general_chars_per_token: f64,
@@ -23,8 +25,9 @@ pub struct ContextBudget {
 
 impl ContextBudget {
     /// Create a new budget from a context window size.
-    pub fn new(context_window_tokens: usize) -> Self {
+    pub fn new(context_window_tokens: usize, tool_result_budget_ratio: f64) -> Self {
         Self {
+            tool_result_budget_ratio,
             context_window_tokens,
             tool_chars_per_token: 2.0,
             general_chars_per_token: 4.0,
@@ -33,7 +36,7 @@ impl ContextBudget {
 
     /// Per-result character cap: 30% of context window converted to chars.
     pub fn per_result_cap(&self) -> usize {
-        let tokens_for_tool = (self.context_window_tokens as f64 * 0.30) as usize;
+        let tokens_for_tool = (self.context_window_tokens as f64 * self.tool_result_budget_ratio) as usize;
         (tokens_for_tool as f64 * self.tool_chars_per_token) as usize
     }
 
@@ -52,7 +55,7 @@ impl ContextBudget {
 
 impl Default for ContextBudget {
     fn default() -> Self {
-        Self::new(200_000)
+        Self::new(200_000, 0.3)
     }
 }
 
@@ -243,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_small_model_budget() {
-        let budget = ContextBudget::new(8_000);
+        let budget = ContextBudget::new(8_000, 0.3);
         // 30% of 8K * 2.0 = 4800 chars
         assert_eq!(budget.per_result_cap(), 4_800);
     }
@@ -257,7 +260,7 @@ mod tests {
 
     #[test]
     fn test_truncate_breaks_at_newline() {
-        let budget = ContextBudget::new(100); // very small: cap = 60 chars
+        let budget = ContextBudget::new(100, 0.3); // very small: cap = 60 chars
         let content =
             "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12";
         let result = truncate_tool_result_dynamic(content, &budget);
@@ -279,7 +282,7 @@ mod tests {
     #[test]
     fn test_context_guard_compacts_oldest() {
         // Use tiny budget to trigger compaction
-        let budget = ContextBudget::new(100); // headroom = 75% of 100 * 2.0 = 150 chars
+        let budget = ContextBudget::new(100, 0.3); // headroom = 75% of 100 * 2.0 = 150 chars
         let big_result = "x".repeat(500);
         let mut messages = vec![
             Message {
@@ -318,7 +321,7 @@ mod tests {
     #[test]
     fn test_truncate_tool_result_multibyte_chinese() {
         // Tiny budget: cap = 30% of 100 * 2.0 = 60 bytes
-        let budget = ContextBudget::new(100);
+        let budget = ContextBudget::new(100, 0.3);
         // Each Chinese char is 3 bytes in UTF-8; 100 chars = 300 bytes
         let content: String = "\u{4f60}\u{597d}\u{4e16}\u{754c}".repeat(25);
         assert_eq!(content.len(), 300);
@@ -341,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_context_guard_multibyte_tool_results() {
-        let budget = ContextBudget::new(100);
+        let budget = ContextBudget::new(100, 0.3);
         // Chinese text: 500 chars * 3 bytes = 1500 bytes
         let big_chinese: String = "\u{4e2d}\u{6587}\u{6d4b}\u{8bd5}\u{6570}\u{636e}".repeat(83);
         let mut messages = vec![Message {

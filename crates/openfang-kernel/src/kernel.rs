@@ -696,6 +696,7 @@ impl OpenFangKernel {
             }),
             skip_permissions: true,
             subprocess_timeout_secs: config.default_model.subprocess_timeout_secs,
+            http_timeout_secs: config.default_model.http_timeout_secs,
         };
         // Primary driver failure is non-fatal: the dashboard should remain accessible
         // even if the LLM provider is misconfigured. Users can fix config via dashboard.
@@ -722,6 +723,7 @@ impl OpenFangKernel {
                         // Inherit operator's default-model timeout intent: auto-detect
                         // is replacing the *provider*, not the timeout policy.
                         subprocess_timeout_secs: config.default_model.subprocess_timeout_secs,
+                        http_timeout_secs: config.default_model.http_timeout_secs,
                     };
                     match drivers::create_driver(&auto_config) {
                         Ok(d) => {
@@ -771,6 +773,7 @@ impl OpenFangKernel {
                     .or_else(|| config.provider_urls.get(&fb.provider).cloned()),
                 skip_permissions: true,
                 subprocess_timeout_secs: fb.subprocess_timeout_secs,
+                http_timeout_secs: fb.http_timeout_secs,
             };
             match drivers::create_driver(&fb_config) {
                 Ok(d) => {
@@ -1904,12 +1907,28 @@ impl OpenFangKernel {
             .entry(agent_id)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
-        let _guard = lock.lock().await;
+        let mut _guard = lock.lock().await;
+
+        // Check if the agent is already processing a message (decouple hangs)
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+        })?;
+
+        if entry.state == AgentState::Thinking {
+            return Err(KernelError::OpenFang(OpenFangError::AgentBusy(agent_id.to_string())));
+        }
 
         // Enforce quota before running the agent loop
         self.scheduler
             .check_quota(agent_id)
             .map_err(KernelError::OpenFang)?;
+
+        // Set state to Thinking and release lock to allow other messages (e.g. status/cancel)
+        // to reach the kernel without hanging the transport layer.
+        self.registry.set_state(agent_id, AgentState::Thinking)
+            .map_err(|e| KernelError::OpenFang(OpenFangError::Registry(e.to_string())))?;
+
+        drop(_guard);
 
         let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
@@ -1931,9 +1950,16 @@ impl OpenFangKernel {
                 content_blocks,
                 sender_id,
                 sender_name,
-            )
-            .await
+                Some(&self.config.runtime),
+            ).await
         };
+
+        // Re-acquire lock to commit state and results
+        let _guard = lock.lock().await;
+
+        // Reset state back to Running (or Crashed if it failed)
+        let final_state = if result.is_ok() { AgentState::Running } else { AgentState::Crashed };
+        let _ = self.registry.set_state(agent_id, final_state);
 
         match result {
             Ok(result) => {
@@ -2117,6 +2143,7 @@ impl OpenFangKernel {
             cat.find_model(&entry.manifest.model.model)
                 .map(|m| m.context_window as usize)
         });
+        let ctx_window = ctx_window.or(Some(self.config.compaction.context_window_tokens));
 
         let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let mut manifest = entry.manifest.clone();
@@ -2378,8 +2405,8 @@ impl OpenFangKernel {
                 ctx_window,
                 Some(&kernel_clone.process_manager),
                 content_blocks,
-            )
-            .await;
+                Some(&kernel_clone.config.runtime),
+            ).await;
 
             // Drop the phase callback immediately after the streaming loop
             // completes. It holds a clone of the stream sender (`tx`), which
@@ -2637,6 +2664,7 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        _runtime_config: Option<&openfang_types::config::RuntimeConfig>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -2926,6 +2954,7 @@ impl OpenFangKernel {
             cat.find_model(&manifest.model.model)
                 .map(|m| m.context_window as usize)
         });
+        let ctx_window = ctx_window.or(Some(self.config.compaction.context_window_tokens));
 
         // skill_snapshot was already built above (before tool list and prompt)
         // with bundled + global + workspace skills. Reuse it for the agent loop.
@@ -2969,9 +2998,9 @@ impl OpenFangKernel {
             ctx_window,
             Some(&self.process_manager),
             content_blocks,
+            Some(&self.config.runtime),
         )
-        .await
-        .map_err(KernelError::OpenFang)?;
+        .await.map_err(KernelError::OpenFang)?;
 
         // Append new messages to canonical session for cross-channel memory
         if session.messages.len() > messages_before {
@@ -3576,12 +3605,21 @@ impl OpenFangKernel {
             });
 
         let config = CompactionConfig::default();
+        let messages_needed = needs_compaction(&session, &config);
+        
+        // Token-based check for high-context sessions
+        use openfang_runtime::compactor::{estimate_token_count, needs_compaction_by_tokens};
+        let estimated_tokens = estimate_token_count(&session.messages, None, None);
+        let tokens_needed = needs_compaction_by_tokens(estimated_tokens, &config);
 
-        if !needs_compaction(&session, &config) {
+        if !messages_needed && !tokens_needed {
+            let token_threshold = (config.context_window_tokens as f64 * config.token_threshold_ratio) as usize;
             return Ok(format!(
-                "No compaction needed ({} messages, threshold {})",
+                "No compaction needed ({} messages, threshold {}; estimated {} tokens, threshold {})",
                 session.messages.len(),
-                config.threshold
+                config.threshold,
+                estimated_tokens,
+                token_threshold
             ));
         }
 
@@ -4831,7 +4869,7 @@ impl OpenFangKernel {
     /// publishes `HealthCheckFailed` events for unresponsive agents.
     fn start_heartbeat_monitor(self: &Arc<Self>) {
         use crate::heartbeat::{
-            check_agents, is_quiet_hours, should_exempt_idle_reactive_agent, HeartbeatConfig,
+            check_agents, is_quiet_hours, should_exempt_agent, HeartbeatConfig,
             RecoveryTracker,
         };
 
@@ -4864,7 +4902,7 @@ impl OpenFangKernel {
                     // Reactive agents are expected to be silent while idle.
                     // Keep them in Running instead of treating normal quiet time
                     // as a crash unless a turn is actively executing.
-                    if should_exempt_idle_reactive_agent(
+                    if should_exempt_agent(
                         &entry,
                         kernel.running_tasks.contains_key(&status.agent_id),
                     ) {
@@ -5646,13 +5684,23 @@ impl OpenFangKernel {
                     .find(|fb| &fb.provider == agent_provider)
                     .and_then(|fb| fb.subprocess_timeout_secs)
             };
-
+            
+            let http_timeout = if agent_provider == default_provider {
+                effective_default.http_timeout_secs
+            } else {
+                effective_fallbacks
+                    .iter()
+                    .find(|fb| &fb.provider == agent_provider)
+                    .and_then(|fb| fb.http_timeout_secs)
+            };
+            
             let driver_config = DriverConfig {
                 provider: agent_provider.clone(),
                 api_key,
                 base_url,
                 skip_permissions: true,
                 subprocess_timeout_secs: primary_timeout,
+                http_timeout_secs: http_timeout,
             };
 
             match drivers::create_driver(&driver_config) {
@@ -5738,6 +5786,11 @@ impl OpenFangKernel {
                 } else {
                     None
                 },
+                http_timeout_secs: if resolved_to_default {
+                    dm.http_timeout_secs
+                } else {
+                    None
+                },
             };
             match drivers::create_driver(&config) {
                 Ok(d) => chain.push((d, strip_provider_prefix(&fb_model_name, &fb_provider))),
@@ -5773,6 +5826,7 @@ impl OpenFangKernel {
                     .or_else(|| self.lookup_provider_url(&fb.provider)),
                 skip_permissions: true,
                 subprocess_timeout_secs: fb.subprocess_timeout_secs,
+                http_timeout_secs: fb.http_timeout_secs,
             };
             match drivers::create_driver(&fb_config) {
                 Ok(d) => {
@@ -8854,6 +8908,7 @@ mod tests {
             api_key_env: String::new(),
             base_url: None,
             subprocess_timeout_secs: Some(120),
+            http_timeout_secs: None,
         });
 
         let kernel = OpenFangKernel::boot_with_config(config.clone()).expect("kernel boots");
@@ -8980,6 +9035,7 @@ mod tests {
             api_key_env: String::new(),
             base_url: None,
             subprocess_timeout_secs: Some(600),
+            http_timeout_secs: None,
         });
 
         let plan = build_reload_plan(&kernel.config, &new_config);
@@ -9035,6 +9091,7 @@ mod tests {
                 api_key_env: "GROQ_API_KEY".to_string(),
                 base_url: None,
                 subprocess_timeout_secs: None,
+                http_timeout_secs: None,
             },
             fallback_providers: vec![FallbackProviderConfig {
                 provider: "ollama".to_string(),
@@ -9042,6 +9099,7 @@ mod tests {
                 api_key_env: String::new(),
                 base_url: None,
                 subprocess_timeout_secs: None,
+                http_timeout_secs: None,
             }],
             provider_urls,
             ..KernelConfig::default()
@@ -9101,6 +9159,7 @@ mod tests {
                 api_key_env: "ANTHROPIC_API_KEY".to_string(),
                 base_url: None,
                 subprocess_timeout_secs: None,
+                http_timeout_secs: None,
             },
             ..KernelConfig::default()
         };
@@ -9138,6 +9197,7 @@ mod tests {
                 api_key_env: "GROQ_API_KEY".to_string(),
                 base_url: None,
                 subprocess_timeout_secs: None,
+                http_timeout_secs: None,
             },
             channels: ChannelsConfig {
                 telegram: Some(TelegramConfig {
@@ -9177,6 +9237,7 @@ mod tests {
                 api_key_env: "GROQ_API_KEY".to_string(),
                 base_url: None,
                 subprocess_timeout_secs: None,
+                http_timeout_secs: None,
             },
             mcp_servers: vec![McpServerConfigEntry {
                 name: "openai-proxy".to_string(),
@@ -9217,6 +9278,7 @@ mod tests {
                 api_key_env: "GROQ_API_KEY".to_string(),
                 base_url: None,
                 subprocess_timeout_secs: None,
+                http_timeout_secs: None,
             },
             ..KernelConfig::default()
         };

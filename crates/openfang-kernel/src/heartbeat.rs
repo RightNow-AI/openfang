@@ -133,10 +133,14 @@ impl Default for RecoveryTracker {
 const IDLE_GRACE_SECS: i64 = 10;
 
 /// Reactive agents are healthy while idle between user messages.
+/// Thinking agents are healthy while processing long LLM turns.
 ///
 /// They should only participate in heartbeat failure detection while a turn is
-/// actively running. Otherwise silence is the expected steady state.
-pub(crate) fn should_exempt_idle_reactive_agent(entry: &AgentEntry, is_running_task: bool) -> bool {
+/// actively running OR if they are genuinely stuck in Running without activity.
+pub(crate) fn should_exempt_agent(entry: &AgentEntry, is_running_task: bool) -> bool {
+    if entry.state == AgentState::Thinking {
+        return true;
+    }
     matches!(entry.manifest.schedule, ScheduleMode::Reactive) && !is_running_task
 }
 
@@ -396,8 +400,8 @@ mod tests {
         );
         agent.manifest.schedule = ScheduleMode::Reactive;
 
-        assert!(should_exempt_idle_reactive_agent(&agent, false));
-        assert!(!should_exempt_idle_reactive_agent(&agent, true));
+        assert!(should_exempt_agent(&agent, false));
+        assert!(!should_exempt_agent(&agent, true));
     }
 
     #[test]
@@ -412,7 +416,7 @@ mod tests {
             cron: "0 * * * *".to_string(),
         };
 
-        assert!(!should_exempt_idle_reactive_agent(&agent, false));
+        assert!(!should_exempt_agent(&agent, false));
     }
 
     #[test]
