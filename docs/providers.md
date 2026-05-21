@@ -1,6 +1,6 @@
 # LLM Providers Guide
 
-OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, **20 providers**, **51 builtin models**, and **23 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
+OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, cloud and local providers, builtin models, and aliases. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
 
 ---
 
@@ -28,6 +28,8 @@ The fastest path from zero to running:
 export GEMINI_API_KEY="your-key"        # Free tier available
 # OR
 export GROQ_API_KEY="your-key"          # Free tier available
+# OR
+export NEARAI_API_KEY="your-key"        # NEAR AI Cloud TEE inference
 # OR
 export ANTHROPIC_API_KEY="your-key"
 # OR
@@ -549,9 +551,38 @@ For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 
 ---
 
+### 21. NEAR AI Cloud
+
+| | |
+|---|---|
+| **Display Name** | NEAR AI Cloud |
+| **Driver** | OpenAI-compatible |
+| **Env Var** | `NEARAI_API_KEY` |
+| **Base URL** | `https://cloud-api.near.ai/v1` |
+| **Key Required** | Yes |
+| **Free Tier** | No |
+| **Auth** | `Authorization: Bearer` header |
+| **Models** | 5 builtin TEE-backed chat models |
+
+**Available Models:**
+- `zai-org/GLM-5.1-FP8` (Smart, default)
+- `Qwen/Qwen3.5-122B-A10B` (Smart)
+- `Qwen/Qwen3.6-35B-A3B-FP8` (Balanced)
+- `Qwen/Qwen3-VL-30B-A3B-Instruct` (Balanced, vision)
+- `google/gemma-4-31B-it` (Fast)
+
+**Setup:**
+1. Create an API key in NEAR AI Cloud
+2. `export NEARAI_API_KEY="..."`
+3. Use `provider = "nearai"` with any NEAR AI Cloud model ID
+
+**Notes:** NEAR AI Cloud uses the OpenAI-compatible chat completions API and provides TEE-backed private inference for the builtin `nearai` catalog entries.
+
+---
+
 ## Model Catalog
 
-The complete catalog of all 51 builtin models, sorted by provider. Pricing is per million tokens.
+The builtin catalog is sorted by provider. Pricing is per million tokens.
 
 | # | Model ID | Display Name | Provider | Tier | Context Window | Max Output | Input $/M | Output $/M | Tools | Vision |
 |---|----------|-------------|----------|------|---------------|------------|-----------|------------|-------|--------|
@@ -608,6 +639,11 @@ The complete catalog of all 51 builtin models, sorted by provider. Pricing is pe
 | 51 | `grok-2-mini` | Grok 2 Mini | xai | Fast | 131,072 | 32,768 | $0.30 | $0.50 | Yes | No |
 | 52 | `hf/meta-llama/Llama-3.3-70B-Instruct` | Llama 3.3 70B (HF) | huggingface | Balanced | 128,000 | 4,096 | $0.30 | $0.30 | No | No |
 | 53 | `replicate/meta-llama-3.3-70b-instruct` | Llama 3.3 70B (Replicate) | replicate | Balanced | 128,000 | 4,096 | $0.40 | $0.40 | No | No |
+| 54 | `zai-org/GLM-5.1-FP8` | GLM 5.1 (NEAR AI TEE) | nearai | Smart | 202,752 | 8,192 | $0.85 | $3.30 | Yes | No |
+| 55 | `Qwen/Qwen3.5-122B-A10B` | Qwen3.5 122B A10B (NEAR AI TEE) | nearai | Smart | 131,072 | 8,192 | $0.40 | $3.20 | Yes | No |
+| 56 | `Qwen/Qwen3.6-35B-A3B-FP8` | Qwen 3.6 35B A3B FP8 (NEAR AI TEE) | nearai | Balanced | 262,144 | 8,192 | $0.17 | $1.10 | Yes | No |
+| 57 | `Qwen/Qwen3-VL-30B-A3B-Instruct` | Qwen3 VL 30B A3B Instruct (NEAR AI TEE) | nearai | Balanced | 256,000 | 8,192 | $0.15 | $0.55 | Yes | Yes |
+| 58 | `google/gemma-4-31B-it` | Gemma 4 31B Instruct (NEAR AI TEE) | nearai | Fast | 262,144 | 8,192 | $0.13 | $0.40 | Yes | No |
 
 **Model Tiers:**
 
@@ -621,13 +657,13 @@ The complete catalog of all 51 builtin models, sorted by provider. Pricing is pe
 
 **Notes:**
 - Local providers (Ollama, vLLM, LM Studio) auto-discover models at runtime. Any model you download and serve will be merged into the catalog with `Local` tier and zero cost.
-- The 46 entries above are the builtin models. The total of 51 referenced in the catalog includes runtime auto-discovered models that vary per installation.
+- The entries above are builtin models. Local providers can also auto-discover models at runtime, and those vary per installation.
 
 ---
 
 ## Model Aliases
 
-All 23 aliases resolve to canonical model IDs. Aliases are case-insensitive.
+Aliases resolve to canonical model IDs and are case-insensitive.
 
 | Alias | Resolves To |
 |-------|------------|
@@ -654,6 +690,8 @@ All 23 aliases resolve to canonical model IDs. Aliases are case-insensitive.
 | `sonar` | `sonar-pro` |
 | `jamba` | `jamba-1.5-large` |
 | `command-r` | `command-r-plus` |
+| `nearai` | `zai-org/GLM-5.1-FP8` |
+| `nearai-glm` | `zai-org/GLM-5.1-FP8` |
 
 You can use aliases anywhere a model ID is accepted: in config files, REST API calls, chat commands, and the model routing configuration.
 
@@ -903,7 +941,7 @@ Returns a map of all alias-to-canonical-ID mappings.
 GET /api/providers
 ```
 
-Returns all 20 providers with auth status and model counts.
+Returns all providers with auth status and model counts.
 
 **Response:**
 ```json
@@ -998,7 +1036,7 @@ Local:
 
 ### `/providers`
 
-Lists all 20 providers with their authentication status.
+Lists all providers with their authentication status.
 
 ```
 /providers
@@ -1006,13 +1044,14 @@ Lists all 20 providers with their authentication status.
 
 Example output:
 ```
-LLM Providers (20):
+LLM Providers:
 
   Anthropic          ANTHROPIC_API_KEY       Configured    3 models
   OpenAI             OPENAI_API_KEY          Missing       6 models
   Google Gemini      GEMINI_API_KEY          Configured    3 models
   DeepSeek           DEEPSEEK_API_KEY        Missing       2 models
   Groq               GROQ_API_KEY            Configured    4 models
+  NEAR AI Cloud      NEARAI_API_KEY          Missing       5 models
   Ollama             (no key needed)         Ready         3 models
   vLLM               (no key needed)         Ready         1 model
   LM Studio          (no key needed)         Ready         1 model
@@ -1033,6 +1072,7 @@ Quick reference for all provider environment variables:
 | DeepSeek | `DEEPSEEK_API_KEY` | Yes |
 | Groq | `GROQ_API_KEY` | Yes |
 | OpenRouter | `OPENROUTER_API_KEY` | Yes |
+| NEAR AI Cloud | `NEARAI_API_KEY` | Yes |
 | Mistral AI | `MISTRAL_API_KEY` | Yes |
 | Together AI | `TOGETHER_API_KEY` | Yes |
 | Fireworks AI | `FIREWORKS_API_KEY` | Yes |

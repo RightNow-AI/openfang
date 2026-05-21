@@ -1,6 +1,6 @@
 //! Model catalog — registry of known models with metadata, pricing, and auth detection.
 //!
-//! Provides a comprehensive catalog of 130+ builtin models across 28 providers,
+//! Provides a comprehensive catalog of 130+ builtin models across 43 providers,
 //! with alias resolution, auth status detection, and pricing lookups.
 
 use openfang_types::model_catalog::{
@@ -8,11 +8,11 @@ use openfang_types::model_catalog::{
     AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
     DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
     HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL,
-    VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NEARAI_BASE_URL, NVIDIA_NIM_BASE_URL,
+    OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL,
+    QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL,
+    VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL,
+    ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -790,6 +790,16 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             auth_status: AuthStatus::Missing,
             model_count: 0,
         },
+        // ── NEAR AI Cloud ───────────────────────────────────────────
+        ProviderInfo {
+            id: "nearai".into(),
+            display_name: "NEAR AI Cloud".into(),
+            api_key_env: "NEARAI_API_KEY".into(),
+            base_url: NEARAI_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
         // ── Venice.ai ────────────────────────────────────────────────
         ProviderInfo {
             id: "venice".into(),
@@ -1030,6 +1040,9 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("codex-o4", "codex/o4-mini"),
         // NVIDIA NIM aliases
         ("nemotron", "nvidia/llama-3.1-nemotron-70b-instruct"),
+        // NEAR AI Cloud aliases
+        ("nearai", "zai-org/GLM-5.1-FP8"),
+        ("nearai-glm", "zai-org/GLM-5.1-FP8"),
         // Venice aliases
         ("venice", "venice-uncensored"),
         // Claude Code aliases
@@ -4023,6 +4036,83 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["chutes-llama-70b".into()],
         },
         // ══════════════════════════════════════════════════════════════
+        // NEAR AI Cloud TEE inference (5)
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "zai-org/GLM-5.1-FP8".into(),
+            display_name: "GLM 5.1 (NEAR AI TEE)".into(),
+            provider: "nearai".into(),
+            tier: ModelTier::Smart,
+            context_window: 202_752,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.85,
+            output_cost_per_m: 3.3,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![
+                "nearai".into(),
+                "nearai-glm".into(),
+                "nearai-glm-5.1".into(),
+            ],
+        },
+        ModelCatalogEntry {
+            id: "Qwen/Qwen3.5-122B-A10B".into(),
+            display_name: "Qwen3.5 122B A10B (NEAR AI TEE)".into(),
+            provider: "nearai".into(),
+            tier: ModelTier::Smart,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.4,
+            output_cost_per_m: 3.2,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["nearai-qwen3.5".into(), "nearai-qwen3.5-122b".into()],
+        },
+        ModelCatalogEntry {
+            id: "Qwen/Qwen3.6-35B-A3B-FP8".into(),
+            display_name: "Qwen 3.6 35B A3B FP8 (NEAR AI TEE)".into(),
+            provider: "nearai".into(),
+            tier: ModelTier::Balanced,
+            context_window: 262_144,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.17,
+            output_cost_per_m: 1.1,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["nearai-qwen3.6".into(), "nearai-qwen3.6-35b".into()],
+        },
+        ModelCatalogEntry {
+            id: "Qwen/Qwen3-VL-30B-A3B-Instruct".into(),
+            display_name: "Qwen3 VL 30B A3B Instruct (NEAR AI TEE)".into(),
+            provider: "nearai".into(),
+            tier: ModelTier::Balanced,
+            context_window: 256_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.15,
+            output_cost_per_m: 0.55,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["nearai-qwen-vl".into(), "nearai-qwen3-vl".into()],
+        },
+        ModelCatalogEntry {
+            id: "google/gemma-4-31B-it".into(),
+            display_name: "Gemma 4 31B Instruct (NEAR AI TEE)".into(),
+            provider: "nearai".into(),
+            tier: ModelTier::Fast,
+            context_window: 262_144,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.13,
+            output_cost_per_m: 0.4,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["nearai-gemma".into(), "nearai-gemma-4".into()],
+        },
+        // ══════════════════════════════════════════════════════════════
         // Venice.ai (3)
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
@@ -4083,7 +4173,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 42);
+        assert_eq!(catalog.list_providers().len(), 43);
     }
 
     #[test]
@@ -4231,6 +4321,34 @@ mod tests {
         assert!(catalog.get_provider("huggingface").is_some());
         assert!(catalog.get_provider("xai").is_some());
         assert!(catalog.get_provider("replicate").is_some());
+        assert!(catalog.get_provider("nearai").is_some());
+    }
+
+    #[test]
+    fn test_nearai_provider_and_models() {
+        let catalog = ModelCatalog::new();
+        let provider = catalog.get_provider("nearai").unwrap();
+        assert_eq!(provider.display_name, "NEAR AI Cloud");
+        assert_eq!(provider.api_key_env, "NEARAI_API_KEY");
+        assert_eq!(provider.base_url, "https://cloud-api.near.ai/v1");
+        assert!(provider.key_required);
+        assert_eq!(provider.model_count, 5);
+
+        let models = catalog.models_by_provider("nearai");
+        assert!(models.iter().all(|m| m.supports_streaming));
+        assert!(models.iter().any(|m| m.id == "zai-org/GLM-5.1-FP8"));
+        assert!(models
+            .iter()
+            .any(|m| m.id == "Qwen/Qwen3-VL-30B-A3B-Instruct" && m.supports_vision));
+    }
+
+    #[test]
+    fn test_nearai_aliases() {
+        let catalog = ModelCatalog::new();
+        let entry = catalog.find_model("nearai").unwrap();
+        assert_eq!(entry.id, "zai-org/GLM-5.1-FP8");
+        assert_eq!(entry.provider, "nearai");
+        assert!(catalog.find_model("nearai-qwen3.6").is_some());
     }
 
     #[test]

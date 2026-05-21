@@ -188,7 +188,7 @@ docker build -f scripts/docker/install-smoke.Dockerfile .
 The release workflow includes a link to `CHANGELOG.md` in every GitHub release body. Ensure it exists at the repo root and covers:
 
 - All 14 crates and what they do
-- Key features: 40 channels, 60 skills, 20 providers, 51 models
+- Key features: 40 channels, 60 skills, cloud/local LLM providers, builtin and runtime-discovered models
 - Security systems (9 SOTA + 7 critical fixes)
 - Desktop app with auto-updater
 - Migration path from OpenClaw
