@@ -57,6 +57,7 @@ use openfang_channels::wecom::WeComAdapter;
 use openfang_kernel::OpenFangKernel;
 use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_types::agent::AgentId;
+use uuid::Uuid;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
@@ -109,6 +110,72 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             .await
             .map_err(|e| format!("{e}"))?;
         Ok(result.response)
+    }
+
+    fn queue_max_retries(&self) -> usize {
+        std::env::var("OPENFANG_QUEUE_MAX_RETRIES")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .or(self.kernel.config.channels.queue_max_retries)
+            .filter(|retries| *retries > 0)
+            .and_then(|retries| usize::try_from(retries).ok())
+            .unwrap_or(300)
+    }
+
+    fn queue_sleep_secs(&self) -> u64 {
+        std::env::var("OPENFANG_QUEUE_SLEEP_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or(self.kernel.config.channels.queue_sleep_secs)
+            .filter(|secs| *secs > 0)
+            .unwrap_or(2)
+    }
+
+    async fn is_agent_busy(&self, agent_id: AgentId) -> bool {
+        self.kernel
+            .registry
+            .get(agent_id)
+            .map(|e| e.state == openfang_types::agent::AgentState::Thinking)
+            .unwrap_or(false)
+    }
+
+    async fn get_channel_queue(&self) -> Result<String, String> {
+        let nil_id = openfang_types::agent::AgentId(Uuid::nil());
+        let val = self
+            .kernel
+            .memory
+            .structured_get(nil_id, "channels_queue")
+            .map_err(|e| format!("{e}"))?;
+        match val {
+            Some(serde_json::Value::String(s)) => Ok(s),
+            _ => Ok(String::new()),
+        }
+    }
+
+    async fn save_channel_queue(&self, queue_json: &str) -> Result<(), String> {
+        let nil_id = openfang_types::agent::AgentId(Uuid::nil());
+        self.kernel
+            .memory
+            .structured_set(
+                nil_id,
+                "channels_queue",
+                serde_json::Value::String(queue_json.to_string()),
+            )
+            .map_err(|e| format!("{e}"))?;
+        Ok(())
+    }
+
+    fn queue_enabled(&self) -> bool {
+        self.kernel.config.channels.queue_enabled.unwrap_or(true)
+    }
+
+    fn queue_poll_secs(&self) -> u64 {
+        std::env::var("OPENFANG_QUEUE_POLL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or(self.kernel.config.channels.queue_poll_secs)
+            .filter(|secs| *secs > 0)
+            .unwrap_or(30)
     }
 
     async fn find_agent_by_name(&self, name: &str) -> Result<Option<AgentId>, String> {

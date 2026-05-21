@@ -43,6 +43,7 @@ async fn start_test_server() -> TestServer {
             api_key_env: "OLLAMA_API_KEY".to_string(),
             base_url: None,
             subprocess_timeout_secs: None,
+            http_timeout_secs: None,
         },
         ..KernelConfig::default()
     };

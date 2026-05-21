@@ -183,6 +183,8 @@ pub enum AgentState {
     Terminated,
     /// Agent crashed and is awaiting recovery.
     Crashed,
+    /// Agent is actively processing an LLM request (long-running turn).
+    Thinking,
 }
 
 /// Permission-based operational mode for an agent.

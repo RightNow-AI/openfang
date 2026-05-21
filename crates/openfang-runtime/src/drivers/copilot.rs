@@ -620,7 +620,7 @@ impl CopilotDriver {
         } else {
             ct.base_url.clone()
         };
-        super::openai::OpenAIDriver::new(ct.token.to_string(), base_url).with_extra_headers(vec![
+        super::openai::OpenAIDriver::new(ct.token.to_string(), base_url, None).with_extra_headers(vec![
             ("Editor-Version".to_string(), "vscode/1.96.0".to_string()),
             (
                 "Editor-Plugin-Version".to_string(),

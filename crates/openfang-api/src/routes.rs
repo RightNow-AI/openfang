@@ -212,7 +212,7 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
                 })
                 .unwrap_or(("unknown".to_string(), "unknown".to_string()));
 
-            let ready = matches!(e.state, openfang_types::agent::AgentState::Running)
+            let ready = matches!(e.state, openfang_types::agent::AgentState::Running | openfang_types::agent::AgentState::Thinking)
                 && auth_status != "missing";
 
             // Issue #1026: surface which agents are currently calling the LLM
@@ -3546,7 +3546,7 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
     let agents = state.kernel.registry.list();
     let active = agents
         .iter()
-        .filter(|a| matches!(a.state, openfang_types::agent::AgentState::Running))
+        .filter(|a| matches!(a.state, openfang_types::agent::AgentState::Running | openfang_types::agent::AgentState::Thinking))
         .count();
     out.push_str("# HELP openfang_agents_active Number of active agents.\n");
     out.push_str("# TYPE openfang_agents_active gauge\n");
@@ -7780,6 +7780,7 @@ pub async fn set_provider_key(
                     api_key_env: env_var.clone(),
                     base_url: None,
                     subprocess_timeout_secs: None,
+                    http_timeout_secs: None,
                 };
                 let mut guard = state
                     .kernel
@@ -7948,6 +7949,7 @@ pub async fn test_provider(
         },
         skip_permissions: true,
         subprocess_timeout_secs: None,
+        http_timeout_secs: None,
     };
 
     match openfang_runtime::drivers::create_driver(&driver_config) {

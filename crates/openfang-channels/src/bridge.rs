@@ -19,6 +19,7 @@ use openfang_types::config::{ChannelOverrides, DmPolicy, GroupPolicy, OutputForm
 use openfang_types::message::ContentBlock;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
@@ -130,6 +131,41 @@ pub trait ChannelBridgeHandle: Send + Sync {
 
     /// Spawn an agent by manifest name, returning its ID.
     async fn spawn_agent_by_name(&self, manifest_name: &str) -> Result<AgentId, String>;
+
+    /// Get the maximum retry count for agent busy queuing.
+    fn queue_max_retries(&self) -> usize {
+        300
+    }
+
+    /// Get the sleep duration in seconds between queuing retries.
+    fn queue_sleep_secs(&self) -> u64 {
+        2
+    }
+
+    /// Check if an agent is currently busy processing a task.
+    async fn is_agent_busy(&self, _agent_id: AgentId) -> bool {
+        false
+    }
+
+    /// Load the persistent channel queue serialized JSON string.
+    async fn get_channel_queue(&self) -> Result<String, String> {
+        Ok(String::new())
+    }
+
+    /// Save the persistent channel queue serialized JSON string.
+    async fn save_channel_queue(&self, _queue_json: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Whether persistent channel queuing is enabled.
+    fn queue_enabled(&self) -> bool {
+        true
+    }
+
+    /// Get the persistent queue polling interval in seconds.
+    fn queue_poll_secs(&self) -> u64 {
+        30
+    }
 
     /// Transcribe raw audio bytes to text.
     async fn transcribe_audio(
@@ -451,6 +487,29 @@ impl BridgeManager {
         // 32 is generous — most setups have 1-5 concurrent users.
         let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
 
+        if handle.queue_enabled() {
+            let handle = handle.clone();
+            let router = router.clone();
+            let adapter = adapter.clone();
+            let mut shutdown = self.shutdown_rx.clone();
+            tokio::spawn(async move {
+                let poll_secs = handle.queue_poll_secs();
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(poll_secs));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            process_queued_messages(&handle, adapter.as_ref(), &adapter, &router).await;
+                        }
+                        _ = shutdown.changed() => {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
         let task = tokio::spawn(async move {
             let mut stream = std::pin::pin!(stream);
             loop {
@@ -744,6 +803,247 @@ async fn try_reresolution(
                 "Re-resolution failed — agent not found by name"
             );
             None
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QueuedMessage {
+    pub id: String,
+    pub message: ChannelMessage,
+    pub prefixed_text: String,
+    pub output_format: OutputFormat,
+    pub lifecycle_reactions: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+static QUEUE_MUTEX: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+fn get_queue_mutex() -> &'static tokio::sync::Mutex<()> {
+    QUEUE_MUTEX.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+async fn read_queue(handle: &dyn ChannelBridgeHandle) -> Vec<QueuedMessage> {
+    match handle.get_channel_queue().await {
+        Ok(s) if !s.is_empty() => serde_json::from_str(&s).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+async fn write_queue(handle: &dyn ChannelBridgeHandle, queue: &[QueuedMessage]) {
+    if let Ok(json) = serde_json::to_string(queue) {
+        let _ = handle.save_channel_queue(&json).await;
+    }
+}
+
+async fn process_queued_messages(
+    handle: &Arc<dyn ChannelBridgeHandle>,
+    adapter: &dyn ChannelAdapter,
+    adapter_arc: &Arc<dyn ChannelAdapter>,
+    router: &Arc<AgentRouter>,
+) {
+    let selected = {
+        let _guard = get_queue_mutex().lock().await;
+        let queue = read_queue(handle.as_ref()).await;
+        if queue.is_empty() {
+            return;
+        }
+
+        let mut selected = None;
+        for q_msg in queue.iter() {
+            if q_msg.message.channel != adapter.channel_type() {
+                continue;
+            }
+
+            let agent_id = match q_msg.message.target_agent {
+                Some(id) => id,
+                None => {
+                    let target_agent_name = q_msg
+                        .message
+                        .metadata
+                        .get("target_agent_name")
+                        .and_then(|v| v.as_str());
+                    let routed_by_name = if let Some(name) = target_agent_name {
+                        handle.find_agent_by_name(name).await.ok().flatten()
+                    } else {
+                        None
+                    };
+                    let binding_ctx = binding_context_for(&q_msg.message);
+                    match routed_by_name.or_else(|| {
+                        router.resolve_with_context(
+                            &q_msg.message.channel,
+                            sender_user_id(&q_msg.message),
+                            q_msg.message.sender.openfang_user.as_deref(),
+                            &binding_ctx,
+                        )
+                    }) {
+                        Some(id) => id,
+                        None => match handle.find_agent_by_name("assistant").await.ok().flatten() {
+                            Some(id) => id,
+                            None => match handle
+                                .list_agents()
+                                .await
+                                .ok()
+                                .and_then(|a| a.first().map(|(id, _)| *id))
+                            {
+                                Some(id) => id,
+                                None => continue,
+                            },
+                        },
+                    }
+                }
+            };
+
+            if handle.is_agent_busy(agent_id).await {
+                continue;
+            }
+
+            selected = Some((q_msg.clone(), agent_id));
+            break;
+        }
+
+        selected
+    };
+
+    let Some((popped, agent_id)) = selected else {
+        return;
+    };
+
+    let msg = popped.message;
+    let prefixed_text = popped.prefixed_text;
+    let thread_id = msg.thread_id.as_deref();
+    let output_format = popped.output_format;
+    let lifecycle_reactions = popped.lifecycle_reactions;
+    let msg_id = &msg.platform_message_id;
+
+    info!(
+        channel = %adapter.name(),
+        agent_id = %agent_id,
+        "Picking up persistently queued message: {}",
+        openfang_types::truncate_str(&prefixed_text, 64)
+    );
+
+    let _ = adapter.send_typing(&msg.sender).await;
+    if lifecycle_reactions {
+        send_lifecycle_reaction(adapter, &msg.sender, msg_id, AgentPhase::Thinking).await;
+    }
+
+    let typing_task = spawn_typing_loop(adapter_arc.clone(), msg.sender.clone());
+    let result = handle.send_message(agent_id, &prefixed_text).await;
+    typing_task.abort();
+
+    let should_remove = result.is_ok()
+        || result
+            .as_ref()
+            .err()
+            .map(|e| !is_busy_error(e))
+            .unwrap_or(false);
+
+    if should_remove {
+        let _guard = get_queue_mutex().lock().await;
+        let mut queue = read_queue(handle.as_ref()).await;
+        queue.retain(|q| q.id != popped.id);
+        write_queue(handle.as_ref(), &queue).await;
+    }
+
+    match result {
+        Ok(response) => {
+            if lifecycle_reactions {
+                send_lifecycle_reaction(adapter, &msg.sender, msg_id, AgentPhase::Done).await;
+            }
+            let overrides = handle.channel_overrides(adapter.name()).await;
+            let text_prefixed =
+                maybe_prefix_response(handle, overrides.as_ref(), agent_id, response).await;
+            send_response(adapter, &msg.sender, text_prefixed, thread_id, output_format).await;
+            handle
+                .record_delivery(
+                    agent_id,
+                    &format!("{:?}", msg.channel),
+                    &msg.sender.platform_id,
+                    true,
+                    None,
+                    thread_id,
+                )
+                .await;
+        }
+        Err(e) if is_busy_error(&e) => {
+            if lifecycle_reactions {
+                send_lifecycle_reaction(adapter, &msg.sender, msg_id, AgentPhase::Queued).await;
+            }
+        }
+        Err(e) => {
+            if lifecycle_reactions {
+                send_lifecycle_reaction(adapter, &msg.sender, msg_id, AgentPhase::Error).await;
+            }
+            let err_msg = sanitize_agent_error(&e);
+            if !adapter.suppress_error_responses() {
+                send_response(adapter, &msg.sender, err_msg.clone(), thread_id, output_format)
+                    .await;
+            }
+            handle
+                .record_delivery(
+                    agent_id,
+                    &format!("{:?}", msg.channel),
+                    &msg.sender.platform_id,
+                    false,
+                    Some(&err_msg),
+                    thread_id,
+                )
+                .await;
+        }
+    }
+}
+
+fn is_busy_error(error: &str) -> bool {
+    error.contains("Agent busy") || error.contains("AgentBusy")
+}
+
+async fn send_message_queued(
+    handle: &Arc<dyn ChannelBridgeHandle>,
+    agent_id: AgentId,
+    message: &str,
+) -> Result<String, String> {
+    let mut retries = 0;
+    let max_retries = handle.queue_max_retries();
+    loop {
+        match handle.send_message(agent_id, message).await {
+            Err(e) if is_busy_error(&e) => {
+                retries += 1;
+                if retries >= max_retries {
+                    return Err("Agent is busy and timed out waiting for the queue.".to_string());
+                }
+                #[cfg(test)]
+                let sleep_dur = std::time::Duration::from_millis(5);
+                #[cfg(not(test))]
+                let sleep_dur = std::time::Duration::from_secs(handle.queue_sleep_secs());
+                tokio::time::sleep(sleep_dur).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+async fn send_message_with_blocks_queued(
+    handle: &Arc<dyn ChannelBridgeHandle>,
+    agent_id: AgentId,
+    blocks: Vec<ContentBlock>,
+) -> Result<String, String> {
+    let mut retries = 0;
+    let max_retries = handle.queue_max_retries();
+    loop {
+        match handle.send_message_with_blocks(agent_id, blocks.clone()).await {
+            Err(e) if is_busy_error(&e) => {
+                retries += 1;
+                if retries >= max_retries {
+                    return Err("Agent is busy and timed out waiting for the queue.".to_string());
+                }
+                #[cfg(test)]
+                let sleep_dur = std::time::Duration::from_millis(5);
+                #[cfg(not(test))]
+                let sleep_dur = std::time::Duration::from_secs(handle.queue_sleep_secs());
+                tokio::time::sleep(sleep_dur).await;
+            }
+            other => return other,
         }
     }
 }
@@ -1330,8 +1630,55 @@ async fn dispatch_message(
         text.clone()
     };
 
+    if handle.queue_enabled() && handle.is_agent_busy(agent_id).await {
+        let _guard = get_queue_mutex().lock().await;
+        let mut queue = read_queue(handle.as_ref()).await;
+
+        let is_dup = queue.iter().any(|q| {
+            q.message.channel == message.channel
+                && q.message.platform_message_id == message.platform_message_id
+        });
+
+        if !is_dup {
+            let position = queue
+                .iter()
+                .filter(|q| {
+                    let q_aid = q.message.target_agent.unwrap_or(agent_id);
+                    q_aid == agent_id
+                })
+                .count()
+                + 1;
+
+            let mut queued_message = message.clone();
+            queued_message.target_agent = Some(agent_id);
+            let queued_item = QueuedMessage {
+                id: Uuid::new_v4().to_string(),
+                message: queued_message,
+                prefixed_text: prefixed_text.clone(),
+                output_format,
+                lifecycle_reactions,
+                created_at: chrono::Utc::now(),
+            };
+            queue.push(queued_item);
+            write_queue(handle.as_ref(), &queue).await;
+
+            let notify_msg = format!(
+                "⏳ Agent is currently busy. Your message has been persistently queued (Position #{position}). I will reply as soon as I'm free!"
+            );
+
+            let _ = adapter.send_typing(&message.sender).await;
+            if lifecycle_reactions {
+                send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Queued).await;
+            }
+
+            send_response(adapter, &message.sender, notify_msg, thread_id, output_format).await;
+        }
+        typing_task.abort();
+        return;
+    }
+
     // Send to agent and relay response
-    let result = handle.send_message(agent_id, &prefixed_text).await;
+    let result = send_message_queued(handle, agent_id, &prefixed_text).await;
 
     // Stop the typing refresh now that we have a response
     typing_task.abort();
@@ -1359,7 +1706,7 @@ async fn dispatch_message(
             // Try re-resolution before reporting error
             if let Some(new_id) = try_reresolution(&e, &channel_key, handle, router).await {
                 let typing_task2 = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
-                let retry = handle.send_message(new_id, &text).await;
+                let retry = send_message_queued(handle, new_id, &text).await;
                 typing_task2.abort();
                 match retry {
                     Ok(response) => {
@@ -1784,9 +2131,7 @@ async fn dispatch_with_blocks(
     // Continuous typing indicator (see spawn_typing_loop doc)
     let typing_task = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
 
-    let result = handle
-        .send_message_with_blocks(agent_id, blocks.clone())
-        .await;
+    let result = send_message_with_blocks_queued(handle, agent_id, blocks.clone()).await;
 
     typing_task.abort();
 
@@ -1823,7 +2168,7 @@ async fn dispatch_with_blocks(
             // Try re-resolution before reporting error
             if let Some(new_id) = try_reresolution(&e, &channel_key, handle, router).await {
                 let typing_task2 = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
-                let retry = handle.send_message_with_blocks(new_id, blocks).await;
+                let retry = send_message_with_blocks_queued(handle, new_id, blocks).await;
                 typing_task2.abort();
                 match retry {
                     Ok(response) => {
@@ -2213,6 +2558,53 @@ mod tests {
         async fn spawn_agent_by_name(&self, _manifest_name: &str) -> Result<AgentId, String> {
             Err("spawn not implemented in mock".to_string())
         }
+    }
+
+    /// Mock busy kernel handle for testing queue.
+    struct MockBusyHandle {
+        agents: Mutex<Vec<(AgentId, String)>>,
+        call_count: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl ChannelBridgeHandle for MockBusyHandle {
+        async fn send_message(&self, _agent_id: AgentId, message: &str) -> Result<String, String> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count <= 2 {
+                Err("Agent busy: mock busy".to_string())
+            } else {
+                Ok(format!("Echo: {message}"))
+            }
+        }
+        async fn find_agent_by_name(&self, name: &str) -> Result<Option<AgentId>, String> {
+            let agents = self.agents.lock().unwrap();
+            Ok(agents.iter().find(|(_, n)| n == name).map(|(id, _)| *id))
+        }
+        async fn list_agents(&self) -> Result<Vec<(AgentId, String)>, String> {
+            Ok(self.agents.lock().unwrap().clone())
+        }
+        async fn spawn_agent_by_name(&self, _manifest_name: &str) -> Result<AgentId, String> {
+            Err("spawn not implemented in mock".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_message_queued_retries_and_succeeds() {
+        let agent_id = AgentId::new();
+        let mock = Arc::new(MockBusyHandle {
+            agents: Mutex::new(vec![(agent_id, "busy-agent".to_string())]),
+            call_count: Mutex::new(0),
+        });
+
+        let handle: Arc<dyn ChannelBridgeHandle> = mock.clone();
+
+        // Should return successfully on the third attempt after retrying
+        let result = send_message_queued(&handle, agent_id, "hello").await;
+        assert_eq!(result, Ok("Echo: hello".to_string()));
+
+        // The handler should have been called exactly 3 times
+        assert_eq!(*mock.call_count.lock().unwrap(), 3);
     }
 
     #[test]
@@ -2809,5 +3201,75 @@ mod tests {
             media_type_from_url("https://api.telegram.org/file/bot123/photos/file_42"),
             "image/jpeg"
         );
+    }
+
+    #[tokio::test]
+    async fn test_persistent_queuing_helpers() {
+        struct MockQueueHandle {
+            queue: Mutex<String>,
+        }
+
+        #[async_trait]
+        impl ChannelBridgeHandle for MockQueueHandle {
+            async fn send_message(&self, _agent_id: AgentId, message: &str) -> Result<String, String> {
+                Ok(message.to_string())
+            }
+            async fn find_agent_by_name(&self, _name: &str) -> Result<Option<AgentId>, String> {
+                Ok(None)
+            }
+            async fn list_agents(&self) -> Result<Vec<(AgentId, String)>, String> {
+                Ok(vec![])
+            }
+            async fn spawn_agent_by_name(&self, _manifest_name: &str) -> Result<AgentId, String> {
+                Err("mock".to_string())
+            }
+            async fn get_channel_queue(&self) -> Result<String, String> {
+                Ok(self.queue.lock().unwrap().clone())
+            }
+            async fn save_channel_queue(&self, queue_json: &str) -> Result<(), String> {
+                let mut q = self.queue.lock().unwrap();
+                *q = queue_json.to_string();
+                Ok(())
+            }
+        }
+
+        let handle = MockQueueHandle {
+            queue: Mutex::new(String::new()),
+        };
+
+        let q = read_queue(&handle).await;
+        assert_eq!(q.len(), 0);
+
+        let msg = ChannelMessage {
+            channel: ChannelType::Telegram,
+            platform_message_id: "msg_123".to_string(),
+            thread_id: None,
+            sender: ChannelUser {
+                platform_id: "user_456".to_string(),
+                display_name: "Test User".to_string(),
+                openfang_user: None,
+            },
+            content: ChannelContent::Text("Hello".to_string()),
+            target_agent: None,
+            timestamp: chrono::Utc::now(),
+            is_group: false,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let q_msg = QueuedMessage {
+            id: "uuid_1".to_string(),
+            message: msg.clone(),
+            prefixed_text: "[From: Test User] Hello".to_string(),
+            output_format: OutputFormat::PlainText,
+            lifecycle_reactions: false,
+            created_at: chrono::Utc::now(),
+        };
+
+        write_queue(&handle, &[q_msg]).await;
+
+        let q = read_queue(&handle).await;
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].id, "uuid_1");
+        assert_eq!(q[0].prefixed_text, "[From: Test User] Hello");
     }
 }

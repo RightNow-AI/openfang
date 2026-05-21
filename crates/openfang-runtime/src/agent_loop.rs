@@ -66,12 +66,19 @@ fn env_timeout_secs(var: &str) -> Option<u64> {
 /// to `0`. In that case the tool runs with no upper bound, which is what users
 /// on slow local inference (vLLM on old GPUs) want for Hands and inter-agent
 /// delegation (issue #1125).
-fn tool_timeout_for(tool_name: &str) -> Option<Duration> {
+fn tool_timeout_for(
+    tool_name: &str,
+    runtime_config: Option<&openfang_types::config::RuntimeConfig>,
+) -> Option<Duration> {
     let secs = match tool_name {
         "agent_send" | "agent_spawn" => {
-            env_timeout_secs("OPENFANG_AGENT_TOOL_TIMEOUT_SECS").unwrap_or(AGENT_TOOL_TIMEOUT_SECS)
+            env_timeout_secs("OPENFANG_AGENT_TOOL_TIMEOUT_SECS")
+                .or_else(|| runtime_config.map(|c| c.agent_tool_timeout_secs))
+                .unwrap_or(AGENT_TOOL_TIMEOUT_SECS)
         }
-        _ => env_timeout_secs("OPENFANG_TOOL_TIMEOUT_SECS").unwrap_or(TOOL_TIMEOUT_SECS),
+        _ => env_timeout_secs("OPENFANG_TOOL_TIMEOUT_SECS")
+            .or_else(|| runtime_config.map(|c| c.tool_timeout_secs))
+            .unwrap_or(TOOL_TIMEOUT_SECS),
     };
     if secs == 0 {
         None
@@ -312,6 +319,7 @@ pub async fn run_agent_loop(
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
+    runtime_config: Option<&openfang_types::config::RuntimeConfig>,
 ) -> OpenFangResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting agent loop");
 
@@ -481,11 +489,13 @@ pub async fn run_agent_loop(
     }
 
     // Use autonomous config max_iterations if set, else default
-    let max_iterations = manifest
-        .autonomous
-        .as_ref()
-        .map(|a| a.max_iterations)
+    let max_iterations = runtime_config
+        .map(|c| c.max_iterations)
+        .or(manifest.autonomous.as_ref().map(|a| a.max_iterations))
         .unwrap_or(MAX_ITERATIONS);
+    let max_continuations = runtime_config
+        .map(|c| c.max_continuations)
+        .unwrap_or(MAX_CONTINUATIONS);
 
     // Initialize loop guard — scale circuit breaker for autonomous agents
     let loop_guard_config = {
@@ -500,7 +510,7 @@ pub async fn run_agent_loop(
 
     // Build context budget from model's actual context window (or fallback to default)
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
-    let context_budget = ContextBudget::new(ctx_window);
+    let context_budget = ContextBudget::new(ctx_window, runtime_config.map(|c| c.tool_result_budget_ratio).unwrap_or(0.3));
     let mut any_tools_executed = false;
 
     for iteration in 0..max_iterations {
@@ -925,7 +935,7 @@ pub async fn run_agent_loop(
 
                     // Timeout-wrapped execution. `tool_timeout_for` returns None
                     // when the operator disabled the timeout (issue #1125).
-                    let timeout_opt = tool_timeout_for(&tool_call.name);
+                    let timeout_opt = tool_timeout_for(&tool_call.name, runtime_config);
                     let exec_fut = tool_runner::execute_tool(
                         &tool_call.id,
                         &tool_call.name,
@@ -1063,7 +1073,7 @@ pub async fn run_agent_loop(
             }
             StopReason::MaxTokens => {
                 consecutive_max_tokens += 1;
-                if consecutive_max_tokens >= MAX_CONTINUATIONS {
+                if consecutive_max_tokens >= max_continuations {
                     // Return partial response instead of continuing forever
                     let text = response.text();
                     let text = if text.trim().is_empty() {
@@ -1267,6 +1277,7 @@ async fn call_with_retry(
                             base_url: fb.base_url.clone(),
                             skip_permissions: true,
                             subprocess_timeout_secs: None,
+                            http_timeout_secs: None,
                         };
                         let fb_driver = match crate::drivers::create_driver(&fb_config) {
                             Ok(d) => d,
@@ -1451,6 +1462,7 @@ async fn stream_with_retry(
                             base_url: fb.base_url.clone(),
                             skip_permissions: true,
                             subprocess_timeout_secs: None,
+                            http_timeout_secs: None,
                         };
                         let fb_driver = match crate::drivers::create_driver(&fb_config) {
                             Ok(d) => d,
@@ -1540,6 +1552,7 @@ pub async fn run_agent_loop_streaming(
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
+    runtime_config: Option<&openfang_types::config::RuntimeConfig>,
 ) -> OpenFangResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting streaming agent loop");
 
@@ -1700,11 +1713,13 @@ pub async fn run_agent_loop_streaming(
     }
 
     // Use autonomous config max_iterations if set, else default
-    let max_iterations = manifest
-        .autonomous
-        .as_ref()
-        .map(|a| a.max_iterations)
+    let max_iterations = runtime_config
+        .map(|c| c.max_iterations)
+        .or(manifest.autonomous.as_ref().map(|a| a.max_iterations))
         .unwrap_or(MAX_ITERATIONS);
+    let max_continuations = runtime_config
+        .map(|c| c.max_continuations)
+        .unwrap_or(MAX_CONTINUATIONS);
 
     // Initialize loop guard — scale circuit breaker for autonomous agents
     let loop_guard_config = {
@@ -1719,7 +1734,7 @@ pub async fn run_agent_loop_streaming(
 
     // Build context budget from model's actual context window (or fallback to default)
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
-    let context_budget = ContextBudget::new(ctx_window);
+    let context_budget = ContextBudget::new(ctx_window, runtime_config.map(|c| c.tool_result_budget_ratio).unwrap_or(0.3));
     let mut any_tools_executed = false;
 
     for iteration in 0..max_iterations {
@@ -2134,7 +2149,7 @@ pub async fn run_agent_loop_streaming(
 
                     // Timeout-wrapped execution. `tool_timeout_for` returns None
                     // when the operator disabled the timeout (issue #1125).
-                    let timeout_opt = tool_timeout_for(&tool_call.name);
+                    let timeout_opt = tool_timeout_for(&tool_call.name, runtime_config);
                     let exec_fut = tool_runner::execute_tool(
                         &tool_call.id,
                         &tool_call.name,
@@ -2285,7 +2300,7 @@ pub async fn run_agent_loop_streaming(
             }
             StopReason::MaxTokens => {
                 consecutive_max_tokens += 1;
-                if consecutive_max_tokens >= MAX_CONTINUATIONS {
+                if consecutive_max_tokens >= max_continuations {
                     let text = response.text();
                     let text = if text.trim().is_empty() {
                         "[Partial response — token limit reached with no text output.]".to_string()
@@ -3431,7 +3446,7 @@ mod tests {
     #[test]
     fn test_dynamic_truncate_short_unchanged() {
         use crate::context_budget::{truncate_tool_result_dynamic, ContextBudget};
-        let budget = ContextBudget::new(200_000);
+        let budget = ContextBudget::new(200_000, 0.3);
         let short = "Hello, world!";
         assert_eq!(truncate_tool_result_dynamic(short, &budget), short);
     }
@@ -3439,7 +3454,7 @@ mod tests {
     #[test]
     fn test_dynamic_truncate_over_limit() {
         use crate::context_budget::{truncate_tool_result_dynamic, ContextBudget};
-        let budget = ContextBudget::new(200_000);
+        let budget = ContextBudget::new(200_000, 0.3);
         let long = "x".repeat(budget.per_result_cap() + 10_000);
         let result = truncate_tool_result_dynamic(&long, &budget);
         assert!(result.len() <= budget.per_result_cap() + 200);
@@ -3450,7 +3465,7 @@ mod tests {
     fn test_dynamic_truncate_newline_boundary() {
         use crate::context_budget::{truncate_tool_result_dynamic, ContextBudget};
         // Small budget to force truncation
-        let budget = ContextBudget::new(1_000);
+        let budget = ContextBudget::new(1_000, 0.3);
         let content = (0..200)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
@@ -3491,30 +3506,30 @@ mod tests {
             Some(Duration::from_secs(600))
         );
         assert_eq!(
-            tool_timeout_for("file_read"),
+            tool_timeout_for("file_read", None),
             Some(Duration::from_secs(120))
         );
         assert_eq!(
-            tool_timeout_for("shell_exec"),
+            tool_timeout_for("shell_exec", None),
             Some(Duration::from_secs(120))
         );
 
         // Override: set to 0 → timeout disabled.
         std::env::set_var("OPENFANG_AGENT_TOOL_TIMEOUT_SECS", "0");
         std::env::set_var("OPENFANG_TOOL_TIMEOUT_SECS", "0");
-        assert_eq!(tool_timeout_for("agent_send"), None);
-        assert_eq!(tool_timeout_for("agent_spawn"), None);
-        assert_eq!(tool_timeout_for("file_read"), None);
+        assert_eq!(tool_timeout_for("agent_send", None), None);
+        assert_eq!(tool_timeout_for("agent_spawn", None), None);
+        assert_eq!(tool_timeout_for("file_read", None), None);
 
         // Override: custom positive values are honored verbatim.
         std::env::set_var("OPENFANG_AGENT_TOOL_TIMEOUT_SECS", "1800");
         std::env::set_var("OPENFANG_TOOL_TIMEOUT_SECS", "300");
         assert_eq!(
-            tool_timeout_for("agent_send"),
+            tool_timeout_for("agent_send", None),
             Some(Duration::from_secs(1800))
         );
         assert_eq!(
-            tool_timeout_for("file_read"),
+            tool_timeout_for("file_read", None),
             Some(Duration::from_secs(300))
         );
 
@@ -3526,7 +3541,7 @@ mod tests {
             Some(Duration::from_secs(600))
         );
         assert_eq!(
-            tool_timeout_for("file_read"),
+            tool_timeout_for("file_read", None),
             Some(Duration::from_secs(120))
         );
 
@@ -3821,6 +3836,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // runtime_config
         )
         .await
         .expect("Loop should complete without error");
@@ -3874,6 +3890,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // runtime_config
         )
         .await
         .expect("Loop should complete without error");
@@ -3929,6 +3946,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // runtime_config
         )
         .await
         .expect("Loop should complete without error");
@@ -3982,6 +4000,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // runtime_config
         )
         .await
         .expect("Loop should complete without error");
@@ -4028,6 +4047,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // runtime_config
         )
         .await
         .expect("Streaming loop should complete without error");
@@ -4152,6 +4172,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // runtime_config
         )
         .await
         .expect("Loop should recover via retry");
@@ -4199,6 +4220,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // runtime_config
         )
         .await
         .expect("Loop should complete with fallback");
@@ -4254,6 +4276,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // runtime_config
         )
         .await
         .expect("Streaming loop should complete without error");
@@ -5230,6 +5253,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // runtime_config
         )
         .await
         .expect("Agent loop should complete");
@@ -5300,6 +5324,7 @@ mod tests {
             None,
             None,
             None,
+            None, // runtime_config
         )
         .await
         .expect("Agent loop should recover nested XML tool calls");
@@ -5372,6 +5397,7 @@ mod tests {
             None,
             None,
             None, // user_content_blocks
+            None, // runtime_config
         )
         .await
         .expect("Normal loop should complete");
@@ -5435,6 +5461,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // runtime_config
         )
         .await
         .expect("Streaming loop should complete");

@@ -27,15 +27,16 @@ pub struct OpenAIDriver {
 }
 
 impl OpenAIDriver {
-    /// Create a new OpenAI-compatible driver.
-    pub fn new(api_key: String, base_url: String) -> Self {
+    /// Create a new OpenAI-compatible driver with optional timeout.
+    pub fn new(api_key: String, base_url: String, timeout: Option<std::time::Duration>) -> Self {
+        let mut builder = reqwest::Client::builder().user_agent(crate::USER_AGENT);
+        if let Some(t) = timeout {
+            builder = builder.timeout(t);
+        }
         Self {
             api_key: Zeroizing::new(api_key),
             base_url,
-            client: reqwest::Client::builder()
-                .user_agent(crate::USER_AGENT)
-                .build()
-                .unwrap_or_default(),
+            client: builder.build().unwrap_or_default(),
             extra_headers: Vec::new(),
             azure_mode: false,
         }
@@ -46,14 +47,15 @@ impl OpenAIDriver {
     /// Azure uses a deployment-based URL scheme and `api-key` header instead of
     /// `Authorization: Bearer`.  The `base_url` should be the deployments root,
     /// e.g. `https://{resource}.openai.azure.com/openai/deployments`.
-    pub fn new_azure(api_key: String, base_url: String) -> Self {
+    pub fn new_azure(api_key: String, base_url: String, timeout: Option<std::time::Duration>) -> Self {
+        let mut builder = reqwest::Client::builder().user_agent(crate::USER_AGENT);
+        if let Some(t) = timeout {
+            builder = builder.timeout(t);
+        }
         Self {
             api_key: Zeroizing::new(api_key),
             base_url,
-            client: reqwest::Client::builder()
-                .user_agent(crate::USER_AGENT)
-                .build()
-                .unwrap_or_default(),
+            client: builder.build().unwrap_or_default(),
             extra_headers: Vec::new(),
             azure_mode: true,
         }
@@ -1707,7 +1709,7 @@ mod tests {
 
     #[test]
     fn test_openai_driver_creation() {
-        let driver = OpenAIDriver::new("test-key".to_string(), "http://localhost".to_string());
+        let driver = OpenAIDriver::new("test-key".to_string(), "http://localhost".to_string(), None);
         assert_eq!(driver.api_key.as_str(), "test-key");
     }
 
@@ -1958,7 +1960,7 @@ mod tests {
     /// the upstream server is pre- or post-vLLM 0.19.
     #[test]
     fn test_assemble_emits_both_reasoning_fields_for_vllm_compat() {
-        let driver = OpenAIDriver::new("test".to_string(), "http://localhost:8000/v1".to_string());
+        let driver = OpenAIDriver::new("test".to_string(), "http://localhost:8000/v1".to_string(), None);
         let blocks = vec![
             ContentBlock::Thinking {
                 thinking: "MARKER-vllm-019".to_string(),
@@ -1993,7 +1995,8 @@ mod tests {
     /// change in #1157.
     #[test]
     fn test_assemble_no_reasoning_fields_for_plain_model() {
-        let driver = OpenAIDriver::new("test".to_string(), "https://api.openai.com/v1".to_string());
+        let driver = OpenAIDriver::new("test".to_string(), "https://api.openai.com/v1".to_string(),
+            None);
         let blocks = vec![ContentBlock::Text {
             text: "hi".to_string(),
             provider_metadata: None,
@@ -2013,7 +2016,7 @@ mod tests {
     #[test]
     fn test_assemble_moonshot_keeps_legacy_field_only() {
         let driver =
-            OpenAIDriver::new("test".to_string(), "https://api.moonshot.cn/v1".to_string());
+            OpenAIDriver::new("test".to_string(), "https://api.moonshot.cn/v1".to_string(), None);
         let blocks = vec![ContentBlock::ToolUse {
             id: "call_1".to_string(),
             name: "search".to_string(),
@@ -2039,6 +2042,7 @@ mod tests {
         let driver = OpenAIDriver::new_azure(
             "test-key".to_string(),
             "https://myresource.openai.azure.com/openai/deployments".to_string(),
+            None,
         );
         assert!(driver.azure_mode);
     }
@@ -2048,6 +2052,7 @@ mod tests {
         let driver = OpenAIDriver::new(
             "test-key".to_string(),
             "https://api.openai.com/v1".to_string(),
+            None,
         );
         assert!(!driver.azure_mode);
     }
@@ -2057,6 +2062,7 @@ mod tests {
         let driver = OpenAIDriver::new_azure(
             "test-key".to_string(),
             "https://myresource.openai.azure.com/openai/deployments".to_string(),
+            None,
         );
         let url = driver.chat_url("my-gpt4o-deployment");
         assert_eq!(
@@ -2070,6 +2076,7 @@ mod tests {
         let driver = OpenAIDriver::new_azure(
             "test-key".to_string(),
             "https://myresource.openai.azure.com/openai/deployments/".to_string(),
+            None,
         );
         let url = driver.chat_url("gpt-4o");
         assert_eq!(
@@ -2083,6 +2090,7 @@ mod tests {
         let driver = OpenAIDriver::new(
             "test-key".to_string(),
             "https://api.openai.com/v1".to_string(),
+            None,
         );
         let url = driver.chat_url("gpt-4o");
         assert_eq!(url, "https://api.openai.com/v1/chat/completions");
@@ -2094,6 +2102,7 @@ mod tests {
         let driver = OpenAIDriver::new(
             "test-key".to_string(),
             "https://api.moonshot.ai/v1".to_string(),
+            None,
         );
         // kimi-k2.5 must go to the .cn endpoint
         let url = driver.chat_url("kimi-k2.5");
@@ -2118,6 +2127,7 @@ mod tests {
         let driver = OpenAIDriver::new(
             "test".to_string(),
             "https://api.minimax.chat/v1".to_string(),
+            None,
         );
         let blocks = vec![
             ContentBlock::Thinking {
@@ -2151,6 +2161,7 @@ mod tests {
         let driver = OpenAIDriver::new(
             "test".to_string(),
             "https://api.deepseek.com/v1".to_string(),
+            None,
         );
         let blocks = vec![
             ContentBlock::Thinking {
@@ -2183,7 +2194,8 @@ mod tests {
     /// assistant message â€” preserve the legacy shape.
     #[test]
     fn test_assemble_assistant_no_thinking_is_plain() {
-        let driver = OpenAIDriver::new("test".to_string(), "https://api.openai.com/v1".to_string());
+        let driver = OpenAIDriver::new("test".to_string(), "https://api.openai.com/v1".to_string(),
+            None);
         let blocks = vec![ContentBlock::Text {
             text: "Hi.".to_string(),
             provider_metadata: None,
@@ -2233,6 +2245,7 @@ mod tests {
         let driver = OpenAIDriver::new(
             "test".to_string(),
             "https://api.deepseek.com/v1".to_string(),
+            None,
         );
         let outbound = assemble_assistant_message(&content, "deepseek-reasoner", &driver);
         // The reasoning_content field must round-trip verbatim.

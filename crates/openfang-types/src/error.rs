@@ -98,6 +98,14 @@ pub enum OpenFangError {
     /// Invalid user input.
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+
+    /// The agent is currently busy processing another message.
+    #[error("Agent busy: {0}")]
+    AgentBusy(String),
+
+    /// An error occurred in the agent registry.
+    #[error("Registry error: {0}")]
+    Registry(String),
 }
 
 /// Alias for Result with OpenFangError.
