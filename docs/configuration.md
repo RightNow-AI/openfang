@@ -329,7 +329,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `provider` | string | `"anthropic"` | Provider name. Supported: `anthropic`, `gemini`, `openai`, `groq`, `openrouter`, `deepseek`, `together`, `mistral`, `fireworks`, `ollama`, `vllm`, `lmstudio`, `perplexity`, `cohere`, `ai21`, `cerebras`, `sambanova`, `huggingface`, `xai`, `replicate`. |
+| `provider` | string | `"anthropic"` | Provider name. Supported: `anthropic`, `gemini`, `openai`, `groq`, `openrouter`, `nearai`, `deepseek`, `together`, `mistral`, `fireworks`, `ollama`, `vllm`, `lmstudio`, `perplexity`, `cohere`, `ai21`, `cerebras`, `sambanova`, `huggingface`, `xai`, `replicate`. |
 | `model` | string | `"claude-sonnet-4-20250514"` | Model identifier. Aliases like `sonnet`, `haiku`, `gpt-4o`, `gemini-flash` are resolved by the model catalog. |
 | `api_key_env` | string | `"ANTHROPIC_API_KEY"` | Name of the environment variable holding the API key. The actual key is read from this env var at runtime, never stored in config. |
 | `base_url` | string or null | `null` | Override the API base URL. Useful for proxies or self-hosted endpoints. When `null`, the provider's default URL from the model catalog is used. |
@@ -1399,6 +1399,7 @@ Complete table of all environment variables referenced by the configuration. Non
 | `DEEPSEEK_API_KEY` | DeepSeek provider | DeepSeek API key. |
 | `PERPLEXITY_API_KEY` | Perplexity provider / web search | Perplexity API key. |
 | `OPENROUTER_API_KEY` | OpenRouter provider | OpenRouter API key. |
+| `NEARAI_API_KEY` | NEAR AI Cloud provider | NEAR AI Cloud TEE inference API key. |
 | `TOGETHER_API_KEY` | Together AI provider | Together AI API key. |
 | `MISTRAL_API_KEY` | Mistral provider | Mistral AI API key. |
 | `FIREWORKS_API_KEY` | Fireworks provider | Fireworks AI API key. |

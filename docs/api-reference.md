@@ -835,7 +835,7 @@ Delete a specific session and its conversation history.
 
 ## Model Catalog Endpoints
 
-OpenFang maintains a built-in catalog of 51+ models across 20 providers. These endpoints allow you to browse available models, check provider authentication status, and resolve model aliases.
+OpenFang maintains a built-in catalog of models across cloud and local providers. These endpoints allow you to browse available models, check provider authentication status, and resolve model aliases.
 
 ### GET /api/models
 

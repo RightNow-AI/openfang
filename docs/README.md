@@ -1,6 +1,6 @@
 # OpenFang Documentation
 
-Welcome to the OpenFang documentation. OpenFang is the open-source Agent Operating System -- 14 Rust crates, 40 channels, 60 skills, 20 LLM providers, 76 API endpoints, and 16 security systems in a single binary.
+Welcome to the OpenFang documentation. OpenFang is the open-source Agent Operating System -- 14 Rust crates, 40 channels, 60 skills, many LLM providers, 76 API endpoints, and 16 security systems in a single binary.
 
 ---
 
@@ -27,7 +27,7 @@ Welcome to the OpenFang documentation. OpenFang is the open-source Agent Operati
 | Guide | Description |
 |-------|-------------|
 | [Channel Adapters](channel-adapters.md) | 40 messaging channels -- setup, configuration, custom adapters |
-| [LLM Providers](providers.md) | 20 providers, 51 models, 23 aliases -- setup and model routing |
+| [LLM Providers](providers.md) | Provider setup, model catalog, aliases, and routing |
 | [Skills](skill-development.md) | 60 bundled skills, custom skill development, FangHub marketplace |
 | [MCP & A2A](mcp-a2a.md) | Model Context Protocol and Agent-to-Agent protocol integration |
 
@@ -74,9 +74,9 @@ openfang init && openfang start
 | Messaging channels | 40 |
 | Bundled skills | 60 |
 | Built-in tools | 38 |
-| LLM providers | 20 |
-| Models in catalog | 51 |
-| Model aliases | 23 |
+| LLM providers | Many cloud and local providers |
+| Models in catalog | Builtin plus runtime-discovered models |
+| Model aliases | Builtin aliases |
 | API endpoints | 76 |
 | Security systems | 16 |
 | Tests | 967 |
@@ -100,6 +100,7 @@ openfang init && openfang start
 | `GEMINI_API_KEY` | Google Gemini |
 | `GROQ_API_KEY` | Groq (fast Llama/Mixtral) |
 | `DEEPSEEK_API_KEY` | DeepSeek |
+| `NEARAI_API_KEY` | NEAR AI Cloud TEE inference |
 | `XAI_API_KEY` | xAI (Grok) |
 
 Only one provider key is needed to get started. Groq offers a free tier.
