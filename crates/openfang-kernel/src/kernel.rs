@@ -6895,8 +6895,12 @@ fn infer_provider_from_model(model: &str) -> Option<String> {
             "minimax" | "gemini" | "anthropic" | "openai" | "groq" | "deepseek" | "mistral"
             | "cohere" | "xai" | "ollama" | "together" | "fireworks" | "perplexity"
             | "cerebras" | "sambanova" | "replicate" | "huggingface" | "ai21" | "codex"
-            | "claude-code" | "copilot" | "github-copilot" | "qwen" | "zhipu" | "zai"
-            | "moonshot" | "openrouter" | "volcengine" | "doubao" | "dashscope" => {
+            | "codex_app_server" | "codex-app-server" | "claude-code" | "copilot"
+            | "github-copilot" | "qwen" | "zhipu" | "zai" | "moonshot" | "openrouter"
+            | "volcengine" | "doubao" | "dashscope" => {
+                if prefix == "codex-app-server" {
+                    return Some("codex_app_server".to_string());
+                }
                 return Some(prefix.to_string());
             }
             // "kimi" is a brand alias for moonshot
@@ -9062,7 +9066,14 @@ mod tests {
 
         // The local providers the user did NOT configure must NOT show up.
         // This is what makes the issue #1031 probe noise go away.
-        for unwanted in &["vllm", "lmstudio", "lemonade", "claude-code", "qwen-code"] {
+        for unwanted in &[
+            "vllm",
+            "lmstudio",
+            "lemonade",
+            "claude-code",
+            "codex_app_server",
+            "qwen-code",
+        ] {
             assert!(
                 !referenced.contains(*unwanted),
                 "unconfigured local provider {unwanted:?} must NOT be in the referenced set ({referenced:?})"

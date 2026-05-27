@@ -203,7 +203,8 @@ pub struct DriverConfig {
     /// `OPENFANG_SUBPROCESS_TIMEOUT_SECS` env var, which wins over both
     /// this field and the driver default.
     ///
-    /// **Scope:** Currently only honored by `provider = "claude-code"`.
+    /// **Scope:** Currently honored by subprocess drivers such as
+    /// `provider = "claude-code"` and `provider = "codex_app_server"`.
     /// Other providers (`default`, `qwen-code`, `openai`, `bedrock`, etc.)
     /// accept the field for forward-compatibility but silently ignore it
     /// today. As additional subprocess-based drivers are added, they will

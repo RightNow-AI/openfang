@@ -40,6 +40,10 @@ pub const NOVITA_BASE_URL: &str = "https://api.novita.ai/openai/v1";
 // ── GitHub Copilot ──────────────────────────────────────────────
 pub const GITHUB_COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 
+// ── Codex app-server ───────────────────────────────────────────
+pub const CODEX_APP_SERVER_PROVIDER_ID: &str = "codex_app_server";
+pub const CODEX_APP_SERVER_BASE_URL: &str = "";
+
 // ── Chinese providers ─────────────────────────────────────────────
 pub const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 /// Global endpoint. For China mainland, override via `[provider_urls] minimax = "https://api.minimaxi.com/v1"`.

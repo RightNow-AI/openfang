@@ -7,6 +7,7 @@
 pub mod anthropic;
 pub mod bedrock;
 pub mod claude_code;
+pub mod codex_app_server;
 pub mod copilot;
 pub mod fallback;
 pub mod gemini;
@@ -17,13 +18,14 @@ pub mod vertex;
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
     AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL,
-    COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NOVITA_BASE_URL, NVIDIA_NIM_BASE_URL,
-    OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL,
-    QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL,
-    VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL,
-    ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    CODEX_APP_SERVER_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL,
+    GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL,
+    LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NOVITA_BASE_URL,
+    NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
+    PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL,
+    SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -213,6 +215,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         }),
         "claude-code" => Some(ProviderDefaults {
             base_url: "",
+            api_key_env: "",
+            key_required: false,
+        }),
+        "codex_app_server" | "codex-app-server" => Some(ProviderDefaults {
+            base_url: CODEX_APP_SERVER_BASE_URL,
             api_key_env: "",
             key_required: false,
         }),
@@ -412,6 +419,19 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         }));
     }
 
+    // Codex app-server — subprocess-based, uses ChatGPT/Codex CLI auth.
+    if provider == "codex_app_server" || provider == "codex-app-server" {
+        let cli_path = config.base_url.clone();
+        let timeout = std::env::var("OPENFANG_SUBPROCESS_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .or(config.subprocess_timeout_secs);
+        return Ok(Arc::new(match timeout {
+            Some(secs) => codex_app_server::CodexAppServerDriver::with_timeout(cli_path, secs),
+            None => codex_app_server::CodexAppServerDriver::new(cli_path),
+        }));
+    }
+
     // Qwen Code CLI — subprocess-based, uses Qwen OAuth (free tier)
     if provider == "qwen-code" {
         let cli_path = config.base_url.clone();
@@ -589,7 +609,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             "Unknown provider '{}'. Supported: anthropic, gemini, openai, azure, bedrock, groq, \
              openrouter, deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, \
              perplexity, cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, \
-             github-copilot, chutes, venice, nvidia, codex, claude-code. \
+             github-copilot, chutes, venice, nvidia, codex, claude-code, codex_app_server. \
              Or set base_url for a custom OpenAI-compatible endpoint.",
             provider
         ),
@@ -692,6 +712,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "novita",
         "codex",
         "claude-code",
+        "codex_app_server",
         "qwen-code",
         "azure",
     ]
@@ -843,9 +864,10 @@ mod tests {
         assert!(providers.contains(&"novita"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
+        assert!(providers.contains(&"codex_app_server"));
         assert!(providers.contains(&"qwen-code"));
         assert!(providers.contains(&"azure"));
-        assert_eq!(providers.len(), 38);
+        assert_eq!(providers.len(), 39);
     }
 
     #[test]
@@ -1138,6 +1160,19 @@ mod tests {
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok(), "claude-code driver should construct");
+    }
+
+    #[test]
+    fn test_codex_app_server_driver_constructs() {
+        let config = DriverConfig {
+            provider: "codex_app_server".to_string(),
+            api_key: None,
+            base_url: None,
+            skip_permissions: true,
+            subprocess_timeout_secs: None,
+        };
+        let driver = create_driver(&config);
+        assert!(driver.is_ok(), "codex_app_server driver should construct");
     }
 
     #[test]

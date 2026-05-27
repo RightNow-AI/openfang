@@ -6,13 +6,14 @@
 use openfang_types::model_catalog::{
     AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
     AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
-    DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL,
-    VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    CODEX_APP_SERVER_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL,
+    GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL,
+    LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL,
+    NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
+    PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL,
+    SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -72,6 +73,15 @@ impl ModelCatalog {
                 } else {
                     AuthStatus::Missing
                 };
+                continue;
+            }
+            if provider.id == "codex_app_server" {
+                provider.auth_status =
+                    if crate::drivers::codex_app_server::codex_app_server_available() {
+                        AuthStatus::Configured
+                    } else {
+                        AuthStatus::Missing
+                    };
                 continue;
             }
 
@@ -941,6 +951,16 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             auth_status: AuthStatus::Missing,
             model_count: 0,
         },
+        // ── Codex app-server ─────────────────────────────────────────
+        ProviderInfo {
+            id: "codex_app_server".into(),
+            display_name: "Codex App Server".into(),
+            api_key_env: String::new(),
+            base_url: CODEX_APP_SERVER_BASE_URL.into(),
+            key_required: false,
+            auth_status: AuthStatus::NotRequired,
+            model_count: 0,
+        },
         // ── Claude Code CLI ─────────────────────────────────────────
         ProviderInfo {
             id: "claude-code".into(),
@@ -1028,6 +1048,10 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("codex-5.4", "codex/gpt-5.4"),
         ("codex-4.1", "codex/gpt-4.1"),
         ("codex-o4", "codex/o4-mini"),
+        // Codex app-server aliases
+        ("codex-app-server", "codex_app_server/gpt-5.4"),
+        ("codex_app_server", "codex_app_server/gpt-5.4"),
+        ("codex-app-server-5.4", "codex_app_server/gpt-5.4"),
         // NVIDIA NIM aliases
         ("nemotron", "nvidia/llama-3.1-nemotron-70b-instruct"),
         // Venice aliases
@@ -3860,6 +3884,27 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec!["codex-o4".into()],
         },
         // ══════════════════════════════════════════════════════════════
+        // Codex app-server (1) — subprocess-based, ChatGPT subscription auth
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "codex_app_server/gpt-5.4".into(),
+            display_name: "GPT-5.4 (Codex App Server)".into(),
+            provider: "codex_app_server".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_047_576,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: false,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![
+                "codex_app_server".into(),
+                "codex-app-server".into(),
+                "codex-app-server-5.4".into(),
+            ],
+        },
+        // ══════════════════════════════════════════════════════════════
         // Claude Code CLI (3) — subprocess-based
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
@@ -4083,7 +4128,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 42);
+        assert_eq!(catalog.list_providers().len(), 43);
     }
 
     #[test]
@@ -4446,6 +4491,32 @@ mod tests {
         let cc = catalog.get_provider("claude-code").unwrap();
         assert_eq!(cc.display_name, "Claude Code");
         assert!(!cc.key_required);
+    }
+
+    #[test]
+    fn test_codex_app_server_provider() {
+        let catalog = ModelCatalog::new();
+        let provider = catalog.get_provider("codex_app_server").unwrap();
+        assert_eq!(provider.display_name, "Codex App Server");
+        assert!(!provider.key_required);
+        assert!(provider.api_key_env.is_empty());
+    }
+
+    #[test]
+    fn test_codex_app_server_models() {
+        let catalog = ModelCatalog::new();
+        let models = catalog.models_by_provider("codex_app_server");
+        assert_eq!(models.len(), 1);
+        assert!(models
+            .iter()
+            .any(|m| m.id == "codex_app_server/gpt-5.4"));
+    }
+
+    #[test]
+    fn test_codex_app_server_aliases() {
+        let catalog = ModelCatalog::new();
+        let entry = catalog.find_model("codex-app-server").unwrap();
+        assert_eq!(entry.id, "codex_app_server/gpt-5.4");
     }
 
     #[test]
