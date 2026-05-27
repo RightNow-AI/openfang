@@ -143,6 +143,18 @@ pub async fn auth(
         return next.run(request).await;
     }
 
+    let signed_download = is_get
+        && path.starts_with("/api/agents/")
+        && path.contains("/files/")
+        && request.uri().query().is_some_and(|query| {
+            query
+                .split('&')
+                .any(|pair| pair.starts_with("download_token="))
+        });
+    if signed_download {
+        return next.run(request).await;
+    }
+
     // If no API key configured and no dashboard login is active, fail closed
     // for anything that did not come from loopback. Opting out of this
     // behavior requires setting `OPENFANG_ALLOW_NO_AUTH=1`, which is logged

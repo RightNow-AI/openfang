@@ -278,7 +278,7 @@ pub async fn build_router(
             axum::routing::get(routes::list_agent_files),
         )
         .route(
-            "/api/agents/{id}/files/{filename}",
+            "/api/agents/{id}/files/{*filename}",
             axum::routing::get(routes::get_agent_file).put(routes::set_agent_file),
         )
         .route(

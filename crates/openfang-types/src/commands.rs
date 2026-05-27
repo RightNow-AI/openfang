@@ -180,6 +180,14 @@ pub const COMMAND_REGISTRY: &[CommandDef] = &[
         requires_agent: true,
     },
     CommandDef {
+        name: "download",
+        aliases: &[],
+        description: "Get a workspace file download link",
+        category: CommandCategory::Session,
+        surfaces: Surfaces::CHANNEL,
+        requires_agent: true,
+    },
+    CommandDef {
         name: "context",
         aliases: &[],
         description: "Show context window usage & pressure",

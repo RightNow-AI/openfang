@@ -1,9 +1,10 @@
 //! Route handlers for the OpenFang API.
 
 use crate::types::*;
+use axum::body::Body;
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use dashmap::DashMap;
 use openfang_kernel::triggers::{TriggerId, TriggerPattern};
@@ -15,6 +16,7 @@ use openfang_runtime::kernel_handle::KernelHandle;
 use openfang_runtime::tool_runner::builtin_tool_definitions;
 use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest};
 use std::collections::HashMap;
+use std::path::Path as FsPath;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
@@ -10217,10 +10219,11 @@ const KNOWN_IDENTITY_FILES: &[&str] = &[
     "HEARTBEAT.md",
 ];
 
-/// GET /api/agents/{id}/files — List workspace identity files.
+/// GET /api/agents/{id}/files — List workspace files.
 pub async fn list_agent_files(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let agent_id: AgentId = match id.parse() {
         Ok(id) => id,
@@ -10241,6 +10244,52 @@ pub async fn list_agent_files(
             );
         }
     };
+
+    if params.contains_key("prefix") || params.contains_key("ext") {
+        let workspace = match entry.manifest.workspace.as_ref() {
+            Some(ws) => ws.clone(),
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "Agent has no workspace"})),
+                );
+            }
+        };
+        let ext_filter = params.get("ext").map(|ext| {
+            ext.split(',')
+                .map(|part| part.trim().trim_start_matches('.').to_string())
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+        });
+        match openfang_runtime::workspace::list_files(
+            &workspace,
+            entry.manifest.state_dir.as_deref(),
+            params.get("prefix").map(String::as_str),
+            ext_filter.as_deref(),
+        ) {
+            Ok(files) => {
+                return (StatusCode::OK, Json(serde_json::json!({ "files": files })));
+            }
+            Err(openfang_runtime::workspace::WorkspaceFileError::Forbidden) => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({"error": "Path traversal denied"})),
+                );
+            }
+            Err(openfang_runtime::workspace::WorkspaceFileError::NoWorkspace) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "Agent has no workspace"})),
+                );
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("Workspace list failed: {e}")})),
+                );
+            }
+        }
+    }
 
     // Identity files live in the agent's private state directory (see #1097).
     // Fall back to the legacy workspace location for agents created before the
@@ -10279,28 +10328,22 @@ pub async fn list_agent_files(
     (StatusCode::OK, Json(serde_json::json!({ "files": files })))
 }
 
-/// GET /api/agents/{id}/files/{filename} — Read a workspace identity file.
+/// GET /api/agents/{id}/files/{rel_path} — Read an identity file or download a workspace file.
 pub async fn get_agent_file(
     State(state): State<Arc<AppState>>,
     Path((id, filename)): Path<(String, String)>,
-) -> impl IntoResponse {
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
     let agent_id: AgentId = match id.parse() {
         Ok(id) => id,
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "Invalid agent ID"})),
-            );
+            )
+                .into_response();
         }
     };
-
-    // Validate filename whitelist
-    if !KNOWN_IDENTITY_FILES.contains(&filename.as_str()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "File not in whitelist"})),
-        );
-    }
 
     let entry = match state.kernel.registry.get(agent_id) {
         Some(e) => e,
@@ -10308,9 +10351,18 @@ pub async fn get_agent_file(
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Agent not found"})),
-            );
+            )
+                .into_response();
         }
     };
+
+    let is_download = params.contains_key("download_token")
+        || params
+            .get("download")
+            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+    if is_download || !KNOWN_IDENTITY_FILES.contains(&filename.as_str()) {
+        return download_agent_file(state, &entry, &filename, &params).into_response();
+    }
 
     // Identity files live in the agent's private state directory (see #1097).
     // Fall back to legacy workspace for agents created before the split.
@@ -10325,7 +10377,8 @@ pub async fn get_agent_file(
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Agent has no workspace"})),
-            );
+            )
+                .into_response();
         }
     };
 
@@ -10337,7 +10390,8 @@ pub async fn get_agent_file(
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "File not found"})),
-            );
+            )
+                .into_response();
         }
     };
     let ws_canonical = match workspace.canonicalize() {
@@ -10346,14 +10400,16 @@ pub async fn get_agent_file(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Workspace path error"})),
-            );
+            )
+                .into_response();
         }
     };
     if !canonical.starts_with(&ws_canonical) {
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Path traversal denied"})),
-        );
+        )
+            .into_response();
     }
 
     let content = match std::fs::read_to_string(&canonical) {
@@ -10362,7 +10418,8 @@ pub async fn get_agent_file(
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "File not found"})),
-            );
+            )
+                .into_response();
         }
     };
 
@@ -10375,6 +10432,127 @@ pub async fn get_agent_file(
             "size_bytes": size_bytes,
         })),
     )
+        .into_response()
+}
+
+fn download_agent_file(
+    state: Arc<AppState>,
+    entry: &openfang_types::agent::AgentEntry,
+    rel_path: &str,
+    params: &HashMap<String, String>,
+) -> Response {
+    if let Some(token) = params.get("download_token") {
+        let secret = download_token_secret(&state);
+        if secret.is_empty()
+            || !crate::session_auth::verify_download_token(
+                token,
+                &secret,
+                &entry.id.to_string(),
+                rel_path,
+            )
+        {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Invalid download token"})),
+            )
+                .into_response();
+        }
+    }
+
+    let workspace = match entry.manifest.workspace.as_ref() {
+        Some(ws) => ws.clone(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent has no workspace"})),
+            )
+                .into_response();
+        }
+    };
+
+    let download = match openfang_runtime::workspace::read_file_for_download(
+        &workspace,
+        entry.manifest.state_dir.as_deref(),
+        rel_path,
+    ) {
+        Ok(download) => download,
+        Err(openfang_runtime::workspace::WorkspaceFileError::NotFound) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "File not found"})),
+            )
+                .into_response();
+        }
+        Err(openfang_runtime::workspace::WorkspaceFileError::Forbidden) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": "Path traversal denied"})),
+            )
+                .into_response();
+        }
+        Err(openfang_runtime::workspace::WorkspaceFileError::NoWorkspace) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent has no workspace"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Workspace read failed: {e}")})),
+            )
+                .into_response();
+        }
+    };
+
+    let body = match std::fs::read(&download.path) {
+        Ok(body) => body,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "File not found"})),
+            )
+                .into_response();
+        }
+    };
+    let filename = FsPath::new(&download.rel_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download");
+    let disposition = format!(
+        "attachment; filename=\"{}\"",
+        sanitize_header_filename(filename)
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, download.mime_type)
+        .header(header::CONTENT_LENGTH, download.size_bytes.to_string())
+        .header(header::CONTENT_DISPOSITION, disposition)
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn download_token_secret(state: &AppState) -> String {
+    let api_key = state.kernel.config.api_key.trim();
+    if !api_key.is_empty() {
+        api_key.to_string()
+    } else if state.kernel.config.auth.enabled {
+        state.kernel.config.auth.password_hash.clone()
+    } else {
+        String::new()
+    }
+}
+
+fn sanitize_header_filename(filename: &str) -> String {
+    filename
+        .chars()
+        .map(|ch| match ch {
+            '"' | '\\' | '\r' | '\n' => '_',
+            _ => ch,
+        })
+        .collect()
 }
 
 /// Request body for writing a workspace identity file.

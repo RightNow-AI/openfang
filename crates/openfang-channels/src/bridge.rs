@@ -41,6 +41,7 @@ const CHANNEL_COMMAND_SPECS: &[ChatCommandSpec] = &[
     ChatCommandSpec { name: "stop", desc: "Cancel current agent run", help: "/stop - cancel current agent run", section: "Session" },
     ChatCommandSpec { name: "usage", desc: "Show session usage and cost", help: "/usage - show session token usage and cost", section: "Session" },
     ChatCommandSpec { name: "think", desc: "Toggle extended thinking", help: "/think [on|off] - toggle extended thinking", section: "Session" },
+    ChatCommandSpec { name: "download", desc: "Get a workspace file download link", help: "/download <name> - get a download link for a workspace file", section: "Session" },
     ChatCommandSpec { name: "status", desc: "Show system status", help: "/status - show system status", section: "Info" },
     ChatCommandSpec { name: "models", desc: "List available AI models", help: "/models - list available AI models", section: "Info" },
     ChatCommandSpec { name: "providers", desc: "Show configured providers", help: "/providers - show configured providers", section: "Info" },
@@ -189,6 +190,15 @@ pub trait ChannelBridgeHandle: Send + Sync {
     /// Toggle extended thinking mode for an agent.
     async fn set_thinking(&self, _agent_id: AgentId, _on: bool) -> Result<String, String> {
         Ok("Extended thinking preference saved.".to_string())
+    }
+
+    /// Create a short-lived download URL for a file in the agent workspace.
+    async fn download_file_url(
+        &self,
+        _agent_id: AgentId,
+        _rel_path: &str,
+    ) -> Result<String, String> {
+        Err("File download is not available.".to_string())
     }
 
     /// List installed skills as formatted text for channel display.
@@ -2108,6 +2118,27 @@ async fn handle_command(
                         .unwrap_or_else(|e| format!("Error: {e}"))
                 }
                 None => "No agent selected. Use /agent <name> first.".to_string(),
+            }
+        }
+        "download" => {
+            let agent_id = router.resolve(
+                &crate::types::ChannelType::CLI,
+                user_id,
+                sender.openfang_user.as_deref(),
+            );
+            let Some(aid) = agent_id else {
+                return "No agent selected. Use /agent <name> first.".to_string();
+            };
+            if args.is_empty() {
+                return "Usage: /download <name>".to_string();
+            }
+            let rel_path = args.join(" ");
+            match handle.download_file_url(aid, &rel_path).await {
+                Ok(url) => format!("Download link (expires in 5 minutes): {url}"),
+                Err(e) if e.to_lowercase().contains("not found") => {
+                    "File not found in workspace.".to_string()
+                }
+                Err(e) => format!("Download failed: {e}"),
             }
         }
         "models" => handle.list_models_text().await,

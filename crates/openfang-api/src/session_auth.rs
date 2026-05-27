@@ -17,6 +17,23 @@ pub fn create_session_token(username: &str, secret: &str, ttl_hours: u64) -> Str
     base64::engine::general_purpose::STANDARD.encode(format!("{payload}:{signature}"))
 }
 
+/// Create a short-lived agent workspace download token.
+pub fn create_download_token(
+    agent_id: &str,
+    rel_path: &str,
+    secret: &str,
+    ttl_seconds: u64,
+) -> String {
+    use base64::Engine;
+    let expiry = chrono::Utc::now().timestamp() + ttl_seconds as i64;
+    let path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rel_path);
+    let payload = format!("download:{agent_id}:{expiry}:{path}");
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC key");
+    mac.update(payload.as_bytes());
+    let signature = hex::encode(mac.finalize().into_bytes());
+    base64::engine::general_purpose::STANDARD.encode(format!("{payload}:{signature}"))
+}
+
 /// Extract the `openfang_session` cookie value from a `Cookie` header string.
 ///
 /// Returns `None` if the header is absent or the cookie is not present.
@@ -72,6 +89,62 @@ pub fn verify_session_token(token: &str, secret: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Verify a download token for one exact agent/path pair.
+pub fn verify_download_token(
+    token: &str,
+    secret: &str,
+    expected_agent_id: &str,
+    expected_rel_path: &str,
+) -> bool {
+    use base64::Engine;
+    let decoded = match base64::engine::general_purpose::STANDARD.decode(token) {
+        Ok(decoded) => decoded,
+        Err(_) => return false,
+    };
+    let decoded_str = match String::from_utf8(decoded) {
+        Ok(decoded) => decoded,
+        Err(_) => return false,
+    };
+    let parts: Vec<&str> = decoded_str.splitn(5, ':').collect();
+    if parts.len() != 5 {
+        return false;
+    }
+    let (kind, agent_id, expiry_str, rel_path_b64, provided_sig) =
+        (parts[0], parts[1], parts[2], parts[3], parts[4]);
+    let rel_path_bytes = match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(rel_path_b64)
+    {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+    let rel_path = match String::from_utf8(rel_path_bytes) {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    if kind != "download" || agent_id != expected_agent_id || rel_path != expected_rel_path {
+        return false;
+    }
+
+    let expiry: i64 = match expiry_str.parse() {
+        Ok(expiry) => expiry,
+        Err(_) => return false,
+    };
+    if chrono::Utc::now().timestamp() > expiry {
+        return false;
+    }
+
+    let payload = format!("{kind}:{agent_id}:{expiry_str}:{rel_path_b64}");
+    let mut mac = match HmacSha256::new_from_slice(secret.as_bytes()) {
+        Ok(mac) => mac,
+        Err(_) => return false,
+    };
+    mac.update(payload.as_bytes());
+    let expected_sig = hex::encode(mac.finalize().into_bytes());
+
+    use subtle::ConstantTimeEq;
+    provided_sig.len() == expected_sig.len()
+        && bool::from(provided_sig.as_bytes().ct_eq(expected_sig.as_bytes()))
 }
 
 /// Hash a password with Argon2id for config storage.
@@ -134,6 +207,30 @@ mod tests {
         let token = create_session_token("admin", "my-secret", 1);
         let user = verify_session_token(&token, "my-secret");
         assert_eq!(user, Some("admin".to_string()));
+    }
+
+    #[test]
+    fn test_download_token_is_agent_and_path_scoped() {
+        let token = create_download_token("agent-a", "reports/final:v1.md", "secret", 300);
+
+        assert!(verify_download_token(
+            &token,
+            "secret",
+            "agent-a",
+            "reports/final:v1.md"
+        ));
+        assert!(!verify_download_token(
+            &token,
+            "secret",
+            "agent-b",
+            "reports/final:v1.md"
+        ));
+        assert!(!verify_download_token(
+            &token,
+            "secret",
+            "agent-a",
+            "reports/other.md"
+        ));
     }
 
     #[test]

@@ -69,6 +69,61 @@ pub struct KernelBridgeAdapter {
     started_at: Instant,
 }
 
+fn download_token_secret(config: &openfang_types::config::KernelConfig) -> String {
+    let api_key = config.api_key.trim();
+    if !api_key.is_empty() {
+        api_key.to_string()
+    } else if config.auth.enabled {
+        config.auth.password_hash.clone()
+    } else {
+        String::new()
+    }
+}
+
+fn download_base_url(api_listen: &str) -> String {
+    if let Ok(url) = std::env::var("OPENFANG_URL") {
+        let url = url.trim_end_matches('/').to_string();
+        if !url.is_empty() {
+            return url;
+        }
+    }
+    let listen = api_listen
+        .replacen("0.0.0.0", "127.0.0.1", 1)
+        .replacen("[::]", "127.0.0.1", 1);
+    let url = format!("http://{listen}");
+    // The 127.0.0.1 fallback works for the CLI channel but is useless for
+    // remote-recipient channels (Telegram, web). Warn once when we fall back
+    // so the operator knows to set OPENFANG_URL before enabling those
+    // channels. Using `warn!` (not error!) because the CLI channel works
+    // fine with this default; the warning is for remote-channel readiness.
+    tracing::warn!(
+        url = %url,
+        "OPENFANG_URL not set; remote channels (Telegram, web) will receive \
+         download links pointing at the daemon's loopback address. Set \
+         OPENFANG_URL to your public URL before enabling them."
+    );
+    url
+}
+
+fn encode_path(path: &str) -> String {
+    path.split('/')
+        .map(percent_encode)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 #[async_trait]
 impl ChannelBridgeHandle for KernelBridgeAdapter {
     async fn send_message(&self, agent_id: AgentId, message: &str) -> Result<String, String> {
@@ -295,6 +350,52 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             }
         }
         msg
+    }
+
+    async fn download_file_url(&self, agent_id: AgentId, rel_path: &str) -> Result<String, String> {
+        let entry = self
+            .kernel
+            .registry
+            .get(agent_id)
+            .ok_or_else(|| "Agent not found".to_string())?;
+        let workspace = entry
+            .manifest
+            .workspace
+            .as_ref()
+            .ok_or_else(|| "Agent has no workspace".to_string())?;
+        let download = openfang_runtime::workspace::read_file_for_download(
+            workspace,
+            entry.manifest.state_dir.as_deref(),
+            rel_path,
+        )
+        .map_err(|e| match e {
+            openfang_runtime::workspace::WorkspaceFileError::NotFound => {
+                "File not found in workspace.".to_string()
+            }
+            openfang_runtime::workspace::WorkspaceFileError::Forbidden => {
+                "Path is outside the workspace.".to_string()
+            }
+            other => other.to_string(),
+        })?;
+
+        let secret = download_token_secret(&self.kernel.config);
+        if secret.is_empty() {
+            return Err("Download links require an API key or dashboard auth secret.".to_string());
+        }
+        let token = crate::session_auth::create_download_token(
+            &agent_id.to_string(),
+            &download.rel_path,
+            &secret,
+            5 * 60,
+        );
+        let base_url = download_base_url(&self.kernel.config.api_listen);
+        Ok(format!(
+            "{}/api/agents/{}/files/{}?download_token={}",
+            base_url,
+            agent_id,
+            encode_path(&download.rel_path),
+            percent_encode(&token),
+        ))
     }
 
     // ── Automation: workflows, triggers, schedules, approvals ──
