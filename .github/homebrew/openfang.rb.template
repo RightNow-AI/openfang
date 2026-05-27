@@ -1,0 +1,26 @@
+class Openfang < Formula
+  desc "Open-source Agent Operating System"
+  homepage "https://openfang.sh"
+  version "{{VERSION}}"
+  license any_of: ["Apache-2.0", "MIT"]
+
+  on_macos do
+    on_arm do
+      url "{{ARM64_URL}}"
+      sha256 "{{ARM64_SHA256}}"
+    end
+
+    on_intel do
+      url "{{X86_64_URL}}"
+      sha256 "{{X86_64_SHA256}}"
+    end
+  end
+
+  def install
+    bin.install "openfang"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/openfang --version")
+  end
+end

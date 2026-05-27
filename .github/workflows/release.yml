@@ -210,6 +210,79 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ── Homebrew tap formula (macOS stable tags only) ─────────────────────────
+  homebrew:
+    name: Homebrew Tap
+    runs-on: ubuntu-latest
+    needs: cli
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download macOS release tarballs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "openfang-x86_64-apple-darwin.tar.gz" \
+            --dir dist
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "openfang-aarch64-apple-darwin.tar.gz" \
+            --dir dist
+          test -s dist/openfang-x86_64-apple-darwin.tar.gz
+          test -s dist/openfang-aarch64-apple-darwin.tar.gz
+
+      - name: Render formula
+        env:
+          FORMULA_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${FORMULA_VERSION#v}"
+          X86_64_ASSET="openfang-x86_64-apple-darwin.tar.gz"
+          ARM64_ASSET="openfang-aarch64-apple-darwin.tar.gz"
+          export FORMULA_VERSION="$VERSION"
+          export FORMULA_X86_64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${X86_64_ASSET}"
+          export FORMULA_ARM64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${ARM64_ASSET}"
+          export FORMULA_X86_64_SHA256
+          export FORMULA_ARM64_SHA256
+          FORMULA_X86_64_SHA256="$(sha256sum "dist/${X86_64_ASSET}" | awk '{print $1}')"
+          FORMULA_ARM64_SHA256="$(sha256sum "dist/${ARM64_ASSET}" | awk '{print $1}')"
+          mkdir -p Formula
+          perl -pe '
+            s/\{\{VERSION\}\}/$ENV{FORMULA_VERSION}/g;
+            s/\{\{X86_64_URL\}\}/$ENV{FORMULA_X86_64_URL}/g;
+            s/\{\{X86_64_SHA256\}\}/$ENV{FORMULA_X86_64_SHA256}/g;
+            s/\{\{ARM64_URL\}\}/$ENV{FORMULA_ARM64_URL}/g;
+            s/\{\{ARM64_SHA256\}\}/$ENV{FORMULA_ARM64_SHA256}/g;
+          ' .github/homebrew/openfang.rb.template > Formula/openfang.rb
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v6
+        with:
+          repository: RightNow-AI/homebrew-openfang
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Publish formula
+        run: |
+          set -euo pipefail
+          mkdir -p homebrew-tap/Formula
+          cp Formula/openfang.rb homebrew-tap/Formula/openfang.rb
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- Formula/openfang.rb; then
+            echo "Formula already up to date."
+            exit 0
+          fi
+          git add Formula/openfang.rb
+          git commit -m "Update openfang formula to ${GITHUB_REF_NAME}"
+          git push origin HEAD:main
+
   # ── Docker (linux/amd64 + linux/arm64) ────────────────────────────────────
   docker:
     name: Docker Image

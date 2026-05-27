@@ -1,0 +1,3902 @@
+2026-05-27T13:51:54.934849Z ERROR codex_core::session: failed to load skill /Users/mvanhorn/.agents/skills/remotion-to-hyperframes/SKILL.md: invalid description: exceeds maximum length of 1024 characters
+OpenAI Codex v0.132.0
+--------
+workdir: /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019e69b4-c437-7cc1-aea1-81bcedf1953f
+--------
+user
+FIRST: source /Users/mvanhorn/.osc/scripts/load-gh-token.sh
+Implement the plan below in this working directory.
+
+## Plan
+---
+generated_by: osc-plan
+source: osc-plan-issue
+title: feat: add Homebrew tap with auto-generated formula and CI release publishing
+type: feat
+status: active
+date: 2026-05-26
+upstream_issue: https://github.com/RightNow-AI/openfang/issues/889
+repo: RightNow-AI/openfang
+merge_confidence: 9
+confidence_factors:
+  implementability: 2
+  scope: 2
+  maintainer_activity: 2
+  label_quality: 1
+  recency: 1
+  engagement: 1
+ai_disclosure_mode: default
+Files:
+  - .github/workflows/release.yml
+  - docs/install.md
+  - README.md
+---
+
+## Issue summary
+
+Issue #889 asks for an installable Homebrew path for openfang so macOS users can ==> Searching for similarly named formulae and casks...
+==> Formulae
+openfa
+openfast
+
+To install openfa, run:
+  brew install openfa
+
+==> Casks
+opensong
+
+To install opensong, run:
+  brew install --cask opensong instead of downloading release tarballs and wiring up the binary by hand. Maintainer jaberjaber23 confirmed in the issue thread the project is open to it and laid out the concrete plan: create a  tap repo, regenerate the formula in CI after each macOS release with the new version + SHA256, and push to the tap. Homebrew-core is explicitly out of scope until release cadence is steady. The existing release workflow already produces arm64 and x86_64 release tarballs (release.yml:31, 36, 155, 158) so the formula has stable artifacts to point at.
+
+## Approach
+
+Extend  with a new  job that runs after the macOS upload jobs complete. The job:
+
+1. Downloads the two macOS release tarballs as workflow artifacts (or refetches them from the freshly-tagged release via ).
+2. Computes SHA256 for each (e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -).
+3. Renders a  from a template stored in , substituting , , , , .
+4. Pushes the rendered formula to  on  using a  repo secret. The job is gated on the tag matching  so pre-release builds do not clobber the tap.
+
+Documentation: add a  section to  and a one-liner in  install table. No code changes inside any Rust crate.
+
+## Test scenarios
+
+- Happy path: tag , workflow runs, both SHAs are computed, formula is rendered with , tap repo receives a commit on  with the new formula,  on a clean macOS runner installs and  reports .
+- Edge: tarballs missing one architecture - the job fails before pushing, leaves the previous formula intact in the tap, and surfaces a clear error in the action log.
+- Edge: tag is a pre-release like  - the job is skipped by the  guard so the tap only tracks stable releases.
+- Error path: tap push fails (deploy key revoked or auth error) - the workflow surfaces a non-zero exit and the release job does not block the rest of the release pipeline. The maintainer can rerun the single job after rotating the key.
+- Verification on the tap side:  passes against the rendered formula in CI on the tap repo (separate workflow, out of scope here but mentioned in the docs handoff).
+
+## Rules
+- Keep changes minimal and focused on the issue
+- Do NOT run git commit, git push, or git add
+- After implementation, run: git status && git diff --stat
+
+hook: SessionStart
+hook: SessionStart Completed
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+codex
+I’ll load the GitHub token first, then inspect the repo’s release workflow and install docs so the Homebrew changes match the existing structure.
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "source /Users/mvanhorn/.osc/scripts/load-gh-token.sh && pwd && git status --short && rg --files | rg '("'^'"\\.github/workflows/release\\.yml"'$|''^docs/install'"\\.md"'$|''^README'"\\.md"'$)'"'" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ exited 127 in 0ms:
+zsh:source:1: no such file or directory: /Users/mvanhorn/.osc/scripts/load-gh-token.sh
+
+hook: PostToolUse
+hook: PostToolUse Completed
+codex
+The requested token script is not present at `/Users/mvanhorn/.osc/scripts/load-gh-token.sh`, so that source step failed before any repo commands ran. I’ll continue with local implementation since this task does not require GitHub API access, and I’ll note the missing script in the final.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc pwd in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+
+hook: PostToolUse
+exec
+/bin/zsh -lc 'git status --short' in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+?? .codex.log
+
+hook: PostToolUse
+exec
+/bin/zsh -lc "rg --files | rg '("'^'"\\.github/workflows/release\\.yml"'$|''^docs/install'"\\.md"'$|''^README'"\\.md"'$)'"'" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+README.md
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+codex
+The working tree has an untracked `.codex.log` that I did not create for this change. I’m leaving it alone and checking the repo layout because the planned `release.yml` and `docs/install.md` paths do not appear in the initial file scan.
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc 'ls -la' in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+total 760
+drwxr-xr-x    38 mvanhorn  staff    1216 May 27 06:51 .
+drwxr-xr-x  1006 mvanhorn  staff   32192 May 27 06:51 ..
+drwxr-xr-x     3 mvanhorn  staff      96 May 27 06:51 .cargo
+-rw-r--r--     1 mvanhorn  staff    5953 May 27 06:52 .codex.log
+-rw-r--r--     1 mvanhorn  staff     171 May 27 06:51 .dockerignore
+-rw-r--r--     1 mvanhorn  staff    2396 May 27 06:51 .env.example
+drwxr-xr-x    15 mvanhorn  staff     480 May 27 06:52 .git
+drwxr-xr-x     7 mvanhorn  staff     224 May 27 06:51 .github
+-rw-r--r--     1 mvanhorn  staff     527 May 27 06:51 .gitignore
+-rw-r--r--     1 mvanhorn  staff     192 May 27 06:51 AGENTS.md
+-rw-r--r--     1 mvanhorn  staff    9910 May 27 06:51 CHANGELOG.md
+-rw-r--r--     1 mvanhorn  staff    4936 May 27 06:51 CLAUDE.md
+-rw-r--r--     1 mvanhorn  staff   11666 May 27 06:51 CONTRIBUTING.md
+-rw-r--r--     1 mvanhorn  staff  227215 May 27 06:51 Cargo.lock
+-rw-r--r--     1 mvanhorn  staff    3778 May 27 06:51 Cargo.toml
+-rw-r--r--     1 mvanhorn  staff     353 May 27 06:51 Cross.toml
+-rw-r--r--     1 mvanhorn  staff    1050 May 27 06:51 Dockerfile
+-rw-r--r--     1 mvanhorn  staff   10242 May 27 06:51 LICENSE-APACHE
+-rw-r--r--     1 mvanhorn  staff    1078 May 27 06:51 LICENSE-MIT
+-rw-r--r--     1 mvanhorn  staff   11726 May 27 06:51 MIGRATION.md
+-rw-r--r--     1 mvanhorn  staff   23733 May 27 06:51 README.md
+-rw-r--r--     1 mvanhorn  staff    3402 May 27 06:51 SECURITY.md
+drwxr-xr-x    33 mvanhorn  staff    1056 May 27 06:51 agents
+drwxr-xr-x    15 mvanhorn  staff     480 May 27 06:51 crates
+drwxr-xr-x     3 mvanhorn  staff      96 May 27 06:51 deploy
+-rw-r--r--     1 mvanhorn  staff    1072 May 27 06:51 docker-compose.yml
+drwxr-xr-x    21 mvanhorn  staff     672 May 27 06:51 docs
+-rw-r--r--     1 mvanhorn  staff    2167 May 27 06:51 flake.nix
+-rw-r--r--     1 mvanhorn  staff    2314 May 27 06:51 openfang.toml.example
+drwxr-xr-x     3 mvanhorn  staff      96 May 27 06:51 packages
+drwxr-xr-x     3 mvanhorn  staff      96 May 27 06:51 public
+-rw-r--r--     1 mvanhorn  staff      66 May 27 06:51 rust-toolchain.toml
+-rw-r--r--     1 mvanhorn  staff      16 May 27 06:51 rustfmt.toml
+drwxr-xr-x     5 mvanhorn  staff     160 May 27 06:51 scripts
+drwxr-xr-x     4 mvanhorn  staff     128 May 27 06:51 sdk
+-rw-r--r--     1 mvanhorn  staff     480 May 27 06:51 start-vertex.bat
+-rw-r--r--     1 mvanhorn  staff    5699 May 27 06:51 test_vertex_e2e.py
+drwxr-xr-x     4 mvanhorn  staff     128 May 27 06:51 xtask
+
+hook: PostToolUse
+hook: PostToolUse Completed
+exec
+/bin/zsh -lc 'find docs -maxdepth 3 -type f -print 2>/dev/null | sort' in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+exec
+/bin/zsh -lc 'find .github -maxdepth 3 -type f -print 2>/dev/null | sort' in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+.github/FUNDING.yml
+.github/ISSUE_TEMPLATE/bug_report.yml
+.github/ISSUE_TEMPLATE/feature_request.yml
+.github/dependabot.yml
+.github/pull_request_template.md
+.github/workflows/ci.yml
+.github/workflows/release.yml
+
+ succeeded in 0ms:
+docs/README.md
+docs/VERTEX_AI_LOCAL_TESTING.md
+docs/agent-templates.md
+docs/api-reference.md
+docs/architecture.md
+docs/benchmarks/architecture-overview.svg
+docs/benchmarks/feature-coverage.svg
+docs/benchmarks/performance.svg
+docs/benchmarks/security-layers.svg
+docs/channel-adapters.md
+docs/cli-reference.md
+docs/configuration.md
+docs/desktop.md
+docs/getting-started.md
+docs/launch-roadmap.md
+docs/mcp-a2a.md
+docs/production-checklist.md
+docs/providers.md
+docs/security.md
+docs/skill-development.md
+docs/troubleshooting.md
+docs/workflows.md
+
+hook: PostToolUse
+exec
+/bin/zsh -lc "find . -maxdepth 3 -type f | sort | sed 's#"'^./##'"' | head -200" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+.cargo/audit.toml
+.codex.log
+.dockerignore
+.env.example
+.git/FETCH_HEAD
+.git/HEAD
+.git/ORIG_HEAD
+.git/config
+.git/description
+.git/hooks/applypatch-msg.sample
+.git/hooks/commit-msg.sample
+.git/hooks/fsmonitor-watchman.sample
+.git/hooks/post-update.sample
+.git/hooks/pre-applypatch.sample
+.git/hooks/pre-commit.sample
+.git/hooks/pre-merge-commit.sample
+.git/hooks/pre-push.sample
+.git/hooks/pre-rebase.sample
+.git/hooks/pre-receive.sample
+.git/hooks/prepare-commit-msg.sample
+.git/hooks/push-to-checkout.sample
+.git/hooks/sendemail-validate.sample
+.git/hooks/update.sample
+.git/index
+.git/info/exclude
+.git/logs/HEAD
+.git/packed-refs
+.git/shallow
+.github/FUNDING.yml
+.github/ISSUE_TEMPLATE/bug_report.yml
+.github/ISSUE_TEMPLATE/feature_request.yml
+.github/dependabot.yml
+.github/pull_request_template.md
+.github/workflows/ci.yml
+.github/workflows/release.yml
+.gitignore
+AGENTS.md
+CHANGELOG.md
+CLAUDE.md
+CONTRIBUTING.md
+Cargo.lock
+Cargo.toml
+Cross.toml
+Dockerfile
+LICENSE-APACHE
+LICENSE-MIT
+MIGRATION.md
+README.md
+SECURITY.md
+agents/analyst/agent.toml
+agents/architect/agent.toml
+agents/assistant/agent.toml
+agents/code-reviewer/agent.toml
+agents/coder/agent.toml
+agents/customer-support/agent.toml
+agents/data-scientist/agent.toml
+agents/debugger/agent.toml
+agents/devops-lead/agent.toml
+agents/doc-writer/agent.toml
+agents/email-assistant/agent.toml
+agents/health-tracker/agent.toml
+agents/hello-world/agent.toml
+agents/home-automation/agent.toml
+agents/langchain-code-reviewer/.gitignore
+agents/langchain-code-reviewer/agent.py
+agents/langchain-code-reviewer/config.example.toml
+agents/langchain-code-reviewer/requirements.txt
+agents/langchain-code-reviewer/server.py
+agents/langchain-code-reviewer/workflow.json
+agents/legal-assistant/agent.toml
+agents/meeting-assistant/agent.toml
+agents/ops/agent.toml
+agents/orchestrator/agent.toml
+agents/personal-finance/agent.toml
+agents/planner/agent.toml
+agents/recruiter/agent.toml
+agents/researcher/agent.toml
+agents/sales-assistant/agent.toml
+agents/security-auditor/agent.toml
+agents/social-media/agent.toml
+agents/test-engineer/agent.toml
+agents/translator/agent.toml
+agents/travel-planner/agent.toml
+agents/tutor/agent.toml
+agents/writer/agent.toml
+crates/openfang-api/Cargo.toml
+crates/openfang-channels/Cargo.toml
+crates/openfang-cli/Cargo.toml
+crates/openfang-desktop/Cargo.toml
+crates/openfang-desktop/build.rs
+crates/openfang-desktop/tauri.conf.json
+crates/openfang-extensions/Cargo.toml
+crates/openfang-hands/Cargo.toml
+crates/openfang-kernel/Cargo.toml
+crates/openfang-memory/Cargo.toml
+crates/openfang-migrate/Cargo.toml
+crates/openfang-runtime/Cargo.toml
+crates/openfang-skills/Cargo.toml
+crates/openfang-types/Cargo.toml
+crates/openfang-wire/Cargo.toml
+deploy/openfang.service
+docker-compose.yml
+docs/README.md
+docs/VERTEX_AI_LOCAL_TESTING.md
+docs/agent-templates.md
+docs/api-reference.md
+docs/architecture.md
+docs/benchmarks/architecture-overview.svg
+docs/benchmarks/feature-coverage.svg
+docs/benchmarks/performance.svg
+docs/benchmarks/security-layers.svg
+docs/channel-adapters.md
+docs/cli-reference.md
+docs/configuration.md
+docs/desktop.md
+docs/getting-started.md
+docs/launch-roadmap.md
+docs/mcp-a2a.md
+docs/production-checklist.md
+docs/providers.md
+docs/security.md
+docs/skill-development.md
+docs/troubleshooting.md
+docs/workflows.md
+flake.nix
+openfang.toml.example
+packages/whatsapp-gateway/.gitignore
+packages/whatsapp-gateway/index.js
+packages/whatsapp-gateway/package.json
+public/assets/openfang-logo.png
+public/assets/openfang-vs-claws.png
+public/assets/rightnow-logo.webp
+rust-toolchain.toml
+rustfmt.toml
+scripts/docker/install-smoke.Dockerfile
+scripts/install.ps1
+scripts/install.sh
+sdk/javascript/index.d.ts
+sdk/javascript/index.js
+sdk/javascript/package.json
+sdk/python/openfang_client.py
+sdk/python/openfang_sdk.py
+sdk/python/setup.py
+start-vertex.bat
+test_vertex_e2e.py
+xtask/Cargo.toml
+xtask/src/main.rs
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "sed -n '1,260p' README.md" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+exec
+/bin/zsh -lc "sed -n '1,260p' .github/workflows/release.yml" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+<p align="center">
+  <img src="public/assets/openfang-logo.png" width="160" alt="OpenFang Logo" />
+</p>
+
+<h1 align="center">OpenFang</h1>
+<h3 align="center">The Agent Operating System</h3>
+
+<p align="center">
+  Open-source Agent OS built in Rust. 137K LOC. 14 crates. 1,767+ tests. Zero clippy warnings.<br/>
+  <strong>One binary. Battle-tested. Agents that actually work for you.</strong>
+</p>
+
+<p align="center">
+  <a href="https://openfang.sh/docs">Documentation</a> &bull;
+  <a href="https://openfang.sh/docs/getting-started">Quick Start</a> &bull;
+  <a href="https://x.com/openfangg">Twitter / X</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
+  <img src="https://img.shields.io/badge/version-0.6.9-green?style=flat-square" alt="v0.6.9" />
+  <img src="https://img.shields.io/badge/tests-2,696%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
+  <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
+</p>
+
+---
+
+> **v0.5.10 (April 2026)**
+>
+> OpenFang is feature complete but still pre-1.0. Expect rough edges and breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
+
+---
+
+## What is OpenFang?
+
+OpenFang is an **open-source Agent Operating System**. Not a chatbot framework. Not a Python wrapper around an LLM. Not a "multi-agent orchestrator." A full operating system for autonomous agents, built from scratch in Rust.
+
+Traditional agent frameworks wait for you to type something. OpenFang runs **autonomous agents that work for you**: on schedules, 24/7, building knowledge graphs, monitoring targets, generating leads, managing your social media, and reporting results to your dashboard.
+
+The entire system compiles to a **single ~32MB binary**. One install, one command, your agents are live.
+
+```bash
+curl -fsSL https://openfang.sh/install | sh
+openfang init
+openfang start
+# Dashboard live at http://localhost:4200
+```
+
+<details>
+<summary><strong>Windows</strong></summary>
+
+```powershell
+irm https://openfang.sh/install.ps1 | iex
+openfang init
+openfang start
+```
+
+</details>
+
+---
+
+## Hands: Agents That Actually Do Things
+
+<p align="center"><em>"Traditional agents wait for you to type. Hands work <strong>for</strong> you."</em></p>
+
+**Hands** are OpenFang's core innovation. Pre-built autonomous capability packages that run independently, on schedules, without you having to prompt them. This is not a chatbot. This is an agent that wakes up at 6 AM, researches your competitors, builds a knowledge graph, scores the findings, and delivers a report to your Telegram before you've had coffee.
+
+Each Hand bundles:
+- **HAND.toml**: manifest declaring tools, settings, requirements, and dashboard metrics.
+- **System Prompt**: multi-phase operational playbook. Not a one-liner. These are 500+ word expert procedures.
+- **SKILL.md**: domain expertise reference injected into context at runtime.
+- **Guardrails**: approval gates for sensitive actions (e.g. Browser Hand requires approval before any purchase).
+
+All compiled into the binary. No downloading, no pip install, no Docker pull.
+
+### The 7 Bundled Hands
+
+| Hand | What It Actually Does |
+|------|----------------------|
+| **Clip** | Takes a YouTube URL, downloads it, identifies the best moments, cuts them into vertical shorts with captions and thumbnails, optionally adds AI voice-over, and publishes to Telegram and WhatsApp. 8-phase pipeline. FFmpeg + yt-dlp + 5 STT backends. |
+| **Lead** | Runs daily. Discovers prospects matching your ICP, enriches them with web research, scores 0-100, deduplicates against your existing database, and delivers qualified leads in CSV/JSON/Markdown. Builds ICP profiles over time. |
+| **Collector** | OSINT grade intelligence. You give it a target (company, person, topic). It monitors continuously: change detection, sentiment tracking, knowledge graph construction, and critical alerts when something important shifts. |
+| **Predictor** | Superforecasting engine. Collects signals from multiple sources, builds calibrated reasoning chains, makes predictions with confidence intervals, and tracks its own accuracy using Brier scores. Has a contrarian mode that deliberately argues against consensus. |
+| **Researcher** | Deep autonomous researcher. Cross-references multiple sources, evaluates credibility using CRAAP criteria (Currency, Relevance, Authority, Accuracy, Purpose), generates cited reports with APA formatting, supports multiple languages. |
+| **Twitter** | Autonomous Twitter/X account manager. Creates content in 7 rotating formats, schedules posts for optimal engagement, responds to mentions, tracks performance metrics. Has an approval queue, so nothing posts without your OK. |
+| **Browser** | Web automation agent. Navigates sites, fills forms, clicks buttons, handles multi-step workflows. Uses Playwright bridge with session persistence. **Mandatory purchase approval gate**: it will never spend your money without explicit confirmation. |
+
+```bash
+# Activate the Researcher Hand. It starts working immediately.
+openfang hand activate researcher
+
+# Check its progress anytime
+openfang hand status researcher
+
+# Activate lead generation on a daily schedule
+openfang hand activate lead
+
+# Pause without losing state
+openfang hand pause lead
+
+# See all available Hands
+openfang hand list
+```
+
+**Build your own.** Define a `HAND.toml` with tools, settings, and a system prompt. Publish to FangHub.
+
+---
+
+## OpenFang vs The Landscape
+
+<p align="center">
+  <img src="public/assets/openfang-vs-claws.png" width="600" alt="OpenFang vs OpenClaw vs ZeroClaw" />
+</p>
+
+### Benchmarks: Measured, Not Marketed
+
+All data from official documentation and public repositories, February 2026.
+
+#### Cold Start Time (lower is better)
+
+```
+ZeroClaw   ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10 ms
+OpenFang   ██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  180 ms    ★
+LangGraph  █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  2.5 sec
+CrewAI     ████████████████████░░░░░░░░░░░░░░░░░░░░░░  3.0 sec
+AutoGen    ██████████████████████████░░░░░░░░░░░░░░░░░  4.0 sec
+OpenClaw   █████████████████████████████████████████░░  5.98 sec
+```
+
+#### Idle Memory Usage (lower is better)
+
+```
+ZeroClaw   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    5 MB
+OpenFang   ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   40 MB    ★
+LangGraph  ██████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  180 MB
+CrewAI     ████████████████████░░░░░░░░░░░░░░░░░░░░░░░  200 MB
+AutoGen    █████████████████████████░░░░░░░░░░░░░░░░░░  250 MB
+OpenClaw   ████████████████████████████████████████░░░░  394 MB
+```
+
+#### Install Size (lower is better)
+
+```
+ZeroClaw   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  8.8 MB
+OpenFang   ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   32 MB    ★
+CrewAI     ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  100 MB
+LangGraph  ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  150 MB
+AutoGen    ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  200 MB
+OpenClaw   ████████████████████████████████████████░░░░  500 MB
+```
+
+#### Security Systems (higher is better)
+
+```
+OpenFang   ████████████████████████████████████████████   16      ★
+ZeroClaw   ███████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░    6
+OpenClaw   ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    3
+AutoGen    █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    2
+LangGraph  █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    2
+CrewAI     ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    1
+```
+
+#### Channel Adapters (higher is better)
+
+```
+OpenFang   ████████████████████████████████████████████   40      ★
+ZeroClaw   ███████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░   15
+OpenClaw   █████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   13
+CrewAI     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    0
+AutoGen    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    0
+LangGraph  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    0
+```
+
+#### LLM Providers (higher is better)
+
+```
+ZeroClaw   ████████████████████████████████████████████   28
+OpenFang   ██████████████████████████████████████████░░   27      ★
+LangGraph  ██████████████████████░░░░░░░░░░░░░░░░░░░░░   15
+CrewAI     ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10
+OpenClaw   ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10
+AutoGen    ███████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    8
+```
+
+### Feature-by-Feature Comparison
+
+| Feature | OpenFang | OpenClaw | ZeroClaw | CrewAI | AutoGen | LangGraph |
+|---------|----------|----------|----------|--------|---------|-----------|
+| **Language** | **Rust** | TypeScript | **Rust** | Python | Python | Python |
+| **Autonomous Hands** | **7 built-in** | None | None | None | None | None |
+| **Security Layers** | **16 discrete** | 3 basic | 6 layers | 1 basic | Docker | AES enc. |
+| **Agent Sandbox** | **WASM dual-metered** | None | Allowlists | None | Docker | None |
+| **Channel Adapters** | **40** | 13 | 15 | 0 | 0 | 0 |
+| **Built-in Tools** | **53 + MCP + A2A** | 50+ | 12 | Plugins | MCP | LC tools |
+| **Memory** | **SQLite + vector** | File-based | SQLite FTS5 | 4-layer | External | Checkpoints |
+| **Desktop App** | **Tauri 2.0** | None | None | None | Studio | None |
+| **Audit Trail** | **Merkle hash-chain** | Logs | Logs | Tracing | Logs | Checkpoints |
+| **Cold Start** | **<200ms** | ~6s | ~10ms | ~3s | ~4s | ~2.5s |
+| **Install Size** | **~32 MB** | ~500 MB | ~8.8 MB | ~100 MB | ~200 MB | ~150 MB |
+| **License** | MIT | MIT | MIT | MIT | Apache 2.0 | MIT |
+
+---
+
+## 16 Security Systems: Defense in Depth
+
+OpenFang doesn't bolt security on after the fact. Every layer is independently testable and operates without a single point of failure.
+
+| # | System | What It Does |
+|---|--------|-------------|
+| 1 | **WASM Dual-Metered Sandbox** | Tool code runs in WebAssembly with fuel metering + epoch interruption. A watchdog thread kills runaway code. |
+| 2 | **Merkle Hash-Chain Audit Trail** | Every action is cryptographically linked to the previous one. Tamper with one entry and the entire chain breaks. |
+| 3 | **Information Flow Taint Tracking** | Labels propagate through execution. Secrets are tracked from source to sink. |
+| 4 | **Ed25519 Signed Agent Manifests** | Every agent identity and capability set is cryptographically signed. |
+| 5 | **SSRF Protection** | Blocks private IPs, cloud metadata endpoints, and DNS rebinding attacks. |
+| 6 | **Secret Zeroization** | `Zeroizing<String>` auto-wipes API keys from memory the instant they're no longer needed. |
+| 7 | **OFP Mutual Authentication** | HMAC-SHA256 nonce-based, constant-time verification for P2P networking. |
+| 8 | **Capability Gates** | Role based access control. Agents declare required tools, the kernel enforces it. |
+| 9 | **Security Headers** | CSP, X-Frame-Options, HSTS, X-Content-Type-Options on every response. |
+| 10 | **Health Endpoint Redaction** | Public health check returns minimal info. Full diagnostics require authentication. |
+| 11 | **Subprocess Sandbox** | `env_clear()` + selective variable passthrough. Process tree isolation with cross-platform kill. |
+| 12 | **Prompt Injection Scanner** | Detects override attempts, data exfiltration patterns, and shell reference injection in skills. |
+| 13 | **Loop Guard** | SHA256-based tool call loop detection with circuit breaker. Handles ping-pong patterns. |
+| 14 | **Session Repair** | 7-phase message history validation and automatic recovery from corruption. |
+| 15 | **Path Traversal Prevention** | Canonicalization with symlink escape prevention. ``../`` doesn't work here. |
+| 16 | **GCRA Rate Limiter** | Cost-aware token bucket rate limiting with per-IP tracking and stale cleanup. |
+
+---
+
+## Architecture
+
+14 Rust crates. 137,728 lines of code. Modular kernel design.
+
+```
+openfang-kernel      Orchestration, workflows, metering, RBAC, scheduler, budget tracking
+openfang-runtime     Agent loop, 3 LLM drivers, 53 tools, WASM sandbox, MCP, A2A
+openfang-api         140+ REST/WS/SSE endpoints, OpenAI-compatible API, dashboard
+openfang-channels    40 messaging adapters with rate limiting, DM/group policies
+openfang-memory      SQLite persistence, vector embeddings, canonical sessions, compaction
+openfang-types       Core types, taint tracking, Ed25519 manifest signing, model catalog
+openfang-skills      60 bundled skills, SKILL.md parser, FangHub marketplace
+openfang-hands       7 autonomous Hands, HAND.toml parser, lifecycle management
+openfang-extensions  25 MCP templates, AES-256-GCM credential vault, OAuth2 PKCE
+openfang-wire        OFP P2P protocol with HMAC-SHA256 mutual authentication
+openfang-cli         CLI with daemon management, TUI dashboard, MCP server mode
+openfang-desktop     Tauri 2.0 native app (system tray, notifications, global shortcuts)
+openfang-migrate     OpenClaw, LangChain, AutoGPT migration engine
+xtask                Build automation
+```
+
+---
+
+## 40 Channel Adapters
+
+Connect your agents to every platform your users are on.
+
+**Core:** Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Email (IMAP/SMTP)
+**Enterprise:** Microsoft Teams, Mattermost, Google Chat, Webex, Feishu/Lark, Zulip
+**Social:** LINE, Viber, Facebook Messenger, Mastodon, Bluesky, Reddit, LinkedIn, Twitch
+
+ succeeded in 0ms:
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Tauri Desktop App (Windows + macOS + Linux) ───────────────────────────
+  # Produces: .msi, .exe (Windows) | .dmg, .app (macOS) | .AppImage, .deb (Linux)
+  # Also generates and uploads latest.json (the auto-updater manifest)
+  desktop:
+    name: Desktop / ${{ matrix.platform.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            args: "--target x86_64-unknown-linux-gnu"
+            rust_target: x86_64-unknown-linux-gnu
+
+          - name: macOS x86_64
+            os: macos-latest
+            args: "--target x86_64-apple-darwin"
+            rust_target: x86_64-apple-darwin
+
+          - name: macOS ARM64
+            os: macos-latest
+            args: "--target aarch64-apple-darwin"
+            rust_target: aarch64-apple-darwin
+
+          - name: Windows x86_64
+            os: windows-latest
+            args: "--target x86_64-pc-windows-msvc"
+            rust_target: x86_64-pc-windows-msvc
+
+          - name: Windows ARM64
+            os: windows-latest
+            args: "--target aarch64-pc-windows-msvc"
+            rust_target: aarch64-pc-windows-msvc
+
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ matrix.platform.rust_target }}
+
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS'
+        env:
+          MAC_CERT_BASE64: ${{ secrets.MAC_CERT_BASE64 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          echo "$MAC_CERT_BASE64" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import $RUNNER_TEMP/certificate.p12 -P "$MAC_CERT_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          echo "Using signing identity: $IDENTITY"
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> $GITHUB_ENV
+          rm -f $RUNNER_TEMP/certificate.p12
+
+      - name: Build and bundle Tauri desktop app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.MAC_NOTARIZE_APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.MAC_NOTARIZE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.MAC_NOTARIZE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "OpenFang ${{ github.ref_name }}"
+          releaseBody: |
+            ## What's New
+
+            See the [CHANGELOG](https://github.com/RightNow-AI/openfang/blob/main/CHANGELOG.md) for full details.
+
+            ## Installation
+
+            **Desktop App** — Download the installer for your platform below.
+
+            **CLI (Linux/macOS)**:
+            ```bash
+            curl -sSf https://openfang.sh | sh
+            ```
+
+            **Docker**:
+            ```bash
+            docker pull ghcr.io/rightnow-ai/openfang:latest
+            ```
+
+            **Coming from OpenClaw?**
+            ```bash
+            openfang migrate --from openclaw
+            ```
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          projectPath: crates/openfang-desktop
+          args: ${{ matrix.platform.args }}
+
+  # ── CLI Binary (7 platforms) ──────────────────────────────────────────────
+  cli:
+    name: CLI / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            archive: tar.gz
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-22.04
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - name: Install cross (Linux aarch64/armv7)
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: cargo install cross --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
+      - name: Build CLI (cross)
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: cross build --release --target ${{ matrix.target }} --bin openfang
+      - name: Build CLI
+        if: matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'armv7-unknown-linux-gnueabihf'
+        run: cargo build --release --target ${{ matrix.target }} --bin openfang
+      - name: Ad-hoc codesign CLI binary (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          xattr -cr target/${{ matrix.target }}/release/openfang || true
+          codesign --force --sign - target/${{ matrix.target }}/release/openfang
+      - name: Package (Unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../openfang-${{ matrix.target }}.tar.gz openfang
+          cd ../../..
+          sha256sum openfang-${{ matrix.target }}.tar.gz > openfang-${{ matrix.target }}.tar.gz.sha256
+      - name: Package (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/${{ matrix.target }}/release/openfang.exe" -DestinationPath "openfang-${{ matrix.target }}.zip"
+          $hash = (Get-FileHash "openfang-${{ matrix.target }}.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  openfang-${{ matrix.target }}.zip" | Out-File -Encoding ASCII "openfang-${{ matrix.target }}.zip.sha256"
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: openfang-${{ matrix.target }}.*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Docker (linux/amd64 + linux/arm64) ────────────────────────────────────
+  docker:
+    name: Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up QEMU (for arm64 emulation)
+        uses: docker/setup-qemu-action@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+      - name: Build and push (multi-arch)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/rightnow-ai/openfang:latest
+            ghcr.io/rightnow-ai/openfang:${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/RightNow-AI/openfang
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.description=OpenFang Agent OS — single-binary Rust agent framework
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Set GHCR package visibility to public
+        run: |
+          curl -fsSL -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/orgs/RightNow-AI/packages/container/openfang \
+            -d '{"visibility":"public"}'
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/README.md" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+# OpenFang Documentation
+
+Welcome to the OpenFang documentation. OpenFang is the open-source Agent Operating System -- 14 Rust crates, 40 channels, 60 skills, 20 LLM providers, 76 API endpoints, and 16 security systems in a single binary.
+
+---
+
+## Getting Started
+
+| Guide | Description |
+|-------|-------------|
+| [Getting Started](getting-started.md) | Installation, first agent, first chat session |
+| [Configuration](configuration.md) | Complete `config.toml` reference with every field |
+| [CLI Reference](cli-reference.md) | Every command and subcommand with examples |
+| [Troubleshooting](troubleshooting.md) | Common issues, FAQ, diagnostics |
+
+## Core Concepts
+
+| Guide | Description |
+|-------|-------------|
+| [Architecture](architecture.md) | 12-crate structure, kernel boot, agent lifecycle, memory substrate |
+| [Agent Templates](agent-templates.md) | 30 pre-built agents across 4 performance tiers |
+| [Workflows](workflows.md) | Multi-agent pipelines with branching, fan-out, loops, and triggers |
+| [Security](security.md) | 16 defense-in-depth security systems |
+
+## Integrations
+
+| Guide | Description |
+|-------|-------------|
+| [Channel Adapters](channel-adapters.md) | 40 messaging channels -- setup, configuration, custom adapters |
+| [LLM Providers](providers.md) | 20 providers, 51 models, 23 aliases -- setup and model routing |
+| [Skills](skill-development.md) | 60 bundled skills, custom skill development, FangHub marketplace |
+| [MCP & A2A](mcp-a2a.md) | Model Context Protocol and Agent-to-Agent protocol integration |
+
+## Reference
+
+| Guide | Description |
+|-------|-------------|
+| [API Reference](api-reference.md) | All 76 REST/WS/SSE endpoints with request/response examples |
+| [Desktop App](desktop.md) | Tauri 2.0 native app -- build, features, architecture |
+
+## Release & Operations
+
+| Guide | Description |
+|-------|-------------|
+| [Production Checklist](production-checklist.md) | Every step before tagging v0.1.0 -- signing keys, secrets, verification |
+
+## Additional Resources
+
+| Resource | Description |
+|----------|-------------|
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | Development setup, code style, PR guidelines |
+| [MIGRATION.md](../MIGRATION.md) | Migrating from OpenClaw, LangChain, or AutoGPT |
+| [SECURITY.md](../SECURITY.md) | Security policy and vulnerability reporting |
+| [CHANGELOG.md](../CHANGELOG.md) | Release notes and version history |
+
+---
+
+## Quick Reference
+
+### Start in 30 Seconds
+
+```bash
+export GROQ_API_KEY="your-key"
+openfang init && openfang start
+# Open http://127.0.0.1:4200
+```
+
+### Key Numbers
+
+| Metric | Count |
+|--------|-------|
+| Crates | 14 |
+| Agent templates | 30 |
+| Messaging channels | 40 |
+| Bundled skills | 60 |
+| Built-in tools | 38 |
+| LLM providers | 20 |
+| Models in catalog | 51 |
+| Model aliases | 23 |
+| API endpoints | 76 |
+| Security systems | 16 |
+| Tests | 967 |
+
+### Important Paths
+
+| Path | Description |
+|------|-------------|
+| `~/.openfang/config.toml` | Main configuration file |
+| `~/.openfang/data/openfang.db` | SQLite database |
+| `~/.openfang/skills/` | Installed skills |
+| `~/.openfang/daemon.json` | Daemon PID and port info |
+| `agents/` | Agent template manifests |
+
+### Key Environment Variables
+
+| Variable | Provider |
+|----------|----------|
+| `ANTHROPIC_API_KEY` | Anthropic (Claude) |
+| `OPENAI_API_KEY` | OpenAI (GPT-4o) |
+| `GEMINI_API_KEY` | Google Gemini |
+| `GROQ_API_KEY` | Groq (fast Llama/Mixtral) |
+| `DEEPSEEK_API_KEY` | DeepSeek |
+| `XAI_API_KEY` | xAI (Grok) |
+
+Only one provider key is needed to get started. Groq offers a free tier.
+
+hook: PostToolUse
+exec
+/bin/zsh -lc 'rg -n "install|Installation|Homebrew|brew|release|tarball|openfang" README.md docs .github/workflows/release.yml' in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+.github/workflows/release.yml:58:          sudo apt-get install -y \
+.github/workflows/release.yml:107:          releaseName: "OpenFang ${{ github.ref_name }}"
+.github/workflows/release.yml:108:          releaseBody: |
+.github/workflows/release.yml:111:            See the [CHANGELOG](https://github.com/RightNow-AI/openfang/blob/main/CHANGELOG.md) for full details.
+.github/workflows/release.yml:113:            ## Installation
+.github/workflows/release.yml:115:            **Desktop App** — Download the installer for your platform below.
+.github/workflows/release.yml:119:            curl -sSf https://openfang.sh | sh
+.github/workflows/release.yml:124:            docker pull ghcr.io/rightnow-ai/openfang:latest
+.github/workflows/release.yml:129:            openfang migrate --from openclaw
+.github/workflows/release.yml:131:          releaseDraft: false
+.github/workflows/release.yml:132:          prerelease: false
+.github/workflows/release.yml:134:          projectPath: crates/openfang-desktop
+.github/workflows/release.yml:174:        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+.github/workflows/release.yml:177:        run: cargo install cross --locked
+.github/workflows/release.yml:183:        run: cross build --release --target ${{ matrix.target }} --bin openfang
+.github/workflows/release.yml:186:        run: cargo build --release --target ${{ matrix.target }} --bin openfang
+.github/workflows/release.yml:190:          xattr -cr target/${{ matrix.target }}/release/openfang || true
+.github/workflows/release.yml:191:          codesign --force --sign - target/${{ matrix.target }}/release/openfang
+.github/workflows/release.yml:195:          cd target/${{ matrix.target }}/release
+.github/workflows/release.yml:196:          tar czf ../../../openfang-${{ matrix.target }}.tar.gz openfang
+.github/workflows/release.yml:198:          sha256sum openfang-${{ matrix.target }}.tar.gz > openfang-${{ matrix.target }}.tar.gz.sha256
+.github/workflows/release.yml:203:          Compress-Archive -Path "target/${{ matrix.target }}/release/openfang.exe" -DestinationPath "openfang-${{ matrix.target }}.zip"
+.github/workflows/release.yml:204:          $hash = (Get-FileHash "openfang-${{ matrix.target }}.zip" -Algorithm SHA256).Hash.ToLower()
+.github/workflows/release.yml:205:          "$hash  openfang-${{ matrix.target }}.zip" | Out-File -Encoding ASCII "openfang-${{ matrix.target }}.zip.sha256"
+.github/workflows/release.yml:207:        uses: softprops/action-gh-release@v3
+.github/workflows/release.yml:209:          files: openfang-${{ matrix.target }}.*
+.github/workflows/release.yml:239:            ghcr.io/rightnow-ai/openfang:latest
+.github/workflows/release.yml:240:            ghcr.io/rightnow-ai/openfang:${{ steps.version.outputs.version }}
+.github/workflows/release.yml:242:            org.opencontainers.image.source=https://github.com/RightNow-AI/openfang
+.github/workflows/release.yml:253:            https://api.github.com/orgs/RightNow-AI/packages/container/openfang \
+README.md:2:  <img src="public/assets/openfang-logo.png" width="160" alt="OpenFang Logo" />
+README.md:14:  <a href="https://openfang.sh/docs">Documentation</a> &bull;
+README.md:15:  <a href="https://openfang.sh/docs/getting-started">Quick Start</a> &bull;
+README.md:16:  <a href="https://x.com/openfangg">Twitter / X</a>
+README.md:25:  <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
+README.md:32:> OpenFang is feature complete but still pre-1.0. Expect rough edges and breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
+README.md:42:The entire system compiles to a **single ~32MB binary**. One install, one command, your agents are live.
+README.md:45:curl -fsSL https://openfang.sh/install | sh
+README.md:46:openfang init
+README.md:47:openfang start
+README.md:55:irm https://openfang.sh/install.ps1 | iex
+README.md:56:openfang init
+README.md:57:openfang start
+README.md:76:All compiled into the binary. No downloading, no pip install, no Docker pull.
+README.md:92:openfang hand activate researcher
+README.md:95:openfang hand status researcher
+README.md:98:openfang hand activate lead
+README.md:101:openfang hand pause lead
+README.md:104:openfang hand list
+README.md:114:  <img src="public/assets/openfang-vs-claws.png" width="600" alt="OpenFang vs OpenClaw vs ZeroClaw" />
+README.md:236:openfang-kernel      Orchestration, workflows, metering, RBAC, scheduler, budget tracking
+README.md:237:openfang-runtime     Agent loop, 3 LLM drivers, 53 tools, WASM sandbox, MCP, A2A
+README.md:238:openfang-api         140+ REST/WS/SSE endpoints, OpenAI-compatible API, dashboard
+README.md:239:openfang-channels    40 messaging adapters with rate limiting, DM/group policies
+README.md:240:openfang-memory      SQLite persistence, vector embeddings, canonical sessions, compaction
+README.md:241:openfang-types       Core types, taint tracking, Ed25519 manifest signing, model catalog
+README.md:242:openfang-skills      60 bundled skills, SKILL.md parser, FangHub marketplace
+README.md:243:openfang-hands       7 autonomous Hands, HAND.toml parser, lifecycle management
+README.md:244:openfang-extensions  25 MCP templates, AES-256-GCM credential vault, OAuth2 PKCE
+README.md:245:openfang-wire        OFP P2P protocol with HMAC-SHA256 mutual authentication
+README.md:246:openfang-cli         CLI with daemon management, TUI dashboard, MCP server mode
+README.md:247:openfang-desktop     Tauri 2.0 native app (system tray, notifications, global shortcuts)
+README.md:248:openfang-migrate     OpenClaw, LangChain, AutoGPT migration engine
+README.md:275:- **Node.js >= 18** installed ([download](https://nodejs.org/))
+README.md:276:- OpenFang installed and initialized
+README.md:284:npm install
+README.md:322:openfang start
+README.md:354:For production workloads, use the [WhatsApp Cloud API](https://developers.facebook.com/docs/whatsapp/cloud-api) with a Meta Business account. See the [Cloud API configuration docs](https://openfang.sh/docs/channels/whatsapp).
+README.md:376:openfang migrate --from openclaw
+README.md:379:openfang migrate --from openclaw --path ~/.openclaw
+README.md:382:openfang migrate --from openclaw --dry-run
+README.md:411:curl -fsSL https://openfang.sh/install | sh
+README.md:414:openfang init
+README.md:417:openfang start
+README.md:422:openfang hand activate researcher
+README.md:425:openfang chat researcher
+README.md:429:openfang agent spawn coder
+README.md:436:irm https://openfang.sh/install.ps1 | iex
+README.md:437:openfang init
+README.md:438:openfang start
+README.md:469:- **Edge cases** exist. If you find one, [open an issue](https://github.com/RightNow-AI/openfang/issues).
+README.md:490:- [Website & Documentation](https://openfang.sh)
+README.md:491:- [Quick Start Guide](https://openfang.sh/docs/getting-started)
+README.md:492:- [GitHub](https://github.com/RightNow-AI/openfang)
+README.md:494:- [Twitter / X](https://x.com/openfangg)
+README.md:513:  <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
+docs/security.md:44:| 1 | Capability-Based Security | `openfang-types` | Unauthorized actions by agents |
+docs/security.md:45:| 2 | WASM Dual Metering | `openfang-runtime` | Infinite loops, CPU DoS |
+docs/security.md:46:| 3 | Merkle Audit Trail | `openfang-runtime` | Tampered audit logs |
+docs/security.md:47:| 4 | Taint Tracking | `openfang-types` | Prompt injection, data exfiltration |
+docs/security.md:48:| 5 | Ed25519 Manifest Signing | `openfang-types` | Supply chain attacks |
+docs/security.md:49:| 6 | SSRF Protection | `openfang-runtime` | Server-Side Request Forgery |
+docs/security.md:50:| 7 | Secret Zeroization | `openfang-runtime`, `openfang-channels` | Memory forensics, key leakage |
+docs/security.md:51:| 8 | OFP Mutual Auth | `openfang-wire` | Unauthorized peer connections |
+docs/security.md:52:| 9 | Security Headers | `openfang-api` | XSS, clickjacking, MIME sniffing |
+docs/security.md:53:| 10 | GCRA Rate Limiter | `openfang-api` | API abuse, denial of service |
+docs/security.md:54:| 11 | Path Traversal Prevention | `openfang-runtime` | Directory traversal attacks |
+docs/security.md:55:| 12 | Subprocess Sandbox | `openfang-runtime` | Secret leakage via child processes |
+docs/security.md:56:| 13 | Prompt Injection Scanner | `openfang-skills` | Malicious skill prompts |
+docs/security.md:57:| 14 | Loop Guard | `openfang-runtime` | Stuck agent tool loops |
+docs/security.md:58:| 15 | Session Repair | `openfang-runtime` | Corrupted LLM conversation history |
+docs/security.md:59:| 16 | Health Endpoint Redaction | `openfang-api` | Information leakage |
+docs/security.md:65:**Source:** `openfang-types/src/capability.rs`
+docs/security.md:188:**Source:** `openfang-runtime/src/sandbox.rs`
+docs/security.md:271:**Source:** `openfang-runtime/src/audit.rs`
+docs/security.md:386:**Source:** `openfang-types/src/taint.rs`
+docs/security.md:477:**Source:** `openfang-types/src/manifest_signing.rs`
+docs/security.md:556:**Source:** `openfang-runtime/src/host_functions.rs`
+docs/security.md:671:**LLM Drivers** (`openfang-runtime/src/drivers/`):
+docs/security.md:679:**Channel Adapters** (`openfang-channels/src/`):
+docs/security.md:692:**Web Search** (`openfang-runtime/src/web_search.rs`):
+docs/security.md:700:**Embedding** (`openfang-runtime/src/embedding.rs`):
+docs/security.md:717:**Source:** `openfang-wire/src/peer.rs`
+docs/security.md:795:**Source:** `openfang-api/src/middleware.rs`
+docs/security.md:840:**Source:** `openfang-api/src/rate_limiter.rs`
+docs/security.md:880:        ("POST", "/api/skills/install")               => 50,
+docs/security.md:881:        ("POST", "/api/skills/uninstall")             => 10,
+docs/security.md:929:**Source:** `openfang-runtime/src/host_functions.rs`
+docs/security.md:998:**Source:** `openfang-runtime/src/subprocess_sandbox.rs`
+docs/security.md:1079:**Source:** `openfang-skills/src/verify.rs`
+docs/security.md:1141:Skills installed from ClawHub have their content verified against a known
+docs/security.md:1157:**Source:** `openfang-runtime/src/loop_guard.rs`
+docs/security.md:1237:**Source:** `openfang-runtime/src/session_repair.rs`
+docs/security.md:1293:**Source:** `openfang-api/src/routes.rs`
+docs/api-reference.md:44:Add to `~/.openfang/config.toml`:
+docs/api-reference.md:582:      "path": "/home/user/.openfang/agents/hello-world/agent.toml"
+docs/api-reference.md:587:      "path": "/home/user/.openfang/agents/coder/agent.toml"
+docs/api-reference.md:670:  "data_dir": "/home/user/.openfang/data",
+docs/api-reference.md:695:  "name": "openfang",
+docs/api-reference.md:771:  "data_dir": "/home/user/.openfang/data",
+docs/api-reference.md:1036:Manage the skill registry. Skills extend agent capabilities with Python, Node.js, WASM, or prompt-only modules. All skill installations go through SHA256 verification and prompt injection scanning.
+docs/api-reference.md:1040:List all installed skills.
+docs/api-reference.md:1066:### POST /api/skills/install
+docs/api-reference.md:1068:Install a skill from a local path or URL. The skill manifest is verified (SHA256 checksum) and scanned for prompt injection before installation.
+docs/api-reference.md:1083:  "status": "installed",
+docs/api-reference.md:1089:### POST /api/skills/uninstall
+docs/api-reference.md:1091:Remove an installed skill. Bundled skills cannot be uninstalled.
+docs/api-reference.md:1105:  "status": "uninstalled",
+docs/api-reference.md:1130:  "path": "/home/user/.openfang/skills/my-skill"
+docs/api-reference.md:1164:Browse and install skills from ClawHub (OpenClaw ecosystem compatibility). All installations go through the full security pipeline: SHA256 verification, SKILL.md security scanning, and trust boundary enforcement.
+docs/api-reference.md:1234:### POST /api/clawhub/install
+docs/api-reference.md:1250:  "status": "installed",
+docs/api-reference.md:1617:Auto-detect migration sources on the system. Scans common locations for OpenClaw installations, config files, and agent data.
+docs/api-reference.md:2121:  "model": "openfang:coder",
+docs/api-reference.md:2136:| `openfang:<name>` | `openfang:coder` | Find agent by name |
+docs/api-reference.md:2145:  "model": "openfang:analyst",
+docs/api-reference.md:2207:      "id": "openfang:coder",
+docs/api-reference.md:2210:      "owned_by": "openfang"
+docs/api-reference.md:2213:      "id": "openfang:researcher",
+docs/api-reference.md:2216:      "owned_by": "openfang"
+docs/api-reference.md:2239:| `201` | Created (spawn agent, create workflow, create trigger, install skill) |
+docs/api-reference.md:2348:| GET | `/api/skills` | List installed skills (60 bundled) |
+docs/api-reference.md:2349:| POST | `/api/skills/install` | Install skill |
+docs/api-reference.md:2350:| POST | `/api/skills/uninstall` | Uninstall skill |
+docs/api-reference.md:2357:| POST | `/api/clawhub/install` | Install from ClawHub |
+docs/cli-reference.md:3:Complete command-line reference for `openfang`, the CLI tool for the OpenFang Agent OS.
+docs/cli-reference.md:7:The `openfang` binary is the primary interface for managing the OpenFang Agent OS. It supports two modes of operation:
+docs/cli-reference.md:9:- **Daemon mode** -- When a daemon is running (`openfang start`), CLI commands communicate with it over HTTP. This is the recommended mode for production use.
+docs/cli-reference.md:12:Running `openfang` with no subcommand launches the interactive TUI (terminal user interface) built with ratatui, which provides a full dashboard experience in the terminal.
+docs/cli-reference.md:14:## Installation
+docs/cli-reference.md:19:cargo install --path crates/openfang-cli
+docs/cli-reference.md:25:cargo build --release -p openfang-cli
+docs/cli-reference.md:26:# Binary: target/release/openfang (or openfang.exe on Windows)
+docs/cli-reference.md:32:docker run -it openfang/openfang:latest
+docs/cli-reference.md:35:### Shell installer
+docs/cli-reference.md:38:curl -fsSL https://get.openfang.ai | sh
+docs/cli-reference.md:47:| `--config <PATH>` | Path to a custom config file. Overrides the default `~/.openfang/config.toml`. |
+docs/cli-reference.md:49:| `--version` | Print the version of the `openfang` binary. |
+docs/cli-reference.md:55:| `RUST_LOG` | Controls log verbosity (e.g. `info`, `debug`, `openfang_kernel=trace`). |
+docs/cli-reference.md:57:| `EDITOR` / `VISUAL` | Editor used by `openfang config edit`. Falls back to `notepad` (Windows) or `vi` (Unix). |
+docs/cli-reference.md:63:### openfang (no subcommand)
+docs/cli-reference.md:68:openfang [--config <PATH>]
+docs/cli-reference.md:71:The TUI provides a full-screen terminal interface with panels for agents, chat, workflows, channels, skills, settings, and more. Tracing output is redirected to `~/.openfang/tui.log` to avoid corrupting the terminal display.
+docs/cli-reference.md:77:### openfang init
+docs/cli-reference.md:79:Initialize the OpenFang workspace. Creates `~/.openfang/` with subdirectories (`data/`, `agents/`) and a default `config.toml`.
+docs/cli-reference.md:82:openfang init [--quick]
+docs/cli-reference.md:101:openfang init
+docs/cli-reference.md:105:openfang init --quick
+docs/cli-reference.md:110:### openfang start
+docs/cli-reference.md:115:openfang start [--config <PATH>]
+docs/cli-reference.md:123:- Writes `daemon.json` to `~/.openfang/` so other CLI commands can discover the running daemon.
+docs/cli-reference.md:142:  hint: Open the dashboard in your browser, or run `openfang chat`
+docs/cli-reference.md:150:openfang start
+docs/cli-reference.md:153:openfang start --config /path/to/config.toml
+docs/cli-reference.md:158:### openfang status
+docs/cli-reference.md:163:openfang status [--json]
+docs/cli-reference.md:180:openfang status
+docs/cli-reference.md:182:openfang status --json | jq '.agent_count'
+docs/cli-reference.md:187:### openfang doctor
+docs/cli-reference.md:189:Run diagnostic checks on the OpenFang installation.
+docs/cli-reference.md:192:openfang doctor [--json] [--repair]
+docs/cli-reference.md:204:1. **OpenFang directory** -- `~/.openfang/` exists
+docs/cli-reference.md:212:9. **Agent manifests** -- validates all `.toml` files in `~/.openfang/agents/`
+docs/cli-reference.md:221:openfang doctor
+docs/cli-reference.md:223:openfang doctor --repair
+docs/cli-reference.md:225:openfang doctor --json
+docs/cli-reference.md:230:### openfang dashboard
+docs/cli-reference.md:235:openfang dashboard
+docs/cli-reference.md:247:openfang dashboard
+docs/cli-reference.md:252:### openfang completion
+docs/cli-reference.md:257:openfang completion <SHELL>
+docs/cli-reference.md:270:openfang completion bash > ~/.bash_completion.d/openfang
+docs/cli-reference.md:273:openfang completion zsh > ~/.zfunc/_openfang
+docs/cli-reference.md:276:openfang completion fish > ~/.config/fish/completions/openfang.fish
+docs/cli-reference.md:279:openfang completion powershell > openfang.ps1
+docs/cli-reference.md:286:### openfang agent new
+docs/cli-reference.md:291:openfang agent new [<TEMPLATE>]
+docs/cli-reference.md:302:- Templates are discovered from: the repo `agents/` directory (dev builds), `~/.openfang/agents/` (installed), and `OPENFANG_AGENTS_DIR` (env override).
+docs/cli-reference.md:311:openfang agent new
+docs/cli-reference.md:314:openfang agent new coder
+docs/cli-reference.md:317:openfang agent new assistant
+docs/cli-reference.md:322:### openfang agent spawn
+docs/cli-reference.md:327:openfang agent spawn <MANIFEST>
+docs/cli-reference.md:345:openfang agent spawn ./my-agent/agent.toml
+docs/cli-reference.md:350:### openfang agent list
+docs/cli-reference.md:355:openfang agent list [--json]
+docs/cli-reference.md:369:openfang agent list
+docs/cli-reference.md:371:openfang agent list --json | jq '.[].name'
+docs/cli-reference.md:376:### openfang agent chat
+docs/cli-reference.md:381:openfang agent chat <AGENT_ID>
+docs/cli-reference.md:388:| `<AGENT_ID>` | Agent UUID. Obtain from `openfang agent list`. |
+docs/cli-reference.md:400:openfang agent chat a1b2c3d4-e5f6-7890-abcd-ef1234567890
+docs/cli-reference.md:405:### openfang agent kill
+docs/cli-reference.md:410:openfang agent kill <AGENT_ID>
+docs/cli-reference.md:422:openfang agent kill a1b2c3d4-e5f6-7890-abcd-ef1234567890
+docs/cli-reference.md:431:### openfang workflow list
+docs/cli-reference.md:436:openfang workflow list
+docs/cli-reference.md:443:### openfang workflow create
+docs/cli-reference.md:448:openfang workflow create <FILE>
+docs/cli-reference.md:460:openfang workflow create ./my-workflow.json
+docs/cli-reference.md:465:### openfang workflow run
+docs/cli-reference.md:470:openfang workflow run <WORKFLOW_ID> <INPUT>
+docs/cli-reference.md:477:| `<WORKFLOW_ID>` | Workflow UUID. Obtain from `openfang workflow list`. |
+docs/cli-reference.md:483:openfang workflow run abc123 "Analyze this code for security issues"
+docs/cli-reference.md:492:### openfang trigger list
+docs/cli-reference.md:497:openfang trigger list [--agent-id <ID>]
+docs/cli-reference.md:510:### openfang trigger create
+docs/cli-reference.md:515:openfang trigger create <AGENT_ID> <PATTERN_JSON> [--prompt <TEMPLATE>] [--max-fires <N>]
+docs/cli-reference.md:536:openfang trigger create <AGENT_ID> '{"lifecycle":{}}'
+docs/cli-reference.md:539:openfang trigger create <AGENT_ID> '{"agent_spawned":{"name_pattern":"*"}}'
+docs/cli-reference.md:542:openfang trigger create <AGENT_ID> '{"agent_terminated":{}}'
+docs/cli-reference.md:545:openfang trigger create <AGENT_ID> '{"all":{}}' --max-fires 10
+docs/cli-reference.md:550:### openfang trigger delete
+docs/cli-reference.md:555:openfang trigger delete <TRIGGER_ID>
+docs/cli-reference.md:568:### openfang skill list
+docs/cli-reference.md:570:List all installed skills.
+docs/cli-reference.md:573:openfang skill list
+docs/cli-reference.md:578:Loads skills from `~/.openfang/skills/` plus bundled skills compiled into the binary.
+docs/cli-reference.md:582:### openfang skill install
+docs/cli-reference.md:587:openfang skill install <SOURCE>
+docs/cli-reference.md:599:- **Remote (FangHub):** Fetches and installs from the FangHub marketplace. Skills pass through SHA256 verification and prompt injection scanning.
+docs/cli-reference.md:605:openfang skill install ./my-skill/
+docs/cli-reference.md:608:openfang skill install web-search
+docs/cli-reference.md:611:openfang skill install ./openclaw-skill/
+docs/cli-reference.md:616:### openfang skill remove
+docs/cli-reference.md:618:Remove an installed skill.
+docs/cli-reference.md:621:openfang skill remove <NAME>
+docs/cli-reference.md:633:openfang skill remove web-search
+docs/cli-reference.md:638:### openfang skill search
+docs/cli-reference.md:643:openfang skill search <QUERY>
+docs/cli-reference.md:655:openfang skill search "docker kubernetes"
+docs/cli-reference.md:660:### openfang skill create
+docs/cli-reference.md:665:openfang skill create
+docs/cli-reference.md:675:Creates a directory under `~/.openfang/skills/<name>/` with:
+docs/cli-reference.md:682:openfang skill create
+docs/cli-reference.md:692:### openfang channel list
+docs/cli-reference.md:697:openfang channel list
+docs/cli-reference.md:708:### openfang channel setup
+docs/cli-reference.md:713:openfang channel setup [<CHANNEL>]
+docs/cli-reference.md:727:3. Saves tokens to `~/.openfang/.env` with owner-only permissions.
+docs/cli-reference.md:735:openfang channel setup
+docs/cli-reference.md:738:openfang channel setup telegram
+docs/cli-reference.md:739:openfang channel setup discord
+docs/cli-reference.md:740:openfang channel setup slack
+docs/cli-reference.md:745:### openfang channel test
+docs/cli-reference.md:750:openfang channel test <CHANNEL>
+docs/cli-reference.md:764:openfang channel test telegram
+docs/cli-reference.md:769:### openfang channel enable
+docs/cli-reference.md:774:openfang channel enable <CHANNEL>
+docs/cli-reference.md:787:### openfang channel disable
+docs/cli-reference.md:792:openfang channel disable <CHANNEL>
+docs/cli-reference.md:807:### openfang config show
+docs/cli-reference.md:812:openfang config show
+docs/cli-reference.md:815:Prints the contents of `~/.openfang/config.toml` with the file path as a header comment.
+docs/cli-reference.md:819:### openfang config edit
+docs/cli-reference.md:824:openfang config edit
+docs/cli-reference.md:831:### openfang config get
+docs/cli-reference.md:836:openfang config get <KEY>
+docs/cli-reference.md:848:openfang config get default_model.provider
+docs/cli-reference.md:851:openfang config get api_listen
+docs/cli-reference.md:854:openfang config get memory.decay_rate
+docs/cli-reference.md:860:### openfang config set
+docs/cli-reference.md:865:openfang config set <KEY> <VALUE>
+docs/cli-reference.md:880:openfang config set default_model.provider anthropic
+docs/cli-reference.md:881:openfang config set default_model.model claude-sonnet-4-20250514
+docs/cli-reference.md:882:openfang config set api_listen "0.0.0.0:4200"
+docs/cli-reference.md:887:### openfang config set-key
+docs/cli-reference.md:889:Save an LLM provider API key to `~/.openfang/.env`.
+docs/cli-reference.md:892:openfang config set-key <PROVIDER>
+docs/cli-reference.md:904:- Saves to `~/.openfang/.env` as `<PROVIDER_NAME>_API_KEY=<value>`.
+docs/cli-reference.md:911:openfang config set-key groq
+docs/cli-reference.md:913:# [ok] Saved GROQ_API_KEY to ~/.openfang/.env
+docs/cli-reference.md:919:### openfang config delete-key
+docs/cli-reference.md:921:Remove an API key from `~/.openfang/.env`.
+docs/cli-reference.md:924:openfang config delete-key <PROVIDER>
+docs/cli-reference.md:936:openfang config delete-key openai
+docs/cli-reference.md:941:### openfang config test-key
+docs/cli-reference.md:946:openfang config test-key <PROVIDER>
+docs/cli-reference.md:957:- Reads the API key from the environment (loaded from `~/.openfang/.env`).
+docs/cli-reference.md:965:openfang config test-key groq
+docs/cli-reference.md:973:### openfang chat
+docs/cli-reference.md:978:openfang chat [<AGENT>]
+docs/cli-reference.md:989:- **Daemon mode:** Finds the agent by name or ID among running agents. If no agent name is given, uses the first available agent. If no agents exist, suggests `openfang agent new`.
+docs/cli-reference.md:998:openfang chat
+docs/cli-reference.md:1001:openfang chat coder
+docs/cli-reference.md:1004:openfang chat a1b2c3d4-e5f6-7890-abcd-ef1234567890
+docs/cli-reference.md:1011:### openfang migrate
+docs/cli-reference.md:1016:openfang migrate --from <FRAMEWORK> [--source-dir <PATH>] [--dry-run]
+docs/cli-reference.md:1030:- Saves imported data to `~/.openfang/`.
+docs/cli-reference.md:1037:openfang migrate --from openclaw --dry-run
+docs/cli-reference.md:1040:openfang migrate --from openclaw
+docs/cli-reference.md:1043:openfang migrate --from langchain --source-dir /home/user/.langchain
+docs/cli-reference.md:1046:openfang migrate --from autogpt
+docs/cli-reference.md:1053:### openfang mcp
+docs/cli-reference.md:1058:openfang mcp
+docs/cli-reference.md:1064:- Each agent becomes a callable tool named `openfang_agent_<name>` (hyphens replaced with underscores).
+docs/cli-reference.md:1088:    "openfang": {
+docs/cli-reference.md:1089:      "command": "openfang",
+docs/cli-reference.md:1102:1. **Read `daemon.json`:** On startup, the daemon writes `~/.openfang/daemon.json` containing the listen address (e.g. `127.0.0.1:4200`). The CLI reads this file to learn where the daemon is.
+docs/cli-reference.md:1111:openfang start          # Starts daemon, writes daemon.json
+docs/cli-reference.md:1113:openfang status         # Connects to daemon via HTTP
+docs/cli-reference.md:1116:openfang doctor --repair  # Cleans up stale daemon.json from crashes
+docs/cli-reference.md:1123:OpenFang loads `~/.openfang/.env` into the process environment on every CLI invocation. System environment variables take priority over `.env` values.
+docs/cli-reference.md:1157:openfang init --quick
+docs/cli-reference.md:1160:openfang start
+docs/cli-reference.md:1167:openfang chat
+docs/cli-reference.md:1170:openfang chat coder
+docs/cli-reference.md:1173:openfang status
+docs/cli-reference.md:1176:openfang dashboard
+docs/cli-reference.md:1183:openfang agent new assistant
+docs/cli-reference.md:1186:openfang agent spawn ./agents/custom-agent/agent.toml
+docs/cli-reference.md:1189:openfang agent list
+docs/cli-reference.md:1192:openfang agent chat <UUID>
+docs/cli-reference.md:1195:openfang agent kill <UUID>
+docs/cli-reference.md:1202:openfang workflow create ./review-pipeline.json
+docs/cli-reference.md:1205:openfang workflow list
+docs/cli-reference.md:1208:openfang workflow run <WORKFLOW_ID> "Review the latest PR"
+docs/cli-reference.md:1215:openfang trigger create <AGENT_ID> '{"agent_spawned":{"name_pattern":"*"}}' \
+docs/cli-reference.md:1220:openfang trigger list
+docs/cli-reference.md:1223:openfang trigger list --agent-id <AGENT_ID>
+docs/cli-reference.md:1226:openfang trigger delete <TRIGGER_ID>
+docs/cli-reference.md:1233:openfang skill search "code review"
+docs/cli-reference.md:1236:openfang skill install code-reviewer
+docs/cli-reference.md:1238:# List installed skills
+docs/cli-reference.md:1239:openfang skill list
+docs/cli-reference.md:1242:openfang skill create
+docs/cli-reference.md:1245:openfang skill remove code-reviewer
+docs/cli-reference.md:1252:openfang channel setup
+docs/cli-reference.md:1255:openfang channel setup telegram
+docs/cli-reference.md:1258:openfang channel list
+docs/cli-reference.md:1261:openfang channel test telegram
+docs/cli-reference.md:1264:openfang channel enable discord
+docs/cli-reference.md:1265:openfang channel disable slack
+docs/cli-reference.md:1272:openfang config show
+docs/cli-reference.md:1275:openfang config get default_model.provider
+docs/cli-reference.md:1278:openfang config set default_model.provider anthropic
+docs/cli-reference.md:1279:openfang config set default_model.model claude-sonnet-4-20250514
+docs/cli-reference.md:1280:openfang config set default_model.api_key_env ANTHROPIC_API_KEY
+docs/cli-reference.md:1283:openfang config set-key anthropic
+docs/cli-reference.md:1284:openfang config test-key anthropic
+docs/cli-reference.md:1285:openfang config delete-key openai
+docs/cli-reference.md:1288:openfang config edit
+docs/cli-reference.md:1295:openfang migrate --from openclaw --dry-run
+docs/cli-reference.md:1298:openfang migrate --from openclaw
+docs/cli-reference.md:1301:openfang migrate --from langchain --source-dir ~/.langchain
+docs/cli-reference.md:1308:openfang mcp
+docs/cli-reference.md:1315:openfang doctor
+docs/cli-reference.md:1318:openfang doctor --repair
+docs/cli-reference.md:1321:openfang doctor --json
+docs/cli-reference.md:1327:# Generate and install completions for your shell
+docs/cli-reference.md:1328:openfang completion bash >> ~/.bashrc
+docs/cli-reference.md:1329:openfang completion zsh > "${fpath[1]}/_openfang"
+docs/cli-reference.md:1330:openfang completion fish > ~/.config/fish/completions/openfang.fish
+docs/cli-reference.md:1337:The following providers are recognized by `openfang config set-key` and `openfang doctor`:
+docs/skill-development.md:12:- [Installing Skills](#installing-skills)
+docs/skill-development.md:27:Skills are installed to `~/.openfang/skills/` and made available to agents through the skill registry. OpenFang ships with **60 bundled skills** that are compiled into the binary and available immediately.
+docs/skill-development.md:41:OpenFang includes 60 expert knowledge skills compiled into the binary (no installation needed):
+docs/skill-development.md:105:author = "openfang-community"
+docs/skill-development.md:134:| `name` | string | Yes | Unique skill name (used as install directory name) |
+docs/skill-development.md:263:For more advanced skills, use the Python SDK (`sdk/python/openfang_sdk.py`):
+docs/skill-development.md:267:from openfang_sdk import SkillHandler
+docs/skill-development.md:323:cargo build --target wasm32-wasi --release
+docs/skill-development.md:331:entry = "target/wasm32-wasi/release/my_skill.wasm"
+docs/skill-development.md:377:openfang skill install /path/to/my-skill
+docs/skill-development.md:380:This reads the `skill.toml`, validates the manifest, and copies the skill to `~/.openfang/skills/my-skill/`.
+docs/skill-development.md:385:openfang skill install web-summarizer
+docs/skill-development.md:393:openfang skill install https://github.com/user/openfang-skill-example.git
+docs/skill-development.md:399:openfang skill list
+docs/skill-development.md:405:3 skill(s) installed:
+docs/skill-development.md:417:openfang skill remove web-summarizer
+docs/skill-development.md:434:openfang skill install /path/to/my-skill
+docs/skill-development.md:441:openfang skill search "web scraping"
+docs/skill-development.md:463:openfang skill publish
+docs/skill-development.md:476:openfang skill install <source>
+docs/skill-development.md:478:# List all installed skills
+docs/skill-development.md:479:openfang skill list
+docs/skill-development.md:481:# Remove an installed skill
+docs/skill-development.md:482:openfang skill remove <name>
+docs/skill-development.md:485:openfang skill search <query>
+docs/skill-development.md:488:openfang skill create
+docs/skill-development.md:494:openfang skill create
+docs/skill-development.md:505:~/.openfang/skills/my-skill/
+docs/skill-development.md:521:author = "openfang"
+docs/skill-development.md:541:OpenFang can install and run OpenClaw-format skills. The skill installer auto-detects OpenClaw skills (by looking for `package.json` + `index.ts`/`index.js`) and converts them.
+docs/skill-development.md:546:openfang skill install /path/to/openclaw-skill
+docs/skill-development.md:576:Place this alongside the existing `index.js`/`index.ts` and install:
+docs/skill-development.md:579:openfang skill install /path/to/skill-directory
+docs/skill-development.md:582:Skills imported via `openfang migrate --from openclaw` are also scanned and reported in the migration report, with instructions for manual reinstallation.
+docs/launch-roadmap.md:20:1. **Add token estimation & context guard** (`crates/openfang-runtime/src/compactor.rs`)
+docs/launch-roadmap.md:26:2. **Add in-loop token guard** (`crates/openfang-runtime/src/agent_loop.rs`)
+docs/launch-roadmap.md:33:3. **Filter tools by profile in kernel** (`crates/openfang-kernel/src/kernel.rs`)
+docs/launch-roadmap.md:39:4. **Raise default token quota** (`crates/openfang-types/src/agent.rs`)
+docs/launch-roadmap.md:43:5. **Token-based compaction trigger** (`crates/openfang-kernel/src/kernel.rs`)
+docs/launch-roadmap.md:47:6. **Compact system prompt injections** (`crates/openfang-kernel/src/kernel.rs`)
+docs/launch-roadmap.md:62:**Problem:** Desktop app may show Tauri default icons. Branding assets exist at `~/Downloads/openfang/output/` but aren't installed.
+docs/launch-roadmap.md:66:1. Generate all required icon sizes from source PNG (`openfang-logo-transparent.png`, 2000x2000)
+docs/launch-roadmap.md:67:2. Place into `crates/openfang-desktop/icons/`:
+docs/launch-roadmap.md:73:3. Replace web UI logo at `crates/openfang-api/static/logo.png`
+docs/launch-roadmap.md:77:- `openfang-logo-transparent.png` (328KB, 2000x2000) — primary source
+docs/launch-roadmap.md:78:- `openfang-logo-black-bg.png` (312KB) — for dark contexts
+docs/launch-roadmap.md:79:- `openfang-vector-transparent.svg` (293KB) — scalable vector
+docs/launch-roadmap.md:80:- `openfang-animated.svg` (310KB) — for loading screens
+docs/launch-roadmap.md:83:- Desktop app shows OpenFang logo in taskbar, title bar, and installer
+docs/launch-roadmap.md:90:**Status: COMPLETE** — Generated Ed25519 signing keypair via `cargo tauri signer generate --ci`. Public key installed in `tauri.conf.json`. Private key at `~/.tauri/openfang.key`. Set `TAURI_SIGNING_PRIVATE_KEY_PATH` in CI secrets.
+docs/launch-roadmap.md:120:**Files:** `crates/openfang-api/static/js/pages/chat.js`, `crates/openfang-runtime/src/tool_runner.rs`
+docs/launch-roadmap.md:151:**Status: COMPLETE** — Already polished with 4 tabs (Installed, ClawHub, MCP Servers, Quick Start), live search with debounce, sort pills, categories, install/uninstall, skill detail modal, runtime badges, source badges, enable/disable toggles, security warnings.
+docs/launch-roadmap.md:153:**Problem (was):** Skills page exists but needs polish for browsing/installing skills.
+docs/launch-roadmap.md:157:2. Verify `/api/skills/install` endpoint works
+docs/launch-roadmap.md:158:3. Polish UI: skill cards with descriptions, install buttons, installed badge
+docs/launch-roadmap.md:161:**Files:** `crates/openfang-api/static/js/pages/skills.js`, `crates/openfang-api/src/routes.rs`
+docs/launch-roadmap.md:164:- Users can browse, search, and install skills from the web UI
+docs/launch-roadmap.md:172:**Problem:** `openfang.sh` domain isn't set up. Users can't do `curl -sSf https://openfang.sh | sh`.
+docs/launch-roadmap.md:175:1. Set up GitHub Pages or Cloudflare Worker for openfang.sh
+docs/launch-roadmap.md:176:2. Serve `scripts/install.sh` at root
+docs/launch-roadmap.md:177:3. Serve `scripts/install.ps1` at `/install.ps1`
+docs/launch-roadmap.md:181:- `curl -sSf https://openfang.sh | sh` installs the latest release
+docs/launch-roadmap.md:182:- `irm https://openfang.sh/install.ps1 | iex` works on Windows PowerShell
+docs/launch-roadmap.md:255:**Status: COMPLETE** — Created `sdk/javascript/` (@openfang/sdk) with full REST client: agent CRUD, streaming via SSE, sessions, workflows, skills, channels, memory KV, triggers, schedules + TypeScript declarations. Created `sdk/python/openfang_client.py` (zero-dependency stdlib urllib) with same coverage. Both include basic + streaming examples. Python `setup.py` for pip install.
+docs/launch-roadmap.md:262:   - Publish to npm as `@openfang/sdk`
+docs/launch-roadmap.md:265:   - Publish to PyPI as `openfang`
+docs/launch-roadmap.md:269:- `npm install @openfang/sdk` works
+docs/launch-roadmap.md:270:- `pip install openfang` works
+docs/launch-roadmap.md:277:**Status: COMPLETE** — Added `GET /api/metrics` endpoint returning Prometheus text format. Metrics: `openfang_uptime_seconds`, `openfang_agents_active`, `openfang_agents_total`, `openfang_tokens_total{agent,provider,model}`, `openfang_tool_calls_total{agent}`, `openfang_panics_total`, `openfang_restarts_total`, `openfang_info{version}`.
+docs/launch-roadmap.md:283:   - `openfang_agents_active` gauge
+docs/launch-roadmap.md:284:   - `openfang_messages_total` counter (by agent, by channel)
+docs/launch-roadmap.md:285:   - `openfang_tokens_total` counter (by provider, by model)
+docs/launch-roadmap.md:286:   - `openfang_request_duration_seconds` histogram
+docs/launch-roadmap.md:287:   - `openfang_tool_calls_total` counter (by tool name)
+docs/launch-roadmap.md:288:   - `openfang_errors_total` counter (by type)
+docs/launch-roadmap.md:291:**Files:** `crates/openfang-api/src/routes.rs`, new `metrics.rs` module
+docs/launch-roadmap.md:334:**Files:** `crates/openfang-kernel/src/kernel.rs`, `routes.rs`, `ws.rs`, `index_body.html`
+docs/launch-roadmap.md:345:1. Watch `~/.openfang/config.toml` for changes (notify crate)
+docs/launch-roadmap.md:350:**Files:** `crates/openfang-api/src/server.rs`, `crates/openfang-types/src/config.rs`
+docs/launch-roadmap.md:386:**Status: ALL CODE COMPLETE** — All 18 code items done. 1751 tests passing. Production audit completed: 2 critical bugs fixed (API delete alias, config/set route), CSP hardened (Tauri + middleware), Tauri signing key installed. Remaining for release: tag v0.1.0, build release artifacts, set up openfang.sh domain.
+docs/launch-roadmap.md:390:3. Verify all release artifacts (desktop installers, CLI binaries, Docker image)
+docs/launch-roadmap.md:436:  2.4 Install script domain ........ PENDING (infra: set up openfang.sh domain)
+docs/launch-roadmap.md:451:  4.5 Final release ................ READY (tag + build)
+docs/benchmarks/performance.svg:38:  <text x="50" y="254" fill="#64748b" font-size="10">Total disk space required for full installation</text>
+docs/benchmarks/performance.svg:56:  <text x="400" y="390" text-anchor="middle" fill="#64748b" font-size="10">OpenFang compiled with Rust 1.93 (release profile, LTO enabled). Python frameworks measured with pip install + dependencies.</text>
+docs/benchmarks/performance.svg:57:  <text x="400" y="404" text-anchor="middle" fill="#64748b" font-size="10">Startup = time until HTTP health endpoint responds. Install size = du -sh after clean install.</text>
+docs/benchmarks/architecture-overview.svg:59:  <text x="50" y="153" fill="#a78bfa" font-size="9" font-weight="600" letter-spacing="1">API GATEWAY — openfang-api</text>
+docs/benchmarks/architecture-overview.svg:68:  <text x="50" y="237" fill="#34d399" font-size="9" font-weight="600" letter-spacing="1">KERNEL — openfang-kernel</text>
+docs/benchmarks/architecture-overview.svg:107:  <text x="50" y="337" fill="#60a5fa" font-size="9" font-weight="600" letter-spacing="1">RUNTIME — openfang-runtime</text>
+docs/benchmarks/architecture-overview.svg:136:  <text x="50" y="462" fill="#f472b6" font-size="9" font-weight="600" letter-spacing="1">MEMORY — openfang-memory</text>
+docs/benchmarks/architecture-overview.svg:150:  <text x="105" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">openfang-types</text>
+docs/benchmarks/architecture-overview.svg:152:  <text x="220" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">openfang-wire</text>
+docs/benchmarks/architecture-overview.svg:154:  <text x="340" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">openfang-migrate</text>
+docs/benchmarks/architecture-overview.svg:156:  <text x="465" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">openfang-hands</text>
+docs/benchmarks/architecture-overview.svg:158:  <text x="595" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">openfang-extensions</text>
+docs/production-checklist.md:11:The Tauri updater requires an Ed25519 keypair. The private key signs every release bundle, and the public key is embedded in the app binary so it can verify updates.
+docs/production-checklist.md:14:# Install the Tauri CLI (if not already installed)
+docs/production-checklist.md:15:cargo install tauri-cli --locked
+docs/production-checklist.md:18:cargo tauri signer generate -w ~/.tauri/openfang.key
+docs/production-checklist.md:27:Your private key was saved to: ~/.tauri/openfang.key
+docs/production-checklist.md:38:Open `crates/openfang-desktop/tauri.conf.json` and replace:
+docs/production-checklist.md:54:**Status:** BLOCKING — CI/CD release workflow will fail without these.
+docs/production-checklist.md:60:| `TAURI_SIGNING_PRIVATE_KEY` | Contents of `~/.tauri/openfang.key` | Yes |
+docs/production-checklist.md:93:The following icon files must exist in `crates/openfang-desktop/icons/`:
+docs/production-checklist.md:98:| `icon.ico` | multi-size | Windows taskbar, installer |
+docs/production-checklist.md:116:## 5. Set Up the `openfang.sh` Domain
+docs/production-checklist.md:118:**Status:** BLOCKING for install scripts — users run `curl -sSf https://openfang.sh | sh`.
+docs/production-checklist.md:121:- **GitHub Pages**: Point `openfang.sh` to a GitHub Pages site that redirects `/` to `scripts/install.sh` and `/install.ps1` to `scripts/install.ps1` from the repo's latest release.
+docs/production-checklist.md:122:- **Cloudflare Workers / Vercel**: Serve the install scripts with proper `Content-Type: text/plain` headers.
+docs/production-checklist.md:123:- **Raw GitHub redirect**: Use `openfang.sh` as a CNAME to `raw.githubusercontent.com/RightNow-AI/openfang/main/scripts/install.sh` (less reliable).
+docs/production-checklist.md:125:The install scripts reference:
+docs/production-checklist.md:126:- `https://openfang.sh` → serves `scripts/install.sh`
+docs/production-checklist.md:127:- `https://openfang.sh/install.ps1` → serves `scripts/install.ps1`
+docs/production-checklist.md:129:Until the domain is set up, users can install via:
+docs/production-checklist.md:131:curl -sSf https://raw.githubusercontent.com/RightNow-AI/openfang/main/scripts/install.sh | sh
+docs/production-checklist.md:141:docker build -t openfang:local .
+docs/production-checklist.md:142:docker run --rm openfang:local --version
+docs/production-checklist.md:143:docker run --rm -p 4200:4200 -v openfang-data:/data openfang:local start
+docs/production-checklist.md:156:**Status:** VERIFY before release.
+docs/production-checklist.md:160:# Test against a real GitHub release (after first tag)
+docs/production-checklist.md:161:bash scripts/install.sh
+docs/production-checklist.md:164:bash -n scripts/install.sh
+docs/production-checklist.md:165:shellcheck scripts/install.sh
+docs/production-checklist.md:170:# Test against a real GitHub release (after first tag)
+docs/production-checklist.md:171:powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+docs/production-checklist.md:174:pwsh -NoProfile -Command "Get-Content scripts/install.ps1 | Out-Null"
+docs/production-checklist.md:179:docker build -f scripts/docker/install-smoke.Dockerfile .
+docs/production-checklist.md:188:The release workflow includes a link to `CHANGELOG.md` in every GitHub release body. Ensure it exists at the repo root and covers:
+docs/production-checklist.md:195:- Docker and CLI install options
+docs/production-checklist.md:205:grep '"version"' crates/openfang-desktop/tauri.conf.json
+docs/production-checklist.md:210:git commit -m "chore: prepare v0.1.0 release"
+docs/production-checklist.md:217:This triggers the release workflow which:
+docs/production-checklist.md:218:1. Builds desktop installers for 4 targets (Linux, macOS x86, macOS ARM, Windows)
+docs/production-checklist.md:228:After the release workflow completes (~15-30 min):
+docs/production-checklist.md:240:Visit: `https://github.com/RightNow-AI/openfang/releases/latest/download/latest.json`
+docs/production-checklist.md:249:docker pull ghcr.io/RightNow-AI/openfang:latest
+docs/production-checklist.md:250:docker pull ghcr.io/RightNow-AI/openfang:0.1.0
+docs/production-checklist.md:253:docker run --rm ghcr.io/RightNow-AI/openfang:latest --version
+docs/production-checklist.md:257:1. Install v0.1.0 from the release
+docs/production-checklist.md:259:3. Wait for release workflow to complete
+docs/production-checklist.md:262:   - Download and install v0.1.1
+docs/production-checklist.md:269:curl -sSf https://openfang.sh | sh
+docs/production-checklist.md:270:openfang --version  # Should print v0.1.0
+docs/production-checklist.md:273:irm https://openfang.sh/install.ps1 | iex
+docs/production-checklist.md:274:openfang --version
+docs/production-checklist.md:288:Step 7 (install scripts) ┤
+docs/configuration.md:35:~/.openfang/config.toml
+docs/configuration.md:43:2. `~/.openfang` (default).
+docs/configuration.md:45:So inside the Docker container the config file must live at `/data/config.toml` (because the image sets `ENV OPENFANG_HOME=/data`). Placing it anywhere else (for example `/opt/openfang/config.toml`) will be silently ignored.
+docs/configuration.md:61:# ~/.openfang/config.toml
+docs/configuration.md:91:home_dir = "~/.openfang"             # OpenFang home directory
+docs/configuration.md:92:data_dir = "~/.openfang/data"        # SQLite databases and data files
+docs/configuration.md:122:# sqlite_path = "~/.openfang/data/openfang.db"  # Auto-resolved if omitted
+docs/configuration.md:235:| `home_dir` | path | `~/.openfang` | OpenFang home directory. Stores config, agents, skills. |
+docs/configuration.md:236:| `data_dir` | path | `~/.openfang/data` | Directory for SQLite databases and persistent data. |
+docs/configuration.md:288:  openfang:
+docs/configuration.md:289:    image: ghcr.io/rightnow-ai/openfang:latest
+docs/configuration.md:293:      - openfang-data:/data
+docs/configuration.md:299:  openfang-data:
+docs/configuration.md:302:If you prefer mounting `config.toml`, the file must live at `/data/config.toml` inside the container (because of `OPENFANG_HOME=/data`). Placing it at `/opt/openfang/config.toml` or any other path will not be picked up. The port in `api_listen` must also match the port published in `ports:` — the example config in `openfang.toml.example` ships with port `50051` to be safe; change it to `4200` (or whatever port you publish) when running in Docker.
+docs/configuration.md:345:# sqlite_path = "/custom/path/openfang.db"
+docs/configuration.md:353:| `sqlite_path` | path or null | `null` | Explicit path to the SQLite database file. When `null`, defaults to `{data_dir}/openfang.db`. |
+docs/configuration.md:391:password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."  # generate with: openfang auth hash-password
+docs/configuration.md:399:| `password_hash` | string | `""` (empty) | Argon2id password hash in PHC string format. Generate with `openfang auth hash-password`. |
+docs/configuration.md:405:openfang auth hash-password
+docs/configuration.md:410:> **Breaking change (v0.5.0):** Password hashes must be in Argon2id format. Older SHA256 hex hashes from versions prior to v0.5.0 are no longer accepted. Re-run `openfang auth hash-password` to generate a new hash.
+docs/configuration.md:618:user_id = "@openfang:matrix.org"
+docs/configuration.md:626:| `user_id` | string | `""` | Bot user ID (e.g., `"@openfang:matrix.org"`). |
+docs/configuration.md:699:nick = "openfang"
+docs/configuration.md:701:channels = ["#openfang"]
+docs/configuration.md:709:| `nick` | string | `"openfang"` | Bot nickname. |
+docs/configuration.md:711:| `channels` | list of strings | `[]` | IRC channels to join (e.g., `["#openfang", "#general"]`). |
+docs/configuration.md:737:nick = "openfang"
+docs/configuration.md:744:| `nick` | string | `"openfang"` | Bot nickname in Twitch chat. |
+docs/configuration.md:1071:username = "openfang"
+docs/configuration.md:1080:| `username` | string | `"openfang"` | Bot username in Mumble. |
+docs/mcp-a2a.md:39:- Client: `crates/openfang-runtime/src/mcp.rs`
+docs/mcp-a2a.md:40:- Server handler: `crates/openfang-runtime/src/mcp_server.rs`
+docs/mcp-a2a.md:41:- CLI server: `crates/openfang-cli/src/mcp.rs`
+docs/mcp-a2a.md:42:- Config types: `crates/openfang-types/src/config.rs` (`McpServerConfigEntry`, `McpTransportEntry`)
+docs/mcp-a2a.md:48:The MCP client (`McpConnection` in `openfang-runtime`) allows OpenFang to connect to any MCP-compatible server and use its tools as if they were built-in.
+docs/mcp-a2a.md:104:Helper functions (exported from `openfang_runtime::mcp`):
+docs/mcp-a2a.md:169:Each OpenFang agent becomes an MCP tool named `openfang_agent_{name}` (with hyphens replaced by underscores). The tool accepts a single `message` string parameter and returns the agent's response.
+docs/mcp-a2a.md:171:For example, an agent named `code-reviewer` becomes the MCP tool `openfang_agent_code_reviewer`.
+docs/mcp-a2a.md:173:#### CLI: `openfang mcp`
+docs/mcp-a2a.md:175:The primary way to run the MCP server is the `openfang mcp` command, which starts a stdio-based MCP server:
+docs/mcp-a2a.md:178:openfang mcp
+docs/mcp-a2a.md:197:- All installed skill tools
+docs/mcp-a2a.md:247:    "serverInfo": { "name": "openfang", "version": "0.1.0" }
+docs/mcp-a2a.md:260:    "name": "openfang_agent_code_reviewer",
+docs/mcp-a2a.md:292:    "openfang": {
+docs/mcp-a2a.md:293:      "command": "openfang",
+docs/mcp-a2a.md:307:    "openfang": {
+docs/mcp-a2a.md:308:      "command": "openfang",
+docs/mcp-a2a.md:316:After configuration, all OpenFang agents appear as tools in the IDE. For example, you can ask Claude Desktop to "use the openfang code-reviewer agent to review this file."
+docs/mcp-a2a.md:465:- Protocol types and logic: `crates/openfang-runtime/src/a2a.rs`
+docs/mcp-a2a.md:466:- API routes: `crates/openfang-api/src/routes.rs`
+docs/mcp-a2a.md:467:- Config types: `crates/openfang-types/src/config.rs` (`A2aConfig`, `ExternalAgent`)
+docs/README.md:11:| [Getting Started](getting-started.md) | Installation, first agent, first chat session |
+docs/README.md:64:openfang init && openfang start
+docs/README.md:88:| `~/.openfang/config.toml` | Main configuration file |
+docs/README.md:89:| `~/.openfang/data/openfang.db` | SQLite database |
+docs/README.md:90:| `~/.openfang/skills/` | Installed skills |
+docs/README.md:91:| `~/.openfang/daemon.json` | Daemon PID and port info |
+docs/getting-started.md:3:This guide walks you through installing OpenFang, configuring your first LLM provider, spawning an agent, and chatting with it.
+docs/getting-started.md:7:- [Installation](#installation)
+docs/getting-started.md:17:## Installation
+docs/getting-started.md:21:Download the installer for your platform from the [latest release](https://github.com/RightNow-AI/openfang/releases/latest):
+docs/getting-started.md:25:| Windows | `.msi` installer |
+docs/getting-started.md:29:The desktop app includes the full OpenFang system with a native window, system tray, auto-updates, and OS notifications. Updates are installed automatically in the background.
+docs/getting-started.md:34:curl -sSf https://openfang.sh | sh
+docs/getting-started.md:37:This downloads the latest CLI binary and installs it to `~/.openfang/bin/`.
+docs/getting-started.md:42:irm https://openfang.sh/install.ps1 | iex
+docs/getting-started.md:52:cargo install --git https://github.com/RightNow-AI/openfang openfang-cli
+docs/getting-started.md:58:git clone https://github.com/RightNow-AI/openfang.git
+docs/getting-started.md:59:cd openfang
+docs/getting-started.md:60:cargo install --path crates/openfang-cli
+docs/getting-started.md:66:docker pull ghcr.io/RightNow-AI/openfang:latest
+docs/getting-started.md:69:  --name openfang \
+docs/getting-started.md:72:  -v openfang-data:/data \
+docs/getting-started.md:73:  ghcr.io/RightNow-AI/openfang:latest
+docs/getting-started.md:79:git clone https://github.com/RightNow-AI/openfang.git
+docs/getting-started.md:80:cd openfang
+docs/getting-started.md:94:  ghcr.io/rightnow-ai/openfang:latest
+docs/getting-started.md:102:### Verify Installation
+docs/getting-started.md:105:openfang --version
+docs/getting-started.md:114:Run the init command to create the `~/.openfang/` directory and a default config file:
+docs/getting-started.md:117:openfang init
+docs/getting-started.md:123:~/.openfang/
+docs/getting-started.md:148:The default config uses Anthropic. To change the provider, edit `~/.openfang/config.toml`:
+docs/getting-started.md:166:openfang doctor
+docs/getting-started.md:180:openfang agent spawn agents/hello-world/agent.toml
+docs/getting-started.md:215:openfang agent spawn my-agent.toml
+docs/getting-started.md:221:openfang agent list
+docs/getting-started.md:239:openfang agent chat a1b2c3d4-e5f6-...
+docs/getting-started.md:245:openfang chat
+docs/getting-started.md:251:openfang chat hello-world
+docs/getting-started.md:292:openfang start
+docs/getting-started.md:312:openfang status
+docs/getting-started.md:348:- **Use bundled skills**: 60 expert knowledge skills are pre-installed (GitHub, Docker, Kubernetes, security audit, prompt engineering, etc.). See [Skill Development](skill-development.md).
+docs/getting-started.md:352:- **Set up workflows**: Chain multiple agents together. Use `openfang workflow create` with a TOML workflow definition.
+docs/getting-started.md:354:- **Migrate from OpenClaw**: Run `openfang migrate --from openclaw`. See [MIGRATION.md](../MIGRATION.md).
+docs/getting-started.md:356:- **Run diagnostics**: `openfang doctor` checks your entire setup.
+docs/getting-started.md:361:openfang init                          # Initialize ~/.openfang/
+docs/getting-started.md:362:openfang start                         # Start the daemon
+docs/getting-started.md:363:openfang status                        # Check daemon status
+docs/getting-started.md:364:openfang doctor                        # Run diagnostic checks
+docs/getting-started.md:366:openfang agent spawn <manifest.toml>   # Spawn an agent
+docs/getting-started.md:367:openfang agent list                    # List all agents
+docs/getting-started.md:368:openfang agent chat <id>               # Chat with an agent
+docs/getting-started.md:369:openfang agent kill <id>               # Kill an agent
+docs/getting-started.md:371:openfang workflow list                 # List workflows
+docs/getting-started.md:372:openfang workflow create <file.json>   # Create a workflow
+docs/getting-started.md:373:openfang workflow run <id> <input>     # Run a workflow
+docs/getting-started.md:375:openfang trigger list                  # List event triggers
+docs/getting-started.md:376:openfang trigger create <args>         # Create a trigger
+docs/getting-started.md:377:openfang trigger delete <id>           # Delete a trigger
+docs/getting-started.md:379:openfang skill install <source>        # Install a skill
+docs/getting-started.md:380:openfang skill list                    # List installed skills
+docs/getting-started.md:381:openfang skill search <query>          # Search FangHub
+docs/getting-started.md:382:openfang skill create                  # Scaffold a new skill
+docs/getting-started.md:384:openfang channel list                  # List channel status
+docs/getting-started.md:385:openfang channel setup <channel>       # Interactive setup wizard
+docs/getting-started.md:387:openfang config show                   # Show current config
+docs/getting-started.md:388:openfang config edit                   # Open config in editor
+docs/getting-started.md:390:openfang chat [agent]                  # Quick chat (alias)
+docs/getting-started.md:391:openfang migrate --from openclaw       # Migrate from OpenClaw
+docs/getting-started.md:392:openfang mcp                           # Start MCP server (stdio)
+docs/channel-adapters.md:118:All channel configurations live in `~/.openfang/config.toml` under the `[channels]` section. Each channel is a subsection:
+docs/channel-adapters.md:205:The `formatter` module (`openfang-channels/src/formatter.rs`) converts Markdown output from the LLM into platform-native formats:
+docs/channel-adapters.md:216:The `ChannelRateLimiter` (`openfang-channels/src/rate_limiter.rs`) uses a `DashMap` to track per-user message counts. When `rate_limit_per_user` is set on a channel's overrides, the limiter enforces a sliding-window cap of N messages per minute. Excess messages receive a polite rejection.
+docs/channel-adapters.md:278:openfang start
+docs/channel-adapters.md:304:openfang channel setup telegram
+docs/channel-adapters.md:509:- Signal CLI installed and linked to a phone number
+docs/channel-adapters.md:554:user_id = "@openfang-bot:matrix.org"
+docs/channel-adapters.md:679:The kernel emits a startup warning when a binding sets `channel_id` for a non-supporting adapter, so misconfigurations surface early instead of silently routing nowhere. The single source of truth for this list is `CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL` in `openfang-types::config`, consumed by both routing (`ChannelMessage::channel_id()`) and config validation.
+docs/channel-adapters.md:687:To add support for a new messaging platform, implement the `ChannelAdapter` trait. The trait is defined in `crates/openfang-channels/src/types.rs`.
+docs/channel-adapters.md:738:Create `crates/openfang-channels/src/myplatform.rs`:
+docs/channel-adapters.md:815:In `crates/openfang-channels/src/lib.rs`:
+docs/channel-adapters.md:823:In `crates/openfang-api/src/channel_bridge.rs`, add initialization logic for your adapter alongside the existing adapters.
+docs/channel-adapters.md:827:In `openfang-types`, add a config struct:
+docs/channel-adapters.md:843:In `crates/openfang-cli/src/main.rs`, add a case to `cmd_channel_setup` with step-by-step instructions for your platform.
+docs/desktop.md:3:The OpenFang Desktop App is a native desktop wrapper built with [Tauri 2.0](https://v2.tauri.app/) that packages the entire OpenFang Agent OS into a single, installable application. Instead of running a CLI daemon and opening a browser, users get a native window with system tray integration, OS notifications, and single-instance enforcement -- all powered by the same kernel and API server that the headless deployment uses.
+docs/desktop.md:5:**Crate:** `openfang-desktop`
+docs/desktop.md:6:**Identifier:** `ai.openfang.desktop`
+docs/desktop.md:21:|  |  Thread   |    | ("openfang-server")|  |
+docs/desktop.md:38:1. **Tracing init** -- `tracing_subscriber` is configured with `RUST_LOG` env, defaulting to `openfang=info,tauri=info`.
+docs/desktop.md:41:4. **Server thread** -- A dedicated OS thread named `"openfang-server"` is spawned. It creates its own `tokio::runtime::Builder::new_multi_thread()` runtime and runs:
+docs/desktop.md:43:   - `run_embedded_server()` -- builds the axum router via `openfang_api::server::build_router()`, converts the `std::net::TcpListener` to a `tokio::net::TcpListener`, and serves with graceful shutdown.
+docs/desktop.md:95:| **Check for Updates...** | Checks for updates, downloads, installs, and restarts if available. Shows notifications for progress/success/failure |
+docs/desktop.md:96:| **Open Config Directory** | Opens `~/.openfang/` in the OS file manager |
+docs/desktop.md:191:Opens a native file picker for `.toml` files. Validates the selected file as an `AgentManifest`, copies it to `~/.openfang/agents/{name}/agent.toml`, and spawns the agent. Returns the agent name on success.
+docs/desktop.md:195:Opens a native file picker for skill files (`.md`, `.toml`, `.py`, `.js`, `.wasm`). Copies the file to `~/.openfang/skills/` and triggers a hot-reload of the skill registry.
+docs/desktop.md:203:Checks for available updates without installing. Returns an `UpdateInfo` object:
+docs/desktop.md:209:### `install_update`
+docs/desktop.md:211:Downloads and installs the latest update, then restarts the app. The command does not return on success (the app restarts). Returns an error string on failure.
+docs/desktop.md:214:await invoke("install_update"); // App restarts if update succeeds
+docs/desktop.md:219:Opens `~/.openfang/` or `~/.openfang/logs/` in the OS file manager.
+docs/desktop.md:240:The app checks for updates 10 seconds after startup. If an update is available, it is downloaded, installed, and the app restarts automatically. Users can also trigger a manual check via the system tray.
+docs/desktop.md:243:1. Startup check (10s delay) → `check_for_update()` → if available → notify user → `download_and_install_update()` → app restarts
+docs/desktop.md:244:2. Tray "Check for Updates" → same flow, with failure notification if install fails
+docs/desktop.md:249:- `plugins.updater.windows.installMode` — `"passive"` (install without full UI)
+docs/desktop.md:251:**Signing:** Every release bundle is signed with `TAURI_SIGNING_PRIVATE_KEY` (GitHub Secret). The `tauri-action` generates `latest.json` containing download URLs and signatures for each platform.
+docs/desktop.md:275:- **Tauri CLI v2**: `cargo install tauri-cli --version "^2"`
+docs/desktop.md:284:cd crates/openfang-desktop
+docs/desktop.md:293:cd crates/openfang-desktop
+docs/desktop.md:297:This produces platform-specific installers:
+docs/desktop.md:298:- **Windows**: `.msi` and `.exe` (NSIS) installers
+docs/desktop.md:302:The release binary suppresses the console window on Windows via:
+docs/desktop.md:382:crates/openfang-desktop/
+docs/desktop.md:410:| `RUST_LOG` | Controls tracing verbosity. Defaults to `openfang=info,tauri=info` if unset. |
+docs/troubleshooting.md:8:- [Installation Issues](#installation-issues)
+docs/troubleshooting.md:25:openfang doctor
+docs/troubleshooting.md:39:openfang status
+docs/troubleshooting.md:54:RUST_LOG=info openfang start          # Default
+docs/troubleshooting.md:55:RUST_LOG=debug openfang start         # Verbose
+docs/troubleshooting.md:56:RUST_LOG=openfang=debug openfang start  # Only OpenFang debug, deps at info
+docs/troubleshooting.md:61:## Installation Issues
+docs/troubleshooting.md:63:### `cargo install` fails with compilation errors
+docs/troubleshooting.md:77:sudo apt install pkg-config libssl-dev libsqlite3-dev
+docs/troubleshooting.md:80:sudo dnf install openssl-devel sqlite-devel
+docs/troubleshooting.md:83:### `openfang` command not found after install
+docs/troubleshooting.md:91:### Black screen on login after install (Arch / CachyOS / fish users)
+docs/troubleshooting.md:93:**Cause**: Older OpenFang installers (`<v0.6.4`) appended a PATH line directly to `~/.config/fish/config.fish`. On Arch derivatives like CachyOS, the desktop session can source fish on login — a malformed or invalid PATH line then prevents the session from finishing, leaving you on a black screen.
+docs/troubleshooting.md:97:sed -i '/openfang/d' ~/.config/fish/config.fish
+docs/troubleshooting.md:99:Then re-run the installer — current versions write to `~/.config/fish/conf.d/openfang.fish` (a drop-in directory) instead, and guard the path with `test -d` so a missing install dir can never wedge fish startup.
+docs/troubleshooting.md:103:rm ~/.config/fish/conf.d/openfang.fish
+docs/troubleshooting.md:109:- No API key provided: `docker run -e GROQ_API_KEY=... ghcr.io/RightNow-AI/openfang`
+docs/troubleshooting.md:129:  ghcr.io/rightnow-ai/openfang:latest
+docs/troubleshooting.md:143:  openfang:
+docs/troubleshooting.md:144:    image: ghcr.io/rightnow-ai/openfang:latest
+docs/troubleshooting.md:158:The default `ghcr.io/rightnow-ai/openfang` image does not ship `curl`, so
+docs/troubleshooting.md:159:`docker exec openfang curl ...` returns `exec: curl: not found`. If you need
+docs/troubleshooting.md:165:FROM ghcr.io/rightnow-ai/openfang:latest
+docs/troubleshooting.md:168:    && apt-get install -y --no-install-recommends ca-certificates curl \
+docs/troubleshooting.md:175:docker build -f Dockerfile.curl -t openfang-curl:latest .
+docs/troubleshooting.md:176:docker run --rm openfang-curl:latest curl -s https://example.com
+docs/troubleshooting.md:188:**Fix**: Run `openfang init` to create the default config:
+docs/troubleshooting.md:190:openfang init
+docs/troubleshooting.md:193:This creates `~/.openfang/config.toml` with sensible defaults.
+docs/troubleshooting.md:214:openfang config show
+docs/troubleshooting.md:359:RUST_LOG=openfang_channels=debug openfang start
+docs/troubleshooting.md:420:1. TOML manifest is valid: `openfang agent spawn --dry-run manifest.toml`
+docs/troubleshooting.md:470:2. Set the model to `openfang:agent-name` (e.g., `openfang:coder`)
+docs/troubleshooting.md:483:3. Try deleting `~/.openfang/daemon.json` and restarting
+docs/troubleshooting.md:515:- Check database size (`~/.openfang/data/openfang.db`)
+docs/troubleshooting.md:532:Edit `~/.openfang/config.toml`:
+docs/troubleshooting.md:546:1. Add the channel config to `~/.openfang/config.toml` under `[channels]`
+docs/troubleshooting.md:554:cd openfang && git pull && cargo install --path crates/openfang-cli
+docs/troubleshooting.md:557:docker pull ghcr.io/RightNow-AI/openfang:latest
+docs/troubleshooting.md:566:Only LLM API calls go to the provider's servers. All agent data, memory, sessions, and configuration are stored locally in SQLite (`~/.openfang/data/openfang.db`). The OFP wire protocol uses HMAC-SHA256 mutual authentication for P2P communication.
+docs/troubleshooting.md:571:- `~/.openfang/config.toml` (configuration)
+docs/troubleshooting.md:572:- `~/.openfang/data/openfang.db` (all agent data, memory, sessions)
+docs/troubleshooting.md:573:- `~/.openfang/skills/` (installed skills)
+docs/troubleshooting.md:578:rm -rf ~/.openfang
+docs/troubleshooting.md:579:openfang init  # Start fresh
+docs/troubleshooting.md:608:OpenFang can import OpenClaw configs: `openfang migrate --from openclaw`
+docs/troubleshooting.md:629:RUST_LOG=openfang_runtime=debug,openfang_channels=info openfang start
+docs/troubleshooting.md:637:openfang-runtime = { path = "crates/openfang-runtime" }
+docs/troubleshooting.md:638:openfang-memory = { path = "crates/openfang-memory" }
+docs/troubleshooting.md:641:The `openfang-kernel` crate assembles everything, but you can use individual crates for custom integrations.
+docs/troubleshooting.md:649:Re-run the install script to get the latest release:
+docs/troubleshooting.md:651:curl -fsSL https://openfang.sh/install | sh
+docs/troubleshooting.md:656:cargo build --release -p openfang-cli
+docs/troubleshooting.md:662:docker run -d --name openfang \
+docs/troubleshooting.md:665:  ghcr.io/rightnow-ai/openfang:latest
+docs/troubleshooting.md:677:OpenFang has built-in dashboard authentication. Enable it in `~/.openfang/config.toml`:
+docs/troubleshooting.md:689:openfang auth hash-password
+docs/troubleshooting.md:698:In `~/.openfang/config.toml`:
+docs/troubleshooting.md:747:Add to `~/.openfang/config.toml`:
+docs/providers.md:330:1. Install vLLM: `pip install vllm`
+docs/providers.md:624:- The 46 entries above are the builtin models. The total of 51 referenced in the catalog includes runtime auto-discovered models that vary per installation.
+docs/architecture.md:30:openfang-cli            CLI interface, daemon auto-detect, MCP server
+docs/architecture.md:32:openfang-desktop        Tauri 2.0 desktop app (WebView + system tray)
+docs/architecture.md:34:openfang-api            REST/WS/SSE API server (Axum 0.8), 76 endpoints
+docs/architecture.md:36:openfang-kernel         Kernel: assembles all subsystems, workflow engine, RBAC, metering
+docs/architecture.md:38:    +-- openfang-runtime    Agent loop, 3 LLM drivers, 23 tools, WASM sandbox, MCP, A2A
+docs/architecture.md:39:    +-- openfang-channels   40 channel adapters, bridge, formatter, rate limiter
+docs/architecture.md:40:    +-- openfang-wire       OFP peer-to-peer networking with HMAC-SHA256 auth
+docs/architecture.md:41:    +-- openfang-migrate    Migration engine (OpenClaw YAML->TOML)
+docs/architecture.md:42:    +-- openfang-skills     60 bundled skills, FangHub marketplace, ClawHub client
+docs/architecture.md:44:openfang-memory         SQLite memory substrate, sessions, semantic search, usage tracking
+docs/architecture.md:46:openfang-types          Shared types: Agent, Capability, Event, Memory, Message, Tool, Config,
+docs/architecture.md:54:| **openfang-types** | Core type definitions used across all crates. Defines `AgentManifest`, `AgentId`, `Capability`, `Event`, `ToolDefinition`, `KernelConfig`, `OpenFangError`, taint tracking (`TaintLabel`, `TaintSet`), Ed25519 manifest signing, model catalog types (`ModelCatalogEntry`, `ProviderInfo`, `ModelTier`), tool compatibility mappings (21 OpenClaw-to-OpenFang), MCP/A2A config types, and web config types. All config structs use `#[serde(default)]` for forward-compatible TOML parsing. |
+docs/architecture.md:55:| **openfang-memory** | SQLite-backed memory substrate (schema v5). Uses `Arc<Mutex<Connection>>` with `spawn_blocking` for async bridge. Provides structured KV storage, semantic search with vector embeddings, knowledge graph (entities and relations), session management, task board, usage event persistence (`usage_events` table, `UsageStore`), and canonical sessions for cross-channel memory. Five schema versions: V1 core, V2 collab, V3 embeddings, V4 usage, V5 canonical_sessions. |
+docs/architecture.md:56:| **openfang-runtime** | Agent execution engine. Contains the agent loop (`run_agent_loop`, `run_agent_loop_streaming`), 3 native LLM drivers (Anthropic, Gemini, OpenAI-compatible covering 20 providers), 23 built-in tools, WASM sandbox (Wasmtime with dual fuel+epoch metering), MCP client/server (JSON-RPC 2.0 over stdio/SSE), A2A protocol (AgentCard, task management), web search engine (4 providers: Tavily/Brave/Perplexity/DuckDuckGo), web fetch with SSRF protection, loop guard (SHA256-based tool loop detection), session repair (history validation), LLM session compactor (block-aware), Merkle hash chain audit trail, and embedding driver. Defines the `KernelHandle` trait that enables inter-agent tools without circular crate dependencies. |
+docs/architecture.md:57:| **openfang-kernel** | The central coordinator. `OpenFangKernel` assembles all subsystems: `AgentRegistry`, `AgentScheduler`, `CapabilityManager`, `EventBus`, `Supervisor`, `WorkflowEngine`, `TriggerEngine`, `BackgroundExecutor`, `WasmSandbox`, `ModelCatalog`, `MeteringEngine`, `ModelRouter`, `AuthManager` (RBAC), `HeartbeatMonitor`, `SetupWizard`, `SkillRegistry`, MCP connections, and `WebToolsContext`. Implements `KernelHandle` for inter-agent operations. Handles agent spawn/kill, message dispatch, workflow execution, trigger evaluation, capability inheritance validation, and graceful shutdown with state persistence. |
+docs/architecture.md:58:| **openfang-api** | HTTP API server built on Axum 0.8 with 76 endpoints. Routes for agents, workflows, triggers, memory, channels, templates, models, providers, skills, ClawHub, MCP, health, status, version, and shutdown. WebSocket handler for real-time agent chat with streaming. SSE endpoint for streaming responses. OpenAI-compatible endpoints (`POST /v1/chat/completions`, `GET /v1/models`). A2A endpoints (`/.well-known/agent.json`, `/a2a/*`). Middleware: Bearer token auth, request ID injection, structured request logging, GCRA rate limiter (cost-aware), security headers (CSP, X-Frame-Options, etc.), health endpoint redaction. |
+docs/architecture.md:59:| **openfang-channels** | Channel bridge layer with 40 adapters. Each adapter implements the `ChannelAdapter` trait. Includes: Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Email, SMS, Webhook, Teams, Mattermost, IRC, Google Chat, Twitch, Rocket.Chat, Zulip, XMPP, LINE, Viber, Messenger, Reddit, Mastodon, Bluesky, Feishu, Revolt, Nextcloud, Guilded, Keybase, Threema, Nostr, Webex, Pumble, Flock, Twist, Mumble, DingTalk, Discourse, Gitter, Ntfy, Gotify, LinkedIn. Features: `AgentRouter` for message routing, `BridgeManager` for lifecycle coordination, `ChannelRateLimiter` (per-user DashMap tracking), `formatter.rs` (Markdown to TelegramHTML/SlackMrkdwn/PlainText), `ChannelOverrides` (model/system_prompt/dm_policy/group_policy/rate_limit/threading/output_format), DM/group policy enforcement. |
+docs/architecture.md:60:| **openfang-wire** | OpenFang Protocol (OFP) for peer-to-peer agent communication. JSON-framed messages over TCP with HMAC-SHA256 mutual authentication (nonce + constant-time verify via `subtle`). `PeerNode` listens for connections and manages peers. `PeerRegistry` tracks known remote peers and their agents. |
+docs/architecture.md:61:| **openfang-cli** | Clap-based CLI. Supports all commands: `init`, `start`, `status`, `doctor`, `agent spawn/list/chat/kill`, `workflow list/create/run`, `trigger list/create/delete`, `migrate`, `skill install/list/remove/search/create`, `channel list/setup/test/enable/disable`, `config show/edit`, `chat`, `mcp`. Daemon auto-detect: checks `~/.openfang/daemon.json` and health pings; uses HTTP when a daemon is running, boots an in-process kernel as fallback. Built-in MCP server mode. |
+docs/architecture.md:62:| **openfang-desktop** | Tauri 2.0 native desktop application. Boots the kernel in-process, runs the axum server on a background thread, and points a WebView at `http://127.0.0.1:{random_port}`. Features: system tray (Show/Browser/Status/Quit), single-instance enforcement, desktop notifications, hide-to-tray on close. IPC commands: `get_port`, `get_status`. Mobile-ready with `#[cfg(desktop)]` guards. |
+docs/architecture.md:63:| **openfang-migrate** | Migration engine. Supports OpenClaw (`~/.openclaw/`). Converts YAML configs to TOML, maps tool names, maps provider names, imports agent manifests, copies memory files, converts channel configs. Produces a `MigrationReport` with imported items, skipped items, and warnings. |
+docs/architecture.md:64:| **openfang-skills** | Skill system for pluggable tool bundles. 60 bundled skills compiled via `include_str!()`. Skills are `skill.toml` + Python/WASM/Node.js/PromptOnly code. `SkillManifest` defines metadata, runtime config, provided tools, and requirements. `SkillRegistry` manages installed and bundled skills. `FangHubClient` connects to FangHub marketplace. `ClawHubClient` connects to clawhub.ai for cross-ecosystem skill discovery. `SKILL.md` parser for OpenClaw compatibility (YAML frontmatter + Markdown body). `SkillVerifier` with SHA256 verification. Prompt injection scanner (`scan_prompt_content()`) detects override attempts, data exfiltration, and shell references. |
+docs/architecture.md:75:   - Read ~/.openfang/config.toml (or specified path)
+docs/architecture.md:80:   - Ensure ~/.openfang/data/ exists
+docs/architecture.md:83:   - Open SQLite database (openfang.db)
+docs/architecture.md:122:    - Load user-installed skills from disk
+docs/architecture.md:282:The memory substrate (`openfang-memory`) provides six layers of storage:
+docs/architecture.md:331:The `LlmDriver` trait (`openfang-runtime`) provides a unified interface for all LLM providers:
+docs/architecture.md:416:The `ModelCatalog` (`openfang-runtime/src/model_catalog.rs`) provides a registry of all known models, providers, and aliases.
+docs/architecture.md:539:`taint.rs` in `openfang-types` implements taint labels and taint sets. Data from external sources carries taint labels that propagate through operations, enabling information flow analysis.
+docs/architecture.md:563:`scan_prompt_content()` in the skills crate detects override attempts, data exfiltration patterns, and shell references in skill content. Applied to all bundled and installed skills and to SKILL.md auto-conversion.
+docs/architecture.md:585:The channel system (`openfang-channels`) provides 40 adapters for messaging platform integration.
+docs/architecture.md:609:The skill system (`openfang-skills`) provides 60 bundled skills and supports external skill installation.
+docs/architecture.md:751:The desktop app (`openfang-desktop`) wraps the full OpenFang stack in a native Tauri 2.0 application.
+docs/architecture.md:792:|                         openfang-cli                                |
+docs/architecture.md:800:|                         openfang-api                                |
+docs/architecture.md:814:|                       openfang-kernel                               |
+docs/architecture.md:845:| openfang-runtime |  | openfang-    |  | open-  |  | openfang- |
+docs/architecture.md:886:| openfang-memory  |
+docs/architecture.md:917:| openfang-types   |
+docs/agent-templates.md:10:openfang spawn orchestrator
+docs/agent-templates.md:11:openfang spawn coder
+docs/agent-templates.md:12:openfang spawn --template agents/writer/agent.toml
+docs/agent-templates.md:126:openfang spawn orchestrator
+docs/agent-templates.md:148:openfang spawn architect
+docs/agent-templates.md:172:openfang spawn security-auditor
+docs/agent-templates.md:196:openfang spawn coder
+docs/agent-templates.md:219:openfang spawn code-reviewer
+docs/agent-templates.md:242:openfang spawn data-scientist
+docs/agent-templates.md:265:openfang spawn debugger
+docs/agent-templates.md:287:openfang spawn researcher
+docs/agent-templates.md:310:openfang spawn analyst
+docs/agent-templates.md:333:openfang spawn test-engineer
+docs/agent-templates.md:356:openfang spawn legal-assistant
+docs/agent-templates.md:378:openfang spawn planner
+docs/agent-templates.md:400:openfang spawn writer
+docs/agent-templates.md:422:openfang spawn doc-writer
+docs/agent-templates.md:445:openfang spawn devops-lead
+docs/agent-templates.md:469:openfang spawn assistant
+docs/agent-templates.md:492:openfang spawn email-assistant
+docs/agent-templates.md:515:openfang spawn social-media
+docs/agent-templates.md:538:openfang spawn customer-support
+docs/agent-templates.md:561:openfang spawn sales-assistant
+docs/agent-templates.md:584:openfang spawn recruiter
+docs/agent-templates.md:607:openfang spawn meeting-assistant
+docs/agent-templates.md:631:openfang spawn ops
+docs/agent-templates.md:653:openfang spawn hello-world
+docs/agent-templates.md:676:openfang spawn translator
+docs/agent-templates.md:700:openfang spawn tutor
+docs/agent-templates.md:724:openfang spawn health-tracker
+docs/agent-templates.md:748:openfang spawn personal-finance
+docs/agent-templates.md:771:openfang spawn travel-planner
+docs/agent-templates.md:795:openfang spawn home-automation
+docs/agent-templates.md:899:openfang spawn coder
+docs/agent-templates.md:902:openfang spawn coder --name "backend-coder"
+docs/agent-templates.md:905:openfang spawn --template agents/custom/my-agent.toml
+docs/agent-templates.md:908:openfang agents
+docs/agent-templates.md:911:openfang message <agent-id> "Write a function to parse TOML files"
+docs/agent-templates.md:914:openfang kill <agent-id>
+docs/agent-templates.md:948:  "model": "openfang:coder",
+docs/VERTEX_AI_LOCAL_TESTING.md:6:2. **gcloud CLI** installed and in PATH
+docs/VERTEX_AI_LOCAL_TESTING.md:14:# Run this from the openfang directory:
+docs/VERTEX_AI_LOCAL_TESTING.md:29:taskkill /F /IM openfang.exe 2>$null
+docs/VERTEX_AI_LOCAL_TESTING.md:40:cd C:\Users\at384\Downloads\osc\dllm\openfang
+docs/VERTEX_AI_LOCAL_TESTING.md:41:.\target\debug\openfang.exe start
+docs/VERTEX_AI_LOCAL_TESTING.md:86:### ~/.openfang/config.toml
+docs/VERTEX_AI_LOCAL_TESTING.md:142:cd C:\Users\at384\Downloads\osc\dllm\openfang
+docs/VERTEX_AI_LOCAL_TESTING.md:146:cargo build -p openfang-cli
+docs/VERTEX_AI_LOCAL_TESTING.md:149:cargo test -p openfang-runtime --lib vertex
+docs/VERTEX_AI_LOCAL_TESTING.md:152:cargo fmt --check -p openfang-runtime
+docs/VERTEX_AI_LOCAL_TESTING.md:155:cargo clippy -p openfang-runtime --lib -- -W warnings
+docs/VERTEX_AI_LOCAL_TESTING.md:170:- `crates/openfang-runtime/src/drivers/vertex.rs` (NEW - ~790 lines)
+docs/VERTEX_AI_LOCAL_TESTING.md:171:- `crates/openfang-runtime/src/drivers/mod.rs` (+62 lines)
+docs/workflows.md:15:The implementation lives in `openfang-kernel/src/workflow.rs`. The workflow engine is decoupled from the kernel through closures -- it never directly owns or references the kernel, making it testable in isolation.
+docs/workflows.md:415:The trigger engine (`openfang-kernel/src/triggers.rs`) provides event-driven automation. Triggers watch the kernel's event bus and automatically send messages to agents when matching events arrive.
+docs/workflows.md:691:openfang workflow list
+docs/workflows.md:696:openfang workflow create <file>
+docs/workflows.md:701:openfang workflow run <workflow_id> <input>
+docs/workflows.md:708:openfang trigger list [--agent-id <uuid>]
+docs/workflows.md:713:openfang trigger create <agent_id> <pattern_json> [--prompt <template>] [--max-fires <n>]
+docs/workflows.md:724:openfang trigger create <agent-id> '"lifecycle"' --prompt "Lifecycle: {{event}}"
+docs/workflows.md:727:openfang trigger create <agent-id> '{"agent_spawned":{"name_pattern":"coder"}}' --max-fires 1
+docs/workflows.md:730:openfang trigger create <agent-id> '{"content_match":{"substring":"error"}}'
+docs/workflows.md:734:openfang trigger delete <trigger_id>
+docs/workflows.md:756:The `AgentScheduler` (in `openfang-kernel/src/scheduler.rs`) tracks per-agent token usage with a rolling 1-hour window via `UsageTracker`. If an agent exceeds its `ResourceQuota.max_llm_tokens_per_hour`, the scheduler returns `OpenFangError::QuotaExceeded`. The window resets automatically after 3600 seconds. This quota applies to all agent interactions, including those invoked by workflows.
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+codex
+The release workflow already uploads all CLI archives directly to the GitHub release, so the tap job can download the macOS tarballs from the release rather than changing packaging. I’m going to add a small formula template plus a guarded publish job, then wire the install docs into the existing documentation index.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "sed -n '1,80p' docs/cli-reference.md" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+exec
+/bin/zsh -lc "sed -n '390,455p' README.md" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+
+Drop-in replacement. Point your existing tools at OpenFang:
+
+```bash
+curl -X POST localhost:4200/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "researcher",
+    "messages": [{"role": "user", "content": "Analyze Q4 market trends"}],
+    "stream": true
+  }'
+```
+
+140+ REST/WS/SSE endpoints covering agents, memory, workflows, channels, models, skills, A2A, Hands, and more.
+
+---
+
+## Quick Start
+
+```bash
+# 1. Install (macOS/Linux)
+curl -fsSL https://openfang.sh/install | sh
+
+# 2. Initialize. Walks you through provider setup.
+openfang init
+
+# 3. Start the daemon
+openfang start
+
+# 4. Dashboard is live at http://localhost:4200
+
+# 5. Activate a Hand. It starts working for you.
+openfang hand activate researcher
+
+# 6. Chat with an agent
+openfang chat researcher
+> "What are the emerging trends in AI agent frameworks?"
+
+# 7. Spawn a pre-built agent
+openfang agent spawn coder
+```
+
+<details>
+<summary><strong>Windows (PowerShell)</strong></summary>
+
+```powershell
+irm https://openfang.sh/install.ps1 | iex
+openfang init
+openfang start
+```
+
+</details>
+
+---
+
+## Development
+
+```bash
+# Build the workspace
+cargo build --workspace --lib
+
+# Run all tests (1,767+)
+cargo test --workspace
+
+# Lint (must be 0 warnings)
+cargo clippy --workspace --all-targets -- -D warnings
+
+ succeeded in 0ms:
+# OpenFang CLI Reference
+
+Complete command-line reference for `openfang`, the CLI tool for the OpenFang Agent OS.
+
+## Overview
+
+The `openfang` binary is the primary interface for managing the OpenFang Agent OS. It supports two modes of operation:
+
+- **Daemon mode** -- When a daemon is running (`openfang start`), CLI commands communicate with it over HTTP. This is the recommended mode for production use.
+- **In-process mode** -- When no daemon is detected, commands that support it will boot an ephemeral in-process kernel. Agents spawned in this mode are not persisted and will be lost when the process exits.
+
+Running `openfang` with no subcommand launches the interactive TUI (terminal user interface) built with ratatui, which provides a full dashboard experience in the terminal.
+
+## Installation
+
+### From source (cargo)
+
+```bash
+cargo install --path crates/openfang-cli
+```
+
+### Build from workspace
+
+```bash
+cargo build --release -p openfang-cli
+# Binary: target/release/openfang (or openfang.exe on Windows)
+```
+
+### Docker
+
+```bash
+docker run -it openfang/openfang:latest
+```
+
+### Shell installer
+
+```bash
+curl -fsSL https://get.openfang.ai | sh
+```
+
+## Global Options
+
+These options apply to all commands.
+
+| Option | Description |
+|---|---|
+| `--config <PATH>` | Path to a custom config file. Overrides the default `~/.openfang/config.toml`. |
+| `--help` | Print help information for any command or subcommand. |
+| `--version` | Print the version of the `openfang` binary. |
+
+**Environment variables:**
+
+| Variable | Description |
+|---|---|
+| `RUST_LOG` | Controls log verbosity (e.g. `info`, `debug`, `openfang_kernel=trace`). |
+| `OPENFANG_AGENTS_DIR` | Override the agent templates directory. |
+| `EDITOR` / `VISUAL` | Editor used by `openfang config edit`. Falls back to `notepad` (Windows) or `vi` (Unix). |
+
+---
+
+## Command Reference
+
+### openfang (no subcommand)
+
+Launch the interactive TUI dashboard.
+
+```
+openfang [--config <PATH>]
+```
+
+The TUI provides a full-screen terminal interface with panels for agents, chat, workflows, channels, skills, settings, and more. Tracing output is redirected to `~/.openfang/tui.log` to avoid corrupting the terminal display.
+
+Press `Ctrl+C` to exit. A second `Ctrl+C` force-exits the process.
+
+---
+
+### openfang init
+
+Initialize the OpenFang workspace. Creates `~/.openfang/` with subdirectories (`data/`, `agents/`) and a default `config.toml`.
+
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+exec
+/bin/zsh -lc "rg -n \"homepage|description|version|authors|license|repository|name = \\\"openfang\"\" Cargo.toml crates/openfang-cli/Cargo.toml crates/openfang-desktop/Cargo.toml" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ exited 1 in 0ms:
+zsh:1: unmatched "
+
+exec
+/bin/zsh -lc "sed -n '1,260p' scripts/install.sh" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+#!/usr/bin/env bash
+# OpenFang installer — works on Linux, macOS, WSL
+# Usage: curl -sSf https://openfang.sh | sh
+#
+# Environment variables:
+#   OPENFANG_INSTALL_DIR  — custom install directory (default: ~/.openfang/bin)
+#   OPENFANG_VERSION      — install a specific version tag (default: latest)
+
+set -euo pipefail
+
+REPO="RightNow-AI/openfang"
+INSTALL_DIR="${OPENFANG_INSTALL_DIR:-$HOME/.openfang/bin}"
+
+detect_platform() {
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64|amd64) ARCH="x86_64" ;;
+        aarch64|arm64) ARCH="aarch64" ;;
+        *) echo "  Unsupported architecture: $ARCH"; exit 1 ;;
+    esac
+    case "$OS" in
+        linux) PLATFORM="${ARCH}-unknown-linux-gnu" ;;
+        darwin) PLATFORM="${ARCH}-apple-darwin" ;;
+        mingw*|msys*|cygwin*)
+            echo ""
+            echo "  For Windows, use PowerShell instead:"
+            echo "    irm https://openfang.sh/install.ps1 | iex"
+            echo ""
+            echo "  Or download the .msi installer from:"
+            echo "    https://github.com/$REPO/releases/latest"
+            echo ""
+            echo "  Or install via cargo:"
+            echo "    cargo install --git https://github.com/$REPO openfang-cli"
+            exit 1
+            ;;
+        *) echo "  Unsupported OS: $OS"; exit 1 ;;
+    esac
+}
+
+install() {
+    detect_platform
+
+    echo ""
+    echo "  OpenFang Installer"
+    echo "  =================="
+    echo ""
+
+    # Get latest version with binary assets
+    if [ -n "${OPENFANG_VERSION:-}" ]; then
+        VERSION="$OPENFANG_VERSION"
+        echo "  Using specified version: $VERSION"
+    else
+        echo "  Fetching latest release..."
+        # Find the most recent release that has binary assets (skip empty tag-only releases)
+        VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=10" | \
+            grep -E '"tag_name"|"assets":\[' | \
+            paste - - | \
+            grep -v '"assets":\[\]' | \
+            head -1 | \
+            sed 's/.*"tag_name": *"//' | sed 's/".*//')
+        # Fallback to /releases/latest if the above fails
+        if [ -z "$VERSION" ]; then
+            VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | sed 's/.*"tag_name": *"//' | sed 's/".*//')
+        fi
+    fi
+
+    if [ -z "$VERSION" ]; then
+        echo "  Could not determine latest version."
+        echo "  Install from source instead:"
+        echo "    cargo install --git https://github.com/$REPO openfang-cli"
+        exit 1
+    fi
+
+    URL="https://github.com/$REPO/releases/download/$VERSION/openfang-$PLATFORM.tar.gz"
+    CHECKSUM_URL="$URL.sha256"
+
+    echo "  Installing OpenFang $VERSION for $PLATFORM..."
+    mkdir -p "$INSTALL_DIR"
+
+    # Download to temp
+    TMPDIR=$(mktemp -d)
+    ARCHIVE="$TMPDIR/openfang.tar.gz"
+    CHECKSUM_FILE="$TMPDIR/checksum.sha256"
+
+    cleanup() { rm -rf "$TMPDIR"; }
+    trap cleanup EXIT
+
+    if ! curl -fsSL "$URL" -o "$ARCHIVE" 2>/dev/null; then
+        echo "  Download failed. The release may not exist for your platform."
+        echo "  Install from source instead:"
+        echo "    cargo install --git https://github.com/$REPO openfang-cli"
+        exit 1
+    fi
+
+    # Verify checksum if available
+    if curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_FILE" 2>/dev/null; then
+        EXPECTED=$(cut -d ' ' -f 1 < "$CHECKSUM_FILE")
+        if command -v sha256sum &>/dev/null; then
+            ACTUAL=$(sha256sum "$ARCHIVE" | cut -d ' ' -f 1)
+        elif command -v shasum &>/dev/null; then
+            ACTUAL=$(shasum -a 256 "$ARCHIVE" | cut -d ' ' -f 1)
+        else
+            ACTUAL=""
+        fi
+        if [ -n "$ACTUAL" ]; then
+            if [ "$EXPECTED" != "$ACTUAL" ]; then
+                echo "  Checksum verification FAILED!"
+                echo "    Expected: $EXPECTED"
+                echo "    Got:      $ACTUAL"
+                exit 1
+            fi
+            echo "  Checksum verified."
+        else
+            echo "  No sha256sum/shasum found, skipping checksum verification."
+        fi
+    fi
+
+    # Extract
+    tar xzf "$ARCHIVE" -C "$INSTALL_DIR"
+    chmod +x "$INSTALL_DIR/openfang"
+
+    # Ad-hoc codesign on macOS (prevents SIGKILL on Apple Silicon)
+    # Must strip extended attributes (com.apple.quarantine) BEFORE signing,
+    # otherwise the signature is computed over the quarantine xattr and macOS
+    # rejects it as "Code Signature Invalid" → SIGKILL.
+    if [ "$OS" = "darwin" ]; then
+        if command -v xattr &>/dev/null; then
+            xattr -cr "$INSTALL_DIR/openfang" 2>/dev/null || true
+        fi
+        if command -v codesign &>/dev/null; then
+            if ! codesign --force --sign - "$INSTALL_DIR/openfang"; then
+                echo ""
+                echo "  Warning: ad-hoc code signing failed."
+                echo "  On Apple Silicon, the binary may be killed (SIGKILL) by Gatekeeper."
+                echo "  Try manually: xattr -cr $INSTALL_DIR/openfang && codesign --force --sign - $INSTALL_DIR/openfang"
+                echo ""
+            fi
+        fi
+    fi
+
+    # Add to PATH — detect the user's login shell
+    USER_SHELL="${SHELL:-}"
+    # Fallback: check /etc/passwd if $SHELL is unset (e.g. minimal containers)
+    if [ -z "$USER_SHELL" ] && command -v getent &>/dev/null; then
+        USER_SHELL=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7)
+    fi
+    if [ -z "$USER_SHELL" ] && [ -f /etc/passwd ]; then
+        USER_SHELL=$(grep "^$(id -un):" /etc/passwd 2>/dev/null | cut -d: -f7)
+    fi
+
+    # Fish shell: write to ~/.config/fish/conf.d/openfang.fish (drop-in dir).
+    # This keeps the user's config.fish completely untouched, so a broken
+    # PATH entry can never wedge the user's main shell config — critical
+    # on Arch/CachyOS where the desktop session sources fish on login.
+    USE_FISH_DROPIN=0
+    case "$USER_SHELL" in
+        */fish) USE_FISH_DROPIN=1 ;;
+    esac
+    # If $USER_SHELL didn't match fish but config.fish exists AND no other
+    # rc files exist, the user is likely a fish user — use the drop-in too.
+    if [ "$USE_FISH_DROPIN" -eq 0 ] \
+        && [ -f "$HOME/.config/fish/config.fish" ] \
+        && [ ! -f "$HOME/.bashrc" ] \
+        && [ ! -f "$HOME/.zshrc" ]; then
+        USE_FISH_DROPIN=1
+    fi
+
+    if [ "$USE_FISH_DROPIN" -eq 1 ]; then
+        FISH_CONF_DIR="$HOME/.config/fish/conf.d"
+        FISH_DROPIN="$FISH_CONF_DIR/openfang.fish"
+        mkdir -p "$FISH_CONF_DIR"
+        if [ ! -f "$FISH_DROPIN" ]; then
+            # Guarded with `test -d` so a missing/broken install dir never
+            # breaks fish startup (which would black-screen Arch/CachyOS
+            # desktop sessions that source fish at login).
+            cat > "$FISH_DROPIN" <<EOF
+# OpenFang PATH — auto-generated by installer
+if test -d "$INSTALL_DIR"
+    fish_add_path -g "$INSTALL_DIR"
+end
+EOF
+            echo "  Added $INSTALL_DIR to PATH via $FISH_DROPIN"
+        fi
+        # Best-effort: clean up legacy bash-syntax export from config.fish
+        # written by older OpenFang installers (<v0.5.0). Harmless if absent.
+        OLD_FISH_RC="$HOME/.config/fish/config.fish"
+        if [ -f "$OLD_FISH_RC" ] && grep -q "openfang/bin" "$OLD_FISH_RC" 2>/dev/null; then
+            # Remove any line containing .openfang/bin (covers both bash
+            # `export PATH=` syntax and old fish `set -gx PATH` lines).
+            TMPFILE=$(mktemp)
+            grep -v "openfang/bin" "$OLD_FISH_RC" > "$TMPFILE" || true
+            mv "$TMPFILE" "$OLD_FISH_RC"
+            echo "  Cleaned legacy openfang PATH entry from $OLD_FISH_RC"
+        fi
+    else
+        SHELL_RC=""
+        case "$USER_SHELL" in
+            */zsh)  SHELL_RC="$HOME/.zshrc" ;;
+            */bash) SHELL_RC="$HOME/.bashrc" ;;
+        esac
+        # Fall back to existing rc files when shell detection failed.
+        if [ -z "$SHELL_RC" ]; then
+            if [ -f "$HOME/.bashrc" ]; then
+                SHELL_RC="$HOME/.bashrc"
+            elif [ -f "$HOME/.zshrc" ]; then
+                SHELL_RC="$HOME/.zshrc"
+            fi
+        fi
+
+        if [ -n "$SHELL_RC" ] && ! grep -q "openfang" "$SHELL_RC" 2>/dev/null; then
+            echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$SHELL_RC"
+            echo "  Added $INSTALL_DIR to PATH in $SHELL_RC"
+        fi
+    fi
+
+    # Verify installation
+    if "$INSTALL_DIR/openfang" --version >/dev/null 2>&1; then
+        INSTALLED_VERSION=$("$INSTALL_DIR/openfang" --version 2>/dev/null || echo "$VERSION")
+        echo ""
+        echo "  OpenFang installed successfully! ($INSTALLED_VERSION)"
+    else
+        echo ""
+        echo "  OpenFang binary installed to $INSTALL_DIR/openfang"
+    fi
+
+    echo ""
+    echo "  Get started:"
+    echo "    openfang init"
+    echo ""
+    echo "  The setup wizard will guide you through provider selection"
+    echo "  and configuration."
+    echo ""
+}
+
+install
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "sed -n '1,90p' crates/openfang-cli/Cargo.toml" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+[package]
+name = "openfang-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI tool for the OpenFang Agent OS"
+
+[[bin]]
+name = "openfang"
+path = "src/main.rs"
+
+[dependencies]
+openfang-types = { path = "../openfang-types" }
+openfang-kernel = { path = "../openfang-kernel" }
+openfang-api = { path = "../openfang-api" }
+openfang-migrate = { path = "../openfang-migrate" }
+openfang-skills = { path = "../openfang-skills" }
+openfang-extensions = { path = "../openfang-extensions" }
+zeroize = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+dirs = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+openfang-runtime = { path = "../openfang-runtime" }
+uuid = { workspace = true }
+ratatui = { workspace = true }
+colored = { workspace = true }
+tempfile = { workspace = true }
+
+exec
+/bin/zsh -lc "sed -n '1,90p' Cargo.toml" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+[workspace]
+resolver = "2"
+members = [
+    "crates/openfang-types",
+    "crates/openfang-memory",
+    "crates/openfang-runtime",
+    "crates/openfang-wire",
+    "crates/openfang-api",
+    "crates/openfang-kernel",
+    "crates/openfang-cli",
+    "crates/openfang-channels",
+    "crates/openfang-migrate",
+    "crates/openfang-skills",
+    "crates/openfang-desktop",
+    "crates/openfang-hands",
+    "crates/openfang-extensions",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.6.9"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/RightNow-AI/openfang"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+rmp-serde = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Concurrency
+dashmap = "6"
+crossbeam = "0.8"
+
+# Logging / Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+
+# IDs
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+
+# HTTP client (for LLM drivers)
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "gzip", "deflate", "brotli"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# Async trait
+async-trait = "0.1"
+
+# Base64
+base64 = "0.22"
+
+# Bytes
+bytes = "1"
+
+# Futures
+futures = "0.3"
+prost = "0.14"
+
+# WebSocket client (for Discord/Slack gateway)
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+url = "2"
+
+# WASM sandbox
+wasmtime = "43"
+
+# HTTP server (for API daemon)
+axum = { version = "0.8", features = ["ws", "multipart"] }
+tower = "0.5"
+
+hook: PostToolUse
+hook: PostToolUse
+exec
+/bin/zsh -lc "sed -n '1,90p' crates/openfang-desktop/Cargo.toml" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+[package]
+name = "openfang-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native desktop application for the OpenFang Agent OS (Tauri 2.0)"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+openfang-kernel = { path = "../openfang-kernel" }
+openfang-api = { path = "../openfang-api" }
+openfang-types = { path = "../openfang-types" }
+tokio = { workspace = true }
+axum = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
+serde = { workspace = true }
+toml = { workspace = true }
+open = "5"
+
+[features]
+# Tauri uses custom-protocol in production builds
+custom-protocol = ["tauri/custom-protocol"]
+
+[[bin]]
+name = "openfang-desktop"
+path = "src/main.rs"
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+codex
+I’m going to create `.github/homebrew/openfang.rb.template`, add a `homebrew` job after the CLI matrix, and add `docs/install.md` because that path is absent in this checkout. The tap target I’m using is `RightNow-AI/homebrew-openfang`, which Homebrew users tap as `RightNow-AI/openfang`.
+hook: PreToolUse
+hook: PreToolUse Completed
+apply patch
+patch: completed
+/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/.github/homebrew/openfang.rb.template
+/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/.github/workflows/release.yml
+/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/README.md
+/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/docs/README.md
+/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/docs/install.md
+diff --git a/.github/homebrew/openfang.rb.template b/.github/homebrew/openfang.rb.template
+new file mode 100644
+index 0000000000000000000000000000000000000000..53960fa4088ce1827ae41595094910da7e87676f
+--- /dev/null
++++ b/.github/homebrew/openfang.rb.template
+@@ -0,0 +1,26 @@
++class Openfang < Formula
++  desc "Open-source Agent Operating System"
++  homepage "https://openfang.sh"
++  version "{{VERSION}}"
++  license any_of: ["Apache-2.0", "MIT"]
++
++  on_macos do
++    on_arm do
++      url "{{ARM64_URL}}"
++      sha256 "{{ARM64_SHA256}}"
++    end
++
++    on_intel do
++      url "{{X86_64_URL}}"
++      sha256 "{{X86_64_SHA256}}"
++    end
++  end
++
++  def install
++    bin.install "openfang"
++  end
++
++  test do
++    assert_match version.to_s, shell_output("#{bin}/openfang --version")
++  end
++end
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index cfd663dcf739f276ff757b15c4fc4823801d4b36..ec0d72bd9130881e3bc1c88587250762125c47ff
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -210,6 +210,79 @@
+         env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+ 
++  # ── Homebrew tap formula (macOS stable tags only) ─────────────────────────
++  homebrew:
++    name: Homebrew Tap
++    runs-on: ubuntu-latest
++    needs: cli
++    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
++    steps:
++      - uses: actions/checkout@v6
++
++      - name: Download macOS release tarballs
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          set -euo pipefail
++          mkdir -p dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-x86_64-apple-darwin.tar.gz" \
++            --dir dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-aarch64-apple-darwin.tar.gz" \
++            --dir dist
++          test -s dist/openfang-x86_64-apple-darwin.tar.gz
++          test -s dist/openfang-aarch64-apple-darwin.tar.gz
++
++      - name: Render formula
++        env:
++          FORMULA_VERSION: ${{ github.ref_name }}
++        run: |
++          set -euo pipefail
++          VERSION="${FORMULA_VERSION#v}"
++          X86_64_ASSET="openfang-x86_64-apple-darwin.tar.gz"
++          ARM64_ASSET="openfang-aarch64-apple-darwin.tar.gz"
++          export FORMULA_VERSION="$VERSION"
++          export FORMULA_X86_64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${X86_64_ASSET}"
++          export FORMULA_ARM64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${ARM64_ASSET}"
++          export FORMULA_X86_64_SHA256
++          export FORMULA_ARM64_SHA256
++          FORMULA_X86_64_SHA256="$(sha256sum "dist/${X86_64_ASSET}" | awk '{print $1}')"
++          FORMULA_ARM64_SHA256="$(sha256sum "dist/${ARM64_ASSET}" | awk '{print $1}')"
++          mkdir -p Formula
++          perl -pe '
++            s/\{\{VERSION\}\}/$ENV{FORMULA_VERSION}/g;
++            s/\{\{X86_64_URL\}\}/$ENV{FORMULA_X86_64_URL}/g;
++            s/\{\{X86_64_SHA256\}\}/$ENV{FORMULA_X86_64_SHA256}/g;
++            s/\{\{ARM64_URL\}\}/$ENV{FORMULA_ARM64_URL}/g;
++            s/\{\{ARM64_SHA256\}\}/$ENV{FORMULA_ARM64_SHA256}/g;
++          ' .github/homebrew/openfang.rb.template > Formula/openfang.rb
++
++      - name: Check out Homebrew tap
++        uses: actions/checkout@v6
++        with:
++          repository: RightNow-AI/homebrew-openfang
++          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
++          path: homebrew-tap
++
++      - name: Publish formula
++        run: |
++          set -euo pipefail
++          mkdir -p homebrew-tap/Formula
++          cp Formula/openfang.rb homebrew-tap/Formula/openfang.rb
++          cd homebrew-tap
++          git config user.name "github-actions[bot]"
++          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
++          if git diff --quiet -- Formula/openfang.rb; then
++            echo "Formula already up to date."
++            exit 0
++          fi
++          git add Formula/openfang.rb
++          git commit -m "Update openfang formula to ${GITHUB_REF_NAME}"
++          git push origin HEAD:main
++
+   # ── Docker (linux/amd64 + linux/arm64) ────────────────────────────────────
+   docker:
+     name: Docker Image
+diff --git a/README.md b/README.md
+index afffa314c3f47e0d8b0284dabea995e99fbe94c3..2caeb82fb41522b4207c867f470258fd79451c65
+--- a/README.md
++++ b/README.md
+@@ -406,6 +406,12 @@
+ 
+ ## Quick Start
+ 
++| Platform | Install |
++|----------|---------|
++| macOS (Homebrew) | `brew tap RightNow-AI/openfang && brew install openfang` |
++| macOS/Linux | `curl -fsSL https://openfang.sh/install \| sh` |
++| Windows | `irm https://openfang.sh/install.ps1 \| iex` |
++
+ ```bash
+ # 1. Install (macOS/Linux)
+ curl -fsSL https://openfang.sh/install | sh
+diff --git a/docs/README.md b/docs/README.md
+index 4ea86d4bf9ce0463f550734ca8cbaae052e4d533..adb739ab62d69d5229b28d4d11a0552a2d86d4ce
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -8,6 +8,7 @@
+ 
+ | Guide | Description |
+ |-------|-------------|
++| [Installation](install.md) | Homebrew, shell installer, Windows, and source install paths |
+ | [Getting Started](getting-started.md) | Installation, first agent, first chat session |
+ | [Configuration](configuration.md) | Complete `config.toml` reference with every field |
+ | [CLI Reference](cli-reference.md) | Every command and subcommand with examples |
+diff --git a/docs/install.md b/docs/install.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2fe58ade080fb91f2a466b44ef24e933b4f15ba5
+--- /dev/null
++++ b/docs/install.md
+@@ -0,0 +1,42 @@
++# Installation
++
++OpenFang can be installed with Homebrew on macOS, the shell installer on macOS or Linux, PowerShell on Windows, or from source for development.
++
++## macOS with Homebrew
++
++```bash
++brew tap RightNow-AI/openfang
++brew install openfang
++```
++
++The tap formula is generated from each stable `v*` release after the macOS CLI tarballs are published. Pre-release tags such as `v1.2.3-rc.1` do not update the tap.
++
++## macOS or Linux
++
++```bash
++curl -fsSL https://openfang.sh/install | sh
++```
++
++To install a specific release, set `OPENFANG_VERSION` to the tag:
++
++```bash
++OPENFANG_VERSION=v0.6.9 curl -fsSL https://openfang.sh/install | sh
++```
++
++## Windows
++
++```powershell
++irm https://openfang.sh/install.ps1 | iex
++```
++
++## From Source
++
++```bash
++cargo install --path crates/openfang-cli
++```
++
++## Maintainer Notes
++
++The release workflow publishes `Formula/openfang.rb` to `RightNow-AI/homebrew-openfang` using the `HOMEBREW_TAP_TOKEN` secret. The token needs contents write access to the tap repository.
++
++Tap-side CI should run `brew test-bot --only-formulae openfang` against the rendered formula before releases are announced.
+
+hook: PostToolUse
+hook: PostToolUse Completed
+diff --git a/.github/homebrew/openfang.rb.template b/.github/homebrew/openfang.rb.template
+new file mode 100644
+index 0000000000000000000000000000000000000000..53960fa4088ce1827ae41595094910da7e87676f
+--- /dev/null
++++ b/.github/homebrew/openfang.rb.template
+@@ -0,0 +1,26 @@
++class Openfang < Formula
++  desc "Open-source Agent Operating System"
++  homepage "https://openfang.sh"
++  version "{{VERSION}}"
++  license any_of: ["Apache-2.0", "MIT"]
++
++  on_macos do
++    on_arm do
++      url "{{ARM64_URL}}"
++      sha256 "{{ARM64_SHA256}}"
++    end
++
++    on_intel do
++      url "{{X86_64_URL}}"
++      sha256 "{{X86_64_SHA256}}"
++    end
++  end
++
++  def install
++    bin.install "openfang"
++  end
++
++  test do
++    assert_match version.to_s, shell_output("#{bin}/openfang --version")
++  end
++end
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index cfd663dcf739f276ff757b15c4fc4823801d4b36..ec0d72bd9130881e3bc1c88587250762125c47ff
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -210,6 +210,79 @@
+         env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+ 
++  # ── Homebrew tap formula (macOS stable tags only) ─────────────────────────
++  homebrew:
++    name: Homebrew Tap
++    runs-on: ubuntu-latest
++    needs: cli
++    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
++    steps:
++      - uses: actions/checkout@v6
++
++      - name: Download macOS release tarballs
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          set -euo pipefail
++          mkdir -p dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-x86_64-apple-darwin.tar.gz" \
++            --dir dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-aarch64-apple-darwin.tar.gz" \
++            --dir dist
++          test -s dist/openfang-x86_64-apple-darwin.tar.gz
++          test -s dist/openfang-aarch64-apple-darwin.tar.gz
++
++      - name: Render formula
++        env:
++          FORMULA_VERSION: ${{ github.ref_name }}
++        run: |
++          set -euo pipefail
++          VERSION="${FORMULA_VERSION#v}"
++          X86_64_ASSET="openfang-x86_64-apple-darwin.tar.gz"
++          ARM64_ASSET="openfang-aarch64-apple-darwin.tar.gz"
++          export FORMULA_VERSION="$VERSION"
++          export FORMULA_X86_64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${X86_64_ASSET}"
++          export FORMULA_ARM64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${ARM64_ASSET}"
++          export FORMULA_X86_64_SHA256
++          export FORMULA_ARM64_SHA256
++          FORMULA_X86_64_SHA256="$(sha256sum "dist/${X86_64_ASSET}" | awk '{print $1}')"
++          FORMULA_ARM64_SHA256="$(sha256sum "dist/${ARM64_ASSET}" | awk '{print $1}')"
++          mkdir -p Formula
++          perl -pe '
++            s/\{\{VERSION\}\}/$ENV{FORMULA_VERSION}/g;
++            s/\{\{X86_64_URL\}\}/$ENV{FORMULA_X86_64_URL}/g;
++            s/\{\{X86_64_SHA256\}\}/$ENV{FORMULA_X86_64_SHA256}/g;
++            s/\{\{ARM64_URL\}\}/$ENV{FORMULA_ARM64_URL}/g;
++            s/\{\{ARM64_SHA256\}\}/$ENV{FORMULA_ARM64_SHA256}/g;
++          ' .github/homebrew/openfang.rb.template > Formula/openfang.rb
++
++      - name: Check out Homebrew tap
++        uses: actions/checkout@v6
++        with:
++          repository: RightNow-AI/homebrew-openfang
++          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
++          path: homebrew-tap
++
++      - name: Publish formula
++        run: |
++          set -euo pipefail
++          mkdir -p homebrew-tap/Formula
++          cp Formula/openfang.rb homebrew-tap/Formula/openfang.rb
++          cd homebrew-tap
++          git config user.name "github-actions[bot]"
++          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
++          if git diff --quiet -- Formula/openfang.rb; then
++            echo "Formula already up to date."
++            exit 0
++          fi
++          git add Formula/openfang.rb
++          git commit -m "Update openfang formula to ${GITHUB_REF_NAME}"
++          git push origin HEAD:main
++
+   # ── Docker (linux/amd64 + linux/arm64) ────────────────────────────────────
+   docker:
+     name: Docker Image
+diff --git a/README.md b/README.md
+index afffa314c3f47e0d8b0284dabea995e99fbe94c3..2caeb82fb41522b4207c867f470258fd79451c65
+--- a/README.md
++++ b/README.md
+@@ -406,6 +406,12 @@
+ 
+ ## Quick Start
+ 
++| Platform | Install |
++|----------|---------|
++| macOS (Homebrew) | `brew tap RightNow-AI/openfang && brew install openfang` |
++| macOS/Linux | `curl -fsSL https://openfang.sh/install \| sh` |
++| Windows | `irm https://openfang.sh/install.ps1 \| iex` |
++
+ ```bash
+ # 1. Install (macOS/Linux)
+ curl -fsSL https://openfang.sh/install | sh
+diff --git a/docs/README.md b/docs/README.md
+index 4ea86d4bf9ce0463f550734ca8cbaae052e4d533..adb739ab62d69d5229b28d4d11a0552a2d86d4ce
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -8,6 +8,7 @@
+ 
+ | Guide | Description |
+ |-------|-------------|
++| [Installation](install.md) | Homebrew, shell installer, Windows, and source install paths |
+ | [Getting Started](getting-started.md) | Installation, first agent, first chat session |
+ | [Configuration](configuration.md) | Complete `config.toml` reference with every field |
+ | [CLI Reference](cli-reference.md) | Every command and subcommand with examples |
+diff --git a/docs/install.md b/docs/install.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2fe58ade080fb91f2a466b44ef24e933b4f15ba5
+--- /dev/null
++++ b/docs/install.md
+@@ -0,0 +1,42 @@
++# Installation
++
++OpenFang can be installed with Homebrew on macOS, the shell installer on macOS or Linux, PowerShell on Windows, or from source for development.
++
++## macOS with Homebrew
++
++```bash
++brew tap RightNow-AI/openfang
++brew install openfang
++```
++
++The tap formula is generated from each stable `v*` release after the macOS CLI tarballs are published. Pre-release tags such as `v1.2.3-rc.1` do not update the tap.
++
++## macOS or Linux
++
++```bash
++curl -fsSL https://openfang.sh/install | sh
++```
++
++To install a specific release, set `OPENFANG_VERSION` to the tag:
++
++```bash
++OPENFANG_VERSION=v0.6.9 curl -fsSL https://openfang.sh/install | sh
++```
++
++## Windows
++
++```powershell
++irm https://openfang.sh/install.ps1 | iex
++```
++
++## From Source
++
++```bash
++cargo install --path crates/openfang-cli
++```
++
++## Maintainer Notes
++
++The release workflow publishes `Formula/openfang.rb` to `RightNow-AI/homebrew-openfang` using the `HOMEBREW_TAP_TOKEN` secret. The token needs contents write access to the tap repository.
++
++Tap-side CI should run `brew test-bot --only-formulae openfang` against the rendered formula before releases are announced.
+
+codex
+The files are patched. I’m validating the workflow YAML and the Ruby formula template now, then I’ll inspect the diff for any quoting or path mistakes before running the requested status commands.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc 'git diff -- .github/workflows/release.yml .github/homebrew/openfang.rb.template docs/install.md docs/README.md README.md' in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index cfd663d..ec0d72b 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -210,6 +210,79 @@ jobs:
+         env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+ 
++  # ── Homebrew tap formula (macOS stable tags only) ─────────────────────────
++  homebrew:
++    name: Homebrew Tap
++    runs-on: ubuntu-latest
++    needs: cli
++    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
++    steps:
++      - uses: actions/checkout@v6
++
++      - name: Download macOS release tarballs
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          set -euo pipefail
++          mkdir -p dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-x86_64-apple-darwin.tar.gz" \
++            --dir dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-aarch64-apple-darwin.tar.gz" \
++            --dir dist
++          test -s dist/openfang-x86_64-apple-darwin.tar.gz
++          test -s dist/openfang-aarch64-apple-darwin.tar.gz
++
++      - name: Render formula
++        env:
++          FORMULA_VERSION: ${{ github.ref_name }}
++        run: |
++          set -euo pipefail
++          VERSION="${FORMULA_VERSION#v}"
++          X86_64_ASSET="openfang-x86_64-apple-darwin.tar.gz"
++          ARM64_ASSET="openfang-aarch64-apple-darwin.tar.gz"
++          export FORMULA_VERSION="$VERSION"
++          export FORMULA_X86_64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${X86_64_ASSET}"
++          export FORMULA_ARM64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${ARM64_ASSET}"
++          export FORMULA_X86_64_SHA256
++          export FORMULA_ARM64_SHA256
++          FORMULA_X86_64_SHA256="$(sha256sum "dist/${X86_64_ASSET}" | awk '{print $1}')"
++          FORMULA_ARM64_SHA256="$(sha256sum "dist/${ARM64_ASSET}" | awk '{print $1}')"
++          mkdir -p Formula
++          perl -pe '
++            s/\{\{VERSION\}\}/$ENV{FORMULA_VERSION}/g;
++            s/\{\{X86_64_URL\}\}/$ENV{FORMULA_X86_64_URL}/g;
++            s/\{\{X86_64_SHA256\}\}/$ENV{FORMULA_X86_64_SHA256}/g;
++            s/\{\{ARM64_URL\}\}/$ENV{FORMULA_ARM64_URL}/g;
++            s/\{\{ARM64_SHA256\}\}/$ENV{FORMULA_ARM64_SHA256}/g;
++          ' .github/homebrew/openfang.rb.template > Formula/openfang.rb
++
++      - name: Check out Homebrew tap
++        uses: actions/checkout@v6
++        with:
++          repository: RightNow-AI/homebrew-openfang
++          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
++          path: homebrew-tap
++
++      - name: Publish formula
++        run: |
++          set -euo pipefail
++          mkdir -p homebrew-tap/Formula
++          cp Formula/openfang.rb homebrew-tap/Formula/openfang.rb
++          cd homebrew-tap
++          git config user.name "github-actions[bot]"
++          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
++          if git diff --quiet -- Formula/openfang.rb; then
++            echo "Formula already up to date."
++            exit 0
++          fi
++          git add Formula/openfang.rb
++          git commit -m "Update openfang formula to ${GITHUB_REF_NAME}"
++          git push origin HEAD:main
++
+   # ── Docker (linux/amd64 + linux/arm64) ────────────────────────────────────
+   docker:
+     name: Docker Image
+diff --git a/README.md b/README.md
+index afffa31..2caeb82 100644
+--- a/README.md
++++ b/README.md
+@@ -406,6 +406,12 @@ curl -X POST localhost:4200/v1/chat/completions \
+ 
+ ## Quick Start
+ 
++| Platform | Install |
++|----------|---------|
++| macOS (Homebrew) | `brew tap RightNow-AI/openfang && brew install openfang` |
++| macOS/Linux | `curl -fsSL https://openfang.sh/install \| sh` |
++| Windows | `irm https://openfang.sh/install.ps1 \| iex` |
++
+ ```bash
+ # 1. Install (macOS/Linux)
+ curl -fsSL https://openfang.sh/install | sh
+diff --git a/docs/README.md b/docs/README.md
+index 4ea86d4..adb739a 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -8,6 +8,7 @@ Welcome to the OpenFang documentation. OpenFang is the open-source Agent Operati
+ 
+ | Guide | Description |
+ |-------|-------------|
++| [Installation](install.md) | Homebrew, shell installer, Windows, and source install paths |
+ | [Getting Started](getting-started.md) | Installation, first agent, first chat session |
+ | [Configuration](configuration.md) | Complete `config.toml` reference with every field |
+ | [CLI Reference](cli-reference.md) | Every command and subcommand with examples |
+
+hook: PostToolUse
+hook: PostToolUse Completed
+exec
+/bin/zsh -lc 'ruby -c .github/homebrew/openfang.rb.template' in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+Syntax OK
+
+hook: PostToolUse
+exec
+/bin/zsh -lc "ruby -e \"require 'yaml'; YAML.load_file('.github/workflows/release.yml'); puts 'workflow yaml ok'\"" in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+ succeeded in 101ms:
+diff --git a/.github/homebrew/openfang.rb.template b/.github/homebrew/openfang.rb.template
+new file mode 100644
+index 0000000000000000000000000000000000000000..53960fa4088ce1827ae41595094910da7e87676f
+--- /dev/null
++++ b/.github/homebrew/openfang.rb.template
+@@ -0,0 +1,26 @@
++class Openfang < Formula
++  desc "Open-source Agent Operating System"
++  homepage "https://openfang.sh"
++  version "{{VERSION}}"
++  license any_of: ["Apache-2.0", "MIT"]
++
++  on_macos do
++    on_arm do
++      url "{{ARM64_URL}}"
++      sha256 "{{ARM64_SHA256}}"
++    end
++
++    on_intel do
++      url "{{X86_64_URL}}"
++      sha256 "{{X86_64_SHA256}}"
++    end
++  end
++
++  def install
++    bin.install "openfang"
++  end
++
++  test do
++    assert_match version.to_s, shell_output("#{bin}/openfang --version")
++  end
++end
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index cfd663dcf739f276ff757b15c4fc4823801d4b36..ec0d72bd9130881e3bc1c88587250762125c47ff
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -210,6 +210,79 @@
+         env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+ 
++  # ── Homebrew tap formula (macOS stable tags only) ─────────────────────────
++  homebrew:
++    name: Homebrew Tap
++    runs-on: ubuntu-latest
++    needs: cli
++    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
++    steps:
++      - uses: actions/checkout@v6
++
++      - name: Download macOS release tarballs
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          set -euo pipefail
++          mkdir -p dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-x86_64-apple-darwin.tar.gz" \
++            --dir dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-aarch64-apple-darwin.tar.gz" \
++            --dir dist
++          test -s dist/openfang-x86_64-apple-darwin.tar.gz
++          test -s dist/openfang-aarch64-apple-darwin.tar.gz
++
++      - name: Render formula
++        env:
++          FORMULA_VERSION: ${{ github.ref_name }}
++        run: |
++          set -euo pipefail
++          VERSION="${FORMULA_VERSION#v}"
++          X86_64_ASSET="openfang-x86_64-apple-darwin.tar.gz"
++          ARM64_ASSET="openfang-aarch64-apple-darwin.tar.gz"
++          export FORMULA_VERSION="$VERSION"
++          export FORMULA_X86_64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${X86_64_ASSET}"
++          export FORMULA_ARM64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${ARM64_ASSET}"
++          export FORMULA_X86_64_SHA256
++          export FORMULA_ARM64_SHA256
++          FORMULA_X86_64_SHA256="$(sha256sum "dist/${X86_64_ASSET}" | awk '{print $1}')"
++          FORMULA_ARM64_SHA256="$(sha256sum "dist/${ARM64_ASSET}" | awk '{print $1}')"
++          mkdir -p Formula
++          perl -pe '
++            s/\{\{VERSION\}\}/$ENV{FORMULA_VERSION}/g;
++            s/\{\{X86_64_URL\}\}/$ENV{FORMULA_X86_64_URL}/g;
++            s/\{\{X86_64_SHA256\}\}/$ENV{FORMULA_X86_64_SHA256}/g;
++            s/\{\{ARM64_URL\}\}/$ENV{FORMULA_ARM64_URL}/g;
++            s/\{\{ARM64_SHA256\}\}/$ENV{FORMULA_ARM64_SHA256}/g;
++          ' .github/homebrew/openfang.rb.template > Formula/openfang.rb
++
++      - name: Check out Homebrew tap
++        uses: actions/checkout@v6
++        with:
++          repository: RightNow-AI/homebrew-openfang
++          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
++          path: homebrew-tap
++
++      - name: Publish formula
++        run: |
++          set -euo pipefail
++          mkdir -p homebrew-tap/Formula
++          cp Formula/openfang.rb homebrew-tap/Formula/openfang.rb
++          cd homebrew-tap
++          git config user.name "github-actions[bot]"
++          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
++          if git diff --quiet -- Formula/openfang.rb; then
++            echo "Formula already up to date."
++            exit 0
++          fi
++          git add Formula/openfang.rb
++          git commit -m "Update openfang formula to ${GITHUB_REF_NAME}"
++          git push origin HEAD:main
++
+   # ── Docker (linux/amd64 + linux/arm64) ────────────────────────────────────
+   docker:
+     name: Docker Image
+diff --git a/README.md b/README.md
+index afffa314c3f47e0d8b0284dabea995e99fbe94c3..2caeb82fb41522b4207c867f470258fd79451c65
+--- a/README.md
++++ b/README.md
+@@ -406,6 +406,12 @@
+ 
+ ## Quick Start
+ 
++| Platform | Install |
++|----------|---------|
++| macOS (Homebrew) | `brew tap RightNow-AI/openfang && brew install openfang` |
++| macOS/Linux | `curl -fsSL https://openfang.sh/install \| sh` |
++| Windows | `irm https://openfang.sh/install.ps1 \| iex` |
++
+ ```bash
+ # 1. Install (macOS/Linux)
+ curl -fsSL https://openfang.sh/install | sh
+diff --git a/docs/README.md b/docs/README.md
+index 4ea86d4bf9ce0463f550734ca8cbaae052e4d533..adb739ab62d69d5229b28d4d11a0552a2d86d4ce
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -8,6 +8,7 @@
+ 
+ | Guide | Description |
+ |-------|-------------|
++| [Installation](install.md) | Homebrew, shell installer, Windows, and source install paths |
+ | [Getting Started](getting-started.md) | Installation, first agent, first chat session |
+ | [Configuration](configuration.md) | Complete `config.toml` reference with every field |
+ | [CLI Reference](cli-reference.md) | Every command and subcommand with examples |
+diff --git a/docs/install.md b/docs/install.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2fe58ade080fb91f2a466b44ef24e933b4f15ba5
+--- /dev/null
++++ b/docs/install.md
+@@ -0,0 +1,42 @@
++# Installation
++
++OpenFang can be installed with Homebrew on macOS, the shell installer on macOS or Linux, PowerShell on Windows, or from source for development.
++
++## macOS with Homebrew
++
++```bash
++brew tap RightNow-AI/openfang
++brew install openfang
++```
++
++The tap formula is generated from each stable `v*` release after the macOS CLI tarballs are published. Pre-release tags such as `v1.2.3-rc.1` do not update the tap.
++
++## macOS or Linux
++
++```bash
++curl -fsSL https://openfang.sh/install | sh
++```
++
++To install a specific release, set `OPENFANG_VERSION` to the tag:
++
++```bash
++OPENFANG_VERSION=v0.6.9 curl -fsSL https://openfang.sh/install | sh
++```
++
++## Windows
++
++```powershell
++irm https://openfang.sh/install.ps1 | iex
++```
++
++## From Source
++
++```bash
++cargo install --path crates/openfang-cli
++```
++
++## Maintainer Notes
++
++The release workflow publishes `Formula/openfang.rb` to `RightNow-AI/homebrew-openfang` using the `HOMEBREW_TAP_TOKEN` secret. The token needs contents write access to the tap repository.
++
++Tap-side CI should run `brew test-bot --only-formulae openfang` against the rendered formula before releases are announced.
+
+codex
+The YAML parses and the template is valid Ruby syntax. I noticed untracked files don’t appear in `git diff`, so I’m doing one render smoke test with dummy tarballs to catch substitution errors before the final requested `git status && git diff --stat`.
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc 'tmpdir=$(mktemp -d)
+trap '"'rm -rf \""'$tmpdir"'"' EXIT
+mkdir -p \""'$tmpdir/dist" "$tmpdir/Formula"
+printf x > "$tmpdir/dist/openfang-x86_64-apple-darwin.tar.gz"
+printf y > "$tmpdir/dist/openfang-aarch64-apple-darwin.tar.gz"
+FORMULA_VERSION=0.0.0 '"\\
+FORMULA_X86_64_URL=https://example.com/x86.tar.gz \\
+FORMULA_ARM64_URL=https://example.com/arm.tar.gz \\
+FORMULA_X86_64_SHA256="'$(sha256sum "$tmpdir/dist/openfang-x86_64-apple-darwin.tar.gz" | awk '"'{print "'$1}'"') \\
+FORMULA_ARM64_SHA256="'$(sha256sum "$tmpdir/dist/openfang-aarch64-apple-darwin.tar.gz" | awk '"'{print "'$1}'"') \\
+perl -pe '
+  s/\\{\\{VERSION\\}\\}/"'$ENV{FORMULA_VERSION}/g;
+  s/'"\\{\\{X86_64_URL\\}\\}/"'$ENV{FORMULA_X86_64_URL}/g;
+  s/'"\\{\\{X86_64_SHA256\\}\\}/"'$ENV{FORMULA_X86_64_SHA256}/g;
+  s/'"\\{\\{ARM64_URL\\}\\}/"'$ENV{FORMULA_ARM64_URL}/g;
+  s/'"\\{\\{ARM64_SHA256\\}\\}/"'$ENV{FORMULA_ARM64_SHA256}/g;
+'"' .github/homebrew/openfang.rb.template > \""'$tmpdir/Formula/openfang.rb"
+ruby -c "$tmpdir/Formula/openfang.rb"
+if rg '"'\\{\\{' \""'$tmpdir/Formula/openfang.rb"; then exit 1; fi' in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+hook: PostToolUse
+hook: PostToolUse Completed
+diff --git a/.github/homebrew/openfang.rb.template b/.github/homebrew/openfang.rb.template
+new file mode 100644
+index 0000000000000000000000000000000000000000..53960fa4088ce1827ae41595094910da7e87676f
+--- /dev/null
++++ b/.github/homebrew/openfang.rb.template
+@@ -0,0 +1,26 @@
++class Openfang < Formula
++  desc "Open-source Agent Operating System"
++  homepage "https://openfang.sh"
++  version "{{VERSION}}"
++  license any_of: ["Apache-2.0", "MIT"]
++
++  on_macos do
++    on_arm do
++      url "{{ARM64_URL}}"
++      sha256 "{{ARM64_SHA256}}"
++    end
++
++    on_intel do
++      url "{{X86_64_URL}}"
++      sha256 "{{X86_64_SHA256}}"
++    end
++  end
++
++  def install
++    bin.install "openfang"
++  end
++
++  test do
++    assert_match version.to_s, shell_output("#{bin}/openfang --version")
++  end
++end
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index cfd663dcf739f276ff757b15c4fc4823801d4b36..ec0d72bd9130881e3bc1c88587250762125c47ff
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -210,6 +210,79 @@
+         env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+ 
++  # ── Homebrew tap formula (macOS stable tags only) ─────────────────────────
++  homebrew:
++    name: Homebrew Tap
++    runs-on: ubuntu-latest
++    needs: cli
++    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
++    steps:
++      - uses: actions/checkout@v6
++
++      - name: Download macOS release tarballs
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          set -euo pipefail
++          mkdir -p dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-x86_64-apple-darwin.tar.gz" \
++            --dir dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-aarch64-apple-darwin.tar.gz" \
++            --dir dist
++          test -s dist/openfang-x86_64-apple-darwin.tar.gz
++          test -s dist/openfang-aarch64-apple-darwin.tar.gz
++
++      - name: Render formula
++        env:
++          FORMULA_VERSION: ${{ github.ref_name }}
++        run: |
++          set -euo pipefail
++          VERSION="${FORMULA_VERSION#v}"
++          X86_64_ASSET="openfang-x86_64-apple-darwin.tar.gz"
++          ARM64_ASSET="openfang-aarch64-apple-darwin.tar.gz"
++          export FORMULA_VERSION="$VERSION"
++          export FORMULA_X86_64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${X86_64_ASSET}"
++          export FORMULA_ARM64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${ARM64_ASSET}"
++          export FORMULA_X86_64_SHA256
++          export FORMULA_ARM64_SHA256
++          FORMULA_X86_64_SHA256="$(sha256sum "dist/${X86_64_ASSET}" | awk '{print $1}')"
++          FORMULA_ARM64_SHA256="$(sha256sum "dist/${ARM64_ASSET}" | awk '{print $1}')"
++          mkdir -p Formula
++          perl -pe '
++            s/\{\{VERSION\}\}/$ENV{FORMULA_VERSION}/g;
++            s/\{\{X86_64_URL\}\}/$ENV{FORMULA_X86_64_URL}/g;
++            s/\{\{X86_64_SHA256\}\}/$ENV{FORMULA_X86_64_SHA256}/g;
++            s/\{\{ARM64_URL\}\}/$ENV{FORMULA_ARM64_URL}/g;
++            s/\{\{ARM64_SHA256\}\}/$ENV{FORMULA_ARM64_SHA256}/g;
++          ' .github/homebrew/openfang.rb.template > Formula/openfang.rb
++
++      - name: Check out Homebrew tap
++        uses: actions/checkout@v6
++        with:
++          repository: RightNow-AI/homebrew-openfang
++          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
++          path: homebrew-tap
++
++      - name: Publish formula
++        run: |
++          set -euo pipefail
++          mkdir -p homebrew-tap/Formula
++          cp Formula/openfang.rb homebrew-tap/Formula/openfang.rb
++          cd homebrew-tap
++          git config user.name "github-actions[bot]"
++          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
++          if git diff --quiet -- Formula/openfang.rb; then
++            echo "Formula already up to date."
++            exit 0
++          fi
++          git add Formula/openfang.rb
++          git commit -m "Update openfang formula to ${GITHUB_REF_NAME}"
++          git push origin HEAD:main
++
+   # ── Docker (linux/amd64 + linux/arm64) ────────────────────────────────────
+   docker:
+     name: Docker Image
+diff --git a/README.md b/README.md
+index afffa314c3f47e0d8b0284dabea995e99fbe94c3..2caeb82fb41522b4207c867f470258fd79451c65
+--- a/README.md
++++ b/README.md
+@@ -406,6 +406,12 @@
+ 
+ ## Quick Start
+ 
++| Platform | Install |
++|----------|---------|
++| macOS (Homebrew) | `brew tap RightNow-AI/openfang && brew install openfang` |
++| macOS/Linux | `curl -fsSL https://openfang.sh/install \| sh` |
++| Windows | `irm https://openfang.sh/install.ps1 \| iex` |
++
+ ```bash
+ # 1. Install (macOS/Linux)
+ curl -fsSL https://openfang.sh/install | sh
+diff --git a/docs/README.md b/docs/README.md
+index 4ea86d4bf9ce0463f550734ca8cbaae052e4d533..adb739ab62d69d5229b28d4d11a0552a2d86d4ce
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -8,6 +8,7 @@
+ 
+ | Guide | Description |
+ |-------|-------------|
++| [Installation](install.md) | Homebrew, shell installer, Windows, and source install paths |
+ | [Getting Started](getting-started.md) | Installation, first agent, first chat session |
+ | [Configuration](configuration.md) | Complete `config.toml` reference with every field |
+ | [CLI Reference](cli-reference.md) | Every command and subcommand with examples |
+diff --git a/docs/install.md b/docs/install.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2fe58ade080fb91f2a466b44ef24e933b4f15ba5
+--- /dev/null
++++ b/docs/install.md
+@@ -0,0 +1,42 @@
++# Installation
++
++OpenFang can be installed with Homebrew on macOS, the shell installer on macOS or Linux, PowerShell on Windows, or from source for development.
++
++## macOS with Homebrew
++
++```bash
++brew tap RightNow-AI/openfang
++brew install openfang
++```
++
++The tap formula is generated from each stable `v*` release after the macOS CLI tarballs are published. Pre-release tags such as `v1.2.3-rc.1` do not update the tap.
++
++## macOS or Linux
++
++```bash
++curl -fsSL https://openfang.sh/install | sh
++```
++
++To install a specific release, set `OPENFANG_VERSION` to the tag:
++
++```bash
++OPENFANG_VERSION=v0.6.9 curl -fsSL https://openfang.sh/install | sh
++```
++
++## Windows
++
++```powershell
++irm https://openfang.sh/install.ps1 | iex
++```
++
++## From Source
++
++```bash
++cargo install --path crates/openfang-cli
++```
++
++## Maintainer Notes
++
++The release workflow publishes `Formula/openfang.rb` to `RightNow-AI/homebrew-openfang` using the `HOMEBREW_TAP_TOKEN` secret. The token needs contents write access to the tap repository.
++
++Tap-side CI should run `brew test-bot --only-formulae openfang` against the rendered formula before releases are announced.
+
+ succeeded in 160ms:
+Syntax OK
+
+codex
+The render smoke test passed with all placeholders replaced. I’m running the required status/stat command now and will summarize the changed files and checks.
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc 'git status && git diff --stat' in /Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh
+ succeeded in 0ms:
+On branch feat/889-homebrew-tap
+Your branch is up to date with 'upstream/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   .github/workflows/release.yml
+	modified:   README.md
+	modified:   docs/README.md
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.codex.log
+	.github/homebrew/
+	docs/install.md
+
+no changes added to commit (use "git add" and/or "git commit -a")
+ .github/workflows/release.yml | 73 +++++++++++++++++++++++++++++++++++++++++++
+ README.md                     |  6 ++++
+ docs/README.md                |  1 +
+ 3 files changed, 80 insertions(+)
+
+hook: PostToolUse
+hook: PostToolUse Completed
+diff --git a/.github/homebrew/openfang.rb.template b/.github/homebrew/openfang.rb.template
+new file mode 100644
+index 0000000000000000000000000000000000000000..53960fa4088ce1827ae41595094910da7e87676f
+--- /dev/null
++++ b/.github/homebrew/openfang.rb.template
+@@ -0,0 +1,26 @@
++class Openfang < Formula
++  desc "Open-source Agent Operating System"
++  homepage "https://openfang.sh"
++  version "{{VERSION}}"
++  license any_of: ["Apache-2.0", "MIT"]
++
++  on_macos do
++    on_arm do
++      url "{{ARM64_URL}}"
++      sha256 "{{ARM64_SHA256}}"
++    end
++
++    on_intel do
++      url "{{X86_64_URL}}"
++      sha256 "{{X86_64_SHA256}}"
++    end
++  end
++
++  def install
++    bin.install "openfang"
++  end
++
++  test do
++    assert_match version.to_s, shell_output("#{bin}/openfang --version")
++  end
++end
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index cfd663dcf739f276ff757b15c4fc4823801d4b36..ec0d72bd9130881e3bc1c88587250762125c47ff
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -210,6 +210,79 @@
+         env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+ 
++  # ── Homebrew tap formula (macOS stable tags only) ─────────────────────────
++  homebrew:
++    name: Homebrew Tap
++    runs-on: ubuntu-latest
++    needs: cli
++    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
++    steps:
++      - uses: actions/checkout@v6
++
++      - name: Download macOS release tarballs
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          set -euo pipefail
++          mkdir -p dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-x86_64-apple-darwin.tar.gz" \
++            --dir dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-aarch64-apple-darwin.tar.gz" \
++            --dir dist
++          test -s dist/openfang-x86_64-apple-darwin.tar.gz
++          test -s dist/openfang-aarch64-apple-darwin.tar.gz
++
++      - name: Render formula
++        env:
++          FORMULA_VERSION: ${{ github.ref_name }}
++        run: |
++          set -euo pipefail
++          VERSION="${FORMULA_VERSION#v}"
++          X86_64_ASSET="openfang-x86_64-apple-darwin.tar.gz"
++          ARM64_ASSET="openfang-aarch64-apple-darwin.tar.gz"
++          export FORMULA_VERSION="$VERSION"
++          export FORMULA_X86_64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${X86_64_ASSET}"
++          export FORMULA_ARM64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${ARM64_ASSET}"
++          export FORMULA_X86_64_SHA256
++          export FORMULA_ARM64_SHA256
++          FORMULA_X86_64_SHA256="$(sha256sum "dist/${X86_64_ASSET}" | awk '{print $1}')"
++          FORMULA_ARM64_SHA256="$(sha256sum "dist/${ARM64_ASSET}" | awk '{print $1}')"
++          mkdir -p Formula
++          perl -pe '
++            s/\{\{VERSION\}\}/$ENV{FORMULA_VERSION}/g;
++            s/\{\{X86_64_URL\}\}/$ENV{FORMULA_X86_64_URL}/g;
++            s/\{\{X86_64_SHA256\}\}/$ENV{FORMULA_X86_64_SHA256}/g;
++            s/\{\{ARM64_URL\}\}/$ENV{FORMULA_ARM64_URL}/g;
++            s/\{\{ARM64_SHA256\}\}/$ENV{FORMULA_ARM64_SHA256}/g;
++          ' .github/homebrew/openfang.rb.template > Formula/openfang.rb
++
++      - name: Check out Homebrew tap
++        uses: actions/checkout@v6
++        with:
++          repository: RightNow-AI/homebrew-openfang
++          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
++          path: homebrew-tap
++
++      - name: Publish formula
++        run: |
++          set -euo pipefail
++          mkdir -p homebrew-tap/Formula
++          cp Formula/openfang.rb homebrew-tap/Formula/openfang.rb
++          cd homebrew-tap
++          git config user.name "github-actions[bot]"
++          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
++          if git diff --quiet -- Formula/openfang.rb; then
++            echo "Formula already up to date."
++            exit 0
++          fi
++          git add Formula/openfang.rb
++          git commit -m "Update openfang formula to ${GITHUB_REF_NAME}"
++          git push origin HEAD:main
++
+   # ── Docker (linux/amd64 + linux/arm64) ────────────────────────────────────
+   docker:
+     name: Docker Image
+diff --git a/README.md b/README.md
+index afffa314c3f47e0d8b0284dabea995e99fbe94c3..2caeb82fb41522b4207c867f470258fd79451c65
+--- a/README.md
++++ b/README.md
+@@ -406,6 +406,12 @@
+ 
+ ## Quick Start
+ 
++| Platform | Install |
++|----------|---------|
++| macOS (Homebrew) | `brew tap RightNow-AI/openfang && brew install openfang` |
++| macOS/Linux | `curl -fsSL https://openfang.sh/install \| sh` |
++| Windows | `irm https://openfang.sh/install.ps1 \| iex` |
++
+ ```bash
+ # 1. Install (macOS/Linux)
+ curl -fsSL https://openfang.sh/install | sh
+diff --git a/docs/README.md b/docs/README.md
+index 4ea86d4bf9ce0463f550734ca8cbaae052e4d533..adb739ab62d69d5229b28d4d11a0552a2d86d4ce
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -8,6 +8,7 @@
+ 
+ | Guide | Description |
+ |-------|-------------|
++| [Installation](install.md) | Homebrew, shell installer, Windows, and source install paths |
+ | [Getting Started](getting-started.md) | Installation, first agent, first chat session |
+ | [Configuration](configuration.md) | Complete `config.toml` reference with every field |
+ | [CLI Reference](cli-reference.md) | Every command and subcommand with examples |
+diff --git a/docs/install.md b/docs/install.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2fe58ade080fb91f2a466b44ef24e933b4f15ba5
+--- /dev/null
++++ b/docs/install.md
+@@ -0,0 +1,42 @@
++# Installation
++
++OpenFang can be installed with Homebrew on macOS, the shell installer on macOS or Linux, PowerShell on Windows, or from source for development.
++
++## macOS with Homebrew
++
++```bash
++brew tap RightNow-AI/openfang
++brew install openfang
++```
++
++The tap formula is generated from each stable `v*` release after the macOS CLI tarballs are published. Pre-release tags such as `v1.2.3-rc.1` do not update the tap.
++
++## macOS or Linux
++
++```bash
++curl -fsSL https://openfang.sh/install | sh
++```
++
++To install a specific release, set `OPENFANG_VERSION` to the tag:
++
++```bash
++OPENFANG_VERSION=v0.6.9 curl -fsSL https://openfang.sh/install | sh
++```
++
++## Windows
++
++```powershell
++irm https://openfang.sh/install.ps1 | iex
++```
++
++## From Source
++
++```bash
++cargo install --path crates/openfang-cli
++```
++
++## Maintainer Notes
++
++The release workflow publishes `Formula/openfang.rb` to `RightNow-AI/homebrew-openfang` using the `HOMEBREW_TAP_TOKEN` secret. The token needs contents write access to the tap repository.
++
++Tap-side CI should run `brew test-bot --only-formulae openfang` against the rendered formula before releases are announced.
+
+codex
+Implemented the Homebrew tap publishing path.
+
+Changed:
+- Added release workflow `homebrew` job in [.github/workflows/release.yml](/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/.github/workflows/release.yml) after the CLI matrix.
+- Added formula template at [.github/homebrew/openfang.rb.template](/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/.github/homebrew/openfang.rb.template).
+- Added install docs at [docs/install.md](/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/docs/install.md).
+- Linked install docs from [docs/README.md](/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/docs/README.md).
+- Added Homebrew install one-liner to [README.md](/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/README.md).
+
+Validation run:
+- `ruby -e "require 'yaml'; YAML.load_file('.github/workflows/release.yml')"`
+- `ruby -c .github/homebrew/openfang.rb.template`
+- Render smoke test with dummy tarballs
+- Required: `git status && git diff --stat`
+
+Note: `source /Users/mvanhorn/.osc/scripts/load-gh-token.sh` failed because that file does not exist in this environment. I did not run `git add`, `git commit`, or `git push`. The pre-existing untracked `.codex.log` is still untouched.
+diff --git a/.github/homebrew/openfang.rb.template b/.github/homebrew/openfang.rb.template
+new file mode 100644
+index 0000000000000000000000000000000000000000..53960fa4088ce1827ae41595094910da7e87676f
+--- /dev/null
++++ b/.github/homebrew/openfang.rb.template
+@@ -0,0 +1,26 @@
++class Openfang < Formula
++  desc "Open-source Agent Operating System"
++  homepage "https://openfang.sh"
++  version "{{VERSION}}"
++  license any_of: ["Apache-2.0", "MIT"]
++
++  on_macos do
++    on_arm do
++      url "{{ARM64_URL}}"
++      sha256 "{{ARM64_SHA256}}"
++    end
++
++    on_intel do
++      url "{{X86_64_URL}}"
++      sha256 "{{X86_64_SHA256}}"
++    end
++  end
++
++  def install
++    bin.install "openfang"
++  end
++
++  test do
++    assert_match version.to_s, shell_output("#{bin}/openfang --version")
++  end
++end
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index cfd663dcf739f276ff757b15c4fc4823801d4b36..ec0d72bd9130881e3bc1c88587250762125c47ff
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -210,6 +210,79 @@
+         env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+ 
++  # ── Homebrew tap formula (macOS stable tags only) ─────────────────────────
++  homebrew:
++    name: Homebrew Tap
++    runs-on: ubuntu-latest
++    needs: cli
++    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
++    steps:
++      - uses: actions/checkout@v6
++
++      - name: Download macOS release tarballs
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          set -euo pipefail
++          mkdir -p dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-x86_64-apple-darwin.tar.gz" \
++            --dir dist
++          gh release download "$GITHUB_REF_NAME" \
++            --repo "$GITHUB_REPOSITORY" \
++            --pattern "openfang-aarch64-apple-darwin.tar.gz" \
++            --dir dist
++          test -s dist/openfang-x86_64-apple-darwin.tar.gz
++          test -s dist/openfang-aarch64-apple-darwin.tar.gz
++
++      - name: Render formula
++        env:
++          FORMULA_VERSION: ${{ github.ref_name }}
++        run: |
++          set -euo pipefail
++          VERSION="${FORMULA_VERSION#v}"
++          X86_64_ASSET="openfang-x86_64-apple-darwin.tar.gz"
++          ARM64_ASSET="openfang-aarch64-apple-darwin.tar.gz"
++          export FORMULA_VERSION="$VERSION"
++          export FORMULA_X86_64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${X86_64_ASSET}"
++          export FORMULA_ARM64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${ARM64_ASSET}"
++          export FORMULA_X86_64_SHA256
++          export FORMULA_ARM64_SHA256
++          FORMULA_X86_64_SHA256="$(sha256sum "dist/${X86_64_ASSET}" | awk '{print $1}')"
++          FORMULA_ARM64_SHA256="$(sha256sum "dist/${ARM64_ASSET}" | awk '{print $1}')"
++          mkdir -p Formula
++          perl -pe '
++            s/\{\{VERSION\}\}/$ENV{FORMULA_VERSION}/g;
++            s/\{\{X86_64_URL\}\}/$ENV{FORMULA_X86_64_URL}/g;
++            s/\{\{X86_64_SHA256\}\}/$ENV{FORMULA_X86_64_SHA256}/g;
++            s/\{\{ARM64_URL\}\}/$ENV{FORMULA_ARM64_URL}/g;
++            s/\{\{ARM64_SHA256\}\}/$ENV{FORMULA_ARM64_SHA256}/g;
++          ' .github/homebrew/openfang.rb.template > Formula/openfang.rb
++
++      - name: Check out Homebrew tap
++        uses: actions/checkout@v6
++        with:
++          repository: RightNow-AI/homebrew-openfang
++          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
++          path: homebrew-tap
++
++      - name: Publish formula
++        run: |
++          set -euo pipefail
++          mkdir -p homebrew-tap/Formula
++          cp Formula/openfang.rb homebrew-tap/Formula/openfang.rb
++          cd homebrew-tap
++          git config user.name "github-actions[bot]"
++          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
++          if git diff --quiet -- Formula/openfang.rb; then
++            echo "Formula already up to date."
++            exit 0
++          fi
++          git add Formula/openfang.rb
++          git commit -m "Update openfang formula to ${GITHUB_REF_NAME}"
++          git push origin HEAD:main
++
+   # ── Docker (linux/amd64 + linux/arm64) ────────────────────────────────────
+   docker:
+     name: Docker Image
+diff --git a/README.md b/README.md
+index afffa314c3f47e0d8b0284dabea995e99fbe94c3..2caeb82fb41522b4207c867f470258fd79451c65
+--- a/README.md
++++ b/README.md
+@@ -406,6 +406,12 @@
+ 
+ ## Quick Start
+ 
++| Platform | Install |
++|----------|---------|
++| macOS (Homebrew) | `brew tap RightNow-AI/openfang && brew install openfang` |
++| macOS/Linux | `curl -fsSL https://openfang.sh/install \| sh` |
++| Windows | `irm https://openfang.sh/install.ps1 \| iex` |
++
+ ```bash
+ # 1. Install (macOS/Linux)
+ curl -fsSL https://openfang.sh/install | sh
+diff --git a/docs/README.md b/docs/README.md
+index 4ea86d4bf9ce0463f550734ca8cbaae052e4d533..adb739ab62d69d5229b28d4d11a0552a2d86d4ce
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -8,6 +8,7 @@
+ 
+ | Guide | Description |
+ |-------|-------------|
++| [Installation](install.md) | Homebrew, shell installer, Windows, and source install paths |
+ | [Getting Started](getting-started.md) | Installation, first agent, first chat session |
+ | [Configuration](configuration.md) | Complete `config.toml` reference with every field |
+ | [CLI Reference](cli-reference.md) | Every command and subcommand with examples |
+diff --git a/docs/install.md b/docs/install.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2fe58ade080fb91f2a466b44ef24e933b4f15ba5
+--- /dev/null
++++ b/docs/install.md
+@@ -0,0 +1,42 @@
++# Installation
++
++OpenFang can be installed with Homebrew on macOS, the shell installer on macOS or Linux, PowerShell on Windows, or from source for development.
++
++## macOS with Homebrew
++
++```bash
++brew tap RightNow-AI/openfang
++brew install openfang
++```
++
++The tap formula is generated from each stable `v*` release after the macOS CLI tarballs are published. Pre-release tags such as `v1.2.3-rc.1` do not update the tap.
++
++## macOS or Linux
++
++```bash
++curl -fsSL https://openfang.sh/install | sh
++```
++
++To install a specific release, set `OPENFANG_VERSION` to the tag:
++
++```bash
++OPENFANG_VERSION=v0.6.9 curl -fsSL https://openfang.sh/install | sh
++```
++
++## Windows
++
++```powershell
++irm https://openfang.sh/install.ps1 | iex
++```
++
++## From Source
++
++```bash
++cargo install --path crates/openfang-cli
++```
++
++## Maintainer Notes
++
++The release workflow publishes `Formula/openfang.rb` to `RightNow-AI/homebrew-openfang` using the `HOMEBREW_TAP_TOKEN` secret. The token needs contents write access to the tap repository.
++
++Tap-side CI should run `brew test-bot --only-formulae openfang` against the rendered formula before releases are announced.
+
+hook: Stop
+hook: Stop Completed
+tokens used
+62,245
+Implemented the Homebrew tap publishing path.
+
+Changed:
+- Added release workflow `homebrew` job in [.github/workflows/release.yml](/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/.github/workflows/release.yml) after the CLI matrix.
+- Added formula template at [.github/homebrew/openfang.rb.template](/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/.github/homebrew/openfang.rb.template).
+- Added install docs at [docs/install.md](/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/docs/install.md).
+- Linked install docs from [docs/README.md](/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/docs/README.md).
+- Added Homebrew install one-liner to [README.md](/Users/mvanhorn/.osc/workspaces/RightNow-AI-openfang-889-fresh/README.md).
+
+Validation run:
+- `ruby -e "require 'yaml'; YAML.load_file('.github/workflows/release.yml')"`
+- `ruby -c .github/homebrew/openfang.rb.template`
+- Render smoke test with dummy tarballs
+- Required: `git status && git diff --stat`
+
+Note: `source /Users/mvanhorn/.osc/scripts/load-gh-token.sh` failed because that file does not exist in this environment. I did not run `git add`, `git commit`, or `git push`. The pre-existing untracked `.codex.log` is still untouched.

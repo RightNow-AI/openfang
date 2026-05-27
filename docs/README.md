@@ -8,6 +8,7 @@ Welcome to the OpenFang documentation. OpenFang is the open-source Agent Operati
 
 | Guide | Description |
 |-------|-------------|
+| [Installation](install.md) | Homebrew, shell installer, Windows, and source install paths |
 | [Getting Started](getting-started.md) | Installation, first agent, first chat session |
 | [Configuration](configuration.md) | Complete `config.toml` reference with every field |
 | [CLI Reference](cli-reference.md) | Every command and subcommand with examples |

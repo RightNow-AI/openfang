@@ -406,6 +406,12 @@ curl -X POST localhost:4200/v1/chat/completions \
 
 ## Quick Start
 
+| Platform | Install |
+|----------|---------|
+| macOS (Homebrew) | `brew tap RightNow-AI/openfang && brew install openfang` |
+| macOS/Linux | `curl -fsSL https://openfang.sh/install \| sh` |
+| Windows | `irm https://openfang.sh/install.ps1 \| iex` |
+
 ```bash
 # 1. Install (macOS/Linux)
 curl -fsSL https://openfang.sh/install | sh
