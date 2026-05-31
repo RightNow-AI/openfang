@@ -7093,6 +7093,7 @@ pub async fn mcp_http(
                 None
             },
             Some(&*state.kernel.process_manager),
+            None, // callback_context — MCP HTTP endpoint has no channel
         )
         .await;
 

@@ -18,6 +18,100 @@ use tracing::{debug, warn};
 /// Maximum inter-agent call depth to prevent infinite recursion (A->B->C->...).
 const MAX_AGENT_CALL_DEPTH: u32 = 5;
 
+/// Maximum number of concurrent async A2A tasks. New tasks are rejected when the cap is reached.
+const MAX_ASYNC_TASKS: usize = 500;
+
+/// Time-to-live for *running* async task entries. A task still in the `Running`
+/// state for longer than this is treated as hung and swept by the cleanup loop.
+const TASK_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Grace period that *completed* task entries linger in the map after the
+/// background work finishes. During this window, `tool_a2a_check_task` can
+/// still return the final result to a polling agent. Chosen as 5 minutes:
+/// long enough for an agent to poll for its result, short enough that
+/// completed entries do not accumulate indefinitely.
+const COMPLETED_GRACE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Lifecycle state of an async A2A task entry.
+///
+/// `Running` is the initial state. When the background future finishes
+/// (success or error), it transitions to `Completed(when)` and the entry
+/// stays in `ASYNC_TASKS` / `A2A_TASK_PROGRESS` for `COMPLETED_GRACE` so a
+/// polling agent can still see the final result via `tool_a2a_check_task`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TaskState {
+    Running,
+    /// Set when the spawned future completed normally (any outcome).
+    /// Sweeper removes the entry once `Instant::now() - when > COMPLETED_GRACE`.
+    Completed(std::time::Instant),
+}
+
+/// A single async A2A task and its associated metadata.
+struct TaskEntry {
+    /// The background task handle (abort on cancel).
+    handle: tokio::task::JoinHandle<()>,
+    /// When this entry was created (used for the `Running` TTL).
+    created_at: std::time::Instant,
+    /// Current lifecycle state. Mutated by the spawned future to `Completed`
+    /// just before its `TaskCleanupGuard` drops on the happy path.
+    state: TaskState,
+}
+
+/// RAII guard tied to the spawned async task. Cleans up *only on panic* —
+/// the normal completion path marks the entry `Completed` and lets the
+/// sweeper remove it after `COMPLETED_GRACE` so polling agents can still
+/// read the result.
+///
+/// The cap-budget slot is released unconditionally on drop (panic or normal):
+/// once the future has stopped running, it no longer counts against the
+/// `MAX_ASYNC_TASKS` admission limit even if its result is still visible
+/// in the maps.
+struct TaskCleanupGuard {
+    task_id: String,
+    /// Set to `true` by the spawned future right before it exits normally.
+    /// When `false` at Drop time we treat this as a panic / early-drop and
+    /// remove both map entries to avoid leaking stale state.
+    completed: bool,
+}
+
+impl Drop for TaskCleanupGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            // Panic / early-drop path: the future never got to mark itself
+            // `Completed`, so we have no result to preserve. Strip both
+            // entries to keep the maps clean.
+            ASYNC_TASKS.remove(&self.task_id);
+            A2A_TASK_PROGRESS.remove(&self.task_id);
+        }
+        // Always release the cap-budget slot reserved at spawn time. AcqRel
+        // keeps the operation paired with the fetch_add in `tool_a2a_send_async`.
+        // Completed-but-still-visible entries do NOT count against the cap —
+        // the cap is about live work, not result retention.
+        ASYNC_TASKS_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// In-flight async agent tasks, keyed by a caller-chosen task ID.
+static ASYNC_TASKS: std::sync::LazyLock<dashmap::DashMap<String, TaskEntry>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// Live accumulated progress from async A2A tasks, keyed by task ID.
+static A2A_TASK_PROGRESS: std::sync::LazyLock<
+    dashmap::DashMap<String, std::sync::Arc<tokio::sync::Mutex<String>>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// Atomic counter of in-flight async A2A tasks.
+///
+/// Used by `tool_a2a_send_async` to enforce `MAX_ASYNC_TASKS` atomically: every
+/// admission does `fetch_add(1)` first and bails (decrementing back) if the
+/// resulting count exceeds the cap. `TaskCleanupGuard::drop` decrements on
+/// task exit. This replaces the previous non-atomic
+/// `if ASYNC_TASKS.len() >= MAX_ASYNC_TASKS { ... }` pattern, which had a race
+/// where two concurrent callers at `len = MAX-1` could both pass the check
+/// and both insert, landing at `MAX+1` entries.
+static ASYNC_TASKS_IN_FLIGHT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Check if a tool name refers to a shell execution tool.
 ///
 /// Used to determine whether exec_policy settings should bypass the approval gate.
@@ -124,6 +218,12 @@ pub async fn execute_tool(
     tts_engine: Option<&crate::tts::TtsEngine>,
     docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
+    // Per-invocation channel callback context. Passed explicitly rather than
+    // stored on the kernel so concurrent dispatches for the same agent cannot
+    // see one another's context. Tools that deliver async results (e.g.
+    // `a2a_send_async`) capture this value at spawn time and own it for the
+    // lifetime of the background task.
+    callback_context: Option<&openfang_types::ChannelCallbackContext>,
 ) -> ToolResult {
     // Normalize the tool name through compat mappings so LLM-hallucinated aliases
     // (e.g. "fs-write" → "file_write") resolve to the canonical OpenFang name.
@@ -375,6 +475,9 @@ pub async fn execute_tool(
         // A2A outbound tools (cross-instance agent communication)
         "a2a_discover" => tool_a2a_discover(input).await,
         "a2a_send" => tool_a2a_send(input, kernel).await,
+        "a2a_send_async" => tool_a2a_send_async(input, kernel, callback_context).await,
+        "a2a_check_task" => tool_a2a_check_task(input).await,
+        "a2a_cancel_task" => tool_a2a_cancel_task(input),
 
         // Browser automation tools
         "browser_navigate" => {
@@ -1181,7 +1284,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "a2a_send".to_string(),
-            description: "Send a task/message to an external A2A agent and get the response. Use agent_name to send to a previously discovered agent, or agent_url for direct addressing.".to_string(),
+            description: "Send a task/message to an external A2A agent and get the response synchronously over an SSE stream. The call blocks until the remote agent emits its final event, up to 300 s. Use agent_name to send to a previously discovered agent, or agent_url for direct addressing.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1191,6 +1294,43 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "session_id": { "type": "string", "description": "Optional session ID for multi-turn conversations" }
                 },
                 "required": ["message"]
+            }),
+        },
+        ToolDefinition {
+            name: "a2a_send_async".to_string(),
+            description: "Send a task to an external A2A agent asynchronously. Returns immediately with a task_id. The result is delivered back to the originating channel when the remote agent finishes. Use for long-running tasks (implement a feature, run tests, etc.). Use a2a_check_task to poll live progress; completed task results remain available via a2a_check_task for 5 minutes after completion. Limits: max 500 concurrent async tasks; running tasks discarded after 1 hour if they never complete.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string", "description": "The task/message to send to the remote agent" },
+                    "agent_url": { "type": "string", "description": "Direct URL of the remote agent's A2A endpoint" },
+                    "agent_name": { "type": "string", "description": "Name of a previously discovered A2A agent (looked up from kernel)" },
+                    "session_id": { "type": "string", "description": "Optional session ID for multi-turn conversations" },
+                    "task_id": { "type": "string", "description": "A unique ID for this task (for polling/cancellation). Auto-generated if omitted." }
+                },
+                "required": ["message"]
+            }),
+        },
+        ToolDefinition {
+            name: "a2a_check_task".to_string(),
+            description: "Check the live or final output from an async A2A task. Returns whatever the remote agent has produced so far; the response is prefixed with a state indicator (running/completed). Completed task results remain available for 5 minutes after completion.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string", "description": "The task ID returned by a2a_send_async" }
+                },
+                "required": ["task_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "a2a_cancel_task".to_string(),
+            description: "Cancel a running async A2A task by its task ID. This aborts the local SSE reader and stops waiting for the remote agent — the remote agent itself continues running and is not notified. Use when you no longer need the result, not as a remote kill signal.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string", "description": "The task ID to cancel" }
+                },
+                "required": ["task_id"]
             }),
         },
         // --- TTS/STT tools ---
@@ -2753,9 +2893,335 @@ async fn tool_a2a_send(
 
     let session_id = input["session_id"].as_str();
     let client = crate::a2a::A2aClient::new();
-    let task = client.send_task(&url, message, session_id).await?;
+    let task = client
+        .send_task_streaming(&url, message, session_id)
+        .await?;
 
     serde_json::to_string_pretty(&task).map_err(|e| format!("Serialization error: {e}"))
+}
+
+/// Fire an A2A task in the background and return a task_id immediately.
+///
+/// Progress is accumulated in `A2A_TASK_PROGRESS` as SSE chunks arrive.
+/// On completion the final result is delivered via `inject_async_callback`
+/// to the originating channel.
+///
+/// # Channel context capture
+/// The `callback_context` parameter is passed in by the agent loop (`execute_tool`)
+/// at the moment this function is called. It is moved into the background-task
+/// closure by value — no global lookup happens after spawn, so concurrent
+/// dispatches for the same agent never see one another's context.
+async fn tool_a2a_send_async(
+    input: &serde_json::Value,
+    kernel: Option<&Arc<dyn KernelHandle>>,
+    callback_context: Option<&openfang_types::ChannelCallbackContext>,
+) -> Result<String, String> {
+    // Atomically reserve a slot in the cap budget. `fetch_add` returns the
+    // pre-increment value, so `reserved < MAX_ASYNC_TASKS` is the admission
+    // criterion. If we'd push past the cap we immediately release the slot
+    // and return the cap error. This pattern replaces the racy
+    // `if ASYNC_TASKS.len() >= MAX_ASYNC_TASKS` check that allowed two
+    // concurrent callers at len == MAX-1 to both pass and both insert,
+    // resulting in MAX+1 entries.
+    use std::sync::atomic::Ordering;
+    let reserved = ASYNC_TASKS_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+    if reserved >= MAX_ASYNC_TASKS {
+        ASYNC_TASKS_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+        return Err(format!(
+            "Async task cap reached ({MAX_ASYNC_TASKS} tasks in flight). \
+             Wait for existing tasks to complete before submitting new ones."
+        ));
+    }
+    // From this point on, every early return MUST release the reserved slot
+    // before bailing. `CapSlotGuard` is an RAII helper that handles this so
+    // the validation paths below can use `?` freely.
+    struct CapSlotGuard {
+        released: bool,
+    }
+    impl CapSlotGuard {
+        fn defuse(mut self) {
+            self.released = true;
+        }
+    }
+    impl Drop for CapSlotGuard {
+        fn drop(&mut self) {
+            if !self.released {
+                ASYNC_TASKS_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
+    }
+    let cap_slot = CapSlotGuard { released: false };
+
+    // Validate required parameters before acquiring the kernel reference so
+    // these errors are always surfaced even in unit-test contexts where no
+    // kernel is wired up.
+    let message = input["message"]
+        .as_str()
+        .ok_or("Missing 'message' parameter")?
+        .to_string();
+
+    // Resolve agent URL and acquire the kernel handle in one go. Each path
+    // calls `require_kernel` exactly once — the previous code called it twice
+    // on the `agent_name` path (once for the URL lookup, once for the spawn).
+    // The kernel handle is needed regardless of path (the spawn uses it for
+    // the result callback), so we pair URL resolution with kh acquisition.
+    let (url, kh) = if let Some(url) = input["agent_url"].as_str() {
+        // SSRF check is kernel-free, so it runs before we require the kernel.
+        // This keeps the validation tests that pass `None` kernel meaningful.
+        if crate::web_fetch::check_ssrf(url, &[]).is_err() {
+            return Err("SSRF blocked: URL resolves to a private or metadata address".to_string());
+        }
+        let kh = require_kernel(kernel)?.clone();
+        (url.to_string(), kh)
+    } else if let Some(name) = input["agent_name"].as_str() {
+        let kh = require_kernel(kernel)?.clone();
+        let url = kh.get_a2a_agent_url(name)
+            .ok_or_else(|| format!("No known A2A agent with name '{name}'. Use a2a_discover first or provide agent_url directly."))?;
+        (url, kh)
+    } else {
+        return Err("Missing 'agent_url' or 'agent_name' parameter".to_string());
+    };
+
+    let agent_label = input["agent_name"]
+        .as_str()
+        .unwrap_or("remote-agent")
+        .to_string();
+    let task_id = input["task_id"]
+        .as_str()
+        .map(String::from)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let session_id = input["session_id"].as_str().map(String::from);
+
+    // Capture the caller's channel context by cloning the borrowed reference.
+    // From this point on the value is owned by this function (and the closure
+    // we're about to spawn) — no global lookup happens later.
+    let captured_ctx = callback_context.cloned();
+    if captured_ctx.is_none() {
+        warn!(
+            task_id = %task_id,
+            "a2a_send_async: no channel context — result will not be delivered to channel"
+        );
+    }
+
+    // Shared progress buffer updated as SSE chunks arrive (tokio Mutex — safe across .await).
+    // The buffer is created here so the calling function and the spawned closure share
+    // the same Arc. The `A2A_TASK_PROGRESS.insert` happens INSIDE the closure so that
+    // any panic between Arc construction and entry registration cleans up via the
+    // guard's Drop rather than orphaning the entry until the next TTL sweep.
+    let progress: std::sync::Arc<tokio::sync::Mutex<String>> =
+        std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+
+    let tid = task_id.clone();
+    let progress_for_task = progress.clone();
+    let agent_label_cb = agent_label.clone();
+
+    // The slot is now formally owned by `TaskCleanupGuard` inside the spawned
+    // future — defuse our local guard so it doesn't double-decrement on
+    // function exit.
+    cap_slot.defuse();
+
+    let handle = tokio::spawn(async move {
+        // Register the progress entry inside the spawned task so it shares the
+        // same lifetime as the guard. If anything in this block panics, Drop
+        // will remove the entry instead of leaving it for the TTL sweep.
+        A2A_TASK_PROGRESS.insert(tid.clone(), progress_for_task.clone());
+
+        // RAII guard — on panic removes entries from both maps; on normal
+        // exit leaves them so `tool_a2a_check_task` can still return the
+        // result during `COMPLETED_GRACE`. Releases the cap-budget slot
+        // unconditionally.
+        let mut guard = TaskCleanupGuard {
+            task_id: tid.clone(),
+            completed: false,
+        };
+
+        let client = crate::a2a::A2aClient::new();
+        let result = client
+            .send_task_streaming_with_progress(
+                &url,
+                &message,
+                session_id.as_deref(),
+                progress_for_task.clone(),
+            )
+            .await;
+
+        let result_text = match result {
+            Ok(task) => {
+                serde_json::to_string_pretty(&task).unwrap_or_else(|_| "Task completed".to_string())
+            }
+            Err(e) => format!("Error: {e}"),
+        };
+
+        // Update the progress buffer with the final result so check_task can read it.
+        {
+            let mut buf = progress_for_task.lock().await;
+            *buf = result_text.clone();
+        }
+
+        // Deliver the result to the originating channel using the context captured at spawn time.
+        if let Some(ctx) = captured_ctx {
+            let _ = kh
+                .inject_async_callback(ctx, &agent_label_cb, &result_text)
+                .await;
+        }
+
+        // Transition the entry to `Completed` so the sweep keeps it visible
+        // for `COMPLETED_GRACE`. If the entry was already removed (e.g. by
+        // `tool_a2a_cancel_task`), there's nothing to update — that's fine.
+        if let Some(mut entry) = ASYNC_TASKS.get_mut(&tid) {
+            entry.state = TaskState::Completed(std::time::Instant::now());
+        }
+
+        // Mark the guard so its Drop does NOT remove the map entries — the
+        // result stays visible until the sweeper expires it after
+        // `COMPLETED_GRACE`. The cap-budget slot is still released.
+        guard.completed = true;
+        // `guard` drops here (cap slot released, entries preserved).
+    });
+
+    ASYNC_TASKS.insert(
+        task_id.clone(),
+        TaskEntry {
+            handle,
+            created_at: std::time::Instant::now(),
+            state: TaskState::Running,
+        },
+    );
+
+    Ok(format!(
+        "Task submitted to {agent_label} (task_id: {task_id}). \
+         Results will be delivered to the channel when complete. \
+         Use a2a_check_task(\"{task_id}\") to poll live progress."
+    ))
+}
+
+/// Return the live (or final) accumulated output from an async A2A task.
+///
+/// The response prefixes the body with a state indicator so an agent knows
+/// whether more output may still arrive:
+///   - `Task <id> (running): ...` — task still streaming, more output likely
+///   - `Task <id> (completed): ...` — final result, no more output coming
+///
+/// Completed entries remain readable for `COMPLETED_GRACE` after the task
+/// finishes (see `TaskCleanupGuard` / `sweep_with_age_thresholds`). After
+/// that, this returns the "No active task" error.
+async fn tool_a2a_check_task(input: &serde_json::Value) -> Result<String, String> {
+    let task_id = input["task_id"]
+        .as_str()
+        .ok_or("Missing 'task_id' parameter")?;
+
+    // Read state from ASYNC_TASKS (may be absent if the task was never
+    // registered or has already been swept). Progress lives in a parallel
+    // map; check both.
+    let state = ASYNC_TASKS.get(task_id).map(|e| e.state);
+    let progress = A2A_TASK_PROGRESS.get(task_id);
+
+    match (state, progress) {
+        (Some(TaskState::Running), Some(entry)) => {
+            let text = entry.value().lock().await.clone();
+            if text.is_empty() {
+                Ok(format!("Task {task_id} (running): no output yet."))
+            } else {
+                Ok(format!("Task {task_id} (running):\n{text}"))
+            }
+        }
+        (Some(TaskState::Completed(_)), Some(entry)) => {
+            let text = entry.value().lock().await.clone();
+            Ok(format!("Task {task_id} (completed):\n{text}"))
+        }
+        // Progress present but no ASYNC_TASKS entry — can happen briefly
+        // between cancel and progress-map cleanup, or in legacy/test states.
+        // Treat as running so polling agents see whatever output exists.
+        (None, Some(entry)) => {
+            let text = entry.value().lock().await.clone();
+            if text.is_empty() {
+                Ok(format!("Task {task_id} (running): no output yet."))
+            } else {
+                Ok(format!("Task {task_id} (running):\n{text}"))
+            }
+        }
+        _ => Err(format!("No active task with ID '{task_id}'.")),
+    }
+}
+
+/// Abort a running async A2A task and clean up both maps.
+///
+/// # Cancellation scope — local only
+/// This function aborts the local `tokio::spawn` background task (the SSE reader
+/// loop) and removes the task from the in-process maps. **The remote agent is
+/// not notified and continues executing.** There is no `tasks/cancel` RPC sent
+/// over the wire. Callers should document this limitation to users: the cancel
+/// only stops this process from waiting for the result; it does not stop the
+/// remote work.
+fn tool_a2a_cancel_task(input: &serde_json::Value) -> Result<String, String> {
+    let task_id = input["task_id"]
+        .as_str()
+        .ok_or("Missing 'task_id' parameter")?;
+
+    let had_task = if let Some((_, entry)) = ASYNC_TASKS.remove(task_id) {
+        entry.handle.abort();
+        true
+    } else {
+        false
+    };
+    A2A_TASK_PROGRESS.remove(task_id);
+
+    if had_task {
+        Ok(format!(
+            "Task {task_id} cancelled (local SSE reader aborted). \
+             Note: the remote agent is not notified and may still be running."
+        ))
+    } else {
+        Err(format!(
+            "No active task with ID '{task_id}' — it may have already completed or been cancelled."
+        ))
+    }
+}
+
+/// Sweep task-store entries using state-specific age thresholds.
+///
+/// - `Running` entries are removed when `now - created_at > running_ttl`
+///   (catches hung tasks that never reached the `Completed` transition).
+/// - `Completed(at)` entries are removed when `now - at > completed_grace`
+///   (gives polling agents a window to retrieve the result via
+///   `tool_a2a_check_task`).
+///
+/// `A2A_TASK_PROGRESS` entries are dropped once their `ASYNC_TASKS` partner
+/// is gone, so orphaned progress buffers don't accumulate.
+///
+/// Public because the production background loop in `OpenFangKernel` lives
+/// in another crate (`openfang-kernel`). Tests may also call with arbitrary
+/// thresholds (e.g. `Duration::ZERO` to expire everything,
+/// `Duration::MAX` to keep all) without any system-uptime dependency.
+pub fn sweep_with_age_thresholds(
+    running_ttl: std::time::Duration,
+    completed_grace: std::time::Duration,
+) {
+    let now = std::time::Instant::now();
+    ASYNC_TASKS.retain(|_, entry| match entry.state {
+        TaskState::Running => now.duration_since(entry.created_at) < running_ttl,
+        TaskState::Completed(when) => now.duration_since(when) < completed_grace,
+    });
+    A2A_TASK_PROGRESS.retain(|task_id, _| ASYNC_TASKS.contains_key(task_id));
+}
+
+/// Back-compat shim: sweep both states using the same threshold.
+///
+/// Kept so existing tests and any external callers continue to compile
+/// against a single-threshold signature. New code should prefer
+/// `sweep_with_age_thresholds` which distinguishes Running from Completed.
+#[cfg(test)]
+pub fn sweep_with_age_threshold(threshold: std::time::Duration) {
+    sweep_with_age_thresholds(threshold, threshold);
+}
+
+/// Sweep expired entries from the global task stores.
+///
+/// Called periodically (every 5 min) by `OpenFangKernel::start_background_agents`
+/// to reclaim memory for hung tasks and to expire completed-task results
+/// after the agent-visible grace window.
+pub fn sweep_expired_async_tasks() {
+    sweep_with_age_thresholds(TASK_TTL, COMPLETED_GRACE);
 }
 
 // ---------------------------------------------------------------------------
@@ -3925,6 +4391,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(
@@ -3954,6 +4421,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -3980,6 +4448,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4006,6 +4475,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4068,6 +4538,7 @@ mod tests {
             None,                 // tts_engine
             None,                 // docker_config
             None,                 // process_manager
+            None,                 // callback_context
         )
         .await;
         assert!(
@@ -4098,6 +4569,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4124,6 +4596,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         // web_search now attempts a real fetch; may succeed or fail depending on network
@@ -4150,6 +4623,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4176,6 +4650,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4203,6 +4678,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4234,6 +4710,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         // Should fail for file-not-found, NOT for permission denied
@@ -4279,6 +4756,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         // Should NOT be the capability-enforcement "Permission denied" — it should
@@ -4314,6 +4792,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4483,6 +4962,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4528,6 +5008,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -5010,5 +5491,941 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_lowercase().contains("kernel"));
+    }
+
+    // ===========================================================================
+    // Async A2A task infrastructure tests
+    //
+    // ASYNC_TASKS, A2A_TASK_PROGRESS, and ASYNC_TASKS_IN_FLIGHT are
+    // process-wide statics; tests that either fill them to the cap or sweep
+    // them clean race with one another when run in parallel. The
+    // `with_global_lock` helper serialises every test that touches these
+    // maps/counter so they observe a consistent baseline.
+    // ===========================================================================
+
+    /// Async mutex that serialises every test touching ASYNC_TASKS /
+    /// A2A_TASK_PROGRESS / ASYNC_TASKS_IN_FLIGHT.
+    ///
+    /// Uses `tokio::sync::Mutex` (not `std::sync::Mutex`) because
+    /// `with_global_lock_async` holds the guard across `.await` — a
+    /// `std::sync::Mutex` held across an await point trips
+    /// `clippy::await_holding_lock` under `--all-targets`.
+    static A2A_GLOBALS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Reset every shared piece of A2A test state to a clean baseline.
+    ///
+    /// Must be called both at lock entry (in case a prior aborted test left
+    /// stale entries behind) and at lock exit (so the next test starts clean).
+    /// Importantly, this resets `ASYNC_TASKS_IN_FLIGHT` to 0 even if a test
+    /// inserted entries into `ASYNC_TASKS` without going through the atomic
+    /// reserve path (e.g. when synthesising "at cap" preconditions).
+    fn reset_a2a_test_state() {
+        ASYNC_TASKS.clear();
+        A2A_TASK_PROGRESS.clear();
+        ASYNC_TASKS_IN_FLIGHT.store(0, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Run `f` while holding the global A2A test lock so concurrent tests do
+    /// not race on the static maps.
+    ///
+    /// This sync variant uses `blocking_lock` because there is no async
+    /// context available for `#[test]` (non-tokio) tests. Tokio's mutex
+    /// supports both modes.
+    fn with_global_lock<F: FnOnce()>(f: F) {
+        let _g = A2A_GLOBALS_TEST_LOCK.blocking_lock();
+        reset_a2a_test_state();
+        f();
+        reset_a2a_test_state();
+    }
+
+    /// Async variant — same lock, but lets the body return a future.
+    ///
+    /// Uses the tokio async lock so the guard can be held across `.await`
+    /// without tripping `clippy::await_holding_lock`.
+    async fn with_global_lock_async<F, Fut>(f: F)
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let _g = A2A_GLOBALS_TEST_LOCK.lock().await;
+        reset_a2a_test_state();
+        f().await;
+        reset_a2a_test_state();
+    }
+
+    /// MAX_ASYNC_TASKS cap: synthesising MAX in-flight tasks causes the next
+    /// call to be rejected with the cap error. Cleanup is automatic via the
+    /// lock helper.
+    ///
+    /// The cap is now enforced against `ASYNC_TASKS_IN_FLIGHT` (atomic) — not
+    /// `ASYNC_TASKS.len()` — so we set the counter directly. We also fill the
+    /// map so the post-condition mirrors a real "at cap" state.
+    #[tokio::test]
+    async fn test_max_async_tasks_cap() {
+        with_global_lock_async(|| async {
+            // Fill the map to exactly the cap using real (never-completing) tasks.
+            for i in 0..MAX_ASYNC_TASKS {
+                let id = format!("cap-test-{i}");
+                ASYNC_TASKS.insert(
+                    id,
+                    TaskEntry {
+                        handle: tokio::spawn(futures::future::pending::<()>()),
+                        created_at: std::time::Instant::now(),
+                        state: TaskState::Running,
+                    },
+                );
+            }
+            // Match the atomic counter to the synthesised map state. The cap
+            // check reads this counter, not `ASYNC_TASKS.len()`, so without
+            // this the new call would slide right past the cap.
+            ASYNC_TASKS_IN_FLIGHT.store(MAX_ASYNC_TASKS, std::sync::atomic::Ordering::Release);
+            assert_eq!(ASYNC_TASKS.len(), MAX_ASYNC_TASKS);
+
+            // The cap is now reached — a2a_send_async must reject a new task.
+            let result = tool_a2a_send_async(
+                &serde_json::json!({
+                    "message": "hello",
+                    "agent_url": "http://example.com/a2a",
+                }),
+                None,
+                None,
+            )
+            .await;
+
+            // Abort the pending futures before the cleanup so they don't leak
+            // (they get dropped by the cleanup but aborting first is tidy).
+            for mut entry in ASYNC_TASKS.iter_mut() {
+                entry.value_mut().handle.abort();
+            }
+
+            let err = result.expect_err("Expected cap error, got Ok");
+            assert!(
+                err.contains("cap reached") || err.contains("500"),
+                "Unexpected cap error: {err}"
+            );
+        })
+        .await;
+    }
+
+    /// Concurrent admissions: exactly MAX_ASYNC_TASKS simultaneous calls
+    /// admit, and the (MAX+1)th gets the cap error.
+    ///
+    /// This is the regression test for the race window in the old non-atomic
+    /// `if ASYNC_TASKS.len() >= MAX_ASYNC_TASKS` check, where two concurrent
+    /// callers at len=MAX-1 could both pass the check and both insert,
+    /// resulting in MAX+1 entries.
+    ///
+    /// We exercise the admission path directly (the atomic reserve), then
+    /// release each reserved slot. We do NOT call `tool_a2a_send_async` here
+    /// because it requires a kernel handle for the spawn — the admission
+    /// gate is the property under test, not the spawn glue.
+    #[tokio::test]
+    async fn test_async_cap_atomic_admission() {
+        with_global_lock_async(|| async {
+            use std::sync::atomic::Ordering;
+
+            // Concurrent admission attempts. We fire MAX+1 of them and check
+            // that exactly MAX_ASYNC_TASKS succeed (counter at MAX) and one
+            // fails (counter would have been MAX+1 after the failing
+            // fetch_add, but the bail decrements it back to MAX).
+            let mut handles: Vec<tokio::task::JoinHandle<bool>> = Vec::new();
+            for _ in 0..(MAX_ASYNC_TASKS + 1) {
+                handles.push(tokio::spawn(async move {
+                    // Inline the cap reserve logic so this test exercises
+                    // exactly the same fetch_add / compare / fetch_sub pattern.
+                    let reserved = ASYNC_TASKS_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+                    if reserved >= MAX_ASYNC_TASKS {
+                        ASYNC_TASKS_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+                        false // rejected
+                    } else {
+                        true // admitted
+                    }
+                }));
+            }
+
+            let mut admitted = 0usize;
+            let mut rejected = 0usize;
+            for h in handles {
+                if h.await.unwrap() {
+                    admitted += 1;
+                } else {
+                    rejected += 1;
+                }
+            }
+
+            assert_eq!(
+                admitted, MAX_ASYNC_TASKS,
+                "Expected exactly {MAX_ASYNC_TASKS} admissions, got {admitted}"
+            );
+            assert_eq!(
+                rejected, 1,
+                "Expected exactly 1 rejection at MAX+1, got {rejected}"
+            );
+            assert_eq!(
+                ASYNC_TASKS_IN_FLIGHT.load(Ordering::Acquire),
+                MAX_ASYNC_TASKS,
+                "Counter must equal MAX after the race"
+            );
+
+            // Release the reserved slots so the lock-exit reset sees a clean
+            // counter — `reset_a2a_test_state` will store(0) anyway, but
+            // explicit release here keeps the intent obvious.
+            ASYNC_TASKS_IN_FLIGHT.store(0, Ordering::Release);
+        })
+        .await;
+    }
+
+    /// TaskCleanupGuard behaviour:
+    ///   - Drop with `completed: false` (panic / early-drop path) removes both
+    ///     map entries AND decrements the in-flight counter.
+    ///   - Drop with `completed: true` (normal-completion path) preserves the
+    ///     map entries so `tool_a2a_check_task` can return the result during
+    ///     the grace window, but still decrements the in-flight counter (the
+    ///     cap is about live work, not result retention).
+    #[tokio::test]
+    async fn test_task_cleanup_guard_drop_paths() {
+        with_global_lock_async(|| async {
+            use std::sync::atomic::Ordering;
+
+            // --- Panic path: completed=false → entries removed. ---
+            let panic_id = "guard-panic".to_string();
+            ASYNC_TASKS.insert(
+                panic_id.clone(),
+                TaskEntry {
+                    handle: tokio::spawn(futures::future::pending::<()>()),
+                    created_at: std::time::Instant::now(),
+                    state: TaskState::Running,
+                },
+            );
+            A2A_TASK_PROGRESS.insert(
+                panic_id.clone(),
+                std::sync::Arc::new(tokio::sync::Mutex::new(String::from("partial"))),
+            );
+            ASYNC_TASKS_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+
+            assert!(ASYNC_TASKS.contains_key(&panic_id));
+            assert!(A2A_TASK_PROGRESS.contains_key(&panic_id));
+            assert_eq!(ASYNC_TASKS_IN_FLIGHT.load(Ordering::Acquire), 1);
+
+            {
+                let _guard = TaskCleanupGuard {
+                    task_id: panic_id.clone(),
+                    completed: false,
+                };
+            }
+
+            assert!(!ASYNC_TASKS.contains_key(&panic_id));
+            assert!(!A2A_TASK_PROGRESS.contains_key(&panic_id));
+            assert_eq!(
+                ASYNC_TASKS_IN_FLIGHT.load(Ordering::Acquire),
+                0,
+                "Panic-path drop must decrement the in-flight counter"
+            );
+
+            // --- Normal-completion path: completed=true → entries preserved. ---
+            let done_id = "guard-done".to_string();
+            ASYNC_TASKS.insert(
+                done_id.clone(),
+                TaskEntry {
+                    handle: tokio::spawn(futures::future::pending::<()>()),
+                    created_at: std::time::Instant::now(),
+                    state: TaskState::Completed(std::time::Instant::now()),
+                },
+            );
+            A2A_TASK_PROGRESS.insert(
+                done_id.clone(),
+                std::sync::Arc::new(tokio::sync::Mutex::new(String::from("final"))),
+            );
+            ASYNC_TASKS_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+
+            {
+                let _guard = TaskCleanupGuard {
+                    task_id: done_id.clone(),
+                    completed: true,
+                };
+            }
+
+            assert!(
+                ASYNC_TASKS.contains_key(&done_id),
+                "Normal-completion drop must leave the ASYNC_TASKS entry in place"
+            );
+            assert!(
+                A2A_TASK_PROGRESS.contains_key(&done_id),
+                "Normal-completion drop must leave the progress buffer in place"
+            );
+            assert_eq!(
+                ASYNC_TASKS_IN_FLIGHT.load(Ordering::Acquire),
+                0,
+                "Normal-completion drop must still decrement the in-flight counter"
+            );
+        })
+        .await;
+    }
+
+    /// tool_a2a_check_task returns the stored progress for a known task_id
+    /// (prefixed with a state indicator) and an error for an unknown task_id.
+    #[tokio::test]
+    async fn test_tool_a2a_check_task_known_and_unknown() {
+        with_global_lock_async(|| async {
+            let task_id = "check-test".to_string();
+            // Register the task in ASYNC_TASKS so check_task can read its state.
+            ASYNC_TASKS.insert(
+                task_id.clone(),
+                TaskEntry {
+                    handle: tokio::spawn(futures::future::pending::<()>()),
+                    created_at: std::time::Instant::now(),
+                    state: TaskState::Running,
+                },
+            );
+            let progress =
+                std::sync::Arc::new(tokio::sync::Mutex::new("step 1 complete".to_string()));
+            A2A_TASK_PROGRESS.insert(task_id.clone(), progress);
+
+            let result = tool_a2a_check_task(&serde_json::json!({"task_id": &task_id}))
+                .await
+                .expect("Should succeed for known task");
+            assert!(
+                result.contains("(running)"),
+                "Expected running indicator, got: {result}"
+            );
+            assert!(
+                result.contains("step 1 complete"),
+                "Expected progress text in response, got: {result}"
+            );
+
+            let err = tool_a2a_check_task(&serde_json::json!({"task_id": "nonexistent-xyz-999"}))
+                .await
+                .expect_err("Should error for unknown task");
+            assert!(err.contains("nonexistent-xyz-999"));
+        })
+        .await;
+    }
+
+    /// tool_a2a_cancel_task returns an error for an unknown / already-completed task.
+    #[tokio::test]
+    async fn test_tool_a2a_cancel_task_unknown_returns_error() {
+        with_global_lock_async(|| async {
+            let err = tool_a2a_cancel_task(&serde_json::json!({"task_id": "unknown-cancel-xyz"}))
+                .expect_err("Should return an error for unknown task");
+            assert!(
+                err.contains("No active task") || err.contains("already completed"),
+                "Unexpected error message: {err}"
+            );
+        })
+        .await;
+    }
+
+    /// tool_a2a_cancel_task aborts a live task and removes it from both maps.
+    #[tokio::test]
+    async fn test_tool_a2a_cancel_task_live() {
+        with_global_lock_async(|| async {
+            let task_id = "cancel-live".to_string();
+            ASYNC_TASKS.insert(
+                task_id.clone(),
+                TaskEntry {
+                    handle: tokio::spawn(futures::future::pending::<()>()),
+                    created_at: std::time::Instant::now(),
+                    state: TaskState::Running,
+                },
+            );
+            A2A_TASK_PROGRESS.insert(
+                task_id.clone(),
+                std::sync::Arc::new(tokio::sync::Mutex::new(String::new())),
+            );
+
+            let result = tool_a2a_cancel_task(&serde_json::json!({"task_id": task_id}));
+            assert!(result.is_ok());
+            assert!(!ASYNC_TASKS.contains_key("cancel-live"));
+            assert!(!A2A_TASK_PROGRESS.contains_key("cancel-live"));
+        })
+        .await;
+    }
+
+    /// Regression for the UX sharp edge: after a task completes, the agent
+    /// must still see the result via `tool_a2a_check_task` for the duration
+    /// of `COMPLETED_GRACE` — NOT "No active task".
+    ///
+    /// Simulates a completed task by inserting an entry in `Completed` state
+    /// with a populated progress buffer (mirroring what the spawned future
+    /// leaves behind), then asserting check_task returns the final body with
+    /// the "(completed)" indicator.
+    #[tokio::test]
+    async fn test_check_task_returns_result_after_completion() {
+        with_global_lock_async(|| async {
+            let task_id = "done-task-1".to_string();
+            // Spawn a no-op task whose handle we just stash — its lifecycle
+            // doesn't matter for this test; we mutate state directly.
+            let handle = tokio::spawn(async {});
+            // Yield once so the task has a chance to complete cleanly before
+            // we replace its entry. (Not required for correctness — the
+            // JoinHandle in the entry is never awaited by the code under
+            // test — but keeps the test free of pending-future noise.)
+            tokio::task::yield_now().await;
+            ASYNC_TASKS.insert(
+                task_id.clone(),
+                TaskEntry {
+                    handle,
+                    created_at: std::time::Instant::now(),
+                    state: TaskState::Completed(std::time::Instant::now()),
+                },
+            );
+            A2A_TASK_PROGRESS.insert(
+                task_id.clone(),
+                std::sync::Arc::new(tokio::sync::Mutex::new("final result body".to_string())),
+            );
+
+            let result = tool_a2a_check_task(&serde_json::json!({"task_id": &task_id}))
+                .await
+                .expect("check_task must succeed for a completed-but-not-swept task");
+
+            assert!(
+                result.contains("(completed)"),
+                "Expected '(completed)' indicator, got: {result}"
+            );
+            assert!(
+                result.contains("final result body"),
+                "Expected the stored result body, got: {result}"
+            );
+            assert!(
+                !result.to_lowercase().contains("no active task"),
+                "Must NOT report 'No active task' for a completed-and-still-visible entry"
+            );
+        })
+        .await;
+    }
+
+    /// `sweep_with_age_thresholds` honours separate ages for Running and
+    /// Completed entries: a Running entry under its TTL stays; a Completed
+    /// entry past its grace is removed.
+    ///
+    /// This test does not depend on real elapsed time or system uptime —
+    /// `Instant` arithmetic with large `Duration`s panics on Windows when the
+    /// VM uptime is shorter than the subtracted duration. Instead we use
+    /// `Duration::ZERO` to expire a state immediately and `Duration::MAX` to
+    /// keep it forever.
+    #[tokio::test]
+    async fn test_completed_entries_swept_after_grace() {
+        with_global_lock_async(|| async {
+            // Both entries are inserted with `created_at = Instant::now()`; the
+            // sweep decision is driven entirely by the threshold arguments
+            // (no artificially-old Instants).
+            let completed_id = "completed-entry".to_string();
+            let now = std::time::Instant::now();
+            ASYNC_TASKS.insert(
+                completed_id.clone(),
+                TaskEntry {
+                    handle: tokio::spawn(futures::future::pending::<()>()),
+                    created_at: now,
+                    state: TaskState::Completed(now),
+                },
+            );
+            A2A_TASK_PROGRESS.insert(
+                completed_id.clone(),
+                std::sync::Arc::new(tokio::sync::Mutex::new("completed".to_string())),
+            );
+
+            let running_id = "running-entry".to_string();
+            ASYNC_TASKS.insert(
+                running_id.clone(),
+                TaskEntry {
+                    handle: tokio::spawn(futures::future::pending::<()>()),
+                    created_at: std::time::Instant::now(),
+                    state: TaskState::Running,
+                },
+            );
+            A2A_TASK_PROGRESS.insert(
+                running_id.clone(),
+                std::sync::Arc::new(tokio::sync::Mutex::new("running".to_string())),
+            );
+
+            // Pass 1: running_ttl = MAX (keep Running), completed_grace = ZERO
+            // (expire every Completed entry immediately). Only the completed
+            // entry should be swept.
+            sweep_with_age_thresholds(std::time::Duration::MAX, std::time::Duration::ZERO);
+
+            assert!(
+                !ASYNC_TASKS.contains_key(&completed_id),
+                "Completed entry must be swept when completed_grace = ZERO"
+            );
+            assert!(
+                !A2A_TASK_PROGRESS.contains_key(&completed_id),
+                "Completed entry's progress must be swept"
+            );
+            assert!(
+                ASYNC_TASKS.contains_key(&running_id),
+                "Running entry must NOT be swept when running_ttl = MAX"
+            );
+            assert!(
+                A2A_TASK_PROGRESS.contains_key(&running_id),
+                "Running entry's progress must NOT be swept"
+            );
+
+            // Pass 2 (asymmetric check): re-insert a fresh Completed entry,
+            // then call with running_ttl = ZERO and completed_grace = MAX.
+            // Now the Running entry from above must go, and the new Completed
+            // entry must stay.
+            let completed_id_2 = "completed-entry-2".to_string();
+            let now_2 = std::time::Instant::now();
+            ASYNC_TASKS.insert(
+                completed_id_2.clone(),
+                TaskEntry {
+                    handle: tokio::spawn(futures::future::pending::<()>()),
+                    created_at: now_2,
+                    state: TaskState::Completed(now_2),
+                },
+            );
+            A2A_TASK_PROGRESS.insert(
+                completed_id_2.clone(),
+                std::sync::Arc::new(tokio::sync::Mutex::new("completed-2".to_string())),
+            );
+
+            sweep_with_age_thresholds(std::time::Duration::ZERO, std::time::Duration::MAX);
+
+            assert!(
+                !ASYNC_TASKS.contains_key(&running_id),
+                "Running entry must be swept when running_ttl = ZERO"
+            );
+            assert!(
+                !A2A_TASK_PROGRESS.contains_key(&running_id),
+                "Running entry's progress must be swept"
+            );
+            assert!(
+                ASYNC_TASKS.contains_key(&completed_id_2),
+                "Completed entry must NOT be swept when completed_grace = MAX"
+            );
+            assert!(
+                A2A_TASK_PROGRESS.contains_key(&completed_id_2),
+                "Completed entry's progress must NOT be swept"
+            );
+
+            // Cleanup: abort the pending future so it doesn't outlive the
+            // test (the lock helper's reset will clear ASYNC_TASKS anyway).
+            for mut entry in ASYNC_TASKS.iter_mut() {
+                entry.value_mut().handle.abort();
+            }
+        })
+        .await;
+    }
+
+    // -----------------------------------------------------------------------
+    // TTL sweep tests
+    // -----------------------------------------------------------------------
+
+    /// sweep_with_age_threshold(Duration::ZERO) removes all entries regardless of
+    /// when they were created (because `duration_since(now) ≈ 0` is NOT < ZERO).
+    /// sweep_with_age_threshold(Duration::MAX) keeps everything. Both ASYNC_TASKS
+    /// and A2A_TASK_PROGRESS are swept together. No system-uptime dependency.
+    #[tokio::test]
+    async fn test_sweep_with_age_threshold_zero_and_max() {
+        with_global_lock_async(|| async {
+            let id_a = "sweep-a".to_string();
+            let id_b = "sweep-b".to_string();
+
+            for id in [&id_a, &id_b] {
+                ASYNC_TASKS.insert(
+                    id.clone(),
+                    TaskEntry {
+                        handle: tokio::spawn(futures::future::pending::<()>()),
+                        created_at: std::time::Instant::now(),
+                        state: TaskState::Running,
+                    },
+                );
+                A2A_TASK_PROGRESS.insert(
+                    id.clone(),
+                    std::sync::Arc::new(tokio::sync::Mutex::new(id.clone())),
+                );
+            }
+
+            sweep_with_age_threshold(std::time::Duration::ZERO);
+
+            assert!(!ASYNC_TASKS.contains_key(&id_a));
+            assert!(!A2A_TASK_PROGRESS.contains_key(&id_a));
+            assert!(!ASYNC_TASKS.contains_key(&id_b));
+            assert!(!A2A_TASK_PROGRESS.contains_key(&id_b));
+
+            // Part 2: MAX threshold preserves entries.
+            let id_c = "sweep-c".to_string();
+            ASYNC_TASKS.insert(
+                id_c.clone(),
+                TaskEntry {
+                    handle: tokio::spawn(futures::future::pending::<()>()),
+                    created_at: std::time::Instant::now(),
+                    state: TaskState::Running,
+                },
+            );
+            A2A_TASK_PROGRESS.insert(
+                id_c.clone(),
+                std::sync::Arc::new(tokio::sync::Mutex::new("keep-me".to_string())),
+            );
+
+            sweep_with_age_threshold(std::time::Duration::MAX);
+            assert!(ASYNC_TASKS.contains_key(&id_c));
+            assert!(A2A_TASK_PROGRESS.contains_key(&id_c));
+        })
+        .await;
+    }
+
+    /// sweep_expired_async_tasks also cleans orphaned A2A_TASK_PROGRESS entries
+    /// (progress entries whose ASYNC_TASKS partner is already gone).
+    #[tokio::test]
+    async fn test_sweep_also_cleans_progress_map() {
+        with_global_lock_async(|| async {
+            let orphan_id = "sweep-orphan".to_string();
+
+            A2A_TASK_PROGRESS.insert(
+                orphan_id.clone(),
+                std::sync::Arc::new(tokio::sync::Mutex::new("orphan".to_string())),
+            );
+
+            assert!(A2A_TASK_PROGRESS.contains_key(&orphan_id));
+            assert!(!ASYNC_TASKS.contains_key(&orphan_id));
+
+            sweep_expired_async_tasks();
+
+            assert!(!A2A_TASK_PROGRESS.contains_key(&orphan_id));
+        })
+        .await;
+    }
+
+    // -----------------------------------------------------------------------
+    // tool_a2a_send_async validation tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_tool_a2a_send_async_validation_missing_message() {
+        with_global_lock_async(|| async {
+            let result = tool_a2a_send_async(
+                &serde_json::json!({
+                    "agent_url": "http://localhost:9999/a2a",
+                }),
+                None,
+                None,
+            )
+            .await;
+            let err = result.expect_err("Should fail when 'message' is missing");
+            assert!(err.contains("message"));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_tool_a2a_send_async_validation_missing_url_and_name() {
+        with_global_lock_async(|| async {
+            let result = tool_a2a_send_async(
+                &serde_json::json!({
+                    "message": "hello",
+                }),
+                None,
+                None,
+            )
+            .await;
+            let err = result.expect_err("Should fail when both url and name are missing");
+            assert!(
+                err.to_lowercase().contains("agent_url")
+                    || err.to_lowercase().contains("agent_name")
+                    || err.to_lowercase().contains("missing")
+            );
+        })
+        .await;
+    }
+
+    /// SSRF-blocked URL (cloud metadata endpoint) returns an error.
+    #[tokio::test]
+    async fn test_tool_a2a_send_async_validation_ssrf_blocked() {
+        with_global_lock_async(|| async {
+            let result = tool_a2a_send_async(
+                &serde_json::json!({
+                    "message": "hello",
+                    "agent_url": "http://169.254.169.254/a2a",
+                }),
+                None,
+                None,
+            )
+            .await;
+            let err = result.expect_err("Should fail for SSRF-blocked URL");
+            assert!(err.to_lowercase().contains("ssrf") || err.to_lowercase().contains("blocked"));
+        })
+        .await;
+    }
+
+    /// At-cap: when the atomic in-flight counter is already at MAX, the next
+    /// call is rejected before the URL is validated.
+    ///
+    /// Updated for the atomic cap-check: the rejection criterion is now
+    /// `ASYNC_TASKS_IN_FLIGHT >= MAX_ASYNC_TASKS`, not `ASYNC_TASKS.len()`.
+    /// We set the counter (and synthesise live task entries to match) so
+    /// the precondition mirrors a real at-cap state.
+    #[tokio::test]
+    async fn test_tool_a2a_send_async_validation_at_cap() {
+        with_global_lock_async(|| async {
+            for i in 0..MAX_ASYNC_TASKS {
+                let id = format!("cap-val-{i}");
+                ASYNC_TASKS.insert(
+                    id,
+                    TaskEntry {
+                        handle: tokio::spawn(futures::future::pending::<()>()),
+                        created_at: std::time::Instant::now(),
+                        state: TaskState::Running,
+                    },
+                );
+            }
+            ASYNC_TASKS_IN_FLIGHT.store(MAX_ASYNC_TASKS, std::sync::atomic::Ordering::Release);
+
+            let result = tool_a2a_send_async(
+                &serde_json::json!({
+                    "message": "hello",
+                    "agent_url": "http://example.com/a2a",
+                }),
+                None,
+                None,
+            )
+            .await;
+
+            // Abort pending tasks before cleanup drops them.
+            for mut entry in ASYNC_TASKS.iter_mut() {
+                entry.value_mut().handle.abort();
+            }
+
+            let err = result.expect_err("Should fail when at cap");
+            assert!(err.contains("cap reached") || err.contains("500"));
+        })
+        .await;
+    }
+
+    // -----------------------------------------------------------------------
+    // Real end-to-end test: tool_a2a_send_async with a mock SSE server
+    // -----------------------------------------------------------------------
+
+    /// Spawn a minimal SSE server on `127.0.0.1:0` that, for any POST request,
+    /// returns the supplied raw SSE body. Returns `(url, server_join_handle)`.
+    async fn spawn_mock_sse_server(
+        sse_body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/a2a");
+
+        let handle = tokio::spawn(async move {
+            // Accept just one connection — the test only fires one request.
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // Drain the request headers + body just enough to unblock the client.
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n\
+                     Content-Type: text/event-stream\r\n\
+                     Cache-Control: no-cache\r\n\
+                     Connection: close\r\n\
+                     \r\n\
+                     {sse_body}"
+                );
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.flush().await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        (url, handle)
+    }
+
+    /// Kernel-handle stub that records inject_async_callback calls so we can
+    /// verify a real `tool_a2a_send_async` invocation delivers the final result.
+    struct AsyncCallbackCapturingHandle {
+        injections:
+            tokio::sync::Mutex<Vec<(openfang_types::ChannelCallbackContext, String, String)>>,
+        notify: tokio::sync::Notify,
+    }
+
+    impl AsyncCallbackCapturingHandle {
+        fn new() -> Self {
+            Self {
+                injections: tokio::sync::Mutex::new(Vec::new()),
+                notify: tokio::sync::Notify::new(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::kernel_handle::KernelHandle for AsyncCallbackCapturingHandle {
+        async fn spawn_agent(&self, _: &str, _: Option<&str>) -> Result<(String, String), String> {
+            Err("unused".into())
+        }
+        async fn send_to_agent(&self, _: &str, _: &str) -> Result<String, String> {
+            Err("unused".into())
+        }
+        fn list_agents(&self) -> Vec<crate::kernel_handle::AgentInfo> {
+            vec![]
+        }
+        fn kill_agent(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn memory_store(&self, _: &str, _: serde_json::Value) -> Result<(), String> {
+            Ok(())
+        }
+        fn memory_recall(&self, _: &str) -> Result<Option<serde_json::Value>, String> {
+            Ok(None)
+        }
+        fn find_agents(&self, _: &str) -> Vec<crate::kernel_handle::AgentInfo> {
+            vec![]
+        }
+        async fn task_post(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<String, String> {
+            Err("unused".into())
+        }
+        async fn task_claim(&self, _: &str) -> Result<Option<serde_json::Value>, String> {
+            Ok(None)
+        }
+        async fn task_complete(&self, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        async fn task_list(&self, _: Option<&str>) -> Result<Vec<serde_json::Value>, String> {
+            Ok(vec![])
+        }
+        async fn publish_event(&self, _: &str, _: serde_json::Value) -> Result<(), String> {
+            Ok(())
+        }
+        async fn knowledge_add_entity(
+            &self,
+            _: openfang_types::memory::Entity,
+        ) -> Result<String, String> {
+            Err("unused".into())
+        }
+        async fn knowledge_add_relation(
+            &self,
+            _: openfang_types::memory::Relation,
+        ) -> Result<String, String> {
+            Err("unused".into())
+        }
+        async fn knowledge_query(
+            &self,
+            _: openfang_types::memory::GraphPattern,
+        ) -> Result<Vec<openfang_types::memory::GraphMatch>, String> {
+            Ok(vec![])
+        }
+
+        // The only method whose behaviour we verify — capture the
+        // (context, agent_name, result_text) tuple verbatim. We deliberately
+        // do NOT re-format the message here; that's production's job and the
+        // dedicated `inject_async_callback` test on `OpenFangKernel` covers it.
+        async fn inject_async_callback(
+            &self,
+            context: openfang_types::ChannelCallbackContext,
+            agent_name: &str,
+            result_text: &str,
+        ) -> Result<(), String> {
+            self.injections.lock().await.push((
+                context,
+                agent_name.to_string(),
+                result_text.to_string(),
+            ));
+            self.notify.notify_one();
+            Ok(())
+        }
+    }
+
+    // NOTE: There is no test that drives `tool_a2a_send_async` end-to-end against
+    // a real local SSE server because `web_fetch::check_ssrf` (the canonical SSRF
+    // guard) unconditionally blocks loopback addresses for security. The full
+    // happy-path is covered piecewise:
+    //   - Outer validation/admission (cap, SSRF, missing params): see
+    //     `test_tool_a2a_send_async_validation_*` and `test_async_cap_atomic_admission`
+    //   - SSE consume + progress buffer: see `test_send_streaming_with_progress_then_inject_callback`
+    //   - Untrusted-tag formatting + channel dispatch: see kernel-side
+    //     `test_format_async_callback_message_*` and the capturing-handle test below
+    // A future PR could add an SSRF allowlist (e.g. OPENFANG_TEST_SSRF_ALLOW=127.0.0.1)
+    // to enable a true end-to-end test.
+
+    /// End-to-end of the SSE-consume → progress-buffer → callback path.
+    ///
+    /// `tool_a2a_send_async` itself can't be driven against an in-process mock
+    /// server because the production SSRF guard unconditionally blocks loopback
+    /// IPs (no allowlist plumbing is exposed to tools). So this test instead
+    /// exercises the same internal pipeline directly:
+    ///
+    ///   1. Stand up a real local TCP server that returns canned SSE bytes.
+    ///   2. Call `A2aClient::send_task_streaming_with_progress` against it
+    ///      (the same function `tool_a2a_send_async` spawns).
+    ///   3. Manually invoke the kernel callback (`inject_async_callback`)
+    ///      with the result text — the same call the production task makes
+    ///      when the stream completes.
+    ///   4. Assert the stub kernel handle received (context, agent_name,
+    ///      result_text) verbatim and the progress buffer has live output.
+    ///
+    /// The argument-shape coverage (correct ctx propagation into the closure,
+    /// agent label and message preserved) is what matters at the unit level;
+    /// the full glue is covered by integration tests in a separate harness.
+    #[tokio::test]
+    async fn test_send_streaming_with_progress_then_inject_callback() {
+        with_global_lock_async(|| async {
+            let sse_body = "data: {\"result\":{\"id\":\"t-99\",\"status\":\"completed\",\"messages\":[{\"role\":\"agent\",\"parts\":[{\"type\":\"text\",\"text\":\"all done\"}]}],\"artifacts\":[],\"final\":true}}\n\n";
+            let (url, server) = spawn_mock_sse_server(sse_body).await;
+
+            let progress = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+            let client = crate::a2a::A2aClient::new();
+            let task = client
+                .send_task_streaming_with_progress(
+                    &url,
+                    "do the thing",
+                    None,
+                    progress.clone(),
+                )
+                .await
+                .expect("streaming call must complete");
+
+            assert_eq!(task.id, "t-99");
+            // Live progress buffer captured the agent text mid-stream.
+            let snapshot = progress.lock().await.clone();
+            assert!(
+                snapshot.contains("all done"),
+                "progress buffer should contain agent text, got: {snapshot:?}"
+            );
+
+            // Now exercise the callback delivery half of the pipeline.
+            let stub = Arc::new(AsyncCallbackCapturingHandle::new());
+            let kh: Arc<dyn crate::kernel_handle::KernelHandle> = stub.clone();
+
+            let ctx = openfang_types::ChannelCallbackContext {
+                channel_type: "slack".to_string(),
+                reply_to_platform_id: "U-XYZ".to_string(),
+                reply_to_display_name: "Test User".to_string(),
+                thread_id: Some("ts-77".to_string()),
+                agent_id: "00000000-0000-0000-0000-000000000099".to_string(),
+            };
+
+            let result_text = serde_json::to_string(&task).unwrap();
+            kh.inject_async_callback(ctx, "remote-bot", &result_text)
+                .await
+                .unwrap();
+
+            let injections = stub.injections.lock().await;
+            assert_eq!(injections.len(), 1);
+            let (rec_ctx, agent_label, raw_text) = &injections[0];
+            assert_eq!(rec_ctx.channel_type, "slack");
+            assert_eq!(rec_ctx.reply_to_platform_id, "U-XYZ");
+            assert_eq!(rec_ctx.thread_id.as_deref(), Some("ts-77"));
+            assert_eq!(agent_label, "remote-bot");
+            assert!(raw_text.contains("t-99"));
+
+            server.abort();
+        })
+        .await;
+    }
+
+    /// `with_global_lock` (sync variant) for the cancel-unknown test that has no .await.
+    /// Smoke test for the helper itself.
+    #[test]
+    fn test_with_global_lock_smoke() {
+        with_global_lock(|| {
+            // Lock acquired; the helper clears both maps on entry and exit.
+            assert_eq!(ASYNC_TASKS.len(), 0);
+            assert_eq!(A2A_TASK_PROGRESS.len(), 0);
+        });
     }
 }

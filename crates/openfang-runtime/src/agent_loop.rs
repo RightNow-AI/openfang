@@ -312,6 +312,10 @@ pub async fn run_agent_loop(
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
+    // Per-invocation channel callback context — handed by the caller, not read
+    // from any global. Threaded into `execute_tool` for tools that deliver async
+    // results to channels.
+    callback_context: Option<openfang_types::ChannelCallbackContext>,
 ) -> OpenFangResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting agent loop");
 
@@ -948,6 +952,7 @@ pub async fn run_agent_loop(
                         tts_engine,
                         docker_config,
                         process_manager,
+                        callback_context.as_ref(),
                     );
                     let result = match timeout_opt {
                         Some(timeout) => {
@@ -1540,6 +1545,8 @@ pub async fn run_agent_loop_streaming(
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
+    // See `run_agent_loop`.
+    callback_context: Option<openfang_types::ChannelCallbackContext>,
 ) -> OpenFangResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting streaming agent loop");
 
@@ -2157,6 +2164,7 @@ pub async fn run_agent_loop_streaming(
                         tts_engine,
                         docker_config,
                         process_manager,
+                        callback_context.as_ref(),
                     );
                     let result = match timeout_opt {
                         Some(timeout) => {
@@ -3821,6 +3829,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // callback_context
         )
         .await
         .expect("Loop should complete without error");
@@ -3874,6 +3883,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // callback_context
         )
         .await
         .expect("Loop should complete without error");
@@ -3929,6 +3939,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // callback_context
         )
         .await
         .expect("Loop should complete without error");
@@ -3982,6 +3993,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // callback_context
         )
         .await
         .expect("Loop should complete without error");
@@ -4028,6 +4040,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // callback_context
         )
         .await
         .expect("Streaming loop should complete without error");
@@ -4152,6 +4165,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // callback_context
         )
         .await
         .expect("Loop should recover via retry");
@@ -4199,6 +4213,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // callback_context
         )
         .await
         .expect("Loop should complete with fallback");
@@ -4254,6 +4269,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // callback_context
         )
         .await
         .expect("Streaming loop should complete without error");
@@ -5230,6 +5246,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // callback_context
         )
         .await
         .expect("Agent loop should complete");
@@ -5285,6 +5302,7 @@ mod tests {
             &memory,
             driver,
             &tools,
+            None,
             None,
             None,
             None,
@@ -5372,6 +5390,7 @@ mod tests {
             None,
             None,
             None, // user_content_blocks
+            None, // callback_context
         )
         .await
         .expect("Normal loop should complete");
@@ -5435,6 +5454,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // callback_context
         )
         .await
         .expect("Streaming loop should complete");

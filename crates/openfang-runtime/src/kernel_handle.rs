@@ -212,6 +212,26 @@ pub trait KernelHandle: Send + Sync {
         Err("Channel send not available".to_string())
     }
 
+    /// Inject an async-tool result back into the originating channel.
+    ///
+    /// Used by `tool_a2a_send_async` (in the async-dispatch PR) when a background
+    /// task completes and its result must be delivered to the channel/user that
+    /// initiated the request. The `context` is captured at spawn time by the
+    /// tool (handed in via the per-invocation `callback_context` parameter), so
+    /// no global lookup happens here and no cross-user bleed is possible.
+    ///
+    /// The implementation should tag `result_text` as untrusted external content
+    /// before passing it through the agent loop (prompt-injection mitigation).
+    async fn inject_async_callback(
+        &self,
+        context: openfang_types::ChannelCallbackContext,
+        agent_name: &str,
+        result_text: &str,
+    ) -> Result<(), String> {
+        let _ = (context, agent_name, result_text);
+        Err("Async callback injection not available".to_string())
+    }
+
     /// Send media content (image/file) to a user on a named channel adapter.
     /// `media_type` is "image" or "file", `media_url` is the URL, `caption` is optional text.
     /// When `thread_id` is provided, the media is sent as a thread reply.
