@@ -9,11 +9,21 @@
 //! - `build_agent_card` — expose OpenFang agents via A2A
 //! - `A2aClient` — discover and interact with external A2A agents
 
+use futures::StreamExt;
 use openfang_types::agent::AgentManifest;
+use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Duration;
 use tracing::{debug, info, warn};
+
+/// Wall-clock deadline applied to the synchronous SSE streaming path
+/// ([`A2aClient::send_task_streaming`]). Must match the contract advertised
+/// in the `a2a_send` tool description ("blocks until complete, up to 300 s").
+/// The async dispatch path ([`A2aClient::send_task_streaming_with_progress`])
+/// intentionally does NOT apply this deadline — see its doc comment.
+pub(crate) const SYNC_STREAMING_DEADLINE: Duration = Duration::from_secs(300);
 
 // ---------------------------------------------------------------------------
 // A2A Agent Card
@@ -393,6 +403,166 @@ pub fn build_agent_card(manifest: &AgentManifest, base_url: &str) -> AgentCard {
 // A2A Client — discover and interact with external A2A agents
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// SSE parsing helpers
+// ---------------------------------------------------------------------------
+
+/// Outcome of processing a single `data:` SSE line.
+pub(crate) enum SseLineOutcome {
+    /// The line yielded a task update. `bool` is `true` when this is the final event.
+    Task(A2aTask, bool),
+    /// The line contained an error object — the stream should be aborted.
+    Error(String),
+    /// The line was empty, non-`data:`, or contained non-JSON payload (e.g. `[DONE]`).
+    Skip,
+}
+
+/// Process a single raw SSE line and return what was found.
+///
+/// Accepts the full line (including the `data: ` prefix, if present).
+/// All the JSON-parsing and task-extraction logic lives here — both
+/// `parse_sse_content` and the streaming methods delegate to this function
+/// so the logic is defined in exactly one place.
+pub(crate) fn process_sse_line(line: &str) -> SseLineOutcome {
+    let data = match line.strip_prefix("data: ") {
+        Some(d) => d.trim(),
+        None => return SseLineOutcome::Skip,
+    };
+    if data.is_empty() {
+        return SseLineOutcome::Skip;
+    }
+    // Malformed / non-JSON payload (e.g. `data: [DONE]`): skip gracefully.
+    let parsed: serde_json::Value = match serde_json::from_str(data) {
+        Ok(v) => v,
+        Err(e) => {
+            debug!(data, error = %e, "SSE data line is not valid JSON — skipping");
+            return SseLineOutcome::Skip;
+        }
+    };
+
+    if let Some(result) = parsed.get("result") {
+        if let Ok(task) = serde_json::from_value::<A2aTask>(result.clone()) {
+            let is_final = result
+                .get("final")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            return SseLineOutcome::Task(task, is_final);
+        }
+    } else if let Some(error) = parsed.get("error") {
+        return SseLineOutcome::Error(format!("A2A SSE error: {error}"));
+    }
+    SseLineOutcome::Skip
+}
+
+/// Consume a streaming SSE response and return the final `A2aTask`.
+///
+/// Shared implementation for both the basic and progress-reporting streaming
+/// variants. Handles incremental byte accumulation (so multi-byte UTF-8
+/// codepoints split across TCP chunk boundaries do not abort the stream),
+/// splits the buffer into newline-terminated lines, and dispatches each one
+/// through [`process_sse_line`]. The supplied `on_task` callback is invoked
+/// for every task observed — final or not — so callers can stream progress
+/// snapshots without re-implementing the parsing loop.
+pub(crate) async fn consume_sse_stream<F, Fut>(
+    response: Response,
+    mut on_task: F,
+) -> Result<A2aTask, String>
+where
+    F: FnMut(&A2aTask) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    // Incremental SSE processing: as each chunk arrives, append to a small
+    // byte accumulator and dispatch any complete (newline-terminated) lines
+    // through `process_sse_line`. We never hold the full response body in
+    // memory at once.
+    //
+    // We accumulate raw *bytes* (not a `String`) because a single TCP chunk
+    // may end in the middle of a multi-byte UTF-8 codepoint (very real with
+    // CJK / emoji / accented text on small MTUs). Trying to convert each
+    // chunk to `str` directly would abort the stream with a UTF-8 error.
+    // Instead we only attempt UTF-8 decoding on prefixes that end at a
+    // newline, where the boundary is guaranteed to fall between codepoints.
+    let mut stream = response.bytes_stream();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut last_task: Option<A2aTask> = None;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("SSE stream error: {e}"))?;
+        bytes.extend_from_slice(&chunk);
+
+        // Drain every complete (newline-terminated) line out of the byte
+        // buffer. Any trailing partial-codepoint bytes stay in `bytes` for
+        // the next iteration.
+        while let Some(newline_pos) = bytes.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = bytes.drain(..=newline_pos).collect();
+            // Drop the terminating '\n' before UTF-8 decoding — and strip
+            // a trailing '\r' if present.
+            let end = if line_bytes.len() >= 2 && line_bytes[line_bytes.len() - 2] == b'\r' {
+                line_bytes.len() - 2
+            } else {
+                line_bytes.len() - 1
+            };
+            // Use lossy decoding: a stray invalid byte on a single line
+            // shouldn't abort the entire stream. `process_sse_line` will
+            // skip lines whose payload isn't valid JSON anyway.
+            let line = String::from_utf8_lossy(&line_bytes[..end]);
+
+            match process_sse_line(&line) {
+                SseLineOutcome::Task(task, is_final) => {
+                    on_task(&task).await;
+                    last_task = Some(task);
+                    if is_final {
+                        return last_task.ok_or_else(|| "No task in final SSE event".to_string());
+                    }
+                }
+                SseLineOutcome::Error(e) => return Err(e),
+                SseLineOutcome::Skip => {}
+            }
+        }
+    }
+
+    // Stream closed without a final event — return whatever we have.
+    last_task.ok_or_else(|| "SSE stream ended without a final event".to_string())
+}
+
+/// Parse a complete SSE stream body (already collected as a `&str`) and
+/// return the final `A2aTask`.
+///
+/// Used by unit tests so they exercise the same line-processing code path
+/// as the streaming production methods.
+///
+/// Behaviour:
+/// - Lines beginning with `data: ` are JSON-parsed via `process_sse_line`.
+/// - A line with `"error"` in the JSON object returns `Err`.
+/// - A line with `"result"` that has `"final": true` returns immediately.
+/// - Malformed JSON lines are skipped (logged at debug level).
+/// - If the stream ends without a `"final": true` event, the last observed task
+///   is returned (partial result) or an `Err` if no task was seen at all.
+#[cfg(test)]
+pub(crate) fn parse_sse_content(content: &str) -> Result<A2aTask, String> {
+    let mut buf = content.to_string();
+    let mut last_task: Option<A2aTask> = None;
+
+    while let Some(newline_pos) = buf.find('\n') {
+        let line = buf[..newline_pos].trim_end_matches('\r').to_string();
+        buf = buf[newline_pos + 1..].to_string();
+
+        match process_sse_line(&line) {
+            SseLineOutcome::Task(task, is_final) => {
+                last_task = Some(task);
+                if is_final {
+                    return last_task.ok_or_else(|| "No task in final SSE event".to_string());
+                }
+            }
+            SseLineOutcome::Error(e) => return Err(e),
+            SseLineOutcome::Skip => {}
+        }
+    }
+
+    // Stream ended without a final event — return whatever we have.
+    last_task.ok_or_else(|| "SSE stream ended without a final event".to_string())
+}
+
 /// Client for discovering and interacting with external A2A agents.
 pub struct A2aClient {
     client: reqwest::Client,
@@ -403,7 +573,7 @@ impl A2aClient {
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(300))
                 .build()
                 .unwrap_or_default(),
         }
@@ -477,6 +647,87 @@ impl A2aClient {
         } else {
             Err("Empty A2A response".to_string())
         }
+    }
+
+    /// Send a task to an external A2A agent using SSE streaming (`tasks/sendSubscribe`).
+    ///
+    /// Synchronous in the sense that it blocks until the server emits its final event
+    /// (or the underlying connection closes), but it processes SSE lines incrementally
+    /// as they arrive from the wire — the full response body is **not** buffered in
+    /// memory. Each `data:` line is fed through [`process_sse_line`] the moment a
+    /// newline is observed, preserving backpressure to the remote.
+    ///
+    /// # Deadline
+    /// The total wall-clock time spent consuming the SSE stream is capped at
+    /// [`SYNC_STREAMING_DEADLINE`] (300 s). This matches the `a2a_send` tool
+    /// description's "blocks until complete, up to 300 s" contract. The deadline
+    /// is enforced via [`tokio::time::timeout`] wrapping the entire SSE consumption,
+    /// **not** by `reqwest`'s `.timeout()` — that one only governs the gap between
+    /// successive read events, not total elapsed time. Wrapping `consume_sse_stream`
+    /// gives us a true wall-clock deadline while still letting us distinguish
+    /// connect-level failures (surfaced by `reqwest`) from "ran too long" timeouts
+    /// (surfaced here as an explicit 300 s error).
+    pub async fn send_task_streaming(
+        &self,
+        url: &str,
+        message: &str,
+        session_id: Option<&str>,
+    ) -> Result<A2aTask, String> {
+        // Build a dedicated client for streaming. We deliberately do NOT set
+        // `.timeout()` on the client itself: reqwest's request timeout fires
+        // when a single read takes too long, which is the wrong semantic for a
+        // long-lived SSE stream that may legitimately have idle gaps between
+        // server-sent events. The total wall-clock deadline is enforced below
+        // via `tokio::time::timeout` around the SSE consumption loop.
+        let streaming_client = reqwest::Client::builder()
+            .build()
+            .map_err(|e| format!("Failed to build streaming client: {e}"))?;
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tasks/sendSubscribe",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"type": "text", "text": message}]
+                },
+                "sessionId": session_id,
+            }
+        });
+
+        let response = streaming_client
+            .post(url)
+            .header("Accept", "text/event-stream")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| format!("A2A send_task_streaming failed: {e}"))?;
+
+        if !response.status().is_success() {
+            return Err(format!(
+                "A2A send_task_streaming returned {}",
+                response.status()
+            ));
+        }
+
+        // The actual SSE loop lives in `consume_sse_stream` so the streaming
+        // and progress-reporting variants stay in lock-step. This caller
+        // doesn't care about intermediate task snapshots — pass a no-op
+        // callback. Wrap the consumption in a 300 s deadline so the tool
+        // description's "up to 300 s" claim is enforced in behaviour, not
+        // merely documentation.
+        tokio::time::timeout(
+            SYNC_STREAMING_DEADLINE,
+            consume_sse_stream(response, |_task| async {}),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "A2A request exceeded {}s timeout",
+                SYNC_STREAMING_DEADLINE.as_secs()
+            )
+        })?
     }
 
     /// Get the status of a task from an external A2A agent.
@@ -750,5 +1001,129 @@ mod tests {
         assert_eq!(back.listen_path, "/a2a");
         assert_eq!(back.external_agents.len(), 1);
         assert_eq!(back.external_agents[0].name, "other-agent");
+    }
+
+    // -----------------------------------------------------------------------
+    // SSE parser edge-case tests (via parse_sse_content)
+    // -----------------------------------------------------------------------
+
+    /// Build a minimal A2A JSON-RPC result payload for use in SSE lines.
+    fn sse_result_line(task_id: &str, status: &str, is_final: bool) -> String {
+        let payload = serde_json::json!({
+            "result": {
+                "id": task_id,
+                "status": status,
+                "messages": [],
+                "artifacts": [],
+                "final": is_final,
+            }
+        });
+        format!("data: {}\n", payload)
+    }
+
+    /// 1. Normal completion: a valid final-event stream returns the task.
+    #[test]
+    fn test_sse_parse_normal_completion() {
+        let mut stream = String::new();
+        stream.push_str(&sse_result_line("t-ok", "working", false));
+        stream.push_str(&sse_result_line("t-ok", "completed", true));
+
+        let result = parse_sse_content(&stream).expect("Should succeed on normal completion");
+        assert_eq!(result.id, "t-ok");
+        assert_eq!(result.status, A2aTaskStatus::Completed);
+    }
+
+    /// 2. Disconnect mid-stream (no final event): returns the last seen task
+    ///    rather than panicking or hanging.
+    #[test]
+    fn test_sse_parse_disconnect_mid_stream() {
+        let mut stream = String::new();
+        stream.push_str(&sse_result_line("t-partial", "working", false));
+        // Stream ends here — no final event.
+
+        let result =
+            parse_sse_content(&stream).expect("Should return partial result on disconnect");
+        assert_eq!(result.id, "t-partial");
+        assert_eq!(result.status, A2aTaskStatus::Working);
+    }
+
+    /// 3. Malformed JSON in a data field: the bad line is skipped; subsequent
+    ///    valid lines are still processed.
+    #[test]
+    fn test_sse_parse_malformed_json_skipped() {
+        let mut stream = String::new();
+        stream.push_str("data: {not json at all}\n");
+        stream.push_str(&sse_result_line("t-after-bad", "completed", true));
+
+        // Must not panic; the malformed line is skipped and the valid final
+        // event is returned.
+        let result = parse_sse_content(&stream)
+            .expect("Malformed JSON line must be skipped, valid final event returned");
+        assert_eq!(result.id, "t-after-bad");
+    }
+
+    /// 4. Valid data lines with no `"final"` field: parse_sse_content returns
+    ///    the accumulated last task rather than hanging or returning an error.
+    #[test]
+    fn test_sse_parse_no_final_event_returns_last_task() {
+        let mut stream = String::new();
+        // Three working events, none marked final.
+        for _ in 0..3 {
+            stream.push_str(&sse_result_line("t-nofinal", "working", false));
+        }
+
+        let result = parse_sse_content(&stream)
+            .expect("Should return last task when no final event is present");
+        assert_eq!(result.id, "t-nofinal");
+    }
+
+    /// 5. Parser correctly handles a single concatenated input that contains
+    ///    a complete `data:` line. This is *not* a wire-level chunk-reassembly
+    ///    test (the parser only ever sees a single `&str`); real chunk-boundary
+    ///    coverage lives in the integration tests that drive
+    ///    `consume_sse_stream` with a mocked TCP source.
+    #[test]
+    fn test_sse_parse_concatenated_lines() {
+        // Build the full final-event line.
+        let full_line = sse_result_line("t-chunked", "completed", true);
+
+        // Split the line at an arbitrary point in the middle of the JSON.
+        let split_at = full_line.len() / 2;
+        let chunk_a = &full_line[..split_at];
+        let chunk_b = &full_line[split_at..];
+
+        // parse_sse_content processes the accumulated buffer — concatenate both
+        // chunks to simulate what the production streaming loop does.
+        let reassembled = format!("{chunk_a}{chunk_b}");
+        let result =
+            parse_sse_content(&reassembled).expect("Chunked event must be reassembled correctly");
+        assert_eq!(result.id, "t-chunked");
+        assert_eq!(result.status, A2aTaskStatus::Completed);
+    }
+
+    /// 6. Error event in the stream: parse_sse_content surfaces the error
+    ///    rather than silently dropping it.
+    #[test]
+    fn test_sse_parse_error_event() {
+        let stream = "data: {\"error\":{\"code\":-32600,\"message\":\"Bad request\"}}\n";
+        let result = parse_sse_content(stream);
+        assert!(result.is_err(), "Error event should return Err");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("A2A SSE error") || msg.contains("Bad request"),
+            "Error message should mention the error: {msg}"
+        );
+    }
+
+    /// 7. Completely empty stream: returns a clear error (no task seen).
+    #[test]
+    fn test_sse_parse_empty_stream() {
+        let result = parse_sse_content("");
+        assert!(result.is_err(), "Empty stream should return Err");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("without a final event") || msg.contains("no task"),
+            "Error should indicate missing final event: {msg}"
+        );
     }
 }

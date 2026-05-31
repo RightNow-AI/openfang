@@ -1181,7 +1181,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "a2a_send".to_string(),
-            description: "Send a task/message to an external A2A agent and get the response. Use agent_name to send to a previously discovered agent, or agent_url for direct addressing.".to_string(),
+            description: "Send a task/message to an external A2A agent and get the response synchronously over an SSE stream. The call blocks until the remote agent emits its final event, up to 300 s. Use agent_name to send to a previously discovered agent, or agent_url for direct addressing.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -2753,7 +2753,9 @@ async fn tool_a2a_send(
 
     let session_id = input["session_id"].as_str();
     let client = crate::a2a::A2aClient::new();
-    let task = client.send_task(&url, message, session_id).await?;
+    let task = client
+        .send_task_streaming(&url, message, session_id)
+        .await?;
 
     serde_json::to_string_pretty(&task).map_err(|e| format!("Serialization error: {e}"))
 }
