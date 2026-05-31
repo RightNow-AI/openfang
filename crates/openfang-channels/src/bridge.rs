@@ -102,6 +102,23 @@ pub trait ChannelBridgeHandle: Send + Sync {
     /// Send a message to an agent and get the text response.
     async fn send_message(&self, agent_id: AgentId, message: &str) -> Result<String, String>;
 
+    /// Send a message to an agent, threading an optional channel callback context
+    /// through the agent loop so tools that need to deliver async results (e.g.
+    /// `a2a_send_async`) can capture the originating channel/user without reading
+    /// from a global per-agent map.
+    ///
+    /// Default implementation discards the context and falls back to `send_message`;
+    /// real bridge adapters override this to propagate the context.
+    async fn send_message_with_context(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        callback_context: Option<openfang_types::ChannelCallbackContext>,
+    ) -> Result<String, String> {
+        let _ = callback_context;
+        self.send_message(agent_id, message).await
+    }
+
     /// Send a message with structured content blocks (text + images) to an agent.
     ///
     /// Default implementation extracts text from blocks and falls back to `send_message()`.
@@ -1330,8 +1347,31 @@ async fn dispatch_message(
         text.clone()
     };
 
-    // Send to agent and relay response
-    let result = handle.send_message(agent_id, &prefixed_text).await;
+    // Build the channel callback context — passed by value into the agent loop
+    // (no global per-agent map) so concurrent dispatches for the same agent never
+    // see one another's context. Tools that need to deliver async results capture
+    // this from the per-invocation parameter handed to them by `execute_tool`.
+    //
+    // `thread_id` is the *smart-thread ID* — `effective_thread_id` resolved above:
+    //   - Discord: thread channel ID from the incoming event
+    //   - Slack: `thread_ts` timestamp
+    //   - auto-threaded adapters: new thread ID from `adapter.create_thread()`
+    //   - non-threaded adapters (Telegram DM, email): `None`
+    let callback_context = openfang_types::ChannelCallbackContext {
+        channel_type: ct_str.to_string(),
+        reply_to_platform_id: message.sender.platform_id.clone(),
+        reply_to_display_name: message.sender.display_name.clone(),
+        thread_id: thread_id.map(|t| t.to_string()),
+        agent_id: agent_id.to_string(),
+    };
+
+    // Send to agent and relay response. Clone so the retry path below
+    // (re-resolution) can pass the same context — otherwise the new agent
+    // would run without callback context and async tools would silently
+    // fail to fire.
+    let result = handle
+        .send_message_with_context(agent_id, &prefixed_text, Some(callback_context.clone()))
+        .await;
 
     // Stop the typing refresh now that we have a response
     typing_task.abort();
@@ -1359,7 +1399,22 @@ async fn dispatch_message(
             // Try re-resolution before reporting error
             if let Some(new_id) = try_reresolution(&e, &channel_key, handle, router).await {
                 let typing_task2 = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
-                let retry = handle.send_message(new_id, &text).await;
+                // Re-send WITH context: the freshly resolved agent needs the
+                // same callback context as the original attempt, otherwise its
+                // async tools (which rely on the channel callback) silently
+                // never fire.
+                //
+                // CRITICAL: rebuild the context's `agent_id` so it points at the
+                // newly resolved agent. The original `callback_context` was built
+                // from the pre-resolution `agent_id` (a UUID that is now dead /
+                // replaced); downstream consumers — notably the async-dispatch
+                // tools that read `context.agent_id` to call `send_to_agent(...)`
+                // — would otherwise deliver async callbacks to the stale agent.
+                let mut retry_context = callback_context.clone();
+                retry_context.agent_id = new_id.to_string();
+                let retry = handle
+                    .send_message_with_context(new_id, &text, Some(retry_context))
+                    .await;
                 typing_task2.abort();
                 match retry {
                     Ok(response) => {
@@ -2809,5 +2864,138 @@ mod tests {
             media_type_from_url("https://api.telegram.org/file/bot123/photos/file_42"),
             "image/jpeg"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Per-invocation context isolation test
+    // -------------------------------------------------------------------
+
+    /// Stub adapter that captures every call to `send_message_with_context`,
+    /// echoing the supplied context back in the response so the test can verify
+    /// no cross-call contamination.
+    struct CapturingContextHandle {
+        /// Records (agent_id, message, callback_context) in call order.
+        calls: tokio::sync::Mutex<
+            Vec<(
+                AgentId,
+                String,
+                Option<openfang_types::ChannelCallbackContext>,
+            )>,
+        >,
+    }
+
+    #[async_trait]
+    impl ChannelBridgeHandle for CapturingContextHandle {
+        async fn send_message(&self, _agent_id: AgentId, message: &str) -> Result<String, String> {
+            // Default impl (no context). Tests should use send_message_with_context.
+            Ok(format!("Echo-no-ctx: {message}"))
+        }
+
+        async fn send_message_with_context(
+            &self,
+            agent_id: AgentId,
+            message: &str,
+            callback_context: Option<openfang_types::ChannelCallbackContext>,
+        ) -> Result<String, String> {
+            // Simulate a non-trivial agent loop with an await point so the two
+            // concurrent calls actually overlap.
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let recipient = callback_context
+                .as_ref()
+                .map(|c| c.reply_to_platform_id.clone())
+                .unwrap_or_else(|| "no-context".to_string());
+            self.calls
+                .lock()
+                .await
+                .push((agent_id, message.to_string(), callback_context));
+            Ok(format!("for:{recipient}|msg:{message}"))
+        }
+
+        async fn find_agent_by_name(&self, _name: &str) -> Result<Option<AgentId>, String> {
+            Ok(None)
+        }
+        async fn list_agents(&self) -> Result<Vec<(AgentId, String)>, String> {
+            Ok(vec![])
+        }
+        async fn spawn_agent_by_name(&self, _: &str) -> Result<AgentId, String> {
+            Err("unused".into())
+        }
+    }
+
+    /// Two concurrent `send_message_with_context` calls to the same agent from
+    /// different channel contexts must each receive a response derived from
+    /// their own context — no cross-bleed.
+    ///
+    /// This is the regression test for the global-channel_contexts-DashMap race
+    /// that prompted the kernel-context-threading refactor. Because context is
+    /// now an owned parameter on the call (not a shared map), the test cannot
+    /// physically observe contamination — the type system enforces isolation.
+    #[tokio::test]
+    async fn test_concurrent_send_message_with_context_no_crossbleed() {
+        let agent_id = AgentId::new();
+        let stub = Arc::new(CapturingContextHandle {
+            calls: tokio::sync::Mutex::new(Vec::new()),
+        });
+        let handle: Arc<dyn ChannelBridgeHandle> = stub.clone();
+
+        let ctx_alice = openfang_types::ChannelCallbackContext {
+            channel_type: "slack".to_string(),
+            reply_to_platform_id: "U-ALICE".to_string(),
+            reply_to_display_name: "Alice".to_string(),
+            thread_id: Some("ts-1".to_string()),
+            agent_id: agent_id.to_string(),
+        };
+        let ctx_bob = openfang_types::ChannelCallbackContext {
+            channel_type: "telegram".to_string(),
+            reply_to_platform_id: "U-BOB".to_string(),
+            reply_to_display_name: "Bob".to_string(),
+            thread_id: None,
+            agent_id: agent_id.to_string(),
+        };
+
+        let h1 = handle.clone();
+        let h2 = handle.clone();
+        let alice_ctx = ctx_alice.clone();
+        let bob_ctx = ctx_bob.clone();
+
+        let alice = tokio::spawn(async move {
+            h1.send_message_with_context(agent_id, "alice msg", Some(alice_ctx))
+                .await
+                .unwrap()
+        });
+        let bob = tokio::spawn(async move {
+            h2.send_message_with_context(agent_id, "bob msg", Some(bob_ctx))
+                .await
+                .unwrap()
+        });
+
+        let alice_resp = alice.await.unwrap();
+        let bob_resp = bob.await.unwrap();
+
+        // Each response must carry its own recipient — no cross-talk.
+        assert!(
+            alice_resp.contains("U-ALICE") && alice_resp.contains("alice msg"),
+            "Alice should see her own context, got: {alice_resp}"
+        );
+        assert!(
+            bob_resp.contains("U-BOB") && bob_resp.contains("bob msg"),
+            "Bob should see his own context, got: {bob_resp}"
+        );
+
+        // And the recorded calls hold the original contexts byte-for-byte.
+        let calls = stub.calls.lock().await;
+        assert_eq!(calls.len(), 2);
+        for (_, msg, ctx) in calls.iter() {
+            let ctx = ctx.as_ref().expect("context must be present");
+            if msg == "alice msg" {
+                assert_eq!(ctx.reply_to_platform_id, "U-ALICE");
+                assert_eq!(ctx.channel_type, "slack");
+            } else if msg == "bob msg" {
+                assert_eq!(ctx.reply_to_platform_id, "U-BOB");
+                assert_eq!(ctx.channel_type, "telegram");
+            } else {
+                panic!("unexpected message: {msg}");
+            }
+        }
     }
 }

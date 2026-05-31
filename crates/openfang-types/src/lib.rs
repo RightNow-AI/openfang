@@ -23,6 +23,26 @@ pub mod tool;
 pub mod tool_compat;
 pub mod webhook;
 
+/// Context for delivering async agent results back to the originating channel.
+///
+/// Threaded as an optional parameter through `send_message` rather than stored
+/// globally — see the `kernel-context-threading` PR description for why the
+/// global-map approach was rejected.
+#[derive(Debug, Clone)]
+pub struct ChannelCallbackContext {
+    /// Channel adapter name (e.g. "slack", "telegram", "email").
+    pub channel_type: String,
+    /// Platform-specific recipient ID (e.g. Slack user ID, Telegram chat ID).
+    pub reply_to_platform_id: String,
+    /// Human-readable sender name (used for prompt context).
+    pub reply_to_display_name: String,
+    /// Smart-thread ID for threaded channels (Discord thread, Slack thread_ts, etc.).
+    pub thread_id: Option<String>,
+    /// UUID of the agent that received the message — used by callbacks to
+    /// re-enter the agent loop.
+    pub agent_id: String,
+}
+
 /// Safely truncate a string to at most `max_bytes`, never splitting a UTF-8 char.
 pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {

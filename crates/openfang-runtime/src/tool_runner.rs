@@ -124,6 +124,12 @@ pub async fn execute_tool(
     tts_engine: Option<&crate::tts::TtsEngine>,
     docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
+    // Per-invocation channel callback context. Passed explicitly rather than
+    // stored on the kernel so concurrent dispatches for the same agent cannot
+    // see one another's context. Tools that deliver async results (e.g.
+    // `a2a_send_async` in the async-dispatch PR) capture this value at spawn
+    // time and own it for the lifetime of the background task.
+    _callback_context: Option<&openfang_types::ChannelCallbackContext>,
 ) -> ToolResult {
     // Normalize the tool name through compat mappings so LLM-hallucinated aliases
     // (e.g. "fs-write" → "file_write") resolve to the canonical OpenFang name.
@@ -3925,6 +3931,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(
@@ -3954,6 +3961,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -3980,6 +3988,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4006,6 +4015,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4068,6 +4078,7 @@ mod tests {
             None,                 // tts_engine
             None,                 // docker_config
             None,                 // process_manager
+            None,                 // callback_context
         )
         .await;
         assert!(
@@ -4098,6 +4109,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4124,6 +4136,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         // web_search now attempts a real fetch; may succeed or fail depending on network
@@ -4150,6 +4163,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4176,6 +4190,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4203,6 +4218,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4234,6 +4250,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         // Should fail for file-not-found, NOT for permission denied
@@ -4279,6 +4296,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         // Should NOT be the capability-enforcement "Permission denied" — it should
@@ -4314,6 +4332,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4483,6 +4502,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);
@@ -4528,6 +4548,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // callback_context
         )
         .await;
         assert!(result.is_error);

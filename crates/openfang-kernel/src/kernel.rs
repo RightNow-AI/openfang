@@ -1831,6 +1831,35 @@ impl OpenFangKernel {
             .await
     }
 
+    /// Send a message with a channel callback context attached.
+    ///
+    /// The context is threaded into the agent loop and made available to tools
+    /// that need to deliver async results back to the originating channel.
+    /// Passed explicitly rather than stored in a global per-agent map so that
+    /// concurrent dispatches for the same agent never interfere.
+    pub async fn send_message_with_context(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        callback_context: Option<openfang_types::ChannelCallbackContext>,
+    ) -> KernelResult<AgentLoopResult> {
+        let handle: Option<Arc<dyn KernelHandle>> = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+        self.send_message_with_handle_and_blocks_and_context(
+            agent_id,
+            message,
+            handle,
+            None,
+            None,
+            None,
+            callback_context,
+        )
+        .await
+    }
+
     /// Send a multimodal message (text + images) to an agent and get a response.
     ///
     /// Used by channel bridges when a user sends a photo — the image is downloaded,
@@ -1895,6 +1924,32 @@ impl OpenFangKernel {
         sender_id: Option<String>,
         sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
+        self.send_message_with_handle_and_blocks_and_context(
+            agent_id,
+            message,
+            kernel_handle,
+            content_blocks,
+            sender_id,
+            sender_name,
+            None,
+        )
+        .await
+    }
+
+    /// Variant of `send_message_with_handle_and_blocks` that also accepts an optional
+    /// channel callback context (threaded to the agent loop for use by tools that
+    /// deliver async results back to a channel).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_message_with_handle_and_blocks_and_context(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+        callback_context: Option<openfang_types::ChannelCallbackContext>,
+    ) -> KernelResult<AgentLoopResult> {
         // Acquire per-agent lock to serialize concurrent messages for the same agent.
         // This prevents session corruption when multiple messages arrive in quick
         // succession (e.g. rapid voice messages via Telegram). Messages for different
@@ -1931,6 +1986,7 @@ impl OpenFangKernel {
                 content_blocks,
                 sender_id,
                 sender_name,
+                callback_context,
             )
             .await
         };
@@ -2378,6 +2434,7 @@ impl OpenFangKernel {
                 ctx_window,
                 Some(&kernel_clone.process_manager),
                 content_blocks,
+                None, // callback_context (streaming path is API/CLI driven, not channel)
             )
             .await;
 
@@ -2637,6 +2694,7 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        callback_context: Option<openfang_types::ChannelCallbackContext>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -2969,6 +3027,7 @@ impl OpenFangKernel {
             ctx_window,
             Some(&self.process_manager),
             content_blocks,
+            callback_context,
         )
         .await
         .map_err(KernelError::OpenFang)?;

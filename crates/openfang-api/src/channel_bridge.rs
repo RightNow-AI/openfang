@@ -84,6 +84,24 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         Ok(result.response)
     }
 
+    async fn send_message_with_context(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        callback_context: Option<openfang_types::ChannelCallbackContext>,
+    ) -> Result<String, String> {
+        let result = self
+            .kernel
+            .send_message_with_context(agent_id, message, callback_context)
+            .await
+            .map_err(|e| format!("{e}"))?;
+        // Silent/NO_REPLY responses should not be forwarded to channels
+        if result.silent {
+            return Ok(String::new());
+        }
+        Ok(result.response)
+    }
+
     async fn send_message_with_blocks(
         &self,
         agent_id: AgentId,
