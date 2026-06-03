@@ -298,6 +298,17 @@ pub struct HandAgentConfig {
     /// making long LLM calls. Omit to use the kernel default.
     #[serde(default)]
     pub heartbeat_interval_secs: Option<u64>,
+    /// Per-hand memory system selection. Omitted in HAND.toml → defaults
+    /// to `MemorySystem::Summarization` (current OpenFang behavior).
+    ///
+    /// Set to `structured` to enable the structured memory pipeline
+    /// (extractions + dream consolidation) for this hand's spawned agent.
+    /// `activate_hand` copies this through to the spawned `AgentManifest`.
+    #[serde(
+        default,
+        skip_serializing_if = "openfang_types::agent::MemoryConfig::is_default"
+    )]
+    pub memory: openfang_types::agent::MemoryConfig,
 }
 
 fn default_module() -> String {

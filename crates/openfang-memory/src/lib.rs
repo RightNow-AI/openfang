@@ -16,6 +16,8 @@ pub mod semantic;
 pub mod session;
 pub mod structured;
 pub mod usage;
+pub mod user_agent_memory;
+pub mod user_memory;
 
 mod substrate;
-pub use substrate::MemorySubstrate;
+pub use substrate::{ExtractionAuditRow, MemorySubstrate, WipeUserCounts};

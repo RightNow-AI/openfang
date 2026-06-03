@@ -178,6 +178,17 @@ pub struct OpenFangKernel {
     /// session corruption when multiple messages arrive concurrently (e.g. rapid voice
     /// messages via Telegram). Different agents can still run in parallel.
     agent_msg_locks: dashmap::DashMap<AgentId, Arc<tokio::sync::Mutex<()>>>,
+    /// Last-activity timestamp per agent — populated on every successful agent
+    /// loop completion. The session lifecycle loop polls this to detect idle
+    /// sessions and trigger dream consolidation for structured-memory agents.
+    agent_last_active: dashmap::DashMap<AgentId, std::time::Instant>,
+    /// Per-agent in-flight dream mutex — guarantees only one dream task runs
+    /// per agent at a time. The lifecycle loop calls `try_lock` so iterations
+    /// never queue: if a previous dream is still running, this tick is skipped
+    /// and the next tick (30s later) will re-check. Separate from
+    /// `agent_msg_locks` because a dream and a user turn for the same agent
+    /// must not block each other — only dream-vs-dream is serialized.
+    agent_dream_locks: dashmap::DashMap<AgentId, Arc<tokio::sync::Mutex<()>>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
     self_handle: OnceLock<Weak<OpenFangKernel>>,
 }
@@ -526,6 +537,71 @@ fn read_identity_file(state_dir: &Path, filename: &str) -> Option<String> {
     }
 }
 
+/// Build the user-memory context block for injection into the system prompt.
+///
+/// Combines general user topics and per-agent user topics into a concise
+/// index with a human-readable "age" for staleness reasoning. The block is
+/// rendered later by `prompt_builder` under the `## What I Remember About
+/// You` heading.
+///
+/// **Opt-in gate:** returns `None` immediately (no DB roundtrip) when the
+/// agent has not opted in to structured memory
+/// (`MemoryConfig::is_structured() == false`). The default
+/// `MemorySystem::Summarization` writes nothing to the user-memory stores,
+/// so the result would always be empty anyway — exiting early avoids the
+/// SQLite read on every prompt build for upstream-shape agents.
+fn build_user_memory_context(
+    memory: &openfang_memory::MemorySubstrate,
+    user_id: openfang_types::agent::UserId,
+    agent_id: AgentId,
+    memory_cfg: &openfang_types::agent::MemoryConfig,
+) -> Option<String> {
+    if !memory_cfg.is_structured() {
+        return None;
+    }
+    let user_topics = memory.user_topic_index(user_id).unwrap_or_default();
+    let agent_topics = memory
+        .user_agent_topic_index(user_id, agent_id)
+        .unwrap_or_default();
+
+    if user_topics.is_empty() && agent_topics.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    for t in &user_topics {
+        let age = format_memory_age(t.updated_at);
+        lines.push(format!("- **{}** — {} ({})", t.topic, t.summary, age));
+    }
+    for t in &agent_topics {
+        let age = format_memory_age(t.updated_at);
+        lines.push(format!(
+            "- **{}** [with me] — {} ({})",
+            t.topic, t.summary, age
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
+/// Format a UTC timestamp as a human-readable age string
+/// (e.g. "3 days ago", "just now"). Used by `build_user_memory_context`.
+fn format_memory_age(updated_at: chrono::DateTime<chrono::Utc>) -> String {
+    let secs = (chrono::Utc::now() - updated_at).num_seconds();
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{} min ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{} hr ago", secs / 3600)
+    } else if secs < 86400 * 7 {
+        format!("{} days ago", secs / 86400)
+    } else if secs < 86400 * 30 {
+        format!("{} weeks ago", secs / (86400 * 7))
+    } else {
+        format!("{} months ago", secs / (86400 * 30))
+    }
+}
+
 /// Get the system hostname as a String.
 fn gethostname() -> Option<String> {
     #[cfg(unix)]
@@ -544,6 +620,34 @@ fn gethostname() -> Option<String> {
     {
         None
     }
+}
+
+/// Returns `true` if the session contains at least one message that represents
+/// genuine user activity, as opposed to autonomous tick prompts or
+/// context-injection summaries.
+///
+/// A "real" message is:
+/// - role = `User`
+/// - **not** tagged `MessageSource::ContextInjection` (calendar/email/etc.)
+/// - whose text does not start with `[AUTONOMOUS TICK]` or `[SCHEDULED TICK]`
+///
+/// This is the thundering-herd guard for session dreaming: heartbeat-only
+/// sessions (every agent fires a dream on every idle window) used to drown
+/// the LLM in pointless extraction calls. Extracted to a free function so it
+/// can be unit-tested directly without spinning up a kernel.
+pub(crate) fn has_real_user_activity(messages: &[openfang_types::message::Message]) -> bool {
+    use openfang_types::message::{MessageSource, Role};
+
+    messages.iter().any(|msg| {
+        if msg.role != Role::User {
+            return false;
+        }
+        if msg.source == Some(MessageSource::ContextInjection) {
+            return false;
+        }
+        let text = msg.content.text_content();
+        !text.starts_with("[AUTONOMOUS TICK]") && !text.starts_with("[SCHEDULED TICK]")
+    })
 }
 
 impl OpenFangKernel {
@@ -649,6 +753,16 @@ impl OpenFangKernel {
             MemorySubstrate::open(&db_path, config.memory.decay_rate, &config.memory)
                 .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
         );
+
+        // Bootstrap the persistent default user UUID.
+        //
+        // Replaces the legacy nil-UUID "anonymous bucket" so unattributed
+        // sessions get a stable owner. The UUID is generated once on first
+        // boot and persisted to the shared kv_store; subsequent boots reload
+        // it. On first boot after upgrading from a pre-v9 schema, any
+        // existing sessions with `user_id = nil UUID` are rewritten to the
+        // new default.
+        Self::bootstrap_default_user(&memory)?;
 
         // Initialize credential resolver (vault → dotenv → env var)
         let credential_resolver = {
@@ -816,8 +930,18 @@ impl OpenFangKernel {
         let wasm_sandbox = WasmSandbox::new()
             .map_err(|e| KernelError::BootFailed(format!("WASM sandbox init failed: {e}")))?;
 
-        // Initialize RBAC authentication manager
-        let auth = AuthManager::new(&config.users);
+        // Initialize RBAC authentication manager.
+        //
+        // The persistent default user (bootstrapped above) is bound to the
+        // `[[users]]` entry marked `is_default = true`, or to the first
+        // entry if none is marked. This keeps the default-user identity
+        // stable across reboots and lets `[[users]]` metadata (display
+        // name, channel bindings) attach to the persistent bucket rather
+        // than to a freshly-generated per-config UUID.
+        let auth = AuthManager::new_with_default(
+            &config.users,
+            Some(openfang_memory::session::default_user_id()),
+        );
         if auth.is_enabled() {
             info!("RBAC enabled with {} users", auth.user_count());
         }
@@ -1219,6 +1343,8 @@ impl OpenFangKernel {
             default_model_override: std::sync::RwLock::new(None),
             fallback_providers_override: std::sync::RwLock::new(None),
             agent_msg_locks: dashmap::DashMap::new(),
+            agent_last_active: dashmap::DashMap::new(),
+            agent_dream_locks: dashmap::DashMap::new(),
             self_handle: OnceLock::new(),
         };
 
@@ -1611,9 +1737,11 @@ impl OpenFangKernel {
 
         // Create session — use the returned session_id so the registry
         // and database are in sync (fixes duplicate session bug #651).
+        // New sessions are tagged with the persistent default user; future
+        // PRs will surface explicit user selection through this path.
         let session = self
             .memory
-            .create_session(agent_id)
+            .create_session(agent_id, openfang_memory::session::default_user_id())
             .map_err(KernelError::OpenFang)?;
         let session_id = session.id;
 
@@ -1940,6 +2068,10 @@ impl OpenFangKernel {
                 // Record token usage for quota tracking
                 self.scheduler.record_usage(agent_id, &result.total_usage);
 
+                // Update last-active time for the session lifecycle / dream trigger.
+                self.agent_last_active
+                    .insert(agent_id, std::time::Instant::now());
+
                 // Update last active time
                 let _ = self.registry.set_state(agent_id, AgentState::Running);
 
@@ -2040,6 +2172,9 @@ impl OpenFangKernel {
                         kernel_clone
                             .scheduler
                             .record_usage(agent_id, &result.total_usage);
+                        kernel_clone
+                            .agent_last_active
+                            .insert(agent_id, std::time::Instant::now());
                         let _ = kernel_clone
                             .registry
                             .set_state(agent_id, AgentState::Running);
@@ -2064,6 +2199,8 @@ impl OpenFangKernel {
             .unwrap_or_else(|| openfang_memory::session::Session {
                 id: entry.session_id,
                 agent_id,
+                user_id: openfang_memory::session::default_user_id(),
+                parent_session_id: None,
                 messages: Vec::new(),
                 context_window_tokens: 0,
                 label: None,
@@ -2278,6 +2415,15 @@ impl OpenFangKernel {
                 context_md: manifest.workspace.as_ref().and_then(|w| {
                     openfang_runtime::agent_context::load_context_md(w, manifest.cache_context)
                 }),
+                // Gated on `manifest.memory.is_structured()` — returns None
+                // immediately for default-Summarization agents so the SQLite
+                // round-trip is skipped on the hot path.
+                user_memory_context: build_user_memory_context(
+                    &self.memory,
+                    session.user_id,
+                    agent_id,
+                    &manifest.memory,
+                ),
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -2439,6 +2585,10 @@ impl OpenFangKernel {
                             cost_usd: cost,
                             tool_calls: result.iterations.saturating_sub(1),
                         });
+
+                    kernel_clone
+                        .agent_last_active
+                        .insert(agent_id, std::time::Instant::now());
 
                     let _ = kernel_clone
                         .registry
@@ -2650,6 +2800,8 @@ impl OpenFangKernel {
             .unwrap_or_else(|| openfang_memory::session::Session {
                 id: entry.session_id,
                 agent_id,
+                user_id: openfang_memory::session::default_user_id(),
+                parent_session_id: None,
                 messages: Vec::new(),
                 context_window_tokens: 0,
                 label: None,
@@ -2859,6 +3011,14 @@ impl OpenFangKernel {
                 context_md: manifest.workspace.as_ref().and_then(|w| {
                     openfang_runtime::agent_context::load_context_md(w, manifest.cache_context)
                 }),
+                // Gated on `manifest.memory.is_structured()` — see the helper
+                // for the early-return rationale.
+                user_memory_context: build_user_memory_context(
+                    &self.memory,
+                    session.user_id,
+                    agent_id,
+                    &manifest.memory,
+                ),
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -3060,10 +3220,10 @@ impl OpenFangKernel {
         // Delete the old session
         let _ = self.memory.delete_session(entry.session_id);
 
-        // Create a fresh session
+        // Create a fresh session bound to the persistent default user.
         let new_session = self
             .memory
-            .create_session(agent_id)
+            .create_session(agent_id, openfang_memory::session::default_user_id())
             .map_err(KernelError::OpenFang)?;
 
         // Update registry with new session ID
@@ -3092,10 +3252,10 @@ impl OpenFangKernel {
         // Delete canonical (cross-channel) session
         let _ = self.memory.delete_canonical_session(agent_id);
 
-        // Create a fresh session
+        // Create a fresh session bound to the persistent default user.
         let new_session = self
             .memory
-            .create_session(agent_id)
+            .create_session(agent_id, openfang_memory::session::default_user_id())
             .map_err(KernelError::OpenFang)?;
 
         // Update registry with new session ID
@@ -3570,6 +3730,8 @@ impl OpenFangKernel {
             .unwrap_or_else(|| openfang_memory::session::Session {
                 id: entry.session_id,
                 agent_id,
+                user_id: openfang_memory::session::default_user_id(),
+                parent_session_id: None,
                 messages: Vec::new(),
                 context_window_tokens: 0,
                 label: None,
@@ -3652,6 +3814,8 @@ impl OpenFangKernel {
             .unwrap_or_else(|| openfang_memory::session::Session {
                 id: entry.session_id,
                 agent_id,
+                user_id: openfang_memory::session::default_user_id(),
+                parent_session_id: None,
                 messages: Vec::new(),
                 context_window_tokens: 0,
                 label: None,
@@ -3860,6 +4024,8 @@ impl OpenFangKernel {
             } else {
                 None
             },
+            // Propagate hand's per-agent memory opt-in to the spawned manifest.
+            memory: def.agent.memory.clone(),
             ..Default::default()
         };
 
@@ -4476,6 +4642,23 @@ impl OpenFangKernel {
         // Start heartbeat monitor for agent health checking
         self.start_heartbeat_monitor();
 
+        // Session lifecycle: inactivity detection and dream consolidation.
+        //
+        // The dreamer background loop runs kernel-wide; per-agent gating happens
+        // inside `trigger_session_dream` via `manifest.memory.is_structured()`,
+        // so default (Summarization) agents are no-ops even when their last-active
+        // timestamp expires. Set `[sessions] gap_secs = 0` to disable entirely.
+        if self.config.sessions.gap_secs > 0 {
+            let kernel = Arc::clone(self);
+            tokio::spawn(async move {
+                kernel.run_session_lifecycle_loop().await;
+            });
+            info!(
+                gap_secs = self.config.sessions.gap_secs,
+                "Session lifecycle monitor started"
+            );
+        }
+
         // Start OFP peer node if network is enabled
         if self.config.network_enabled && !self.config.network.shared_secret.is_empty() {
             let kernel = Arc::clone(self);
@@ -4996,6 +5179,285 @@ impl OpenFangKernel {
         });
 
         info!("Heartbeat monitor started (interval: {}s)", interval_secs);
+    }
+
+    /// Background loop: check for inactive agent sessions and trigger dream consolidation.
+    ///
+    /// Wakes up every 30 seconds. For each agent that has been idle longer than
+    /// `sessions.gap_secs`, triggers the dream pass (structured extraction →
+    /// user memory consolidation) and removes the agent from the active map.
+    ///
+    /// The per-agent `manifest.memory.is_structured()` gate inside
+    /// `trigger_session_dream` ensures default agents are no-ops even if they
+    /// briefly show up in `agent_last_active` from a turn that ran before the
+    /// opt-in check.
+    async fn run_session_lifecycle_loop(self: &Arc<Self>) {
+        let check_interval = std::time::Duration::from_secs(30);
+        let inactivity_threshold = std::time::Duration::from_secs(self.config.sessions.gap_secs);
+
+        let mut interval = tokio::time::interval(check_interval);
+        interval.tick().await; // Skip initial tick
+
+        loop {
+            interval.tick().await;
+            if self.supervisor.is_shutting_down() {
+                break;
+            }
+
+            // NOTE: Race window — if a new turn finishes between the snapshot
+            // taken here and the per-agent `remove` below, the fresh timestamp
+            // is wiped. Result is a delayed `gap_secs` window (dream fires at
+            // the next tick instead of being suppressed by the new activity).
+            // The dream task itself reads the live session, so the content is
+            // correct; only the timing is briefly off — benign.
+            let now = std::time::Instant::now();
+            let expired: Vec<AgentId> = self
+                .agent_last_active
+                .iter()
+                .filter(|entry| now.duration_since(*entry.value()) >= inactivity_threshold)
+                .map(|entry| *entry.key())
+                .collect();
+
+            for agent_id in expired {
+                self.agent_last_active.remove(&agent_id);
+                let kernel = Arc::clone(self);
+                // Per-agent in-flight dream mutex — if a previous dream task
+                // for this agent is still running, skip this iteration to
+                // avoid double-dispatch. We use `try_lock` (not `lock`) so
+                // tasks never queue: the next 30s tick will check again.
+                let dream_lock = self
+                    .agent_dream_locks
+                    .entry(agent_id)
+                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                    .clone();
+                tokio::spawn(async move {
+                    let Ok(_guard) = dream_lock.try_lock() else {
+                        debug!(
+                            agent_id = %agent_id,
+                            "Dream: skipping — previous dream still in flight"
+                        );
+                        return;
+                    };
+                    kernel.trigger_session_dream(agent_id).await;
+                });
+            }
+        }
+    }
+
+    /// Run the dream pass for an agent session that has gone idle.
+    ///
+    /// Loads the session's structured extractions (accumulated during compaction passes),
+    /// plus the recent message tail, and consolidates into topic-organized user memory.
+    ///
+    /// Gates:
+    /// - The agent must opt in to structured memory (`manifest.memory.is_structured()`).
+    /// - The session must contain *real* user activity — pure autonomous-tick sessions
+    ///   (where the only inputs are `[AUTONOMOUS TICK]` / `[SCHEDULED TICK]` prompts or
+    ///   `ContextInjection` messages) are skipped via [`has_real_user_activity`] to
+    ///   avoid the thundering-herd problem that surfaced in production when every
+    ///   heartbeat fired a dream.
+    pub async fn trigger_session_dream(self: &Arc<Self>, agent_id: AgentId) {
+        use openfang_memory::user_memory::MemoryTopic;
+        use openfang_runtime::compactor::{extract_structured, CompactionConfig};
+        use openfang_runtime::dreamer::dream;
+
+        let entry = match self.registry.get(agent_id) {
+            Some(e) => e,
+            None => return,
+        };
+
+        // Gate: dream consolidation only runs for agents that have opted in
+        // to structured memory. Agents on the default Summarization path never
+        // accumulate extractions, so there is nothing to consolidate.
+        if !entry.manifest.memory.is_structured() {
+            debug!(
+                agent_id = %agent_id,
+                "Dream: skipping — agent memory.system is not structured"
+            );
+            return;
+        }
+
+        let session = match self.memory.get_session(entry.session_id) {
+            Ok(Some(s)) => s,
+            _ => return,
+        };
+
+        if session.messages.is_empty() {
+            return;
+        }
+
+        // Skip dream if the session had no real user activity — only autonomous
+        // tick prompts or context injections. A pure-tick session (heartbeat fires,
+        // agent responds NO_REPLY, nothing else) is not worth consolidating.
+        // This is the activity-gating fix from production (commit aa4ec5c on branchu).
+        if !has_real_user_activity(&session.messages) {
+            debug!(
+                agent_id = %agent_id,
+                messages = session.messages.len(),
+                "Dream: skipping — no real user activity in session"
+            );
+            return;
+        }
+
+        let user_id = session.user_id;
+        let session_id = session.id;
+
+        info!(
+            agent_id = %agent_id,
+            session_id = %session_id,
+            messages = session.messages.len(),
+            "Dream: session idle, starting consolidation"
+        );
+
+        // Run a final extraction pass if needed
+        let config = CompactionConfig::default();
+        let existing_extractions = self.memory.load_extractions(session_id).unwrap_or_default();
+
+        // Resolve the driver up front. We do NOT fall back to StubDriver because
+        // StubDriver.complete() always errors, which burns the full retry budget
+        // inside extract_structured and emits noisy warns. If no driver is
+        // available, the dream pass is meaningless — return early to match the
+        // pattern used later in this function.
+        let driver = match self.resolve_driver(&entry.manifest) {
+            Ok(d) => d,
+            Err(e) => {
+                debug!(agent_id = %agent_id, "Dream: skipping — no LLM driver available: {e}");
+                return;
+            }
+        };
+
+        // Always run a final extraction to capture anything since last compaction.
+        // `extract_structured` is infallible: internal failures fall back to the
+        // existing extraction (or default) and never error.
+        let final_extraction = if !session.messages.is_empty() {
+            let existing = existing_extractions.last().cloned();
+            let extraction = extract_structured(
+                driver.clone(),
+                &entry.manifest.model.model,
+                &session.messages,
+                existing.as_ref(),
+                &config,
+            )
+            .await;
+            let _ = self.memory.append_extraction(session_id, &extraction);
+            extraction
+        } else {
+            existing_extractions.last().cloned().unwrap_or_default()
+        };
+
+        // Reload all extractions including the new one
+        let all_extractions = self.memory.load_extractions(session_id).unwrap_or_default();
+
+        if all_extractions.is_empty()
+            && final_extraction.facts.is_empty()
+            && final_extraction.preferences.is_empty()
+        {
+            debug!(agent_id = %agent_id, "Dream: no content to consolidate, skipping");
+            return;
+        }
+
+        // Load existing user memory topics (name + full content) for conflict detection.
+        // The dream prompt uses these to detect contradictions and emit a `supersedes` list.
+        let existing_topics: Vec<(String, String)> = self
+            .memory
+            .user_topic_index(user_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| {
+                self.memory
+                    .user_topic(user_id, &entry.topic)
+                    .ok()
+                    .flatten()
+                    .map(|t| (entry.topic, t.content))
+            })
+            .collect();
+
+        // Take the last ~20 messages as the "recent tail" (not compacted)
+        let recent_tail: Vec<_> = session
+            .messages
+            .iter()
+            .rev()
+            .take(20)
+            .cloned()
+            .rev()
+            .collect();
+
+        match dream(
+            driver,
+            &entry.manifest.model.model,
+            &all_extractions,
+            &recent_tail,
+            user_id,
+            &existing_topics,
+            &config,
+        )
+        .await
+        {
+            Ok(result) => {
+                info!(
+                    agent_id = %agent_id,
+                    topics = result.topics.len(),
+                    superseded = result.superseded_topics.len(),
+                    "Dream: consolidation complete, persisting topics"
+                );
+
+                // Delete superseded topics before writing new ones (conflict resolution).
+                for superseded in &result.superseded_topics {
+                    if let Err(e) = self.memory.delete_user_topic(user_id, superseded) {
+                        warn!(agent_id = %agent_id, topic = %superseded, "Dream: failed to delete superseded topic: {e}");
+                    } else {
+                        info!(agent_id = %agent_id, topic = %superseded, "Dream: deleted superseded topic");
+                    }
+                }
+
+                // Write new topics, propagating expires_at from dream output.
+                let now = chrono::Utc::now();
+                for dt in &result.topics {
+                    let expires_at = dt
+                        .expires_at
+                        .as_deref()
+                        .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok());
+                    let topic = MemoryTopic {
+                        user_id,
+                        topic: dt.topic.clone(),
+                        summary: dt.summary.clone(),
+                        content: dt.content.clone(),
+                        updated_at: now,
+                        expires_at,
+                    };
+                    if let Err(e) = self.memory.upsert_user_topic(&topic) {
+                        warn!(agent_id = %agent_id, topic = %dt.topic, "Dream: failed to persist topic: {e}");
+                        continue;
+                    }
+                    // Embed the topic content for semantic retrieval.
+                    if let Some(emb) = &self.embedding_driver {
+                        match emb.embed_one(&dt.content).await {
+                            Ok(vec) => {
+                                if let Err(e) = self
+                                    .memory
+                                    .store_user_topic_embedding(user_id, &dt.topic, &vec)
+                                {
+                                    warn!(agent_id = %agent_id, topic = %dt.topic, "Dream: failed to store embedding: {e}");
+                                }
+                            }
+                            Err(e) => {
+                                warn!(agent_id = %agent_id, topic = %dt.topic, "Dream: embedding failed: {e}");
+                            }
+                        }
+                    }
+                }
+
+                // Prune any expired topics left over from previous sessions.
+                if let Ok(n) = self.memory.prune_expired_user_topics(user_id) {
+                    if n > 0 {
+                        info!(agent_id = %agent_id, pruned = n, "Dream: pruned expired topics");
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(agent_id = %agent_id, "Dream: consolidation failed: {e}");
+            }
+        }
     }
 
     /// Start the background loop / register triggers for a single agent.
@@ -6728,6 +7190,196 @@ impl OpenFangKernel {
             }
         }
     }
+
+    /// Return the persistent default user UUID generated at boot.
+    pub fn default_user_id(&self) -> openfang_types::agent::UserId {
+        openfang_memory::session::default_user_id()
+    }
+
+    /// Public, HTTP-boundary user-ID resolver.
+    ///
+    /// This is the strict, security-relevant variant: every reserved-bucket
+    /// value that an API-key holder could otherwise abuse to attribute writes
+    /// to is folded back to the persistent default user, with a `warn!` log:
+    ///
+    /// - `"default"` → persistent default user
+    /// - `"test"` → persistent default user (with `warn!` — deprecated alias,
+    ///   external traffic no longer reaches the test bucket)
+    /// - the nil UUID (`00000000-…`) → persistent default user (with `warn!`)
+    /// - any other valid UUID → parsed as-is
+    /// - `None` or unparseable → `None` (callers fall back to the default
+    ///   session selection)
+    ///
+    /// Use this for any caller that takes user-controlled input: HTTP route
+    /// handlers, message dispatchers, channel adapters. Tests and other
+    /// in-process callers that need to address the well-known test user UUID
+    /// must call [`Self::resolve_user_id_internal`] instead.
+    ///
+    /// # Why this is public in PR 1
+    ///
+    /// No HTTP route consumes this in PR 1 — it is foundation API for PR 2,
+    /// which adds the `parse_user_id` route helper that delegates here. The
+    /// strict-filter behaviour is part of the security model and ships best
+    /// alongside the foundation; downgrading to private would mean
+    /// re-promoting in PR 2.
+    pub fn resolve_user_id(
+        &self,
+        user_id_str: Option<&str>,
+    ) -> Option<openfang_types::agent::UserId> {
+        let resolved = self.resolve_user_id_internal(user_id_str)?;
+        let default_user = openfang_memory::session::default_user_id();
+        if resolved.0 == openfang_memory::session::TEST_USER_UUID {
+            warn!(
+                input = ?user_id_str,
+                "Rejected reserved \"test\" user alias on external API; mapped to default user"
+            );
+            return Some(default_user);
+        }
+        if resolved.0.is_nil() {
+            warn!(
+                input = ?user_id_str,
+                "Rejected nil-UUID user on external API; mapped to default user"
+            );
+            return Some(default_user);
+        }
+        Some(resolved)
+    }
+
+    /// Internal, raw user-ID resolver.
+    ///
+    /// Honours `"test"` and the nil UUID literally (no folding), without the
+    /// security filter applied by [`Self::resolve_user_id`]:
+    ///
+    /// - `"test"` → the well-known test user UUID (isolated from
+    ///   default-user memory; see [`openfang_memory::session::TEST_USER_UUID`])
+    /// - `"default"` → persistent default user
+    /// - any valid UUID (including nil) → parsed as-is
+    /// - `None` or unparseable → `None`
+    ///
+    /// Use ONLY from test harnesses or trusted internal code paths. Any
+    /// caller taking user-controlled input must use the HTTP-boundary
+    /// [`Self::resolve_user_id`] instead.
+    ///
+    /// # Why this is public in PR 1
+    ///
+    /// Same rationale as [`Self::resolve_user_id`]: this is foundation API
+    /// for the PR 2 route helpers. The internal/strict pair ships together
+    /// so PR 2 only has to wire the route helper through, without re-opening
+    /// visibility.
+    pub fn resolve_user_id_internal(
+        &self,
+        user_id_str: Option<&str>,
+    ) -> Option<openfang_types::agent::UserId> {
+        match user_id_str? {
+            "test" => Some(openfang_types::agent::UserId(
+                openfang_memory::session::TEST_USER_UUID,
+            )),
+            "default" => Some(openfang_memory::session::default_user_id()),
+            s => s
+                .parse::<uuid::Uuid>()
+                .ok()
+                .map(openfang_types::agent::UserId),
+        }
+    }
+
+    /// Bootstrap the persistent default user UUID on kernel startup.
+    ///
+    /// On first boot: generate a new UUID, persist it under
+    /// `kv_store[shared_memory_agent_id, "default_user_uuid"]`, and rewrite
+    /// any legacy nil-UUID sessions to use the new default user.
+    ///
+    /// On subsequent boots: load the existing UUID. The rewrite has already
+    /// happened (sentinel `default_user_bootstrap_done` is set) so it is
+    /// skipped.
+    ///
+    /// The UUID is installed into `openfang_memory::session` via
+    /// `set_default_user_id`, so every call to `default_user_id()` from
+    /// anywhere in the codebase returns this persistent value.
+    fn bootstrap_default_user(memory: &Arc<MemorySubstrate>) -> KernelResult<()> {
+        const KEY_UUID: &str = "default_user_uuid";
+        const KEY_DONE: &str = "default_user_bootstrap_done";
+        let shared = shared_memory_agent_id();
+
+        // Load or generate the persistent UUID.
+        let user_id = match memory
+            .structured_get(shared, KEY_UUID)
+            .map_err(|e| KernelError::BootFailed(format!("kv read default_user_uuid: {e}")))?
+        {
+            Some(serde_json::Value::String(s)) => match uuid::Uuid::parse_str(&s) {
+                Ok(u) => {
+                    info!(default_user = %u, "Loaded persistent default user UUID");
+                    openfang_types::agent::UserId(u)
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        value = %s,
+                        "Stored default_user_uuid is not a valid UUID — regenerating"
+                    );
+                    let u = openfang_types::agent::UserId::new();
+                    memory
+                        .structured_set(
+                            shared,
+                            KEY_UUID,
+                            serde_json::Value::String(u.0.to_string()),
+                        )
+                        .map_err(|e| {
+                            KernelError::BootFailed(format!("kv write default_user_uuid: {e}"))
+                        })?;
+                    u
+                }
+            },
+            _ => {
+                let u = openfang_types::agent::UserId::new();
+                info!(default_user = %u.0, "Generated persistent default user UUID");
+                memory
+                    .structured_set(shared, KEY_UUID, serde_json::Value::String(u.0.to_string()))
+                    .map_err(|e| {
+                        KernelError::BootFailed(format!("kv write default_user_uuid: {e}"))
+                    })?;
+                u
+            }
+        };
+
+        // Install for all callers of `default_user_id()`.
+        openfang_memory::session::set_default_user_id(user_id);
+
+        // One-shot fixup: rewrite legacy nil-UUID sessions to the new default.
+        //
+        // The sentinel is written ONLY on success — if the rewrite fails
+        // (lock contention, disk error, etc.) the next boot will retry,
+        // rather than permanently leaving sessions stranded on the nil UUID.
+        let already_done = matches!(
+            memory.structured_get(shared, KEY_DONE).ok().flatten(),
+            Some(serde_json::Value::Bool(true))
+        );
+        if !already_done {
+            match memory.rewrite_nil_user_sessions(user_id) {
+                Ok(n) => {
+                    if n > 0 {
+                        info!(
+                            sessions_updated = n,
+                            "Rewrote nil-UUID sessions to persistent default user"
+                        );
+                    }
+                    // Mark the bootstrap done only after a clean rewrite — a
+                    // failure path must NOT poison the sentinel, otherwise
+                    // the retry would be silently suppressed on the next boot.
+                    if let Err(e) =
+                        memory.structured_set(shared, KEY_DONE, serde_json::Value::Bool(true))
+                    {
+                        warn!(error = %e, "Failed to persist default_user_bootstrap_done sentinel");
+                    }
+                }
+                Err(e) => warn!(
+                    error = %e,
+                    "Failed to rewrite nil-UUID sessions; will retry on next boot"
+                ),
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Convert a manifest's capability declarations into Capability enums.
@@ -7970,6 +8622,7 @@ mod tests {
             tool_blocklist: vec![],
             cache_context: false,
             max_history_messages: None,
+            memory: openfang_types::agent::MemoryConfig::default(),
         };
         manifest.capabilities.tools = vec!["file_read".to_string(), "web_fetch".to_string()];
         manifest.capabilities.agent_spawn = true;
@@ -8014,6 +8667,7 @@ mod tests {
             tool_blocklist: vec![],
             cache_context: false,
             max_history_messages: None,
+            memory: openfang_types::agent::MemoryConfig::default(),
         };
         let mut disk = entry.clone();
         disk.description = "new".to_string();
@@ -8065,6 +8719,7 @@ mod tests {
             tool_blocklist: vec![],
             cache_context: false,
             max_history_messages: None,
+            memory: openfang_types::agent::MemoryConfig::default(),
         };
         let mut disk = entry.clone();
         disk.workspace = Some(std::path::PathBuf::from("/new"));
@@ -8122,6 +8777,7 @@ mod tests {
             tool_blocklist: vec![],
             cache_context: false,
             max_history_messages: None,
+            memory: openfang_types::agent::MemoryConfig::default(),
         };
 
         // Current kernel config now says mode = Full.
@@ -8236,6 +8892,7 @@ mod tests {
             tool_blocklist: vec![],
             cache_context: false,
             max_history_messages: None,
+            memory: openfang_types::agent::MemoryConfig::default(),
         }
     }
 
@@ -9411,5 +10068,504 @@ system_prompt = "You are a test agent."
         let contents = std::fs::read_to_string(user_workspace.path().join("pre-existing.txt"))
             .expect("read pre-existing");
         assert_eq!(contents, "hello", "must not overwrite user files");
+    }
+
+    // ── PR 1: persistent default user + session user-tagging foundation ────────
+    //
+    // These tests target the kernel-side bootstrap and the public/strict
+    // `resolve_user_id` filter. Each test boots a kernel against a temp dir,
+    // exercises the new APIs, and shuts down cleanly.
+
+    fn minimal_kernel(tmp: &tempfile::TempDir) -> OpenFangKernel {
+        let home_dir = tmp.path().join("openfang");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+        OpenFangKernel::boot_with_config(config).expect("kernel boots")
+    }
+
+    /// Helper: read the persisted default-user UUID directly out of
+    /// `kv_store[shared_memory_agent_id, "default_user_uuid"]`.
+    ///
+    /// This bypasses `default_user_id()`, which reads a process-wide
+    /// `OnceLock` and would happily return the same value across restarts
+    /// even if `bootstrap_default_user` regenerated a fresh UUID on every
+    /// boot. Reading the durable storage is the only way to prove the boot
+    /// path actually persisted.
+    fn read_persisted_default_user_uuid(kernel: &OpenFangKernel) -> String {
+        let value = kernel
+            .memory
+            .structured_get(shared_memory_agent_id(), "default_user_uuid")
+            .expect("kv read default_user_uuid")
+            .expect("default_user_uuid must be persisted at boot");
+        match value {
+            serde_json::Value::String(s) => s,
+            other => panic!("default_user_uuid stored as non-string: {other:?}"),
+        }
+    }
+
+    /// The persistent default-user UUID must survive a kernel restart against
+    /// the same data directory. This is the "stable identity for one-person
+    /// installs" contract: every reboot resolves to the same UUID.
+    ///
+    /// We verify persistence by reading the durable `kv_store` row directly
+    /// — NOT via `default_user_id()`, which is backed by a process-wide
+    /// `OnceLock` and would return the same value across reboots even if
+    /// the bootstrap regenerated a fresh UUID on disk every time.
+    #[test]
+    fn test_bootstrap_default_user_persists_across_restarts() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // First boot: bootstrap generates and persists a new UUID.
+        let k1 = minimal_kernel(&tmp);
+        let first_uuid_str = read_persisted_default_user_uuid(&k1);
+        let first_uuid = uuid::Uuid::parse_str(&first_uuid_str)
+            .expect("persisted default_user_uuid must be a valid UUID");
+        assert!(
+            !first_uuid.is_nil(),
+            "bootstrap must generate a non-nil UUID, got {first_uuid_str}"
+        );
+        k1.shutdown();
+
+        // Second boot against the same data dir: must reuse the persisted
+        // UUID. Compare the raw kv_store strings — that is the only source
+        // of truth that survives a process restart.
+        let k2 = minimal_kernel(&tmp);
+        let second_uuid_str = read_persisted_default_user_uuid(&k2);
+        assert_eq!(
+            first_uuid_str, second_uuid_str,
+            "default_user_uuid in kv_store must persist across kernel restarts"
+        );
+        k2.shutdown();
+    }
+
+    /// `resolve_user_id_internal` is the raw mapper used by in-process
+    /// callers. It must round-trip the test-user alias and pass arbitrary
+    /// UUIDs through unchanged so the integration suite can address the
+    /// test user.
+    #[test]
+    fn test_resolve_user_id_internal_preserves_test_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = minimal_kernel(&tmp);
+
+        assert_eq!(
+            kernel.resolve_user_id_internal(Some("test")),
+            Some(openfang_types::agent::UserId(
+                openfang_memory::session::TEST_USER_UUID
+            ))
+        );
+
+        let uid = uuid::Uuid::new_v4();
+        assert_eq!(
+            kernel.resolve_user_id_internal(Some(&uid.to_string())),
+            Some(openfang_types::agent::UserId(uid))
+        );
+
+        // None and unparseable inputs both yield None.
+        assert_eq!(kernel.resolve_user_id_internal(None), None);
+        assert_eq!(kernel.resolve_user_id_internal(Some("not-a-uuid")), None);
+
+        // "default" resolves to the persistent default user.
+        assert_eq!(
+            kernel.resolve_user_id_internal(Some("default")),
+            Some(kernel.default_user_id())
+        );
+
+        kernel.shutdown();
+    }
+
+    /// The public `resolve_user_id` is the boundary between untrusted API
+    /// input and write-path attribution. It must fold both `"test"` and the
+    /// nil UUID to the persistent default user, leave other UUIDs alone, and
+    /// return `None` for unparseable input.
+    #[test]
+    fn test_resolve_user_id_strict_filter_folds_reserved_buckets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = minimal_kernel(&tmp);
+        let default = kernel.default_user_id();
+
+        // "test" → default (not the test user)
+        assert_eq!(kernel.resolve_user_id(Some("test")), Some(default));
+        assert_ne!(
+            kernel.resolve_user_id(Some("test")),
+            Some(openfang_types::agent::UserId(
+                openfang_memory::session::TEST_USER_UUID
+            ))
+        );
+
+        // Nil UUID → default
+        let nil = uuid::Uuid::nil();
+        assert_eq!(
+            kernel.resolve_user_id(Some(&nil.to_string())),
+            Some(default)
+        );
+
+        // Other valid UUIDs pass through.
+        let uid = uuid::Uuid::new_v4();
+        assert_eq!(
+            kernel.resolve_user_id(Some(&uid.to_string())),
+            Some(openfang_types::agent::UserId(uid))
+        );
+
+        // None / unparseable behave like the internal variant.
+        assert_eq!(kernel.resolve_user_id(None), None);
+        assert_eq!(kernel.resolve_user_id(Some("not-a-uuid")), None);
+
+        // "default" still resolves to the default user.
+        assert_eq!(kernel.resolve_user_id(Some("default")), Some(default));
+
+        kernel.shutdown();
+    }
+
+    /// Sessions created without an explicit user_id are bound to the
+    /// persistent default user — the "single-user installs, everyone is the
+    /// default user" contract.
+    ///
+    /// We verify by reading the `user_id` column directly out of SQLite and
+    /// matching it against the argument passed to `create_session`, NOT
+    /// against `kernel.default_user_id()` returned at the assertion site.
+    /// Both reads-via-getter would tautologically agree on the OnceLock's
+    /// value even if the column was somehow stamped with a different one.
+    ///
+    /// We also verify that the persisted UUID is not nil and is a valid
+    /// UUID — those properties are insensitive to whichever kernel happened
+    /// to install the OnceLock first under cargo's shared-process test
+    /// harness.
+    #[test]
+    fn test_session_created_without_user_id_uses_default_user() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = minimal_kernel(&tmp);
+        let agent_id = openfang_types::agent::AgentId::new();
+
+        // Capture the exact argument we'll pass to create_session so we can
+        // compare the column read-back to it (not to a later getter call).
+        let passed_user_id = openfang_memory::session::default_user_id();
+
+        let session = kernel
+            .memory
+            .create_session(agent_id, passed_user_id)
+            .expect("create session");
+
+        // Read the user_id column straight from SQLite — bypassing
+        // `SessionStore::get_session` which falls back to `default_user_id()`
+        // when the column is NULL, masking the very behaviour we want to
+        // confirm.
+        let conn_arc = kernel.memory.usage_conn();
+        let conn = conn_arc.lock().unwrap();
+        let stored_user_id: String = conn
+            .query_row(
+                "SELECT user_id FROM sessions WHERE id = ?1",
+                rusqlite::params![session.id.0.to_string()],
+                |row| row.get(0),
+            )
+            .expect("session row must exist");
+        drop(conn);
+
+        let stored_uuid =
+            uuid::Uuid::parse_str(&stored_user_id).expect("user_id column must be a valid UUID");
+        assert!(
+            !stored_uuid.is_nil(),
+            "default-user session must not be tagged with the nil UUID"
+        );
+        assert_eq!(
+            stored_user_id,
+            passed_user_id.0.to_string(),
+            "user_id column must round-trip the value passed to create_session"
+        );
+
+        kernel.shutdown();
+    }
+
+    /// Sessions created with an explicit user_id are bound to that user.
+    #[test]
+    fn test_session_created_with_explicit_user_id_is_bound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = minimal_kernel(&tmp);
+        let agent_id = openfang_types::agent::AgentId::new();
+        let alice = openfang_types::agent::UserId::new();
+
+        let session = kernel
+            .memory
+            .create_session(agent_id, alice)
+            .expect("create session");
+        assert_eq!(session.user_id, alice);
+        assert_ne!(session.user_id, kernel.default_user_id());
+
+        kernel.shutdown();
+    }
+
+    // -----------------------------------------------------------------
+    // build_user_memory_context — the opt-in gate that decides whether
+    // structured memory bleeds into the system prompt.
+    // -----------------------------------------------------------------
+
+    /// Default agents (no `[memory]` block, or `system = "summarization"`)
+    /// MUST return `None` from the helper without touching SQLite. This is the
+    /// core upstream-compatibility guarantee of the structured-memory feature.
+    #[test]
+    fn test_build_user_memory_context_returns_none_for_default_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = minimal_kernel(&tmp);
+        let agent_id = openfang_types::agent::AgentId::new();
+        let user_id = openfang_types::agent::UserId::new();
+        let default_cfg = openfang_types::agent::MemoryConfig::default();
+
+        // Seed a topic — the helper must STILL return None because the gate
+        // is on the memory config, not on the contents of the store.
+        kernel
+            .memory
+            .upsert_user_topic(&openfang_memory::user_memory::MemoryTopic {
+                user_id,
+                topic: "prefs".into(),
+                summary: "summary".into(),
+                content: "content".into(),
+                updated_at: chrono::Utc::now(),
+                expires_at: None,
+            })
+            .unwrap();
+
+        let result = build_user_memory_context(&kernel.memory, user_id, agent_id, &default_cfg);
+        assert!(
+            result.is_none(),
+            "default-Summarization agents must skip the user-memory block"
+        );
+
+        kernel.shutdown();
+    }
+
+    /// Opted-in agents WITH topics return the formatted index.
+    #[test]
+    fn test_build_user_memory_context_populated_for_opted_in_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = minimal_kernel(&tmp);
+        let agent_id = openfang_types::agent::AgentId::new();
+        let user_id = openfang_types::agent::UserId::new();
+        let structured_cfg = openfang_types::agent::MemoryConfig {
+            system: openfang_types::agent::MemorySystem::Structured,
+        };
+
+        kernel
+            .memory
+            .upsert_user_topic(&openfang_memory::user_memory::MemoryTopic {
+                user_id,
+                topic: "prefs".into(),
+                summary: "likes tea".into(),
+                content: "details".into(),
+                updated_at: chrono::Utc::now(),
+                expires_at: None,
+            })
+            .unwrap();
+
+        let result =
+            build_user_memory_context(&kernel.memory, user_id, agent_id, &structured_cfg).unwrap();
+        assert!(result.contains("prefs"));
+        assert!(result.contains("likes tea"));
+
+        kernel.shutdown();
+    }
+
+    /// Opted-in agent with no stored topics returns `None` (empty index
+    /// shouldn't add a noisy empty section to the prompt).
+    #[test]
+    fn test_build_user_memory_context_none_when_no_topics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = minimal_kernel(&tmp);
+        let agent_id = openfang_types::agent::AgentId::new();
+        let user_id = openfang_types::agent::UserId::new();
+        let structured_cfg = openfang_types::agent::MemoryConfig {
+            system: openfang_types::agent::MemorySystem::Structured,
+        };
+
+        let result = build_user_memory_context(&kernel.memory, user_id, agent_id, &structured_cfg);
+        assert!(
+            result.is_none(),
+            "empty index should yield None, not an empty block"
+        );
+
+        kernel.shutdown();
+    }
+
+    // -----------------------------------------------------------------
+    // agent_dream_locks — per-agent serialization of dream tasks. Two
+    // concurrent dispatches for the same agent must not both run.
+    // -----------------------------------------------------------------
+
+    /// Two concurrent dream tasks for the same agent must not run in parallel:
+    /// `try_lock` skips the second when the first is still holding the per-agent
+    /// dream mutex. We simulate this by acquiring the mutex (mirroring an
+    /// in-flight dream) and confirming a subsequent `try_lock` fails. A second
+    /// agent gets its own mutex, so its `try_lock` succeeds.
+    #[tokio::test]
+    async fn test_agent_dream_locks_serialize_per_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = minimal_kernel(&tmp);
+
+        let agent_a = openfang_types::agent::AgentId::new();
+        let agent_b = openfang_types::agent::AgentId::new();
+
+        // Simulate dream task A acquiring its lock.
+        let lock_a = kernel
+            .agent_dream_locks
+            .entry(agent_a)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _guard_a = lock_a.lock().await;
+
+        // A second dispatch for agent A should be skipped: try_lock fails.
+        let lock_a_again = kernel
+            .agent_dream_locks
+            .entry(agent_a)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        assert!(
+            lock_a_again.try_lock().is_err(),
+            "concurrent dream for the same agent must be skipped (try_lock fails)"
+        );
+
+        // A dispatch for a different agent gets its own mutex — try_lock succeeds.
+        let lock_b = kernel
+            .agent_dream_locks
+            .entry(agent_b)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        assert!(
+            lock_b.try_lock().is_ok(),
+            "different agent must NOT be blocked by another agent's in-flight dream"
+        );
+
+        drop(_guard_a);
+
+        // Once A's lock is released, the next dispatch succeeds again.
+        let lock_a_after = kernel
+            .agent_dream_locks
+            .entry(agent_a)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        assert!(
+            lock_a_after.try_lock().is_ok(),
+            "released lock must allow the next dream dispatch through"
+        );
+
+        kernel.shutdown();
+    }
+
+    // -----------------------------------------------------------------
+    // has_real_user_activity — the thundering-herd guard for dreaming.
+    // Pure-tick sessions must skip dream consolidation; sessions with any
+    // genuine user activity must proceed.
+    // -----------------------------------------------------------------
+
+    /// Scenario 1: real user activity → predicate true → dream would proceed.
+    #[test]
+    fn test_has_real_user_activity_with_user_message() {
+        let messages = vec![
+            openfang_types::message::Message::user("Hello, how are you?"),
+            openfang_types::message::Message::assistant("I'm doing well, thanks!"),
+        ];
+        assert!(
+            has_real_user_activity(&messages),
+            "session with a normal user message must count as real activity"
+        );
+    }
+
+    /// Scenario 2: pure tick-only session → predicate false → dream skipped.
+    #[test]
+    fn test_has_real_user_activity_only_autonomous_ticks() {
+        let messages = vec![
+            openfang_types::message::Message::user("[AUTONOMOUS TICK] heartbeat"),
+            openfang_types::message::Message::assistant("NO_REPLY"),
+            openfang_types::message::Message::user("[AUTONOMOUS TICK] heartbeat"),
+            openfang_types::message::Message::assistant("NO_REPLY"),
+        ];
+        assert!(
+            !has_real_user_activity(&messages),
+            "pure [AUTONOMOUS TICK] session must NOT count as real activity"
+        );
+    }
+
+    /// Pure scheduled-tick session is also skipped.
+    #[test]
+    fn test_has_real_user_activity_only_scheduled_ticks() {
+        let messages = vec![
+            openfang_types::message::Message::user("[SCHEDULED TICK] daily summary"),
+            openfang_types::message::Message::assistant("NO_REPLY"),
+        ];
+        assert!(
+            !has_real_user_activity(&messages),
+            "pure [SCHEDULED TICK] session must NOT count as real activity"
+        );
+    }
+
+    /// Scenario 3: mixed session (ticks + one real user message) → predicate true.
+    #[test]
+    fn test_has_real_user_activity_mixed_ticks_and_real() {
+        let messages = vec![
+            openfang_types::message::Message::user("[AUTONOMOUS TICK] heartbeat"),
+            openfang_types::message::Message::assistant("NO_REPLY"),
+            openfang_types::message::Message::user("Hey, can you check my email?"),
+            openfang_types::message::Message::assistant("Sure, looking now."),
+            openfang_types::message::Message::user("[AUTONOMOUS TICK] heartbeat"),
+        ];
+        assert!(
+            has_real_user_activity(&messages),
+            "mixed session with at least one real user message must count as real activity"
+        );
+    }
+
+    /// Scenario 4: pure context-injection session → predicate false.
+    #[test]
+    fn test_has_real_user_activity_only_context_injections() {
+        let messages = vec![
+            openfang_types::message::Message::context_injection(
+                "Calendar: meeting with Alice at 3pm",
+            ),
+            openfang_types::message::Message::assistant("Noted."),
+            openfang_types::message::Message::context_injection("Email: 3 unread from Bob"),
+        ];
+        assert!(
+            !has_real_user_activity(&messages),
+            "pure ContextInjection session must NOT count as real activity"
+        );
+    }
+
+    /// Empty message slice → predicate false (trivially no activity).
+    #[test]
+    fn test_has_real_user_activity_empty() {
+        let messages: Vec<openfang_types::message::Message> = vec![];
+        assert!(
+            !has_real_user_activity(&messages),
+            "empty session must NOT count as real activity"
+        );
+    }
+
+    /// Only assistant messages → predicate false (assistant doesn't count).
+    #[test]
+    fn test_has_real_user_activity_only_assistant_messages() {
+        let messages = vec![
+            openfang_types::message::Message::assistant("Hello!"),
+            openfang_types::message::Message::assistant("Anyone there?"),
+        ];
+        assert!(
+            !has_real_user_activity(&messages),
+            "assistant-only session must NOT count as real activity"
+        );
+    }
+
+    /// Mixed ticks + context injections (no real user) → still false.
+    #[test]
+    fn test_has_real_user_activity_ticks_plus_context_injections() {
+        let messages = vec![
+            openfang_types::message::Message::user("[AUTONOMOUS TICK] heartbeat"),
+            openfang_types::message::Message::context_injection("Calendar update"),
+            openfang_types::message::Message::user("[SCHEDULED TICK] morning"),
+            openfang_types::message::Message::assistant("NO_REPLY"),
+        ];
+        assert!(
+            !has_real_user_activity(&messages),
+            "ticks + context-injections (no real user) must NOT count as real activity"
+        );
     }
 }
