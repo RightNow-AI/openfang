@@ -319,6 +319,8 @@ pub fn inject_attachments_into_session(
         _ => openfang_memory::session::Session {
             id: entry.session_id,
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,

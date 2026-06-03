@@ -13,6 +13,20 @@ fn new_msg_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// Source tag for a message — identifies system-injected context that should
+/// not be treated like ordinary conversational turns by downstream consumers
+/// (e.g. structured-memory extraction, dream summarisation).
+///
+/// Foundational type: this PR adds the field so older sessions deserialize
+/// cleanly and future consumers (PR 2: per-user memory extraction filtering)
+/// have a stable tag to read. No code path in this PR sets a non-`None` value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSource {
+    /// Injected by context sources (e.g. calendar-hand, mail-hand summaries).
+    ContextInjection,
+}
+
 /// A message in an LLM conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -38,6 +52,12 @@ pub struct Message {
     pub role: Role,
     /// The content of the message.
     pub content: MessageContent,
+    /// Optional source tag — set for system-injected messages that downstream
+    /// consumers may want to treat differently (e.g. exclude from structured
+    /// extraction). `#[serde(default)]` so sessions persisted before this
+    /// field existed deserialize with `source = None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<MessageSource>,
 }
 
 /// The role of a message sender in an LLM conversation.
@@ -76,6 +96,7 @@ impl Default for Message {
             provider_msg_id: None,
             role: Role::User,
             content: MessageContent::Text(String::new()),
+            source: None,
         }
     }
 }
@@ -249,6 +270,7 @@ impl Message {
             provider_msg_id: None,
             role: Role::System,
             content: MessageContent::Text(content.into()),
+            source: None,
         }
     }
 
@@ -259,6 +281,7 @@ impl Message {
             provider_msg_id: None,
             role: Role::User,
             content: MessageContent::Text(content.into()),
+            source: None,
         }
     }
 
@@ -269,6 +292,7 @@ impl Message {
             provider_msg_id: None,
             role: Role::User,
             content: MessageContent::Blocks(blocks),
+            source: None,
         }
     }
 
@@ -279,6 +303,7 @@ impl Message {
             provider_msg_id: None,
             role: Role::Assistant,
             content: MessageContent::Text(content.into()),
+            source: None,
         }
     }
 
@@ -292,6 +317,7 @@ impl Message {
             provider_msg_id: None,
             role: Role::Assistant,
             content: MessageContent::Blocks(blocks),
+            source: None,
         }
     }
 
@@ -585,6 +611,65 @@ mod tests {
         let restored: Message = rmp_serde::from_slice(&bytes).expect("decode");
         assert_eq!(restored.msg_id, original.msg_id);
         assert_eq!(restored.provider_msg_id.as_deref(), Some("msg_xyz"));
+    }
+
+    #[test]
+    fn test_message_source_roundtrip() {
+        // The `MessageSource::ContextInjection` tag must survive serde
+        // round-trips so future consumers can rely on it.
+        let mut msg = Message::user("Hello");
+        msg.source = Some(MessageSource::ContextInjection);
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.source, Some(MessageSource::ContextInjection));
+    }
+
+    #[test]
+    fn test_message_source_skipped_when_none() {
+        // `skip_serializing_if = "Option::is_none"` keeps the JSON minimal
+        // for the overwhelmingly common case of an untagged user/assistant
+        // message.
+        let msg = Message::user("Hello");
+        let json = serde_json::to_value(&msg).unwrap();
+        assert!(
+            json.get("source").is_none(),
+            "untagged messages must not write a `source` field"
+        );
+    }
+
+    #[test]
+    fn test_message_source_legacy_deser_defaults_to_none() {
+        // A message serialized before the `source` field existed should
+        // deserialize with `source = None`. This is what every existing
+        // session on disk looks like — `serde(default)` carries the load.
+        let json = r#"{"role":"user","content":"Hello"}"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.source, None);
+        assert_eq!(msg.role, Role::User);
+    }
+
+    #[test]
+    fn test_message_source_msgpack_roundtrip() {
+        // SessionStore persists messages via rmp_serde::to_vec_named — make
+        // sure the new field round-trips through msgpack the same way it
+        // does through JSON, since msgpack is the on-disk format.
+        let mut msg = Message::user("hello");
+        msg.source = Some(MessageSource::ContextInjection);
+        let bytes = rmp_serde::to_vec_named(&msg).expect("msgpack encode");
+        let restored: Message = rmp_serde::from_slice(&bytes).expect("msgpack decode");
+        assert_eq!(restored.source, Some(MessageSource::ContextInjection));
+    }
+
+    #[test]
+    fn test_message_legacy_msgpack_deser_defaults_to_none() {
+        // A msgpack-encoded message persisted before the `source` field
+        // existed must still deserialize cleanly. We synthesise the
+        // pre-`source` shape by encoding a plain `Message::user` and
+        // confirming the round-trip yields `source = None`.
+        let msg = Message::user("legacy");
+        let bytes = rmp_serde::to_vec_named(&msg).expect("encode");
+        let restored: Message = rmp_serde::from_slice(&bytes).expect("decode");
+        assert_eq!(restored.source, None);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 
 /// Current schema version.
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 
 /// Run all migrations to bring the database up to date.
 pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -41,6 +41,10 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
 
     if current_version < 8 {
         migrate_v8(conn)?;
+    }
+
+    if current_version < 9 {
+        migrate_v9(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -328,6 +332,40 @@ fn migrate_v8(conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
+/// Version 9: Tag every session with a user and a parent-session link.
+///
+/// - `user_id` (TEXT, NOT NULL, default = nil UUID) — owning user. Existing
+///   v8 rows inherit the nil-UUID sentinel; the kernel's
+///   `bootstrap_default_user` rewrite migrates them to the persistent
+///   default user on first boot after upgrade.
+/// - `parent_session_id` (TEXT, nullable) — set when a session is forked off
+///   another (e.g. a hand session linked back to its caller). No production
+///   code path forks sessions yet, so the column is unused on existing rows.
+///
+/// Indexes on `(agent_id, user_id)` and `parent_session_id` keep the per-user
+/// lookups and child-session fan-out cheap.
+fn migrate_v9(conn: &Connection) -> Result<(), rusqlite::Error> {
+    if !column_exists(conn, "sessions", "user_id") {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'",
+            [],
+        )?;
+    }
+    if !column_exists(conn, "sessions", "parent_session_id") {
+        conn.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT", [])?;
+    }
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(agent_id, user_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
+
+        INSERT OR IGNORE INTO migrations (version, applied_at, description)
+        VALUES (9, datetime('now'), 'Tag sessions with user_id and parent_session_id');
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,5 +397,79 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         run_migrations(&conn).unwrap(); // Should not error
+    }
+
+    #[test]
+    fn test_migration_v9_adds_session_user_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        assert!(column_exists(&conn, "sessions", "user_id"));
+        assert!(column_exists(&conn, "sessions", "parent_session_id"));
+    }
+
+    #[test]
+    fn test_migration_v9_indexes_present() {
+        // The (agent_id, user_id) and parent_session_id indexes underpin the
+        // per-user and child-session lookups added in PR 1. If either is
+        // missing, the queries fall back to full table scans.
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(names.contains(&"idx_sessions_user".to_string()));
+        assert!(names.contains(&"idx_sessions_parent".to_string()));
+    }
+
+    /// A v8 database (sessions table without `user_id` or `parent_session_id`)
+    /// must upgrade cleanly to v9: existing rows survive, the new columns are
+    /// present, and the user_id default sentinel is the nil UUID.
+    #[test]
+    fn test_migration_v8_to_v9_upgrade_preserves_existing_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Build the v8 schema by stopping the migration runner one step early.
+        migrate_v1(&conn).unwrap();
+        migrate_v2(&conn).unwrap();
+        migrate_v3(&conn).unwrap();
+        migrate_v4(&conn).unwrap();
+        migrate_v5(&conn).unwrap();
+        migrate_v6(&conn).unwrap();
+        migrate_v7(&conn).unwrap();
+        migrate_v8(&conn).unwrap();
+        set_schema_version(&conn, 8).unwrap();
+
+        assert!(!column_exists(&conn, "sessions", "user_id"));
+        assert!(!column_exists(&conn, "sessions", "parent_session_id"));
+
+        // Insert a pre-v9 session row (no user_id, no parent_session_id).
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, messages, context_window_tokens, created_at, updated_at)
+             VALUES ('sess-1', 'agent-1', X'', 0, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+
+        // Now run the full pipeline — v9 should apply on top of v8.
+        run_migrations(&conn).unwrap();
+
+        assert!(column_exists(&conn, "sessions", "user_id"));
+        assert!(column_exists(&conn, "sessions", "parent_session_id"));
+
+        // The pre-existing row survives and gets the nil-UUID default for
+        // user_id, NULL for parent_session_id.
+        let (uid, parent): (String, Option<String>) = conn
+            .query_row(
+                "SELECT user_id, parent_session_id FROM sessions WHERE id = 'sess-1'",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(uid, "00000000-0000-0000-0000-000000000000");
+        assert!(parent.is_none());
     }
 }

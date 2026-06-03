@@ -12,7 +12,7 @@ use crate::structured::StructuredStore;
 use crate::usage::UsageStore;
 
 use async_trait::async_trait;
-use openfang_types::agent::{AgentEntry, AgentId, SessionId};
+use openfang_types::agent::{AgentEntry, AgentId, SessionId, UserId};
 use openfang_types::config::MemoryConfig;
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::memory::{
@@ -207,9 +207,51 @@ impl MemorySubstrate {
             .map_err(|e| OpenFangError::Internal(e.to_string()))?
     }
 
-    /// Create a new empty session for an agent.
-    pub fn create_session(&self, agent_id: AgentId) -> OpenFangResult<Session> {
-        self.sessions.create_session(agent_id)
+    /// Create a new empty session for an agent owned by `user_id`.
+    ///
+    /// Callers without a specific user pass `default_user_id()` so the
+    /// session attaches to the kernel's persistent default identity.
+    pub fn create_session(&self, agent_id: AgentId, user_id: UserId) -> OpenFangResult<Session> {
+        self.sessions.create_session(agent_id, user_id)
+    }
+
+    /// Rewrite all sessions that are still tagged with the nil-UUID owner
+    /// (the legacy "anonymous bucket" default) to the given `target` user.
+    ///
+    /// Returns the number of sessions updated. Called once at kernel boot
+    /// after the persistent default-user UUID is determined; subsequent calls
+    /// are no-ops because no nil-UUID rows remain.
+    ///
+    /// The UPDATE runs inside an explicit transaction so a crash or lock
+    /// failure mid-flight rolls back cleanly — the caller's bootstrap
+    /// sentinel relies on this being all-or-nothing to avoid permanently
+    /// stranding sessions on the nil bucket.
+    pub fn rewrite_nil_user_sessions(&self, target: UserId) -> OpenFangResult<usize> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        let nil_str = uuid::Uuid::nil().to_string();
+        let target_str = target.0.to_string();
+
+        let tx = conn
+            .transaction()
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        let sessions_updated = tx
+            .execute(
+                "UPDATE sessions SET user_id = ?1 WHERE user_id = ?2 OR user_id IS NULL",
+                rusqlite::params![target_str, nil_str],
+            )
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        tx.commit()
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        info!(
+            sessions_updated = sessions_updated,
+            target = %target.0,
+            "Rewrote nil-UUID sessions to persistent default user"
+        );
+        Ok(sessions_updated)
     }
 
     /// List all sessions with metadata.
@@ -731,6 +773,109 @@ impl Memory for MemorySubstrate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::default_user_id;
+
+    #[test]
+    fn test_rewrite_nil_user_sessions_is_idempotent_and_targeted() {
+        // The one-shot fixup must rewrite ONLY the nil-UUID rows and leave
+        // every other session alone; a second call after the rewrite must
+        // find zero matching rows and behave as a no-op.
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let agent_id = AgentId::new();
+        let other_user = UserId::new();
+        let target = UserId::new();
+        let nil_user = UserId(uuid::Uuid::nil());
+
+        // Two nil-bucket sessions (the legacy default) + one explicit-user session.
+        let s1 = substrate
+            .sessions
+            .create_session(agent_id, nil_user)
+            .unwrap();
+        let s2 = substrate
+            .sessions
+            .create_session(agent_id, nil_user)
+            .unwrap();
+        let s3 = substrate
+            .sessions
+            .create_session(agent_id, other_user)
+            .unwrap();
+
+        let updated = substrate.rewrite_nil_user_sessions(target).unwrap();
+        assert_eq!(
+            updated, 2,
+            "exactly the two nil-UUID sessions must be rewritten"
+        );
+
+        let s1 = substrate.sessions.get_session(s1.id).unwrap().unwrap();
+        let s2 = substrate.sessions.get_session(s2.id).unwrap().unwrap();
+        let s3 = substrate.sessions.get_session(s3.id).unwrap().unwrap();
+        assert_eq!(s1.user_id, target);
+        assert_eq!(s2.user_id, target);
+        assert_eq!(
+            s3.user_id, other_user,
+            "non-nil sessions must NOT be touched"
+        );
+
+        // Second call is a no-op (no nil rows left).
+        let updated2 = substrate.rewrite_nil_user_sessions(target).unwrap();
+        assert_eq!(updated2, 0);
+    }
+
+    #[test]
+    fn test_rewrite_nil_user_sessions_returns_err_when_table_missing() {
+        // When the `sessions` table is missing, the UPDATE cannot run and the
+        // caller must observe an error — not a silent success. This is what
+        // lets `bootstrap_default_user` skip setting the
+        // `default_user_bootstrap_done` sentinel on failure so the rewrite is
+        // retried on the next boot.
+        //
+        // NOTE: This test does NOT exercise transactional atomicity. A single
+        // `UPDATE` is implicitly all-or-nothing under SQLite, so there is no
+        // partial-commit state to roll back from. True multi-statement
+        // atomicity becomes testable in PR 2 when the `extractions` table
+        // joins the same transaction — at that point we add a dedicated
+        // `…_is_atomic_on_partial_failure` test that forces the second
+        // statement to fail and verifies the first one is rolled back.
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let agent_id = AgentId::new();
+        let target = UserId::new();
+        let nil_user = UserId(uuid::Uuid::nil());
+
+        let _s1 = substrate
+            .sessions
+            .create_session(agent_id, nil_user)
+            .unwrap();
+
+        // Drop the only table the UPDATE touches; the next call must error.
+        {
+            let conn = substrate.conn.lock().unwrap();
+            conn.execute("DROP TABLE sessions", [])
+                .expect("drop sessions");
+        }
+
+        let err = substrate.rewrite_nil_user_sessions(target);
+        assert!(
+            err.is_err(),
+            "rewrite must fail when the UPDATE cannot complete"
+        );
+    }
+
+    #[test]
+    fn test_create_session_via_substrate_routes_user_id() {
+        // The substrate's `create_session` proxy must forward the user_id
+        // through to the session store rather than silently dropping it.
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let agent_id = AgentId::new();
+        let user = UserId::new();
+
+        let session = substrate.create_session(agent_id, user).unwrap();
+        assert_eq!(session.user_id, user);
+
+        let default_session = substrate
+            .create_session(agent_id, default_user_id())
+            .unwrap();
+        assert_eq!(default_session.user_id, default_user_id());
+    }
 
     #[tokio::test]
     async fn test_substrate_kv() {

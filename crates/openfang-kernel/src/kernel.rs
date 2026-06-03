@@ -650,6 +650,16 @@ impl OpenFangKernel {
                 .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
         );
 
+        // Bootstrap the persistent default user UUID.
+        //
+        // Replaces the legacy nil-UUID "anonymous bucket" so unattributed
+        // sessions get a stable owner. The UUID is generated once on first
+        // boot and persisted to the shared kv_store; subsequent boots reload
+        // it. On first boot after upgrading from a pre-v9 schema, any
+        // existing sessions with `user_id = nil UUID` are rewritten to the
+        // new default.
+        Self::bootstrap_default_user(&memory)?;
+
         // Initialize credential resolver (vault → dotenv → env var)
         let credential_resolver = {
             let vault_path = config.home_dir.join("vault.enc");
@@ -816,8 +826,18 @@ impl OpenFangKernel {
         let wasm_sandbox = WasmSandbox::new()
             .map_err(|e| KernelError::BootFailed(format!("WASM sandbox init failed: {e}")))?;
 
-        // Initialize RBAC authentication manager
-        let auth = AuthManager::new(&config.users);
+        // Initialize RBAC authentication manager.
+        //
+        // The persistent default user (bootstrapped above) is bound to the
+        // `[[users]]` entry marked `is_default = true`, or to the first
+        // entry if none is marked. This keeps the default-user identity
+        // stable across reboots and lets `[[users]]` metadata (display
+        // name, channel bindings) attach to the persistent bucket rather
+        // than to a freshly-generated per-config UUID.
+        let auth = AuthManager::new_with_default(
+            &config.users,
+            Some(openfang_memory::session::default_user_id()),
+        );
         if auth.is_enabled() {
             info!("RBAC enabled with {} users", auth.user_count());
         }
@@ -1611,9 +1631,11 @@ impl OpenFangKernel {
 
         // Create session — use the returned session_id so the registry
         // and database are in sync (fixes duplicate session bug #651).
+        // New sessions are tagged with the persistent default user; future
+        // PRs will surface explicit user selection through this path.
         let session = self
             .memory
-            .create_session(agent_id)
+            .create_session(agent_id, openfang_memory::session::default_user_id())
             .map_err(KernelError::OpenFang)?;
         let session_id = session.id;
 
@@ -2064,6 +2086,8 @@ impl OpenFangKernel {
             .unwrap_or_else(|| openfang_memory::session::Session {
                 id: entry.session_id,
                 agent_id,
+                user_id: openfang_memory::session::default_user_id(),
+                parent_session_id: None,
                 messages: Vec::new(),
                 context_window_tokens: 0,
                 label: None,
@@ -2650,6 +2674,8 @@ impl OpenFangKernel {
             .unwrap_or_else(|| openfang_memory::session::Session {
                 id: entry.session_id,
                 agent_id,
+                user_id: openfang_memory::session::default_user_id(),
+                parent_session_id: None,
                 messages: Vec::new(),
                 context_window_tokens: 0,
                 label: None,
@@ -3060,10 +3086,10 @@ impl OpenFangKernel {
         // Delete the old session
         let _ = self.memory.delete_session(entry.session_id);
 
-        // Create a fresh session
+        // Create a fresh session bound to the persistent default user.
         let new_session = self
             .memory
-            .create_session(agent_id)
+            .create_session(agent_id, openfang_memory::session::default_user_id())
             .map_err(KernelError::OpenFang)?;
 
         // Update registry with new session ID
@@ -3092,10 +3118,10 @@ impl OpenFangKernel {
         // Delete canonical (cross-channel) session
         let _ = self.memory.delete_canonical_session(agent_id);
 
-        // Create a fresh session
+        // Create a fresh session bound to the persistent default user.
         let new_session = self
             .memory
-            .create_session(agent_id)
+            .create_session(agent_id, openfang_memory::session::default_user_id())
             .map_err(KernelError::OpenFang)?;
 
         // Update registry with new session ID
@@ -3570,6 +3596,8 @@ impl OpenFangKernel {
             .unwrap_or_else(|| openfang_memory::session::Session {
                 id: entry.session_id,
                 agent_id,
+                user_id: openfang_memory::session::default_user_id(),
+                parent_session_id: None,
                 messages: Vec::new(),
                 context_window_tokens: 0,
                 label: None,
@@ -3652,6 +3680,8 @@ impl OpenFangKernel {
             .unwrap_or_else(|| openfang_memory::session::Session {
                 id: entry.session_id,
                 agent_id,
+                user_id: openfang_memory::session::default_user_id(),
+                parent_session_id: None,
                 messages: Vec::new(),
                 context_window_tokens: 0,
                 label: None,
@@ -6728,6 +6758,196 @@ impl OpenFangKernel {
             }
         }
     }
+
+    /// Return the persistent default user UUID generated at boot.
+    pub fn default_user_id(&self) -> openfang_types::agent::UserId {
+        openfang_memory::session::default_user_id()
+    }
+
+    /// Public, HTTP-boundary user-ID resolver.
+    ///
+    /// This is the strict, security-relevant variant: every reserved-bucket
+    /// value that an API-key holder could otherwise abuse to attribute writes
+    /// to is folded back to the persistent default user, with a `warn!` log:
+    ///
+    /// - `"default"` → persistent default user
+    /// - `"test"` → persistent default user (with `warn!` — deprecated alias,
+    ///   external traffic no longer reaches the test bucket)
+    /// - the nil UUID (`00000000-…`) → persistent default user (with `warn!`)
+    /// - any other valid UUID → parsed as-is
+    /// - `None` or unparseable → `None` (callers fall back to the default
+    ///   session selection)
+    ///
+    /// Use this for any caller that takes user-controlled input: HTTP route
+    /// handlers, message dispatchers, channel adapters. Tests and other
+    /// in-process callers that need to address the well-known test user UUID
+    /// must call [`Self::resolve_user_id_internal`] instead.
+    ///
+    /// # Why this is public in PR 1
+    ///
+    /// No HTTP route consumes this in PR 1 — it is foundation API for PR 2,
+    /// which adds the `parse_user_id` route helper that delegates here. The
+    /// strict-filter behaviour is part of the security model and ships best
+    /// alongside the foundation; downgrading to private would mean
+    /// re-promoting in PR 2.
+    pub fn resolve_user_id(
+        &self,
+        user_id_str: Option<&str>,
+    ) -> Option<openfang_types::agent::UserId> {
+        let resolved = self.resolve_user_id_internal(user_id_str)?;
+        let default_user = openfang_memory::session::default_user_id();
+        if resolved.0 == openfang_memory::session::TEST_USER_UUID {
+            warn!(
+                input = ?user_id_str,
+                "Rejected reserved \"test\" user alias on external API; mapped to default user"
+            );
+            return Some(default_user);
+        }
+        if resolved.0.is_nil() {
+            warn!(
+                input = ?user_id_str,
+                "Rejected nil-UUID user on external API; mapped to default user"
+            );
+            return Some(default_user);
+        }
+        Some(resolved)
+    }
+
+    /// Internal, raw user-ID resolver.
+    ///
+    /// Honours `"test"` and the nil UUID literally (no folding), without the
+    /// security filter applied by [`Self::resolve_user_id`]:
+    ///
+    /// - `"test"` → the well-known test user UUID (isolated from
+    ///   default-user memory; see [`openfang_memory::session::TEST_USER_UUID`])
+    /// - `"default"` → persistent default user
+    /// - any valid UUID (including nil) → parsed as-is
+    /// - `None` or unparseable → `None`
+    ///
+    /// Use ONLY from test harnesses or trusted internal code paths. Any
+    /// caller taking user-controlled input must use the HTTP-boundary
+    /// [`Self::resolve_user_id`] instead.
+    ///
+    /// # Why this is public in PR 1
+    ///
+    /// Same rationale as [`Self::resolve_user_id`]: this is foundation API
+    /// for the PR 2 route helpers. The internal/strict pair ships together
+    /// so PR 2 only has to wire the route helper through, without re-opening
+    /// visibility.
+    pub fn resolve_user_id_internal(
+        &self,
+        user_id_str: Option<&str>,
+    ) -> Option<openfang_types::agent::UserId> {
+        match user_id_str? {
+            "test" => Some(openfang_types::agent::UserId(
+                openfang_memory::session::TEST_USER_UUID,
+            )),
+            "default" => Some(openfang_memory::session::default_user_id()),
+            s => s
+                .parse::<uuid::Uuid>()
+                .ok()
+                .map(openfang_types::agent::UserId),
+        }
+    }
+
+    /// Bootstrap the persistent default user UUID on kernel startup.
+    ///
+    /// On first boot: generate a new UUID, persist it under
+    /// `kv_store[shared_memory_agent_id, "default_user_uuid"]`, and rewrite
+    /// any legacy nil-UUID sessions to use the new default user.
+    ///
+    /// On subsequent boots: load the existing UUID. The rewrite has already
+    /// happened (sentinel `default_user_bootstrap_done` is set) so it is
+    /// skipped.
+    ///
+    /// The UUID is installed into `openfang_memory::session` via
+    /// `set_default_user_id`, so every call to `default_user_id()` from
+    /// anywhere in the codebase returns this persistent value.
+    fn bootstrap_default_user(memory: &Arc<MemorySubstrate>) -> KernelResult<()> {
+        const KEY_UUID: &str = "default_user_uuid";
+        const KEY_DONE: &str = "default_user_bootstrap_done";
+        let shared = shared_memory_agent_id();
+
+        // Load or generate the persistent UUID.
+        let user_id = match memory
+            .structured_get(shared, KEY_UUID)
+            .map_err(|e| KernelError::BootFailed(format!("kv read default_user_uuid: {e}")))?
+        {
+            Some(serde_json::Value::String(s)) => match uuid::Uuid::parse_str(&s) {
+                Ok(u) => {
+                    info!(default_user = %u, "Loaded persistent default user UUID");
+                    openfang_types::agent::UserId(u)
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        value = %s,
+                        "Stored default_user_uuid is not a valid UUID — regenerating"
+                    );
+                    let u = openfang_types::agent::UserId::new();
+                    memory
+                        .structured_set(
+                            shared,
+                            KEY_UUID,
+                            serde_json::Value::String(u.0.to_string()),
+                        )
+                        .map_err(|e| {
+                            KernelError::BootFailed(format!("kv write default_user_uuid: {e}"))
+                        })?;
+                    u
+                }
+            },
+            _ => {
+                let u = openfang_types::agent::UserId::new();
+                info!(default_user = %u.0, "Generated persistent default user UUID");
+                memory
+                    .structured_set(shared, KEY_UUID, serde_json::Value::String(u.0.to_string()))
+                    .map_err(|e| {
+                        KernelError::BootFailed(format!("kv write default_user_uuid: {e}"))
+                    })?;
+                u
+            }
+        };
+
+        // Install for all callers of `default_user_id()`.
+        openfang_memory::session::set_default_user_id(user_id);
+
+        // One-shot fixup: rewrite legacy nil-UUID sessions to the new default.
+        //
+        // The sentinel is written ONLY on success — if the rewrite fails
+        // (lock contention, disk error, etc.) the next boot will retry,
+        // rather than permanently leaving sessions stranded on the nil UUID.
+        let already_done = matches!(
+            memory.structured_get(shared, KEY_DONE).ok().flatten(),
+            Some(serde_json::Value::Bool(true))
+        );
+        if !already_done {
+            match memory.rewrite_nil_user_sessions(user_id) {
+                Ok(n) => {
+                    if n > 0 {
+                        info!(
+                            sessions_updated = n,
+                            "Rewrote nil-UUID sessions to persistent default user"
+                        );
+                    }
+                    // Mark the bootstrap done only after a clean rewrite — a
+                    // failure path must NOT poison the sentinel, otherwise
+                    // the retry would be silently suppressed on the next boot.
+                    if let Err(e) =
+                        memory.structured_set(shared, KEY_DONE, serde_json::Value::Bool(true))
+                    {
+                        warn!(error = %e, "Failed to persist default_user_bootstrap_done sentinel");
+                    }
+                }
+                Err(e) => warn!(
+                    error = %e,
+                    "Failed to rewrite nil-UUID sessions; will retry on next boot"
+                ),
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Convert a manifest's capability declarations into Capability enums.
@@ -9411,5 +9631,232 @@ system_prompt = "You are a test agent."
         let contents = std::fs::read_to_string(user_workspace.path().join("pre-existing.txt"))
             .expect("read pre-existing");
         assert_eq!(contents, "hello", "must not overwrite user files");
+    }
+
+    // ── PR 1: persistent default user + session user-tagging foundation ────────
+    //
+    // These tests target the kernel-side bootstrap and the public/strict
+    // `resolve_user_id` filter. Each test boots a kernel against a temp dir,
+    // exercises the new APIs, and shuts down cleanly.
+
+    fn minimal_kernel(tmp: &tempfile::TempDir) -> OpenFangKernel {
+        let home_dir = tmp.path().join("openfang");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            ..KernelConfig::default()
+        };
+        OpenFangKernel::boot_with_config(config).expect("kernel boots")
+    }
+
+    /// Helper: read the persisted default-user UUID directly out of
+    /// `kv_store[shared_memory_agent_id, "default_user_uuid"]`.
+    ///
+    /// This bypasses `default_user_id()`, which reads a process-wide
+    /// `OnceLock` and would happily return the same value across restarts
+    /// even if `bootstrap_default_user` regenerated a fresh UUID on every
+    /// boot. Reading the durable storage is the only way to prove the boot
+    /// path actually persisted.
+    fn read_persisted_default_user_uuid(kernel: &OpenFangKernel) -> String {
+        let value = kernel
+            .memory
+            .structured_get(shared_memory_agent_id(), "default_user_uuid")
+            .expect("kv read default_user_uuid")
+            .expect("default_user_uuid must be persisted at boot");
+        match value {
+            serde_json::Value::String(s) => s,
+            other => panic!("default_user_uuid stored as non-string: {other:?}"),
+        }
+    }
+
+    /// The persistent default-user UUID must survive a kernel restart against
+    /// the same data directory. This is the "stable identity for one-person
+    /// installs" contract: every reboot resolves to the same UUID.
+    ///
+    /// We verify persistence by reading the durable `kv_store` row directly
+    /// — NOT via `default_user_id()`, which is backed by a process-wide
+    /// `OnceLock` and would return the same value across reboots even if
+    /// the bootstrap regenerated a fresh UUID on disk every time.
+    #[test]
+    fn test_bootstrap_default_user_persists_across_restarts() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // First boot: bootstrap generates and persists a new UUID.
+        let k1 = minimal_kernel(&tmp);
+        let first_uuid_str = read_persisted_default_user_uuid(&k1);
+        let first_uuid = uuid::Uuid::parse_str(&first_uuid_str)
+            .expect("persisted default_user_uuid must be a valid UUID");
+        assert!(
+            !first_uuid.is_nil(),
+            "bootstrap must generate a non-nil UUID, got {first_uuid_str}"
+        );
+        k1.shutdown();
+
+        // Second boot against the same data dir: must reuse the persisted
+        // UUID. Compare the raw kv_store strings — that is the only source
+        // of truth that survives a process restart.
+        let k2 = minimal_kernel(&tmp);
+        let second_uuid_str = read_persisted_default_user_uuid(&k2);
+        assert_eq!(
+            first_uuid_str, second_uuid_str,
+            "default_user_uuid in kv_store must persist across kernel restarts"
+        );
+        k2.shutdown();
+    }
+
+    /// `resolve_user_id_internal` is the raw mapper used by in-process
+    /// callers. It must round-trip the test-user alias and pass arbitrary
+    /// UUIDs through unchanged so the integration suite can address the
+    /// test user.
+    #[test]
+    fn test_resolve_user_id_internal_preserves_test_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = minimal_kernel(&tmp);
+
+        assert_eq!(
+            kernel.resolve_user_id_internal(Some("test")),
+            Some(openfang_types::agent::UserId(
+                openfang_memory::session::TEST_USER_UUID
+            ))
+        );
+
+        let uid = uuid::Uuid::new_v4();
+        assert_eq!(
+            kernel.resolve_user_id_internal(Some(&uid.to_string())),
+            Some(openfang_types::agent::UserId(uid))
+        );
+
+        // None and unparseable inputs both yield None.
+        assert_eq!(kernel.resolve_user_id_internal(None), None);
+        assert_eq!(kernel.resolve_user_id_internal(Some("not-a-uuid")), None);
+
+        // "default" resolves to the persistent default user.
+        assert_eq!(
+            kernel.resolve_user_id_internal(Some("default")),
+            Some(kernel.default_user_id())
+        );
+
+        kernel.shutdown();
+    }
+
+    /// The public `resolve_user_id` is the boundary between untrusted API
+    /// input and write-path attribution. It must fold both `"test"` and the
+    /// nil UUID to the persistent default user, leave other UUIDs alone, and
+    /// return `None` for unparseable input.
+    #[test]
+    fn test_resolve_user_id_strict_filter_folds_reserved_buckets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = minimal_kernel(&tmp);
+        let default = kernel.default_user_id();
+
+        // "test" → default (not the test user)
+        assert_eq!(kernel.resolve_user_id(Some("test")), Some(default));
+        assert_ne!(
+            kernel.resolve_user_id(Some("test")),
+            Some(openfang_types::agent::UserId(
+                openfang_memory::session::TEST_USER_UUID
+            ))
+        );
+
+        // Nil UUID → default
+        let nil = uuid::Uuid::nil();
+        assert_eq!(
+            kernel.resolve_user_id(Some(&nil.to_string())),
+            Some(default)
+        );
+
+        // Other valid UUIDs pass through.
+        let uid = uuid::Uuid::new_v4();
+        assert_eq!(
+            kernel.resolve_user_id(Some(&uid.to_string())),
+            Some(openfang_types::agent::UserId(uid))
+        );
+
+        // None / unparseable behave like the internal variant.
+        assert_eq!(kernel.resolve_user_id(None), None);
+        assert_eq!(kernel.resolve_user_id(Some("not-a-uuid")), None);
+
+        // "default" still resolves to the default user.
+        assert_eq!(kernel.resolve_user_id(Some("default")), Some(default));
+
+        kernel.shutdown();
+    }
+
+    /// Sessions created without an explicit user_id are bound to the
+    /// persistent default user — the "single-user installs, everyone is the
+    /// default user" contract.
+    ///
+    /// We verify by reading the `user_id` column directly out of SQLite and
+    /// matching it against the argument passed to `create_session`, NOT
+    /// against `kernel.default_user_id()` returned at the assertion site.
+    /// Both reads-via-getter would tautologically agree on the OnceLock's
+    /// value even if the column was somehow stamped with a different one.
+    ///
+    /// We also verify that the persisted UUID is not nil and is a valid
+    /// UUID — those properties are insensitive to whichever kernel happened
+    /// to install the OnceLock first under cargo's shared-process test
+    /// harness.
+    #[test]
+    fn test_session_created_without_user_id_uses_default_user() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = minimal_kernel(&tmp);
+        let agent_id = openfang_types::agent::AgentId::new();
+
+        // Capture the exact argument we'll pass to create_session so we can
+        // compare the column read-back to it (not to a later getter call).
+        let passed_user_id = openfang_memory::session::default_user_id();
+
+        let session = kernel
+            .memory
+            .create_session(agent_id, passed_user_id)
+            .expect("create session");
+
+        // Read the user_id column straight from SQLite — bypassing
+        // `SessionStore::get_session` which falls back to `default_user_id()`
+        // when the column is NULL, masking the very behaviour we want to
+        // confirm.
+        let conn_arc = kernel.memory.usage_conn();
+        let conn = conn_arc.lock().unwrap();
+        let stored_user_id: String = conn
+            .query_row(
+                "SELECT user_id FROM sessions WHERE id = ?1",
+                rusqlite::params![session.id.0.to_string()],
+                |row| row.get(0),
+            )
+            .expect("session row must exist");
+        drop(conn);
+
+        let stored_uuid =
+            uuid::Uuid::parse_str(&stored_user_id).expect("user_id column must be a valid UUID");
+        assert!(
+            !stored_uuid.is_nil(),
+            "default-user session must not be tagged with the nil UUID"
+        );
+        assert_eq!(
+            stored_user_id,
+            passed_user_id.0.to_string(),
+            "user_id column must round-trip the value passed to create_session"
+        );
+
+        kernel.shutdown();
+    }
+
+    /// Sessions created with an explicit user_id are bound to that user.
+    #[test]
+    fn test_session_created_with_explicit_user_id_is_bound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = minimal_kernel(&tmp);
+        let agent_id = openfang_types::agent::AgentId::new();
+        let alice = openfang_types::agent::UserId::new();
+
+        let session = kernel
+            .memory
+            .create_session(agent_id, alice)
+            .expect("create session");
+        assert_eq!(session.user_id, alice);
+        assert_ne!(session.user_id, kernel.default_user_id());
+
+        kernel.shutdown();
     }
 }
