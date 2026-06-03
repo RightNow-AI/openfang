@@ -1,13 +1,70 @@
 //! Session management — load/save conversation history.
 
 use chrono::Utc;
-use openfang_types::agent::{AgentId, SessionId};
+use openfang_types::agent::{AgentId, SessionId, UserId};
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::message::{ContentBlock, Message, MessageContent, Role};
 use rusqlite::Connection;
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// Process-wide override for the default user ID.
+///
+/// Set by the kernel at boot via [`set_default_user_id`] after it loads or
+/// generates the persistent default-user UUID from the kv_store. If unset,
+/// [`default_user_id`] falls back to the legacy nil UUID so library callers
+/// (tests, embeddings without a kernel) still get a deterministic value.
+static DEFAULT_USER_ID: OnceLock<UserId> = OnceLock::new();
+
+/// Install the persistent default user ID. Called once at kernel boot.
+///
+/// Subsequent calls are ignored (OnceLock semantics). This matches the
+/// expectation that a single kernel process has exactly one default user.
+pub fn set_default_user_id(user_id: UserId) {
+    let _ = DEFAULT_USER_ID.set(user_id);
+}
+
+/// Return the default user ID.
+///
+/// When the kernel has installed a persistent UUID via [`set_default_user_id`]
+/// (the normal case in production), returns it. Otherwise falls back to the
+/// nil UUID — preserved for tests and embedded use that never call the kernel.
+pub fn default_user_id() -> UserId {
+    DEFAULT_USER_ID
+        .get()
+        .copied()
+        .unwrap_or_else(|| UserId(uuid::Uuid::nil()))
+}
+
+/// Sentinel UUID for the well-known "test user" bucket
+/// (`00000000-0000-0000-0000-000000000002`).
+///
+/// This is distinct from:
+/// - the persistent default user (a fresh UUID generated at kernel boot,
+///   falling back to the nil UUID `…0000` for library callers that never
+///   call the kernel), and
+/// - `shared_memory_agent_id()`, which uses
+///   `00000000-0000-0000-0000-000000000001` as its agent-side sentinel.
+///
+/// Production code may reference this constant only to recognise the
+/// kernel's `"test"` alias and (for the strict HTTP-boundary resolver) fold
+/// it back to the persistent default user. It is **not** routable from any
+/// external API surface — see `OpenFangKernel::resolve_user_id`.
+pub const TEST_USER_UUID: uuid::Uuid = uuid::Uuid::from_u128(2);
+
+/// Return the test user ID — a fixed well-known UUID separate from the
+/// default user and from `shared_memory_agent_id()`.
+///
+/// Test-only helper used by the in-process integration suite to address an
+/// isolated bucket without polluting the default user's memory. Production
+/// code that needs the same UUID for sentinel comparisons must reference
+/// [`TEST_USER_UUID`] directly so this helper stays out of the production
+/// API surface.
+#[cfg(test)]
+pub fn test_user_id() -> UserId {
+    UserId(TEST_USER_UUID)
+}
 
 /// A conversation session with message history.
 #[derive(Debug, Clone)]
@@ -16,6 +73,17 @@ pub struct Session {
     pub id: SessionId,
     /// Owning agent ID.
     pub agent_id: AgentId,
+    /// User this session belongs to.
+    ///
+    /// Required: every session is owned by exactly one user. New sessions
+    /// created without an explicit user use [`default_user_id`].
+    pub user_id: UserId,
+    /// Parent session ID — set when this session was forked off another one
+    /// (e.g. a hand session linked back to its caller). Lays the foundation
+    /// for tree-scoped cascade deletion; no production code path forks
+    /// sessions in this PR, so the value is `None` for every session created
+    /// today.
+    pub parent_session_id: Option<SessionId>,
     /// Conversation messages.
     pub messages: Vec<Message>,
     /// Estimated token count for the context window.
@@ -43,7 +111,11 @@ impl SessionStore {
             .lock()
             .map_err(|e| OpenFangError::Internal(e.to_string()))?;
         let mut stmt = conn
-            .prepare("SELECT agent_id, messages, context_window_tokens, label FROM sessions WHERE id = ?1")
+            .prepare(
+                "SELECT agent_id, messages, context_window_tokens, label, \
+                        user_id, parent_session_id \
+                 FROM sessions WHERE id = ?1",
+            )
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
         let result = stmt.query_row(rusqlite::params![session_id.0.to_string()], |row| {
@@ -51,19 +123,37 @@ impl SessionStore {
             let messages_blob: Vec<u8> = row.get(1)?;
             let tokens: i64 = row.get(2)?;
             let label: Option<String> = row.get(3).unwrap_or(None);
-            Ok((agent_str, messages_blob, tokens, label))
+            let user_id_str: Option<String> = row.get(4).unwrap_or(None);
+            let parent_session_id_str: Option<String> = row.get(5).unwrap_or(None);
+            Ok((
+                agent_str,
+                messages_blob,
+                tokens,
+                label,
+                user_id_str,
+                parent_session_id_str,
+            ))
         });
 
         match result {
-            Ok((agent_str, messages_blob, tokens, label)) => {
+            Ok((agent_str, messages_blob, tokens, label, user_id_str, parent_session_id_str)) => {
                 let agent_id = uuid::Uuid::parse_str(&agent_str)
                     .map(AgentId)
                     .map_err(|e| OpenFangError::Memory(e.to_string()))?;
                 let messages: Vec<Message> = rmp_serde::from_slice(&messages_blob)
                     .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+                let user_id = user_id_str
+                    .and_then(|s| uuid::Uuid::parse_str(&s).ok())
+                    .map(UserId)
+                    .unwrap_or_else(default_user_id);
+                let parent_session_id = parent_session_id_str
+                    .and_then(|s| uuid::Uuid::parse_str(&s).ok())
+                    .map(SessionId);
                 Ok(Some(Session {
                     id: session_id,
                     agent_id,
+                    user_id,
+                    parent_session_id,
                     messages,
                     context_window_tokens: tokens as u64,
                     label,
@@ -83,16 +173,26 @@ impl SessionStore {
         let messages_blob = rmp_serde::to_vec_named(&session.messages)
             .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
+        let parent_str = session
+            .parent_session_id
+            .as_ref()
+            .map(|id| id.0.to_string());
         conn.execute(
-            "INSERT INTO sessions (id, agent_id, messages, context_window_tokens, label, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-             ON CONFLICT(id) DO UPDATE SET messages = ?3, context_window_tokens = ?4, label = ?5, updated_at = ?6",
+            "INSERT INTO sessions \
+                (id, agent_id, messages, context_window_tokens, label, \
+                 user_id, parent_session_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+             ON CONFLICT(id) DO UPDATE SET \
+                messages = ?3, context_window_tokens = ?4, label = ?5, \
+                user_id = ?6, parent_session_id = ?7, updated_at = ?8",
             rusqlite::params![
                 session.id.0.to_string(),
                 session.agent_id.0.to_string(),
                 messages_blob,
                 session.context_window_tokens as i64,
                 session.label.as_deref(),
+                session.user_id.0.to_string(),
+                parent_str,
                 now,
             ],
         )
@@ -112,6 +212,57 @@ impl SessionStore {
         )
         .map_err(|e| OpenFangError::Memory(e.to_string()))?;
         Ok(())
+    }
+
+    /// Get all direct child session IDs for a parent session.
+    ///
+    /// Uses the `parent_session_id` column added in v9 (PR 1). The producer
+    /// that actually forks sessions (hand sessions linked to callers) lands
+    /// in a later PR — until then this returns empty for every input.
+    pub fn get_child_sessions(
+        &self,
+        parent_session_id: SessionId,
+    ) -> OpenFangResult<Vec<SessionId>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        let mut stmt = conn
+            .prepare("SELECT id FROM sessions WHERE parent_session_id = ?1")
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![parent_session_id.0.to_string()], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        let mut ids = Vec::new();
+        for row in rows {
+            let id_str = row.map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            let session_id = uuid::Uuid::parse_str(&id_str)
+                .map(SessionId)
+                .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            ids.push(session_id);
+        }
+        Ok(ids)
+    }
+
+    /// Delete a session and all its descendants recursively.
+    ///
+    /// Returns the total number of sessions deleted (including the root).
+    /// No forks exist today so this is functionally equivalent to
+    /// `delete_session`; once the fork producer lands, every descendant is
+    /// pulled in via the `parent_session_id` link.
+    pub fn delete_session_tree(&self, root_session_id: SessionId) -> OpenFangResult<usize> {
+        let children = self.get_child_sessions(root_session_id)?;
+        let mut count = 0;
+        for child_id in children {
+            count += self.delete_session_tree(child_id)?;
+        }
+        self.delete_session(root_session_id)?;
+        count += 1;
+        Ok(count)
     }
 
     /// Delete all sessions belonging to an agent.
@@ -182,11 +333,16 @@ impl SessionStore {
         Ok(sessions)
     }
 
-    /// Create a new empty session for an agent.
-    pub fn create_session(&self, agent_id: AgentId) -> OpenFangResult<Session> {
+    /// Create a new empty session for an agent owned by `user_id`.
+    ///
+    /// Callers that have no specific user pass [`default_user_id`] so the
+    /// session attaches to the kernel's persistent default identity.
+    pub fn create_session(&self, agent_id: AgentId, user_id: UserId) -> OpenFangResult<Session> {
         let session = Session {
             id: SessionId::new(),
             agent_id,
+            user_id,
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -225,8 +381,9 @@ impl SessionStore {
             .map_err(|e| OpenFangError::Internal(e.to_string()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, messages, context_window_tokens, label FROM sessions \
-                 WHERE agent_id = ?1 AND label = ?2 LIMIT 1",
+                "SELECT id, messages, context_window_tokens, label, \
+                        user_id, parent_session_id \
+                 FROM sessions WHERE agent_id = ?1 AND label = ?2 LIMIT 1",
             )
             .map_err(|e| OpenFangError::Memory(e.to_string()))?;
 
@@ -235,19 +392,37 @@ impl SessionStore {
             let messages_blob: Vec<u8> = row.get(1)?;
             let tokens: i64 = row.get(2)?;
             let lbl: Option<String> = row.get(3).unwrap_or(None);
-            Ok((id_str, messages_blob, tokens, lbl))
+            let user_id_str: Option<String> = row.get(4).unwrap_or(None);
+            let parent_session_id_str: Option<String> = row.get(5).unwrap_or(None);
+            Ok((
+                id_str,
+                messages_blob,
+                tokens,
+                lbl,
+                user_id_str,
+                parent_session_id_str,
+            ))
         });
 
         match result {
-            Ok((id_str, messages_blob, tokens, lbl)) => {
+            Ok((id_str, messages_blob, tokens, lbl, user_id_str, parent_session_id_str)) => {
                 let session_id = uuid::Uuid::parse_str(&id_str)
                     .map(SessionId)
                     .map_err(|e| OpenFangError::Memory(e.to_string()))?;
                 let messages: Vec<Message> = rmp_serde::from_slice(&messages_blob)
                     .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+                let user_id = user_id_str
+                    .and_then(|s| uuid::Uuid::parse_str(&s).ok())
+                    .map(UserId)
+                    .unwrap_or_else(default_user_id);
+                let parent_session_id = parent_session_id_str
+                    .and_then(|s| uuid::Uuid::parse_str(&s).ok())
+                    .map(SessionId);
                 Ok(Some(Session {
                     id: session_id,
                     agent_id,
+                    user_id,
+                    parent_session_id,
                     messages,
                     context_window_tokens: tokens as u64,
                     label: lbl,
@@ -298,6 +473,10 @@ impl SessionStore {
     }
 
     /// Create a new session with an optional label.
+    ///
+    /// The session is owned by [`default_user_id`]. This entry point is used
+    /// by the kernel's "create named session" API, which today does not
+    /// surface a user selector.
     pub fn create_session_with_label(
         &self,
         agent_id: AgentId,
@@ -306,6 +485,8 @@ impl SessionStore {
         let session = Session {
             id: SessionId::new(),
             agent_id,
+            user_id: default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: label.map(|s| s.to_string()),
@@ -620,6 +801,165 @@ impl SessionStore {
     }
 }
 
+/// A structured extraction pass result stored mid-session during compaction.
+///
+/// Populated by the (not-yet-landed) producer in a later PR. This PR provides
+/// the type and the storage backend so the surrounding plumbing — control
+/// API, wipe, audit — can be wired up independently of the producer.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct SessionExtraction {
+    pub facts: Vec<String>,
+    pub preferences: Vec<String>,
+    pub decisions: Vec<String>,
+    pub tasks: Vec<String>,
+    pub open_items: Vec<String>,
+}
+
+/// Store for session extractions (compaction outputs).
+///
+/// Each `append` denormalizes the session's owning `user_id` and `agent_id`
+/// onto the extraction row so the audit endpoint can attribute the event
+/// even after the originating session is deleted. The audit query joins
+/// against `sessions` purely to surface the `session_deleted` flag, not for
+/// attribution.
+#[derive(Clone)]
+pub struct SessionExtractionStore {
+    conn: Arc<Mutex<Connection>>,
+}
+
+impl SessionExtractionStore {
+    pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
+        Self { conn }
+    }
+
+    /// Append a new extraction record for a session.
+    ///
+    /// Looks up the owning `user_id`/`agent_id` from the `sessions` table and
+    /// denormalizes them onto the extraction row so the audit endpoint can
+    /// attribute the event correctly even after the session is deleted. If
+    /// the session is missing (shouldn't happen in normal flow — extractions
+    /// are written by code that just loaded the session) we fall back to the
+    /// nil UUID.
+    pub fn append(
+        &self,
+        session_id: SessionId,
+        extraction: &SessionExtraction,
+    ) -> OpenFangResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let facts = serde_json::to_string(&extraction.facts)
+            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+        let preferences = serde_json::to_string(&extraction.preferences)
+            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+        let decisions = serde_json::to_string(&extraction.decisions)
+            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+        let tasks = serde_json::to_string(&extraction.tasks)
+            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+        let open_items = serde_json::to_string(&extraction.open_items)
+            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+
+        // Resolve owning user/agent for the audit-friendly denormalized columns.
+        let nil = uuid::Uuid::nil().to_string();
+        let (user_id, agent_id): (String, String) = conn
+            .query_row(
+                "SELECT user_id, agent_id FROM sessions WHERE id = ?1",
+                rusqlite::params![session_id.0.to_string()],
+                |row| {
+                    let u: Option<String> = row.get(0).ok();
+                    let a: Option<String> = row.get(1).ok();
+                    Ok((
+                        u.unwrap_or_else(|| nil.clone()),
+                        a.unwrap_or_else(|| nil.clone()),
+                    ))
+                },
+            )
+            .unwrap_or_else(|_| (nil.clone(), nil.clone()));
+
+        conn.execute(
+            "INSERT INTO session_extractions \
+                (id, session_id, facts, preferences, decisions, tasks, open_items, created_at, user_id, agent_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                id,
+                session_id.0.to_string(),
+                facts,
+                preferences,
+                decisions,
+                tasks,
+                open_items,
+                now,
+                user_id,
+                agent_id,
+            ],
+        )
+        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Load all extractions for a session, ordered by created_at.
+    pub fn load_all(&self, session_id: SessionId) -> OpenFangResult<Vec<SessionExtraction>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT facts, preferences, decisions, tasks, open_items \
+                 FROM session_extractions WHERE session_id = ?1 ORDER BY created_at ASC",
+            )
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![session_id.0.to_string()], |row| {
+                let facts: String = row.get(0)?;
+                let preferences: String = row.get(1)?;
+                let decisions: String = row.get(2)?;
+                let tasks: String = row.get(3)?;
+                let open_items: String = row.get(4)?;
+                Ok((facts, preferences, decisions, tasks, open_items))
+            })
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        let mut extractions = Vec::new();
+        for row in rows {
+            let (facts, preferences, decisions, tasks, open_items) =
+                row.map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            let extraction = SessionExtraction {
+                facts: serde_json::from_str(&facts)
+                    .map_err(|e| OpenFangError::Serialization(e.to_string()))?,
+                preferences: serde_json::from_str(&preferences)
+                    .map_err(|e| OpenFangError::Serialization(e.to_string()))?,
+                decisions: serde_json::from_str(&decisions)
+                    .map_err(|e| OpenFangError::Serialization(e.to_string()))?,
+                tasks: serde_json::from_str(&tasks)
+                    .map_err(|e| OpenFangError::Serialization(e.to_string()))?,
+                open_items: serde_json::from_str(&open_items)
+                    .map_err(|e| OpenFangError::Serialization(e.to_string()))?,
+            };
+            extractions.push(extraction);
+        }
+        Ok(extractions)
+    }
+
+    /// Delete all extractions for a session.
+    pub fn delete_for_session(&self, session_id: SessionId) -> OpenFangResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM session_extractions WHERE session_id = ?1",
+            rusqlite::params![session_id.0.to_string()],
+        )
+        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,18 +975,73 @@ mod tests {
     fn test_create_and_load_session() {
         let store = setup();
         let agent_id = AgentId::new();
-        let session = store.create_session(agent_id).unwrap();
+        let session = store.create_session(agent_id, default_user_id()).unwrap();
 
         let loaded = store.get_session(session.id).unwrap().unwrap();
         assert_eq!(loaded.agent_id, agent_id);
         assert!(loaded.messages.is_empty());
+        // Sessions created with the default user must report that ownership
+        // through the new column.
+        assert_eq!(loaded.user_id, default_user_id());
+        assert!(loaded.parent_session_id.is_none());
+    }
+
+    #[test]
+    fn test_create_session_with_explicit_user_binds_to_that_user() {
+        // Sessions created with a specific user_id must round-trip through
+        // SQLite without being silently rewritten to the default user.
+        let store = setup();
+        let agent_id = AgentId::new();
+        let user = UserId::new();
+
+        let session = store.create_session(agent_id, user).unwrap();
+        let loaded = store.get_session(session.id).unwrap().unwrap();
+        assert_eq!(loaded.user_id, user);
+        assert_ne!(loaded.user_id, default_user_id());
+    }
+
+    #[test]
+    fn test_default_and_test_user_ids_differ() {
+        // `default_user_id` and `test_user_id` must be distinct so the test
+        // bucket never collides with the production default identity.
+        // (OnceLock is process-wide so we don't assert the nil-UUID fallback
+        // value directly — another test in the binary may have installed a
+        // persistent UUID first.)
+        assert_ne!(default_user_id(), test_user_id());
+        assert_eq!(test_user_id().0, TEST_USER_UUID);
+        assert_eq!(TEST_USER_UUID, uuid::Uuid::from_u128(2));
+    }
+
+    #[test]
+    fn test_user_id_does_not_collide_with_shared_memory_agent() {
+        // `shared_memory_agent_id()` lives on the agent-ID axis and uses
+        // `from_u128(1)`. The test user bucket uses `from_u128(2)` so they
+        // can never accidentally compare equal when a stringly-typed UUID
+        // appears in logs or migration audits.
+        let shared_agent_uuid = uuid::Uuid::from_u128(1);
+        assert_ne!(TEST_USER_UUID, shared_agent_uuid);
+    }
+
+    #[test]
+    fn test_save_session_persists_parent_link() {
+        // Sessions with a `parent_session_id` round-trip the link so a
+        // future PR can cascade-delete by session tree.
+        let store = setup();
+        let agent_id = AgentId::new();
+        let parent = store.create_session(agent_id, default_user_id()).unwrap();
+        let mut child = store.create_session(agent_id, default_user_id()).unwrap();
+        child.parent_session_id = Some(parent.id);
+        store.save_session(&child).unwrap();
+
+        let loaded = store.get_session(child.id).unwrap().unwrap();
+        assert_eq!(loaded.parent_session_id, Some(parent.id));
     }
 
     #[test]
     fn test_save_and_load_with_messages() {
         let store = setup();
         let agent_id = AgentId::new();
-        let mut session = store.create_session(agent_id).unwrap();
+        let mut session = store.create_session(agent_id, default_user_id()).unwrap();
         session.messages.push(Message::user("Hello"));
         session.messages.push(Message::assistant("Hi there!"));
         store.save_session(&session).unwrap();
@@ -666,7 +1061,7 @@ mod tests {
     fn test_delete_session() {
         let store = setup();
         let agent_id = AgentId::new();
-        let session = store.create_session(agent_id).unwrap();
+        let session = store.create_session(agent_id, default_user_id()).unwrap();
         let sid = session.id;
         assert!(store.get_session(sid).unwrap().is_some());
         store.delete_session(sid).unwrap();
@@ -677,8 +1072,8 @@ mod tests {
     fn test_delete_agent_sessions() {
         let store = setup();
         let agent_id = AgentId::new();
-        let s1 = store.create_session(agent_id).unwrap();
-        let s2 = store.create_session(agent_id).unwrap();
+        let s1 = store.create_session(agent_id, default_user_id()).unwrap();
+        let s2 = store.create_session(agent_id, default_user_id()).unwrap();
         assert!(store.get_session(s1.id).unwrap().is_some());
         assert!(store.get_session(s2.id).unwrap().is_some());
         store.delete_agent_sessions(agent_id).unwrap();
@@ -782,7 +1177,7 @@ mod tests {
     fn test_jsonl_mirror_write() {
         let store = setup();
         let agent_id = AgentId::new();
-        let mut session = store.create_session(agent_id).unwrap();
+        let mut session = store.create_session(agent_id, default_user_id()).unwrap();
         session
             .messages
             .push(openfang_types::message::Message::user("Hello"));

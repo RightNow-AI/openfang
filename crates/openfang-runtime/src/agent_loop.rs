@@ -4,8 +4,9 @@
 //! calling the LLM, executing tool calls, and saving the conversation.
 
 use crate::auth_cooldown::{CooldownVerdict, ProviderCooldown};
+use crate::compactor::CompactionConfig;
 use crate::context_budget::{apply_context_guard, truncate_tool_result_dynamic, ContextBudget};
-use crate::context_overflow::{recover_from_overflow, RecoveryStage};
+use crate::context_overflow::{overflow_drain_count, recover_from_overflow, RecoveryStage};
 use crate::embedding::EmbeddingDriver;
 use crate::kernel_handle::KernelHandle;
 use crate::llm_driver::{CompletionRequest, DriverConfig, LlmDriver, LlmError, StreamEvent};
@@ -505,6 +506,30 @@ pub async fn run_agent_loop(
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Agent loop iteration");
+
+        // Mini-dream: before trimming, extract facts from messages about to be discarded
+        // so they are preserved in user memory rather than lost.
+        //
+        // Gated by the per-agent memory system selection: only runs when the
+        // agent has explicitly opted in to structured memory. Agents on the
+        // default (Summarization) path skip extraction entirely.
+        if manifest.memory.is_structured() {
+            let drain =
+                overflow_drain_count(&messages, &system_prompt, available_tools, ctx_window);
+            if drain > 0 {
+                let config = CompactionConfig::default();
+                crate::mini_dream::run_mini_dream(
+                    &messages[..drain],
+                    session.user_id,
+                    Arc::clone(&driver),
+                    &manifest.model.model,
+                    memory,
+                    &config,
+                    embedding_driver.map(|e| e as &(dyn EmbeddingDriver + Send + Sync)),
+                )
+                .await;
+            }
+        }
 
         // Context overflow recovery pipeline (replaces emergency_trim_messages)
         let recovery =
@@ -1724,6 +1749,30 @@ pub async fn run_agent_loop_streaming(
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Streaming agent loop iteration");
+
+        // Mini-dream: before trimming, extract facts from messages about to be discarded
+        // so they are preserved in user memory rather than lost.
+        //
+        // Gated by the per-agent memory system selection: only runs when the
+        // agent has explicitly opted in to structured memory. Agents on the
+        // default (Summarization) path skip extraction entirely.
+        if manifest.memory.is_structured() {
+            let drain =
+                overflow_drain_count(&messages, &system_prompt, available_tools, ctx_window);
+            if drain > 0 {
+                let config = CompactionConfig::default();
+                crate::mini_dream::run_mini_dream(
+                    &messages[..drain],
+                    session.user_id,
+                    Arc::clone(&driver),
+                    &manifest.model.model,
+                    memory,
+                    &config,
+                    embedding_driver.map(|e| e as &(dyn EmbeddingDriver + Send + Sync)),
+                )
+                .await;
+            }
+        }
 
         // Context overflow recovery pipeline (replaces emergency_trim_messages)
         let recovery =
@@ -3792,6 +3841,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -3845,6 +3896,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -3900,6 +3953,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -3953,6 +4008,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -3997,6 +4054,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -4123,6 +4182,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -4170,6 +4231,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -4223,6 +4286,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -5189,6 +5254,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -5260,6 +5327,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -5337,6 +5406,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -5392,6 +5463,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,

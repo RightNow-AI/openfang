@@ -319,6 +319,8 @@ pub fn inject_attachments_into_session(
         _ => openfang_memory::session::Session {
             id: entry.session_id,
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -1524,6 +1526,21 @@ pub async fn get_agent(
             "mcp_servers": entry.manifest.mcp_servers,
             "mcp_servers_mode": if entry.manifest.mcp_servers.is_empty() { "all" } else { "allowlist" },
             "fallback_models": entry.manifest.fallback_models,
+            // Per-agent memory system selection. Surfaced both as a flat
+            // string for dashboard widgets and nested under `manifest.memory`
+            // so callers that round-trip the full manifest can see the field.
+            "memory_system": match entry.manifest.memory.system {
+                openfang_types::agent::MemorySystem::Summarization => "summarization",
+                openfang_types::agent::MemorySystem::Structured => "structured",
+            },
+            "manifest": {
+                "memory": {
+                    "system": match entry.manifest.memory.system {
+                        openfang_types::agent::MemorySystem::Summarization => "summarization",
+                        openfang_types::agent::MemorySystem::Structured => "structured",
+                    },
+                },
+            },
         })),
     )
 }
@@ -3358,6 +3375,561 @@ pub async fn get_template(Path(name): Path<String>) -> impl IntoResponse {
             )
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// User memory control endpoints
+// ---------------------------------------------------------------------------
+//
+// Expose the storage primitives in `UserMemoryStore` and `UserAgentMemoryStore`
+// so users (or the dashboard) can list, view, delete, and export their
+// structured memory. All endpoints require the standard API-key auth applied
+// to `/api/**` routes by `middleware::auth`.
+//
+// # Authorization model
+//
+// All user memory endpoints accept any valid API key. The endpoints do NOT
+// enforce that the caller is the same as the `{user_id}` in the URL — a
+// single API key effectively grants access to every user's memory in the
+// substrate.
+//
+// This matches the current single-tenant deployment model (one operator,
+// one trust boundary, the API key gates everything). Multi-tenant
+// deployments must enforce per-user authorization at the middleware layer
+// — typically by resolving the caller's identity from the bearer token
+// and rejecting requests whose URL `{user_id}` does not match the caller.
+// Until such middleware lands, treat every endpoint below as "API-key
+// holder == full memory admin".
+//
+// Each handler also carries a one-line `AUTHORIZATION:` reminder so the
+// limitation is visible at the point of use, not just in this module doc.
+
+/// Parse and validate a user_id path parameter.
+///
+/// Accepts the literal `default` (the persistent default user) or any valid
+/// non-nil UUID. The nil UUID is explicitly rejected with 400 so an
+/// attacker can't poke at the legacy "anonymous bucket" via the HTTP
+/// surface. The deprecated `"test"` alias is also rejected — production
+/// code that needs the test bucket must reach it through
+/// `kernel.resolve_user_id_internal` directly, not through this function.
+fn parse_user_id(
+    s: &str,
+) -> Result<openfang_types::agent::UserId, (StatusCode, Json<serde_json::Value>)> {
+    if s == "default" {
+        return Ok(openfang_memory::session::default_user_id());
+    }
+    match uuid::Uuid::parse_str(s) {
+        Ok(u) if u.is_nil() => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid user ID; the nil UUID is reserved and cannot be addressed via the API"
+            })),
+        )),
+        Ok(u) => Ok(openfang_types::agent::UserId(u)),
+        Err(_) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid user ID; expected \"default\" or a valid UUID"
+            })),
+        )),
+    }
+}
+
+/// GET /api/users — List all configured users (id, name, role).
+///
+/// Includes any `[[users]]` blocks plus the persistent default user (even
+/// when no block claims it).
+///
+/// AUTHORIZATION: any valid API key. See module doc.
+pub async fn list_users(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut users: Vec<serde_json::Value> = state
+        .kernel
+        .auth
+        .list_users()
+        .into_iter()
+        .map(|u| {
+            serde_json::json!({
+                "id": u.id.0.to_string(),
+                "name": u.name,
+                "role": u.role.to_string(),
+            })
+        })
+        .collect();
+
+    // Always surface the persistent default user, even when no [[users]] block claims it.
+    let default_id = state.kernel.default_user_id();
+    let already_listed = users
+        .iter()
+        .any(|u| u.get("id").and_then(|v| v.as_str()) == Some(default_id.0.to_string().as_str()));
+    if !already_listed {
+        users.push(serde_json::json!({
+            "id": default_id.0.to_string(),
+            "name": "Default User",
+            "role": "user",
+            "is_default": true,
+        }));
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true,
+            "users": users,
+            "default_user_id": default_id.0.to_string(),
+        })),
+    )
+}
+
+/// GET /api/users/:user_id/memory — List all memory topics for a user.
+///
+/// AUTHORIZATION: caller is NOT required to match `{user_id}`. See module doc.
+pub async fn list_user_memory(
+    State(state): State<Arc<AppState>>,
+    Path(user_id_str): Path<String>,
+) -> impl IntoResponse {
+    let user_id = match parse_user_id(&user_id_str) {
+        Ok(u) => u,
+        Err(resp) => return resp.into_response(),
+    };
+
+    match state.kernel.memory.user_topic_index(user_id) {
+        Ok(entries) => {
+            let topics: Vec<serde_json::Value> = entries
+                .into_iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "topic": e.topic,
+                        "summary": e.summary,
+                        "updated_at": e.updated_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "ok": true,
+                    "user_id": user_id.0.to_string(),
+                    "topics": topics,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::warn!("user_topic_index({user_id_str}) failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Memory operation failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// GET /api/users/:user_id/memory/:topic — Get full content for one topic.
+///
+/// AUTHORIZATION: caller is NOT required to match `{user_id}`. See module doc.
+pub async fn get_user_memory_topic(
+    State(state): State<Arc<AppState>>,
+    Path((user_id_str, topic)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let user_id = match parse_user_id(&user_id_str) {
+        Ok(u) => u,
+        Err(resp) => return resp.into_response(),
+    };
+
+    match state.kernel.memory.user_topic(user_id, &topic) {
+        Ok(Some(t)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "user_id": user_id.0.to_string(),
+                "topic": t.topic,
+                "summary": t.summary,
+                "content": t.content,
+                "updated_at": t.updated_at.to_rfc3339(),
+                "expires_at": t.expires_at.map(|d| d.to_rfc3339()),
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Topic not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!("get_user_topic({user_id_str}, {topic}) failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Memory operation failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// DELETE /api/users/:user_id/memory/:topic — Delete one topic for a user.
+///
+/// Returns 404 if the topic does not exist (or was already expired).
+///
+/// AUTHORIZATION: caller is NOT required to match `{user_id}`. See module doc.
+pub async fn delete_user_memory_topic(
+    State(state): State<Arc<AppState>>,
+    Path((user_id_str, topic)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let user_id = match parse_user_id(&user_id_str) {
+        Ok(u) => u,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // Distinguish 404 from a successful delete by checking existence first.
+    let existed = matches!(state.kernel.memory.user_topic(user_id, &topic), Ok(Some(_)));
+    if !existed {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Topic not found"})),
+        )
+            .into_response();
+    }
+
+    match state.kernel.memory.delete_user_topic(user_id, &topic) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "deleted": {"user_id": user_id.0.to_string(), "topic": topic},
+            })),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!("delete_user_topic({user_id_str}, {topic}) failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Memory operation failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// DELETE /api/users/:user_id/memory — Wipe all memory for a user.
+///
+/// Atomic: the three bucket DELETEs run inside a single SQLite transaction
+/// via `MemorySubstrate::wipe_user`, so a partial failure rolls back
+/// instead of leaving a user half-wiped.
+///
+/// AUTHORIZATION: caller is NOT required to match `{user_id}`. See module doc.
+pub async fn delete_all_user_memory(
+    State(state): State<Arc<AppState>>,
+    Path(user_id_str): Path<String>,
+) -> impl IntoResponse {
+    let user_id = match parse_user_id(&user_id_str) {
+        Ok(u) => u,
+        Err(resp) => return resp.into_response(),
+    };
+
+    let counts = match state.kernel.memory.wipe_user(user_id) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("wipe_user({user_id_str}) failed: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Memory operation failed"})),
+            )
+                .into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true,
+            "user_id": user_id.0.to_string(),
+            "topics_deleted": counts.topics_deleted,
+            "agent_topics_deleted": counts.agent_topics_deleted,
+            "extractions_deleted": counts.extractions_deleted,
+        })),
+    )
+        .into_response()
+}
+
+/// GET /api/users/:user_id/agents/:agent_id/memory — Per-agent topics for this user.
+///
+/// AUTHORIZATION: caller is NOT required to match `{user_id}`. See module doc.
+pub async fn list_user_agent_memory(
+    State(state): State<Arc<AppState>>,
+    Path((user_id_str, agent_id_str)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let user_id = match parse_user_id(&user_id_str) {
+        Ok(u) => u,
+        Err(resp) => return resp.into_response(),
+    };
+    let agent_id = match uuid::Uuid::parse_str(&agent_id_str).map(AgentId) {
+        Ok(a) => a,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent_id"})),
+            )
+                .into_response();
+        }
+    };
+
+    match state
+        .kernel
+        .memory
+        .user_agent_topic_index(user_id, agent_id)
+    {
+        Ok(entries) => {
+            let topics: Vec<serde_json::Value> = entries
+                .into_iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "topic": e.topic,
+                        "summary": e.summary,
+                        "updated_at": e.updated_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "ok": true,
+                    "user_id": user_id.0.to_string(),
+                    "agent_id": agent_id.0.to_string(),
+                    "topics": topics,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::warn!("user_agent_topic_index({user_id_str}, {agent_id_str}) failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Memory operation failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// DELETE /api/users/:user_id/agents/:agent_id/memory — Delete per-agent memory.
+///
+/// AUTHORIZATION: caller is NOT required to match `{user_id}`. See module doc.
+pub async fn delete_user_agent_memory(
+    State(state): State<Arc<AppState>>,
+    Path((user_id_str, agent_id_str)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let user_id = match parse_user_id(&user_id_str) {
+        Ok(u) => u,
+        Err(resp) => return resp.into_response(),
+    };
+    let agent_id = match uuid::Uuid::parse_str(&agent_id_str).map(AgentId) {
+        Ok(a) => a,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent_id"})),
+            )
+                .into_response();
+        }
+    };
+
+    match state
+        .kernel
+        .memory
+        .delete_user_agent_memory(user_id, agent_id)
+    {
+        Ok(n) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "deleted": {
+                    "user_id": user_id.0.to_string(),
+                    "agent_id": agent_id.0.to_string(),
+                    "rows": n,
+                },
+            })),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!("delete_user_agent_memory({user_id_str}, {agent_id_str}) failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Memory operation failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Query parameters for `GET /api/users/:user_id/memory/audit`.
+///
+/// `limit` overrides the default page size (100); the handler caps it at 500.
+#[derive(serde::Deserialize)]
+pub struct MemoryAuditQuery {
+    pub limit: Option<usize>,
+}
+
+/// GET /api/users/:user_id/memory/audit — Recent extraction events.
+///
+/// Each entry includes the originating agent, the source session id, a
+/// `session_deleted` flag (true once the original session is gone — the row
+/// survives via the denormalized `user_id` column), and the agent name when
+/// the agent is still registered. Default limit 100, capped at 500.
+///
+/// AUTHORIZATION: caller is NOT required to match `{user_id}`. See module doc.
+pub async fn get_user_memory_audit(
+    State(state): State<Arc<AppState>>,
+    Path(user_id_str): Path<String>,
+    Query(q): Query<MemoryAuditQuery>,
+) -> impl IntoResponse {
+    let user_id = match parse_user_id(&user_id_str) {
+        Ok(u) => u,
+        Err(resp) => return resp.into_response(),
+    };
+    let limit = q.limit.unwrap_or(100).min(500);
+
+    match state
+        .kernel
+        .memory
+        .list_user_extraction_audit(user_id, limit)
+    {
+        Ok(rows) => {
+            let registry = &state.kernel.registry;
+            let entries: Vec<serde_json::Value> = rows
+                .into_iter()
+                .map(
+                    |(id, session_id, agent_id_str, created_at, session_deleted)| {
+                        let agent_name = uuid::Uuid::parse_str(&agent_id_str)
+                            .ok()
+                            .and_then(|u| registry.get(AgentId(u)))
+                            .map(|e| e.name.clone());
+                        serde_json::json!({
+                            "id": id,
+                            "session_id": session_id,
+                            "agent_id": agent_id_str,
+                            "agent_name": agent_name,
+                            "created_at": created_at,
+                            "session_deleted": session_deleted,
+                        })
+                    },
+                )
+                .collect();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "ok": true,
+                    "user_id": user_id.0.to_string(),
+                    "entries": entries,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::warn!("list_user_extraction_audit({user_id_str}) failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Memory operation failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// GET /api/users/:user_id/memory/export — JSON dump of everything.
+///
+/// Returns user_memory topics (full content) plus per-agent topics for every
+/// registered agent this user has interacted with. Suitable for user data
+/// export.
+///
+/// AUTHORIZATION: caller is NOT required to match `{user_id}`. See module doc.
+pub async fn export_user_memory(
+    State(state): State<Arc<AppState>>,
+    Path(user_id_str): Path<String>,
+) -> impl IntoResponse {
+    let user_id = match parse_user_id(&user_id_str) {
+        Ok(u) => u,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // 1) General topics — fetch the index, then full content for each.
+    let index = match state.kernel.memory.user_topic_index(user_id) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("export: user_topic_index({user_id_str}) failed: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Memory operation failed"})),
+            )
+                .into_response();
+        }
+    };
+    let mut topics: Vec<serde_json::Value> = Vec::new();
+    for e in &index {
+        if let Ok(Some(t)) = state.kernel.memory.user_topic(user_id, &e.topic) {
+            topics.push(serde_json::json!({
+                "topic": t.topic,
+                "summary": t.summary,
+                "content": t.content,
+                "updated_at": t.updated_at.to_rfc3339(),
+                "expires_at": t.expires_at.map(|d| d.to_rfc3339()),
+            }));
+        }
+    }
+
+    // 2) Per-agent topics.
+    let mut agent_topics: Vec<serde_json::Value> = Vec::new();
+    for entry in state.kernel.registry.list() {
+        let agent_id = entry.id;
+        if let Ok(idx) = state
+            .kernel
+            .memory
+            .user_agent_topic_index(user_id, agent_id)
+        {
+            if idx.is_empty() {
+                continue;
+            }
+            let mut full: Vec<serde_json::Value> = Vec::new();
+            for ie in &idx {
+                if let Ok(Some(t)) = state
+                    .kernel
+                    .memory
+                    .user_agent_topic(user_id, agent_id, &ie.topic)
+                {
+                    full.push(serde_json::json!({
+                        "topic": t.topic,
+                        "summary": t.summary,
+                        "content": t.content,
+                        "updated_at": t.updated_at.to_rfc3339(),
+                    }));
+                }
+            }
+            agent_topics.push(serde_json::json!({
+                "agent_id": agent_id.0.to_string(),
+                "agent_name": entry.name.clone(),
+                "topics": full,
+            }));
+        }
+    }
+
+    (
+        [(
+            axum::http::header::CONTENT_DISPOSITION,
+            format!(
+                "attachment; filename=\"memory_{}_{}.json\"",
+                user_id.0,
+                chrono::Utc::now().format("%Y%m%d")
+            ),
+        )],
+        Json(serde_json::json!({
+            "ok": true,
+            "user_id": user_id.0.to_string(),
+            "exported_at": chrono::Utc::now().to_rfc3339(),
+            "topics": topics,
+            "agents": agent_topics,
+        })),
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -9706,6 +10278,9 @@ pub struct PatchAgentConfigRequest {
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
     pub fallback_models: Option<Vec<openfang_types::agent::FallbackModel>>,
+    /// Per-agent memory system. Accepts `"summarization"` or `"structured"`.
+    /// Anything else returns 400. Omit to leave the current value unchanged.
+    pub memory_system: Option<String>,
 }
 
 /// PATCH /api/agents/{id}/config — Hot-update agent name, description, system prompt, and identity.
@@ -9920,6 +10495,41 @@ pub async fn patch_agent_config(
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Agent not found"})),
             );
+        }
+    }
+
+    // Update per-agent memory system selection.
+    //
+    // Accepts only `"summarization"` (default) and `"structured"` (opt-in to
+    // the structured-memory pipeline). Round-trips through `MemorySystem`'s
+    // serde rename_all = "snake_case" via a tiny JSON detour so we get
+    // identical parse behavior as `[memory] system = "..."` in agent.toml.
+    if let Some(ref ms_str) = req.memory_system {
+        let parsed: Result<openfang_types::agent::MemorySystem, _> =
+            serde_json::from_value(serde_json::Value::String(ms_str.clone()));
+        match parsed {
+            Ok(system) => {
+                let new_cfg = openfang_types::agent::MemoryConfig { system };
+                if state
+                    .kernel
+                    .registry
+                    .update_memory_config(agent_id, new_cfg)
+                    .is_err()
+                {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(serde_json::json!({"error": "Agent not found"})),
+                    );
+                }
+            }
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "Invalid memory_system; expected \"summarization\" or \"structured\""
+                    })),
+                );
+            }
         }
     }
 
@@ -12971,5 +13581,63 @@ mod uninstall_agent_tests {
             home.join("escape").is_dir(),
             "sibling dir outside agents/ must NOT be deleted"
         );
+    }
+}
+
+#[cfg(test)]
+mod user_id_parsing_tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn parse_user_id_accepts_default_keyword() {
+        // The literal "default" routes to the persistent default user.
+        let id = parse_user_id("default").expect("default keyword must parse");
+        assert_eq!(id, openfang_memory::session::default_user_id());
+    }
+
+    #[test]
+    fn parse_user_id_accepts_valid_uuid() {
+        let u = uuid::Uuid::new_v4();
+        let id = parse_user_id(&u.to_string()).expect("valid UUID must parse");
+        assert_eq!(id.0, u);
+    }
+
+    #[test]
+    fn parse_user_id_rejects_nil_uuid() {
+        // The nil UUID is the legacy anonymous-bucket sentinel and must not
+        // be addressable from the HTTP surface — otherwise any API-key
+        // holder could poke at the pre-bootstrap default-user data.
+        let nil = uuid::Uuid::nil();
+        let err = parse_user_id(&nil.to_string()).expect_err("nil UUID must be rejected");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        let body = err.1 .0;
+        assert!(
+            body.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .contains("nil UUID"),
+            "error message should call out the nil UUID rejection; got: {body}"
+        );
+    }
+
+    #[test]
+    fn parse_user_id_rejects_test_alias() {
+        // The deprecated "test" alias must not be exposed via the HTTP
+        // surface — tests use the in-process helper instead.
+        let err = parse_user_id("test").expect_err("\"test\" must be rejected");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn parse_user_id_rejects_garbage() {
+        let err = parse_user_id("not-a-uuid").expect_err("garbage must be rejected");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn parse_user_id_rejects_empty_string() {
+        let err = parse_user_id("").expect_err("empty string must be rejected");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
     }
 }

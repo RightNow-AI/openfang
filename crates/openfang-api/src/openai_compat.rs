@@ -240,6 +240,7 @@ fn convert_messages(oai_messages: &[OaiMessage]) -> Vec<Message> {
                 provider_msg_id: None,
                 role,
                 content,
+                source: None,
             })
         })
         .collect()
