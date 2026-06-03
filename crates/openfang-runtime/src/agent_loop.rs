@@ -3792,6 +3792,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -3845,6 +3847,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -3900,6 +3904,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -3953,6 +3959,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -3997,6 +4005,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -4123,6 +4133,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -4170,6 +4182,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -4223,6 +4237,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -5189,6 +5205,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -5260,6 +5278,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -5337,6 +5357,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
@@ -5392,6 +5414,8 @@ mod tests {
         let mut session = openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id,
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,

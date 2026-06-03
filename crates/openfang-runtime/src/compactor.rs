@@ -777,6 +777,8 @@ mod tests {
         let session = Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id: openfang_types::agent::AgentId::new(),
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: vec![Message::user("hello")],
             context_window_tokens: 0,
             label: None,
@@ -793,6 +795,8 @@ mod tests {
         let session = Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id: openfang_types::agent::AgentId::new(),
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages,
             context_window_tokens: 0,
             label: None,
@@ -842,6 +846,8 @@ mod tests {
         let session = Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id: openfang_types::agent::AgentId::new(),
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: vec![Message::user("hello"), Message::assistant("hi")],
             context_window_tokens: 0,
             label: None,
@@ -931,6 +937,8 @@ mod tests {
         let session = Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id: openfang_types::agent::AgentId::new(),
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages,
             context_window_tokens: 0,
             label: None,
@@ -1002,6 +1010,8 @@ mod tests {
         let session = Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id: openfang_types::agent::AgentId::new(),
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages,
             context_window_tokens: 0,
             label: None,
@@ -1129,6 +1139,8 @@ mod tests {
         let session = Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id: openfang_types::agent::AgentId::new(),
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages,
             context_window_tokens: 0,
             label: None,

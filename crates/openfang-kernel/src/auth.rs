@@ -104,14 +104,52 @@ pub struct AuthManager {
 
 impl AuthManager {
     /// Create a new AuthManager from kernel user configuration.
+    ///
+    /// Thin wrapper over [`Self::new_with_default`] for callers that do not
+    /// have a persistent default-user UUID to bind. Each user gets a freshly
+    /// generated `UserId`.
     pub fn new(user_configs: &[UserConfig]) -> Self {
+        Self::new_with_default(user_configs, None)
+    }
+
+    /// Like [`Self::new`] but accepts an explicit persistent default-user UUID.
+    ///
+    /// When `default_user_id` is `Some(uid)`, the config user marked
+    /// `is_default = true` (or, if none is marked, the first user in the list)
+    /// is registered under `uid` instead of a freshly-generated UUID. This
+    /// binds the user's display name and channel bindings to the kernel's
+    /// persistent default-session bucket, so unattributed traffic is
+    /// attributed to a real person rather than the nil-UUID anonymous bucket.
+    pub fn new_with_default(user_configs: &[UserConfig], default_user_id: Option<UserId>) -> Self {
         let manager = Self {
             users: DashMap::new(),
             channel_index: DashMap::new(),
         };
 
-        for config in user_configs {
-            let user_id = UserId::new();
+        // Determine which config index claims the default user identity.
+        // Priority: an explicit `is_default = true` block, else the first
+        // user. We only need a `Some` here when the caller actually has a
+        // persistent UUID to bind, otherwise every user gets a fresh ID.
+        let default_index: Option<usize> = if default_user_id.is_some() {
+            user_configs
+                .iter()
+                .position(|c| c.is_default)
+                .or(if user_configs.is_empty() {
+                    None
+                } else {
+                    Some(0)
+                })
+        } else {
+            None
+        };
+
+        for (idx, config) in user_configs.iter().enumerate() {
+            let user_id = if Some(idx) == default_index {
+                // SAFETY: default_index is only Some when default_user_id is Some.
+                default_user_id.unwrap()
+            } else {
+                UserId::new()
+            };
             let role = UserRole::from_str_role(&config.role);
             let identity = UserIdentity {
                 id: user_id,
@@ -131,6 +169,7 @@ impl AuthManager {
                 user = %config.name,
                 role = %role,
                 bindings = config.channel_bindings.len(),
+                default = (Some(idx) == default_index),
                 "Registered user"
             );
         }
@@ -205,6 +244,7 @@ mod tests {
                     m
                 },
                 api_key_hash: None,
+                is_default: false,
             },
             UserConfig {
                 name: "Guest".to_string(),
@@ -215,12 +255,14 @@ mod tests {
                     m
                 },
                 api_key_hash: None,
+                is_default: false,
             },
             UserConfig {
                 name: "ReadOnly".to_string(),
                 role: "viewer".to_string(),
                 channel_bindings: HashMap::new(),
                 api_key_hash: None,
+                is_default: false,
             },
         ]
     }
@@ -300,6 +342,85 @@ mod tests {
     #[test]
     fn test_no_users_means_disabled() {
         let manager = AuthManager::new(&[]);
+        assert!(!manager.is_enabled());
+        assert_eq!(manager.user_count(), 0);
+    }
+
+    #[test]
+    fn test_new_with_default_binds_is_default_user() {
+        // When one [[users]] entry sets `is_default = true`, the manager must
+        // register that user under the persistent UUID (not a fresh one).
+        let default_uid = UserId::new();
+        let configs = vec![
+            UserConfig {
+                name: "Alice".to_string(),
+                role: "user".to_string(),
+                channel_bindings: HashMap::new(),
+                api_key_hash: None,
+                is_default: false,
+            },
+            UserConfig {
+                name: "Owner".to_string(),
+                role: "owner".to_string(),
+                channel_bindings: HashMap::new(),
+                api_key_hash: None,
+                is_default: true,
+            },
+        ];
+
+        let manager = AuthManager::new_with_default(&configs, Some(default_uid));
+        // Owner's name resolves to the persistent UUID.
+        let owner = manager.get_user(default_uid).expect("owner registered");
+        assert_eq!(owner.name, "Owner");
+        assert_eq!(owner.role, UserRole::Owner);
+    }
+
+    #[test]
+    fn test_new_with_default_falls_back_to_first_user() {
+        // When no entry sets `is_default`, the first user in the list inherits
+        // the persistent UUID. This matches the single-user-install default
+        // where there is exactly one `[[users]]` block.
+        let default_uid = UserId::new();
+        let configs = vec![
+            UserConfig {
+                name: "Primary".to_string(),
+                role: "owner".to_string(),
+                channel_bindings: HashMap::new(),
+                api_key_hash: None,
+                is_default: false,
+            },
+            UserConfig {
+                name: "Secondary".to_string(),
+                role: "user".to_string(),
+                channel_bindings: HashMap::new(),
+                api_key_hash: None,
+                is_default: false,
+            },
+        ];
+
+        let manager = AuthManager::new_with_default(&configs, Some(default_uid));
+        let primary = manager.get_user(default_uid).expect("primary registered");
+        assert_eq!(primary.name, "Primary");
+    }
+
+    #[test]
+    fn test_new_with_default_none_keeps_fresh_uuids() {
+        // Pass `None` (e.g. from a non-kernel test harness): no user is
+        // bound to the persistent UUID; each entry gets a fresh `UserId`.
+        let configs = test_configs();
+        let manager = AuthManager::new_with_default(&configs, None);
+        assert_eq!(manager.user_count(), 3);
+        // None of the users can be looked up under the nil UUID by accident.
+        assert!(manager.get_user(UserId(uuid::Uuid::nil())).is_none());
+    }
+
+    #[test]
+    fn test_new_with_default_empty_config_is_noop() {
+        // Empty [[users]] config: the default UUID has nowhere to bind, so
+        // the manager comes up disabled. This matches a fresh install with
+        // no user config block.
+        let default_uid = UserId::new();
+        let manager = AuthManager::new_with_default(&[], Some(default_uid));
         assert!(!manager.is_enabled());
         assert_eq!(manager.user_count(), 0);
     }

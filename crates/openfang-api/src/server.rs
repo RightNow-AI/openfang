@@ -295,6 +295,32 @@ pub async fn build_router(
             "/api/uploads/{file_id}",
             axum::routing::get(routes::serve_upload),
         )
+        // User memory control endpoints (see routes::list_user_memory module doc).
+        // The `/memory/audit` route comes BEFORE the `:topic` capture so it
+        // doesn't get swallowed by the catch-all topic parameter.
+        .route("/api/users", axum::routing::get(routes::list_users))
+        .route(
+            "/api/users/{user_id}/memory",
+            axum::routing::get(routes::list_user_memory).delete(routes::delete_all_user_memory),
+        )
+        .route(
+            "/api/users/{user_id}/memory/audit",
+            axum::routing::get(routes::get_user_memory_audit),
+        )
+        .route(
+            "/api/users/{user_id}/memory/export",
+            axum::routing::get(routes::export_user_memory),
+        )
+        .route(
+            "/api/users/{user_id}/memory/{topic}",
+            axum::routing::get(routes::get_user_memory_topic)
+                .delete(routes::delete_user_memory_topic),
+        )
+        .route(
+            "/api/users/{user_id}/agents/{agent_id}/memory",
+            axum::routing::get(routes::list_user_agent_memory)
+                .delete(routes::delete_user_agent_memory),
+        )
         // Channel endpoints
         .route("/api/channels", axum::routing::get(routes::list_channels))
         .route(
