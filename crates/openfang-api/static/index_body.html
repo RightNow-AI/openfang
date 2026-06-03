@@ -16,9 +16,9 @@
     <div class="sidebar-header">
       <div class="sidebar-header-text">
         <div class="sidebar-logo">
-          <img src="/logo.png" alt="OpenFang" width="28" height="28">
+          <img src="/logo.png" alt="AntiDev" width="28" height="28">
           <div>
-            <h1>OPENFANG</h1>
+            <h1>ANTIDEV ADMIN</h1>
             <div class="version" x-text="'v' + version"></div>
           </div>
         </div>
@@ -243,7 +243,7 @@
           </div>
           <!-- Onboarding banner -->
           <div class="onboarding-banner" x-show="!loading && !loadError && $store.app.showOnboarding && checklistDismissed">
-            <h3>Welcome to OpenFang</h3>
+            <h3>Welcome to AntiDev Admin</h3>
             <p style="font-size:12px;color:var(--text-dim)">Get started quickly with the guided Setup Wizard, or configure manually:</p>
             <div class="flex gap-2">
               <button class="btn btn-primary" @click="location.hash='wizard'">Launch Setup Wizard</button>
@@ -591,7 +591,7 @@
                   <template x-for="(msg, $index) in filteredMessages" :key="msg.id">
                     <div class="message" :class="msg.role + (msg.thinking ? ' thinking' : '') + (msg.streaming ? ' streaming' : '') + (isGrouped($index) ? ' grouped' : '')">
                       <div class="message-avatar" x-show="msg.role === 'agent'">
-                        <img src="/logo.png" alt="OpenFang">
+                        <img src="/logo.png" alt="AntiDev">
                       </div>
                       <div class="message-body">
                         <!-- Copy button on hover -->
@@ -722,7 +722,7 @@
                   <span class="recording-dot"></span>
                   <span class="text-xs" style="color:var(--danger)" x-text="formatRecordingTime()"></span>
                 </div>
-                <textarea id="msg-input" rows="1" :placeholder="recording ? 'Recording... release to send' : 'Message OpenFang... (/ for commands)'"
+                <textarea id="msg-input" rows="1" :placeholder="recording ? 'Recording... release to send' : 'Message AntiDev... (/ for commands)'"
                           @keydown.enter.prevent="if(!$event.shiftKey){if(showModelPicker && filteredModelPicker.length){pickModel(filteredModelPicker[modelPickerIdx].id)}else if(showSlashMenu && filteredSlashCommands.length){executeSlashCommand(filteredSlashCommands[slashIdx].cmd)}else{sendMessage()}}"
                           @keydown.escape="showSlashMenu = false; showModelPicker = false"
                           @keydown.arrow-up.prevent="if(showModelPicker){modelPickerIdx = Math.max(0, modelPickerIdx - 1)}else if(showSlashMenu){slashIdx = Math.max(0, slashIdx - 1)}"
@@ -2061,7 +2061,7 @@
         <div class="page-body" x-init="loadSkills()">
           <div class="info-card">
             <h4>Skills &amp; Ecosystem</h4>
-            <p>Skills extend your agents with new capabilities. OpenFang supports the <strong>OpenClaw/ClawHub</strong> ecosystem (3,000+ community skills) plus local skills.</p>
+            <p>Skills extend your agents with new capabilities. AntiDev Admin supports the <strong>OpenClaw/ClawHub</strong> ecosystem (3,000+ community skills) plus local skills.</p>
             <ul>
               <li><strong>Prompt-only</strong> &mdash; inject context and instructions into the agent's system prompt (most ClawHub skills)</li>
               <li><strong>Python / Node.js</strong> &mdash; executable tools that agents can call during conversations</li>
@@ -2226,7 +2226,7 @@
           <div x-show="tab === 'mcp'">
             <div class="info-card">
               <h4>MCP Servers (Model Context Protocol)</h4>
-              <p>MCP servers provide external tools to your agents &mdash; GitHub, filesystem, databases, APIs, and more. OpenFang is compatible with all OpenClaw MCP servers.</p>
+              <p>MCP servers provide external tools to your agents &mdash; GitHub, filesystem, databases, APIs, and more. AntiDev Admin is compatible with all OpenClaw MCP servers.</p>
               <p class="mt-2" style="font-size:0.8rem;color:var(--text-dim)">Configure MCP servers in your <code>config.toml</code> under <code>[mcp_servers]</code>.</p>
             </div>
             <div x-show="mcpLoading" class="loading-state"><div class="spinner"></div><span>Loading MCP servers...</span></div>
@@ -2289,7 +2289,7 @@ timeout_secs = 30
 type = "stdio"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
-                <p class="hint mt-2" style="font-size:0.75rem">OpenFang supports all OpenClaw-compatible MCP servers.</p>
+                <p class="hint mt-2" style="font-size:0.75rem">AntiDev Admin supports all OpenClaw-compatible MCP servers.</p>
               </div>
             </div>
           </div>
@@ -2927,7 +2927,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <div x-show="tab === 'providers'">
             <div class="info-card">
               <h4>LLM Providers</h4>
-              <p>OpenFang supports 12 LLM providers out of the box. Configure API keys to unlock models from each provider. Set environment variables and restart, or use the form below to save keys directly.</p>
+              <p>AntiDev Admin supports 12 LLM providers out of the box. Configure API keys to unlock models from each provider. Set environment variables and restart, or use the form below to save keys directly.</p>
             </div>
             <div class="card-grid">
               <template x-for="p in providers" :key="p.id">
@@ -3109,7 +3109,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <div x-show="tab === 'config'">
             <div class="info-card">
               <h4>Runtime Configuration</h4>
-              <p>View and edit the active configuration. Changes are applied immediately. For advanced edits, modify <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">config.toml</code> in your OpenFang data directory.</p>
+              <p>View and edit the active configuration. Changes are applied immediately. For advanced edits, modify <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">config.toml</code> in your AntiDev Admin data directory.</p>
             </div>
 
             <!-- Dynamic config form (when schema is available) -->
@@ -3180,7 +3180,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <div class="security-hero-shield"><svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
               <div>
                 <div class="security-hero-title">Defense in Depth</div>
-                <div class="security-hero-desc">OpenFang implements 15 layered security features across the entire stack &mdash; from network ingress to agent sandboxing to cryptographic audit trails. Core protections cannot be disabled.</div>
+                <div class="security-hero-desc">AntiDev Admin implements 15 layered security features across the entire stack &mdash; from network ingress to agent sandboxing to cryptographic audit trails. Core protections cannot be disabled.</div>
               </div>
             </div>
 
@@ -3297,7 +3297,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             <div class="info-card" style="display:flex;justify-content:space-between;align-items:center">
               <div>
                 <h4>Peer Networking (OFP)</h4>
-                <p>Link multiple OpenFang instances into a mesh via the OFP wire protocol.</p>
+                <p>Link multiple AntiDev Admin instances into a mesh via the OFP wire protocol.</p>
               </div>
               <span class="badge" :class="netStatus && netStatus.enabled ? 'badge-success' : 'badge-muted'" x-text="netStatus && netStatus.enabled ? 'Enabled' : 'Disabled'" style="font-size:12px;padding:4px 10px"></span>
             </div>
@@ -3341,7 +3341,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             <!-- A2A External Agents -->
             <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
               <h4 style="margin-bottom:8px">A2A External Agents</h4>
-              <p class="text-xs text-dim mb-2">Discovered agents on other OpenFang/A2A-compatible instances that this node can communicate with.</p>
+              <p class="text-xs text-dim mb-2">Discovered agents on other AntiDev Admin/A2A-compatible instances that this node can communicate with.</p>
               <div class="flex gap-2 mb-3">
                 <input class="form-input" style="flex:1" placeholder="https://remote-agent.example.com" x-model="a2aDiscoverUrl">
                 <button class="btn btn-primary btn-sm" @click="discoverA2a()" :disabled="a2aDiscovering">
@@ -3501,7 +3501,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             <div class="card mb-4" style="border-left:3px solid var(--accent)" x-show="migStep === 'intro'">
               <div class="font-bold" style="font-size:14px;margin-bottom:6px">Migrate from OpenClaw</div>
               <div class="text-sm text-dim" style="line-height:1.7">
-                Seamlessly transfer your agents, memory, workspace files, and channel configurations from OpenClaw to OpenFang.
+                Seamlessly transfer your agents, memory, workspace files, and channel configurations from OpenClaw to AntiDev Admin.
               </div>
               <ul class="text-sm text-dim" style="margin:8px 0 0 16px;line-height:1.8">
                 <li>Converts agent.yaml to agent.toml with proper capabilities</li>
@@ -3525,7 +3525,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 <input class="form-input" type="text" x-model="sourcePath" placeholder="~/.openclaw" style="font-family:monospace;font-size:12px">
               </div>
               <div class="form-group mt-2">
-                <label>OpenFang Target Directory</label>
+                <label>AntiDev Admin Target Directory</label>
                 <input class="form-input" type="text" x-model="targetPath" placeholder="~/.openfang (default)" style="font-family:monospace;font-size:12px">
               </div>
               <div class="flex gap-2 mt-4">
@@ -4289,10 +4289,10 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <!-- Step 1: Welcome -->
           <div class="wizard-step" x-show="step === 1">
             <div class="wizard-card" style="text-align:center;max-width:600px;margin:0 auto">
-              <img src="/logo.png" alt="OpenFang" style="width:80px;height:80px;margin:0 auto 20px;display:block;opacity:0.85">
-              <h3 style="font-size:22px;font-weight:700;margin-bottom:12px;color:var(--accent)">Welcome to OpenFang</h3>
+              <img src="/logo.png" alt="AntiDev" style="width:80px;height:80px;margin:0 auto 20px;display:block;opacity:0.85">
+              <h3 style="font-size:22px;font-weight:700;margin-bottom:12px;color:var(--accent)">Welcome to AntiDev Admin</h3>
               <p style="font-size:13px;color:var(--text-dim);line-height:1.8;max-width:480px;margin:0 auto 24px">
-                OpenFang is an open-source Agent Operating System. It lets you run AI agents that can chat, use tools, access memory, and connect to messaging channels &mdash; all from a single dashboard.
+                AntiDev Admin is the agent runtime that powers AntiDev Editor. It lets you run AI agents that can chat, use tools, access memory, and connect to messaging channels &mdash; all from a single dashboard.
               </p>
               <div class="card" style="text-align:left;margin-bottom:20px">
                 <div class="card-header">This wizard will help you:</div>
@@ -4328,7 +4328,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             <div class="wizard-card">
               <h3 style="font-size:16px;font-weight:700;margin-bottom:4px">Connect an LLM Provider</h3>
               <p style="font-size:12px;color:var(--text-dim);margin-bottom:16px;line-height:1.6">
-                OpenFang needs at least one LLM provider to power your agents. Select a provider and enter your API key.
+                AntiDev Admin needs at least one LLM provider to power your agents. Select a provider and enter your API key.
               </p>
 
               <div class="info-card" x-show="hasConfiguredProvider" style="border-left-color:var(--success)">
@@ -4566,7 +4566,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             <div class="wizard-card" style="text-align:center;max-width:560px;margin:0 auto">
               <div style="font-size:56px;margin-bottom:12px;color:var(--success)">&#10003;</div>
               <h3 style="font-size:20px;font-weight:700;margin-bottom:8px;color:var(--accent)">You're All Set!</h3>
-              <p style="font-size:13px;color:var(--text-dim);line-height:1.8;margin-bottom:24px">OpenFang is configured and ready to go. Here is a summary of what was set up:</p>
+              <p style="font-size:13px;color:var(--text-dim);line-height:1.8;margin-bottom:24px">AntiDev Admin is configured and ready to go. Here is a summary of what was set up:</p>
 
               <div class="card" style="text-align:left;margin-bottom:20px">
                 <div class="detail-grid">

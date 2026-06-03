@@ -1101,14 +1101,15 @@ mark.search-highlight {
 /* Theme switcher — 3-mode pill (Light / System / Dark) */
 .theme-switcher {
   display: inline-flex;
+  flex-shrink: 0;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   overflow: hidden;
 }
 .theme-opt {
   cursor: pointer;
-  padding: 4px 8px;
-  font-size: 14px;
+  padding: 3px 6px;
+  font-size: 12px;
   background: none;
   border: none;
   color: var(--text-muted);

@@ -20,12 +20,12 @@
   --text-dim: #6B6560;
   --text-muted: #9A958F;
 
-  /* Brand — Orange accent */
-  --accent: #FF5C00;
-  --accent-light: #FF7A2E;
-  --accent-dim: #E05200;
-  --accent-glow: rgba(255, 92, 0, 0.1);
-  --accent-subtle: rgba(255, 92, 0, 0.05);
+  /* Brand — AntiDev Accent (Indigo) */
+  --accent: #4F46E5;
+  --accent-light: #6366F1;
+  --accent-dim: #4338CA;
+  --accent-glow: rgba(79, 70, 229, 0.1);
+  --accent-subtle: rgba(79, 70, 229, 0.05);
 
   /* Status colors */
   --success: #22C55E;
@@ -70,7 +70,7 @@
   --shadow-lg: 0 12px 28px rgba(0,0,0,0.08), 0 4px 10px rgba(0,0,0,0.05);
   --shadow-xl: 0 20px 40px rgba(0,0,0,0.1), 0 8px 16px rgba(0,0,0,0.06);
   --shadow-glow: 0 0 40px rgba(0,0,0,0.05);
-  --shadow-accent: 0 4px 16px rgba(255, 92, 0, 0.12);
+  --shadow-accent: 0 4px 16px rgba(79, 70, 229, 0.12);
   --shadow-inset: inset 0 1px 0 rgba(255,255,255,0.5);
 
   /* Typography — dual font system */
@@ -101,11 +101,11 @@
   --text-secondary: #C4C0BC;
   --text-dim: #8A8380;
   --text-muted: #5C5754;
-  --accent: #FF5C00;
-  --accent-light: #FF7A2E;
-  --accent-dim: #E05200;
-  --accent-glow: rgba(255, 92, 0, 0.15);
-  --accent-subtle: rgba(255, 92, 0, 0.08);
+  --accent: #6366F1;
+  --accent-light: #818CF8;
+  --accent-dim: #4F46E5;
+  --accent-glow: rgba(99, 102, 241, 0.15);
+  --accent-subtle: rgba(99, 102, 241, 0.08);
   --success: #4ADE80;
   --success-dim: #22C55E;
   --success-subtle: rgba(74, 222, 128, 0.1);
@@ -132,7 +132,7 @@
   --shadow-lg: 0 12px 28px rgba(0,0,0,0.35), 0 4px 10px rgba(0,0,0,0.3);
   --shadow-xl: 0 20px 40px rgba(0,0,0,0.4), 0 8px 16px rgba(0,0,0,0.3);
   --shadow-glow: 0 0 80px rgba(0,0,0,0.6);
-  --shadow-accent: 0 4px 16px rgba(255, 92, 0, 0.2);
+  --shadow-accent: 0 4px 16px rgba(99, 102, 241, 0.2);
   --shadow-inset: inset 0 1px 0 rgba(255,255,255,0.03);
 }
 
