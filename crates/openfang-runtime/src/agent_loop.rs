@@ -312,8 +312,21 @@ pub async fn run_agent_loop(
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
+    // When true, the calling context treats the agent's final text response
+    // as the user-visible delivery (e.g. Discord/Telegram channel-reply path,
+    // where the bridge sends the reply text back to the originating channel
+    // without the agent needing to call `channel_send`).  In that case the
+    // `phantom_action_detected` guard must be suppressed: text-only replies
+    // containing words like "sent" or "channel" are legitimately the action,
+    // not a fabricated tool call.  Default `false` for cron, agent_send,
+    // API direct, and other callers where text alone is NOT delivery.
+    text_reply_is_delivery: bool,
 ) -> OpenFangResult<AgentLoopResult> {
-    info!(agent = %manifest.name, "Starting agent loop");
+    info!(
+        agent = %manifest.name,
+        text_reply_is_delivery,
+        "Starting agent loop"
+    );
 
     // Extract hand-allowed env vars from manifest metadata (set by kernel for hand settings)
     let hand_allowed_env: Vec<String> = manifest
@@ -687,7 +700,15 @@ pub async fn run_agent_loop(
                 // channel action (send, post, email, etc.) but never actually
                 // called the corresponding tool, re-prompt once to force real
                 // tool usage instead of hallucinated completion.
-                let text = if !any_tools_executed
+                //
+                // Suppressed when `text_reply_is_delivery` is true: in
+                // channel-reply paths the bridge delivers the agent's text
+                // verbatim back to the originating channel, so phrases like
+                // "I sent the message" are factually true descriptions of
+                // what's about to happen, not a hallucinated tool call.
+                //
+                let text = if !text_reply_is_delivery
+                    && !any_tools_executed
                     && iteration == 0
                     && phantom_action_detected(&text)
                 {
@@ -3813,14 +3834,15 @@ mod tests {
             None,
             None,
             None,
-            None, // on_phase
-            None, // media_engine
-            None, // tts_engine
-            None, // docker_config
-            None, // hooks
-            None, // context_window_tokens
-            None, // process_manager
-            None, // user_content_blocks
+            None,  // on_phase
+            None,  // media_engine
+            None,  // tts_engine
+            None,  // docker_config
+            None,  // hooks
+            None,  // context_window_tokens
+            None,  // process_manager
+            None,  // user_content_blocks
+            false, // text_reply_is_delivery
         )
         .await
         .expect("Loop should complete without error");
@@ -3866,14 +3888,15 @@ mod tests {
             None,
             None,
             None,
-            None, // on_phase
-            None, // media_engine
-            None, // tts_engine
-            None, // docker_config
-            None, // hooks
-            None, // context_window_tokens
-            None, // process_manager
-            None, // user_content_blocks
+            None,  // on_phase
+            None,  // media_engine
+            None,  // tts_engine
+            None,  // docker_config
+            None,  // hooks
+            None,  // context_window_tokens
+            None,  // process_manager
+            None,  // user_content_blocks
+            false, // text_reply_is_delivery
         )
         .await
         .expect("Loop should complete without error");
@@ -3921,14 +3944,15 @@ mod tests {
             None,
             None,
             None,
-            None, // on_phase
-            None, // media_engine
-            None, // tts_engine
-            None, // docker_config
-            None, // hooks
-            None, // context_window_tokens
-            None, // process_manager
-            None, // user_content_blocks
+            None,  // on_phase
+            None,  // media_engine
+            None,  // tts_engine
+            None,  // docker_config
+            None,  // hooks
+            None,  // context_window_tokens
+            None,  // process_manager
+            None,  // user_content_blocks
+            false, // text_reply_is_delivery
         )
         .await
         .expect("Loop should complete without error");
@@ -3974,14 +3998,15 @@ mod tests {
             None,
             None,
             None,
-            None, // on_phase
-            None, // media_engine
-            None, // tts_engine
-            None, // docker_config
-            None, // hooks
-            None, // context_window_tokens
-            None, // process_manager
-            None, // user_content_blocks
+            None,  // on_phase
+            None,  // media_engine
+            None,  // tts_engine
+            None,  // docker_config
+            None,  // hooks
+            None,  // context_window_tokens
+            None,  // process_manager
+            None,  // user_content_blocks
+            false, // text_reply_is_delivery
         )
         .await
         .expect("Loop should complete without error");
@@ -4149,9 +4174,10 @@ mod tests {
             None,
             None,
             None,
-            None, // context_window_tokens
-            None, // process_manager
-            None, // user_content_blocks
+            None,  // context_window_tokens
+            None,  // process_manager
+            None,  // user_content_blocks
+            false, // text_reply_is_delivery
         )
         .await
         .expect("Loop should recover via retry");
@@ -4196,9 +4222,10 @@ mod tests {
             None,
             None,
             None,
-            None, // context_window_tokens
-            None, // process_manager
-            None, // user_content_blocks
+            None,  // context_window_tokens
+            None,  // process_manager
+            None,  // user_content_blocks
+            false, // text_reply_is_delivery
         )
         .await
         .expect("Loop should complete with fallback");
@@ -5222,14 +5249,15 @@ mod tests {
             None,
             None,
             None,
-            None, // on_phase
-            None, // media_engine
-            None, // tts_engine
-            None, // docker_config
-            None, // hooks
-            None, // context_window_tokens
-            None, // process_manager
-            None, // user_content_blocks
+            None,  // on_phase
+            None,  // media_engine
+            None,  // tts_engine
+            None,  // docker_config
+            None,  // hooks
+            None,  // context_window_tokens
+            None,  // process_manager
+            None,  // user_content_blocks
+            false, // text_reply_is_delivery
         )
         .await
         .expect("Agent loop should complete");
@@ -5300,6 +5328,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .expect("Agent loop should recover nested XML tool calls");
@@ -5371,7 +5400,8 @@ mod tests {
             None,
             None,
             None,
-            None, // user_content_blocks
+            None,  // user_content_blocks
+            false, // text_reply_is_delivery
         )
         .await
         .expect("Normal loop should complete");
@@ -5489,5 +5519,157 @@ mod tests {
         assert!(!is_silent_token("Hello, how can I help?"));
         assert!(!is_silent_token("SILENT"));
         assert!(!is_silent_token(""));
+    }
+
+    // === phantom_action_detected gating by text_reply_is_delivery ===
+
+    /// Mock driver that, on iteration 0, returns phantom-action-shaped text
+    /// (matches `phantom_action_detected`) with no tool calls.  On iteration 1
+    /// (only reached if the phantom guard re-prompts) it returns a distinct
+    /// marker text so callers can tell whether a re-prompt occurred.
+    struct PhantomShapedDriver {
+        call_count: AtomicU32,
+    }
+
+    impl PhantomShapedDriver {
+        fn new() -> Self {
+            Self {
+                call_count: AtomicU32::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmDriver for PhantomShapedDriver {
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> Result<CompletionResponse, LlmError> {
+            let call = self.call_count.fetch_add(1, Ordering::Relaxed);
+            let text = if call == 0 {
+                // Matches phantom_action_detected: action verb + channel ref,
+                // and is exactly the legitimate "text-IS-delivery" shape we
+                // want to stop misfiring on in channel-reply contexts.
+                "I sent the message to the channel."
+            } else {
+                "REPROMPTED-FALLBACK"
+            };
+            Ok(CompletionResponse {
+                content: vec![ContentBlock::Text {
+                    text: text.to_string(),
+                    provider_metadata: None,
+                }],
+                stop_reason: StopReason::EndTurn,
+                tool_calls: vec![],
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 8,
+                },
+            })
+        }
+    }
+
+    /// When `text_reply_is_delivery == false` (cron / agent_send / API direct),
+    /// the phantom-action guard must still re-prompt on phantom-shaped text.
+    #[tokio::test]
+    async fn phantom_guard_fires_when_text_reply_is_delivery_false() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(PhantomShapedDriver::new());
+
+        let result = run_agent_loop(
+            &manifest,
+            "Send a message to #system-code",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,  // on_phase
+            None,  // media_engine
+            None,  // tts_engine
+            None,  // docker_config
+            None,  // hooks
+            None,  // context_window_tokens
+            None,  // process_manager
+            None,  // user_content_blocks
+            false, // text_reply_is_delivery
+        )
+        .await
+        .expect("loop should complete");
+
+        assert_eq!(
+            result.response.trim(),
+            "REPROMPTED-FALLBACK",
+            "phantom guard must re-prompt when text_reply_is_delivery=false; got {:?}",
+            result.response
+        );
+    }
+
+    /// When `text_reply_is_delivery == true` (Discord/Telegram channel-reply
+    /// path), the same phantom-shaped text is the legitimate delivery and
+    /// must pass through unmodified — the guard is suppressed.  This is the
+    /// behavior change this patch introduces.
+    #[tokio::test]
+    async fn phantom_guard_suppressed_when_text_reply_is_delivery_true() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(PhantomShapedDriver::new());
+
+        let result = run_agent_loop(
+            &manifest,
+            "Send a message to #system-code",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // on_phase
+            None, // media_engine
+            None, // tts_engine
+            None, // docker_config
+            None, // hooks
+            None, // context_window_tokens
+            None, // process_manager
+            None, // user_content_blocks
+            true, // text_reply_is_delivery — suppress phantom guard
+        )
+        .await
+        .expect("loop should complete");
+
+        assert_eq!(
+            result.response.trim(),
+            "I sent the message to the channel.",
+            "phantom guard must be suppressed when text_reply_is_delivery=true; got {:?}",
+            result.response
+        );
     }
 }

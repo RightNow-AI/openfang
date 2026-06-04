@@ -1853,6 +1853,50 @@ impl OpenFangKernel {
             Some(blocks),
             None,
             None,
+            false,
+        )
+        .await
+    }
+
+    /// Send a message in a channel-reply context: the caller (a channel
+    /// bridge) will deliver the agent's text response back to the originating
+    /// user-visible channel verbatim.  Sets `text_reply_is_delivery = true`
+    /// so the phantom-action detector does not misfire on legitimate
+    /// text-only replies that describe channel actions.
+    pub async fn send_message_channel_reply(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+    ) -> KernelResult<AgentLoopResult> {
+        let handle: Option<Arc<dyn KernelHandle>> = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+        self.send_message_with_handle_and_blocks(agent_id, message, handle, None, None, None, true)
+            .await
+    }
+
+    /// Multimodal channel-reply variant; see [`Self::send_message_channel_reply`].
+    pub async fn send_message_channel_reply_with_blocks(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        blocks: Vec<openfang_types::message::ContentBlock>,
+    ) -> KernelResult<AgentLoopResult> {
+        let handle: Option<Arc<dyn KernelHandle>> = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+        self.send_message_with_handle_and_blocks(
+            agent_id,
+            message,
+            handle,
+            Some(blocks),
+            None,
+            None,
+            true,
         )
         .await
     }
@@ -1873,6 +1917,7 @@ impl OpenFangKernel {
             None,
             sender_id,
             sender_name,
+            false,
         )
         .await
     }
@@ -1886,6 +1931,7 @@ impl OpenFangKernel {
     /// Per-agent locking ensures that concurrent messages for the same agent
     /// are serialized (preventing session corruption), while messages for
     /// different agents run in parallel.
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_message_with_handle_and_blocks(
         &self,
         agent_id: AgentId,
@@ -1894,6 +1940,7 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        text_reply_is_delivery: bool,
     ) -> KernelResult<AgentLoopResult> {
         // Acquire per-agent lock to serialize concurrent messages for the same agent.
         // This prevents session corruption when multiple messages arrive in quick
@@ -1931,6 +1978,7 @@ impl OpenFangKernel {
                 content_blocks,
                 sender_id,
                 sender_name,
+                text_reply_is_delivery,
             )
             .await
         };
@@ -2637,6 +2685,7 @@ impl OpenFangKernel {
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
+        text_reply_is_delivery: bool,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -2969,6 +3018,7 @@ impl OpenFangKernel {
             ctx_window,
             Some(&self.process_manager),
             content_blocks,
+            text_reply_is_delivery,
         )
         .await
         .map_err(KernelError::OpenFang)?;

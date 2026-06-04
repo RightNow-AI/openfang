@@ -393,6 +393,7 @@ pub async fn send_message(
             content_blocks,
             req.sender_id,
             req.sender_name,
+            false,
         )
         .await
     {

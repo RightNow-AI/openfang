@@ -74,7 +74,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
     async fn send_message(&self, agent_id: AgentId, message: &str) -> Result<String, String> {
         let result = self
             .kernel
-            .send_message(agent_id, message)
+            .send_message_channel_reply(agent_id, message)
             .await
             .map_err(|e| format!("{e}"))?;
         // Silent/NO_REPLY responses should not be forwarded to channels
@@ -105,7 +105,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         };
         let result = self
             .kernel
-            .send_message_with_blocks(agent_id, &text, blocks)
+            .send_message_channel_reply_with_blocks(agent_id, &text, blocks)
             .await
             .map_err(|e| format!("{e}"))?;
         Ok(result.response)
