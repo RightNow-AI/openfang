@@ -5238,6 +5238,11 @@ impl OpenFangKernel {
                 // Best-effort kill — don't block shutdown on failure
                 #[cfg(unix)]
                 {
+                    // SAFETY: `pid` was stored when this process spawned the WhatsApp
+                    // gateway child; the Mutex guard is held so no concurrent mutation
+                    // of the PID can occur. If the child has already exited the kernel
+                    // will have reaped it (or it became a zombie), in which case
+                    // `kill(pid, SIGTERM)` returns ESRCH and is a harmless no-op here.
                     unsafe {
                         libc::kill(pid as i32, libc::SIGTERM);
                     }

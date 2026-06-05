@@ -8,6 +8,7 @@ use crate::webchat;
 use crate::ws;
 use axum::Router;
 use openfang_kernel::OpenFangKernel;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -41,6 +42,24 @@ pub async fn build_router(
     // Start channel bridges (Telegram, etc.)
     let bridge = channel_bridge::start_channel_bridge(kernel.clone()).await;
 
+    // Pre-populate the runtime API key map from the credential resolver so keys
+    // stored in vault or secrets.env are visible at startup without set_var.
+    let api_keys = {
+        let mut map = HashMap::new();
+        let catalog = kernel
+            .model_catalog
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        for provider in catalog.list_providers() {
+            if !provider.api_key_env.is_empty() {
+                if let Some(val) = kernel.resolve_credential(&provider.api_key_env) {
+                    map.insert(provider.api_key_env.clone(), val);
+                }
+            }
+        }
+        Arc::new(std::sync::RwLock::new(map))
+    };
+
     let channels_config = kernel.config.channels.clone();
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
@@ -52,6 +71,7 @@ pub async fn build_router(
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(kernel.config.budget.clone())),
+        api_keys,
     });
 
     // Start WS cron broadcaster — subscribes to kernel event bus and pushes
