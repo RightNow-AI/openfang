@@ -238,7 +238,7 @@ fn host_net_fetch(state: &GuestState, params: &serde_json::Value) -> serde_json:
     }
 
     state.tokio_handle.block_on(async {
-        let client = reqwest::Client::new();
+        let client = &state.http_client;
         let request = match method.to_uppercase().as_str() {
             "POST" => client.post(url).body(body.to_string()),
             "PUT" => client.put(url).body(body.to_string()),
@@ -433,6 +433,7 @@ mod tests {
             agent_id: "test-agent".to_string(),
             tokio_handle: tokio::runtime::Handle::current(),
             ssrf_allowed_hosts: Vec::new(),
+            http_client: reqwest::Client::new(),
         }
     }
 
