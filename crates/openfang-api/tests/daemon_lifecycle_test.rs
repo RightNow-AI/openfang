@@ -9,6 +9,7 @@ use openfang_api::routes::{self, AppState};
 use openfang_api::server::{read_daemon_info, DaemonInfo};
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::cors::CorsLayer;
@@ -117,6 +118,7 @@ async fn test_full_daemon_lifecycle() {
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(Default::default())),
+        api_keys: Arc::new(std::sync::RwLock::new(HashMap::new())),
     });
 
     let app = Router::new()
@@ -244,6 +246,7 @@ async fn test_server_immediate_responsiveness() {
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(Default::default())),
+        api_keys: Arc::new(std::sync::RwLock::new(HashMap::new())),
     });
 
     let app = Router::new()
