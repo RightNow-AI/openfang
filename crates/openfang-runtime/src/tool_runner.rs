@@ -1371,7 +1371,7 @@ fn resolve_file_path(raw_path: &str, workspace_root: Option<&Path>) -> Result<Pa
     if let Some(root) = workspace_root {
         crate::workspace_sandbox::resolve_sandbox_path(raw_path, root)
     } else {
-        let _ = validate_path(raw_path)?;
+        validate_path(raw_path)?;
         Ok(PathBuf::from(raw_path))
     }
 }
@@ -1420,7 +1420,7 @@ fn resolve_directory_path_for_create(
     workspace_root: Option<&Path>,
 ) -> Result<PathBuf, String> {
     // Reject `..` components regardless of workspace.
-    let _ = validate_path(raw_path)?;
+    validate_path(raw_path)?;
 
     let Some(root) = workspace_root else {
         return Ok(PathBuf::from(raw_path));
