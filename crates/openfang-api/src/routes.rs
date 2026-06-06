@@ -2407,8 +2407,7 @@ fn build_field_json(
     let has_value = f
         .env_var
         .map(|ev| {
-            api_keys.contains_key(ev)
-                || std::env::var(ev).map(|v| !v.is_empty()).unwrap_or(false)
+            api_keys.contains_key(ev) || std::env::var(ev).map(|v| !v.is_empty()).unwrap_or(false)
         })
         .unwrap_or(false);
     let mut field = serde_json::json!({
@@ -2914,15 +2913,20 @@ pub async fn test_channel(
 
     // Clone the keys map immediately so no RwLockReadGuard (which is !Send)
     // is held across any await point in this async function.
-    let api_keys: HashMap<String, String> =
-        state.api_keys.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let api_keys: HashMap<String, String> = state
+        .api_keys
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     // Check all required env vars are set
     let mut missing = Vec::new();
     for field_def in meta.fields {
         if field_def.required {
             if let Some(env_var) = field_def.env_var {
                 let has = api_keys.contains_key(env_var)
-                    || std::env::var(env_var).map(|v| !v.is_empty()).unwrap_or(false);
+                    || std::env::var(env_var)
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false);
                 if !has {
                     missing.push(env_var);
                 }

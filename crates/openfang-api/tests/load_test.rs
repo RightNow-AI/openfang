@@ -10,6 +10,7 @@ use openfang_api::middleware;
 use openfang_api::routes::{self, AppState};
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tower_http::cors::CorsLayer;
@@ -61,6 +62,7 @@ async fn start_test_server() -> TestServer {
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(Default::default())),
+        api_keys: Arc::new(std::sync::RwLock::new(HashMap::new())),
     });
 
     let app = Router::new()

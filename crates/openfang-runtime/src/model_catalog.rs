@@ -144,14 +144,13 @@ impl ModelCatalog {
                     .or_else(|_| std::env::var("USERPROFILE"))
                     .map(|h| std::path::PathBuf::from(h).join(".openfang"))
                     .unwrap_or_else(|_| std::path::PathBuf::from(".openfang"));
-                provider.auth_status =
-                    if runtime_keys.contains_key("GITHUB_TOKEN")
-                        || crate::drivers::copilot::copilot_auth_available(&openfang_dir)
-                    {
-                        AuthStatus::Configured
-                    } else {
-                        AuthStatus::Missing
-                    };
+                provider.auth_status = if runtime_keys.contains_key("GITHUB_TOKEN")
+                    || crate::drivers::copilot::copilot_auth_available(&openfang_dir)
+                {
+                    AuthStatus::Configured
+                } else {
+                    AuthStatus::Missing
+                };
                 continue;
             }
             if !provider.key_required {
