@@ -230,11 +230,18 @@ pub enum ScheduleMode {
     #[default]
     Reactive,
     /// Agent wakes up on a cron schedule.
-    Periodic { cron: String },
+    Periodic {
+        /// Cron expression controlling wake-up times.
+        cron: String,
+    },
     /// Agent monitors conditions and acts when thresholds are met.
-    Proactive { conditions: Vec<String> },
+    Proactive {
+        /// Conditions to monitor; the agent acts when one is met.
+        conditions: Vec<String>,
+    },
     /// Agent runs in a persistent loop.
     Continuous {
+        /// Seconds between consecutive loop iterations.
         #[serde(default = "default_check_interval")]
         check_interval_secs: u64,
     },
@@ -299,13 +306,20 @@ pub enum Priority {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolProfile {
+    /// File read/list only.
     Minimal,
+    /// File read/write/list, shell exec, and web fetch.
     Coding,
+    /// Web fetch/search plus file read/write.
     Research,
+    /// Inter-agent messaging and memory tools.
     Messaging,
+    /// Combines coding, research, and messaging tools.
     Automation,
+    /// All tools (`*`).
     #[default]
     Full,
+    /// User-defined tool list — no implied tools.
     Custom,
 }
 
@@ -405,10 +419,14 @@ impl Default for ModelConfig {
 /// A fallback model entry in a chain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FallbackModel {
+    /// LLM provider name.
     pub provider: String,
+    /// Model identifier.
     pub model: String,
+    /// Optional API key environment variable name.
     #[serde(default)]
     pub api_key_env: Option<String>,
+    /// Optional base URL override for the provider.
     #[serde(default)]
     pub base_url: Option<String>,
 }

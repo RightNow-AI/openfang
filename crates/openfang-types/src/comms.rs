@@ -43,7 +43,9 @@ pub enum EdgeKind {
 /// The full agent topology: nodes + edges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Topology {
+    /// Agents in the topology.
     pub nodes: Vec<TopoNode>,
+    /// Relationships between agents.
     pub edges: Vec<TopoEdge>,
 }
 
@@ -89,16 +91,22 @@ pub enum CommsEventKind {
 /// Request body for POST /api/comms/send.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CommsSendRequest {
+    /// ID of the sending agent.
     pub from_agent_id: String,
+    /// ID of the receiving agent.
     pub to_agent_id: String,
+    /// Message content.
     pub message: String,
 }
 
 /// Request body for POST /api/comms/task.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CommsTaskRequest {
+    /// Short task title.
     pub title: String,
+    /// Full task description.
     pub description: String,
+    /// ID of the agent the task is assigned to, if any.
     #[serde(default)]
     pub assigned_to: Option<String>,
 }
