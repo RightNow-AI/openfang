@@ -267,4 +267,57 @@ pub trait KernelHandle: Send + Sync {
         let _ = parent_caps;
         self.spawn_agent(manifest_toml, parent_id).await
     }
+
+    /// Run a hand agent as a one-shot ephemeral subagent and return its
+    /// final text response, wrapped in the existing untrusted-content marker.
+    ///
+    /// # Trust model
+    ///
+    /// The hand's response is treated as **external untrusted content**. It is
+    /// wrapped in the same SHA-boundary markers that `web_fetch` uses (see
+    /// [`crate::web_content::wrap_external_content`]) with a synthetic
+    /// `hand://{hand_name}` source URL, so downstream consumers cannot
+    /// accidentally treat the paragraph as first-party content. This closes a
+    /// prompt-injection vector flagged on issue #896 — a malicious calendar
+    /// entry surfaced by a calendar hand cannot escape into the caller's
+    /// system prompt.
+    ///
+    /// # Persistence semantics
+    ///
+    /// The hand's canonical session is **not** touched: no row in the SQLite
+    /// `sessions` table is read or written, `canonical_session` is left alone,
+    /// no JSONL mirror or daily-memory log is appended, no mini-dream / dream
+    /// task is enqueued, no usage row is recorded against the hand's quota,
+    /// and no continuous-compaction trigger fires. The spawn lives entirely
+    /// inside this function call and is dropped on return.
+    ///
+    /// # Knobs
+    ///
+    /// * `max_output_tokens` — caps the underlying LLM `max_tokens` field
+    ///   *for this call only*. The persisted manifest is not mutated; a clone
+    ///   carries the override. This is a real budget knob on the completion
+    ///   request, not post-hoc string truncation.
+    /// * `timeout` — wall-clock cap on the whole call. On expiry the function
+    ///   returns `Err("hand query timed out after Ns")`.
+    ///
+    /// # When to use
+    ///
+    /// Use this for synchronous one-shot queries where the caller wants a
+    /// short paragraph back from a specialized hand (e.g. "summarize today's
+    /// calendar"). For normal conversational dispatch — where the hand should
+    /// remember the exchange and may chain tool calls — use
+    /// [`Self::send_to_agent`] instead.
+    ///
+    /// The default impl returns `Err("not supported")` so test doubles that
+    /// don't carry a hand registry still satisfy the trait.
+    async fn query_hand_ephemeral(
+        &self,
+        hand_name: &str,
+        prompt: &str,
+        max_output_tokens: u32,
+        timeout: std::time::Duration,
+    ) -> Result<String, String> {
+        let _ = (hand_name, prompt, max_output_tokens, timeout);
+        Err("query_hand_ephemeral not supported on this KernelHandle".into())
+    }
 }

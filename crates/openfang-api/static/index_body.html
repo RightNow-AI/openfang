@@ -159,6 +159,10 @@
               <span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>
               <span class="nav-label">Runtime</span>
             </a>
+            <a class="nav-item" :class="{ active: page === 'users' }" @click="navigate('users')" :aria-current="page === 'users' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+              <span class="nav-label">Users</span>
+            </a>
             <a class="nav-item" :class="{ active: page === 'settings' }" @click="navigate('settings')" :aria-current="page === 'settings' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></svg></span>
               <span class="nav-label">Settings</span>
@@ -1043,6 +1047,18 @@
                       <option value="technical">Technical</option><option value="creative">Creative</option>
                       <option value="concise">Concise</option><option value="mentor">Mentor</option>
                     </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="memory-system">Memory System</label>
+                    <select id="memory-system" class="form-select" x-model="configForm.memory_system">
+                      <option value="summarization">Summarization (default)</option>
+                      <option value="structured">Structured (LLM extraction + dreamer)</option>
+                    </select>
+                    <p class="text-xs text-dim" style="margin-top:4px">
+                      Summarization: LLM-summarize old messages when count exceeds threshold (default).
+                      Structured: extract facts/preferences/decisions/tasks via LLM, with periodic
+                      dream consolidation. Higher API cost but better long-term memory.
+                    </p>
                   </div>
                   <button class="btn btn-primary mt-4" @click="saveConfig()" :disabled="configSaving">
                     <span x-show="!configSaving">Save Config</span><span x-show="configSaving">Saving...</span>
@@ -5396,6 +5412,180 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
 
             <div class="flex gap-2">
               <button class="btn btn-ghost btn-sm" @click="loadData()">Refresh</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ─── Users page ─── -->
+    <template x-if="page === 'users'">
+      <div x-data="usersPage">
+        <div class="page-header">
+          <h2>Users</h2>
+          <div class="flex gap-2 items-center" x-show="selectedUserId">
+            <button class="btn btn-ghost btn-sm" @click="loadTopics()" x-show="tab === 'memory'">Refresh</button>
+            <button class="btn btn-ghost btn-sm" @click="loadAudit()" x-show="tab === 'audit'">Refresh</button>
+            <button class="btn btn-ghost btn-sm" @click="exportMemory()">Export JSON</button>
+          </div>
+        </div>
+        <div class="page-body" x-init="loadUsers()">
+          <div x-show="loadingUsers" class="loading-state"><div class="spinner"></div><span>Loading users...</span></div>
+          <div x-show="!loadingUsers && loadError" class="error-state">
+            <span class="error-icon">!</span>
+            <p x-text="loadError"></p>
+            <button class="btn btn-ghost btn-sm" @click="loadUsers()">Retry</button>
+          </div>
+          <div x-show="!loadingUsers && !loadError" class="grid grid-cols-12 gap-4">
+            <!-- Left rail: users list -->
+            <div class="col-span-3">
+              <div class="card">
+                <div class="card-header">Configured Users</div>
+                <div style="max-height:60vh;overflow-y:auto">
+                  <template x-for="u in users" :key="u.id">
+                    <div class="nav-item" :class="{ active: selectedUserId === u.id }" @click="selectUser(u.id)" style="cursor:pointer">
+                      <div style="flex:1;min-width:0">
+                        <div class="font-bold" x-text="u.name"></div>
+                        <div class="text-xs text-dim truncate" x-text="u.id"></div>
+                        <div class="text-xs text-dim" style="margin-top:2px">
+                          <span x-text="u.role"></span>
+                          <span x-show="u.id === defaultUserId" style="margin-left:6px" class="badge badge-success">default</span>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+                  <div class="empty-state" x-show="!users.length" style="padding:14px">
+                    <p class="text-dim text-sm">No users configured.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: user detail with Memory + Audit tabs -->
+            <div class="col-span-9">
+              <div x-show="!selectedUserId" class="empty-state">
+                <h3>Select a user</h3>
+                <p class="hint">Choose a user on the left to manage their structured memory.</p>
+              </div>
+
+              <div x-show="selectedUserId">
+                <div class="card mb-4" style="border-left:3px solid var(--accent)">
+                  <div class="font-bold" style="font-size:13px;margin-bottom:4px" x-text="(selectedUser && selectedUser.name) || 'User'"></div>
+                  <div class="text-xs text-dim" style="font-family:monospace" x-text="selectedUserId"></div>
+                </div>
+
+                <div class="tabs">
+                  <div class="tab" :class="{ active: tab === 'memory' }" @click="switchTab('memory')">Memory</div>
+                  <div class="tab" :class="{ active: tab === 'audit' }" @click="switchTab('audit')">Extraction Audit</div>
+                </div>
+
+                <!-- Memory tab -->
+                <div x-show="tab === 'memory'">
+                  <div x-show="memLoading" class="loading-state"><div class="spinner"></div><span>Loading memory...</span></div>
+                  <div x-show="!memLoading && memError" class="error-state">
+                    <span class="error-icon">!</span>
+                    <p x-text="memError"></p>
+                    <button class="btn btn-ghost btn-sm" @click="loadTopics()">Retry</button>
+                  </div>
+                  <div x-show="!memLoading && !memError">
+                    <div class="flex justify-between items-center mb-4">
+                      <span class="text-sm text-dim" x-text="topics.length + ' topic(s)'"></span>
+                      <button class="btn btn-danger btn-sm" @click="deleteAllMemory()" x-show="topics.length">Delete All Memory</button>
+                    </div>
+                    <div class="table-wrap" x-show="topics.length">
+                      <table>
+                        <thead><tr><th>Topic</th><th>Summary</th><th>Updated</th><th style="width:170px">Actions</th></tr></thead>
+                        <tbody>
+                          <template x-for="t in topics" :key="t.topic">
+                            <tr>
+                              <td class="font-bold" x-text="t.topic"></td>
+                              <td class="text-sm" x-text="t.summary"></td>
+                              <td class="text-xs text-dim" x-text="formatAge(t.updated_at)" :title="t.updated_at"></td>
+                              <td>
+                                <div class="flex gap-2">
+                                  <button class="btn btn-ghost btn-sm" @click="viewTopic(t.topic)">View</button>
+                                  <button class="btn btn-danger btn-sm" @click="deleteTopic(t.topic)">Delete</button>
+                                </div>
+                              </td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="empty-state" x-show="!topics.length">
+                      <h4>No memory topics yet</h4>
+                      <p class="hint">Structured-memory agents will populate this list as they consolidate facts about the user.</p>
+                    </div>
+                  </div>
+
+                  <!-- Topic viewer modal -->
+                  <template x-if="viewingTopic">
+                    <div class="modal-overlay" @click.self="closeViewer()" @keydown.escape.window="closeViewer()">
+                      <div class="modal" style="max-width:720px">
+                        <div class="modal-header">
+                          <h3 x-text="viewingTopic"></h3>
+                          <button class="modal-close" @click="closeViewer()">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                          </button>
+                        </div>
+                        <div x-show="viewingLoading" class="loading-state"><div class="spinner"></div></div>
+                        <div x-show="!viewingLoading">
+                          <div class="form-group">
+                            <label>Summary</label>
+                            <div class="text-sm" x-text="viewingSummary"></div>
+                          </div>
+                          <div class="form-group">
+                            <label>Content</label>
+                            <pre style="font-size:12px;max-height:50vh;overflow:auto;white-space:pre-wrap;background:var(--bg-input);padding:10px;border-radius:4px" x-text="viewingContent"></pre>
+                          </div>
+                          <div class="text-xs text-dim" x-text="'Updated: ' + viewingUpdatedAt"></div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- Audit tab -->
+                <div x-show="tab === 'audit'">
+                  <div x-show="auditLoading" class="loading-state"><div class="spinner"></div><span>Loading audit log...</span></div>
+                  <div x-show="!auditLoading && auditError" class="error-state">
+                    <span class="error-icon">!</span>
+                    <p x-text="auditError"></p>
+                    <button class="btn btn-ghost btn-sm" @click="loadAudit()">Retry</button>
+                  </div>
+                  <div x-show="!auditLoading && !auditError">
+                    <div class="card mb-4" style="border-left:3px solid var(--accent)">
+                      <div class="font-bold" style="font-size:13px;margin-bottom:4px">Extraction Audit</div>
+                      <div class="text-sm text-dim" style="line-height:1.6">
+                        Each row is a structured-memory extraction event written by an agent for this user, newest first. Counts show how many facts, preferences, decisions, tasks and open-items were captured.
+                      </div>
+                    </div>
+                    <div class="table-wrap" x-show="auditEntries.length">
+                      <table>
+                        <thead><tr><th>When</th><th>Agent</th><th>Session</th><th>Facts</th><th>Prefs</th><th>Decisions</th><th>Tasks</th><th>Open</th></tr></thead>
+                        <tbody>
+                          <template x-for="e in auditEntries" :key="(e.timestamp + e.session_id)">
+                            <tr>
+                              <td class="text-xs" x-text="formatAge(e.timestamp)" :title="e.timestamp"></td>
+                              <td class="font-bold" x-text="e.agent_name || (e.agent_id ? e.agent_id.substring(0,8) + '...' : '-')" :title="e.agent_id"></td>
+                              <td class="text-xs" style="font-family:monospace" x-text="e.session_id ? e.session_id.substring(0,8) + '...' : '-'" :title="e.session_id"></td>
+                              <td class="text-xs" x-text="e.fields_extracted && e.fields_extracted.facts"></td>
+                              <td class="text-xs" x-text="e.fields_extracted && e.fields_extracted.preferences"></td>
+                              <td class="text-xs" x-text="e.fields_extracted && e.fields_extracted.decisions"></td>
+                              <td class="text-xs" x-text="e.fields_extracted && e.fields_extracted.tasks"></td>
+                              <td class="text-xs" x-text="e.fields_extracted && e.fields_extracted.open_items"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="empty-state" x-show="!auditEntries.length">
+                      <h4>No extractions yet</h4>
+                      <p class="hint">Structured-memory agents will record extractions here on each compaction or end-of-session pass.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

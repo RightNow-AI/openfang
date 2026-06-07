@@ -327,6 +327,25 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Update an agent's memory configuration (opt-in to/out of structured memory).
+    ///
+    /// Hot-swappable: the next prompt build picks up the new gate. Persisting
+    /// to disk is the caller's responsibility (the control-API handler calls
+    /// `persist_manifest_to_disk` right after).
+    pub fn update_memory_config(
+        &self,
+        id: AgentId,
+        new_memory: openfang_types::agent::MemoryConfig,
+    ) -> OpenFangResult<()> {
+        let mut entry = self
+            .agents
+            .get_mut(&id)
+            .ok_or_else(|| OpenFangError::AgentNotFound(id.to_string()))?;
+        entry.manifest.memory = new_memory;
+        entry.last_active = chrono::Utc::now();
+        Ok(())
+    }
+
     /// Update an agent's resource quota (budget limits).
     pub fn update_resources(
         &self,
@@ -415,6 +434,7 @@ mod tests {
                 tool_blocklist: vec![],
                 cache_context: false,
                 max_history_messages: None,
+                memory: openfang_types::agent::MemoryConfig::default(),
             },
             state: AgentState::Created,
             mode: AgentMode::default(),

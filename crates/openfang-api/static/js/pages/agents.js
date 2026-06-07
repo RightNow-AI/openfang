@@ -339,13 +339,18 @@ function agentsPage() {
 
     buildConfigForm(agent) {
       var identity = (agent && agent.identity) || {};
+      var memorySystem =
+        (agent && agent.memory_system) ||
+        (agent && agent.manifest && agent.manifest.memory && agent.manifest.memory.system) ||
+        'summarization';
       return {
         name: (agent && agent.name) || '',
         system_prompt: (agent && agent.system_prompt) || '',
         emoji: identity.emoji || '',
         color: identity.color || '#FF5C00',
         archetype: identity.archetype || '',
-        vibe: identity.vibe || ''
+        vibe: identity.vibe || '',
+        memory_system: memorySystem
       };
     },
 

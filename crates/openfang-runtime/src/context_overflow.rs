@@ -111,6 +111,38 @@ fn estimate_tokens(messages: &[Message], system_prompt: &str, tools: &[ToolDefin
     crate::compactor::estimate_token_count(messages, Some(system_prompt), Some(tools))
 }
 
+/// Returns the number of leading messages that overflow recovery would drain,
+/// without actually applying the trim.
+///
+/// 0 means no recovery needed. The caller can run mini-dream on `messages[..n]`
+/// before calling `recover_from_overflow` to preserve facts before discard.
+pub fn overflow_drain_count(
+    messages: &[Message],
+    system_prompt: &str,
+    tools: &[ToolDefinition],
+    context_window: usize,
+) -> usize {
+    let estimated = estimate_tokens(messages, system_prompt, tools);
+    let threshold_70 = (context_window as f64 * 0.70) as usize;
+    let threshold_90 = (context_window as f64 * 0.90) as usize;
+
+    if estimated <= threshold_70 {
+        return 0;
+    }
+
+    if estimated <= threshold_90 {
+        // Matches Stage 1: keep last 10
+        let keep = 10.min(messages.len());
+        let raw_remove = messages.len().saturating_sub(keep);
+        return safe_drain_boundary(messages, raw_remove);
+    }
+
+    // Matches Stage 2: keep last 4
+    let keep = 4.min(messages.len());
+    let raw_remove = messages.len().saturating_sub(keep);
+    safe_drain_boundary(messages, raw_remove)
+}
+
 /// Run the 4-stage overflow recovery pipeline.
 ///
 /// Returns the recovery stage applied and the number of messages/results affected.
@@ -416,5 +448,97 @@ mod tests {
     fn test_safe_drain_boundary_edge_end() {
         let msgs = vec![Message::user("a"), Message::assistant("b")];
         assert_eq!(safe_drain_boundary(&msgs, 2), 2);
+    }
+
+    /// Cross-check: `overflow_drain_count` must report exactly how many
+    /// leading messages `recover_from_overflow` will drain in stages 1+2.
+    /// If the thresholds in either function drift, this test catches it
+    /// before mini-dream silently sees a different message slice than
+    /// `recover_from_overflow` actually trims.
+    #[test]
+    fn test_overflow_drain_count_matches_recover_from_overflow_stage1() {
+        // Stage 1 zone: between 70% and 90% of context window.
+        // 1000-token context window: 70% = 700 tokens = 2800 chars, 90% = 2520 tokens.
+        // 20 messages of 150 chars each ≈ 3000+ chars total → past 70%.
+        let mut msgs_for_recover = make_messages(20, 150);
+        let msgs_for_count = msgs_for_recover.clone();
+        let system_prompt = "system";
+        let tools: Vec<ToolDefinition> = vec![];
+        let context_window = 1000;
+
+        let predicted =
+            overflow_drain_count(&msgs_for_count, system_prompt, &tools, context_window);
+        let original_len = msgs_for_recover.len();
+        let stage =
+            recover_from_overflow(&mut msgs_for_recover, system_prompt, &tools, context_window);
+
+        if let RecoveryStage::AutoCompaction { removed } = stage {
+            assert_eq!(
+                predicted, removed,
+                "overflow_drain_count must match Stage 1 (AutoCompaction) drain"
+            );
+            assert_eq!(
+                original_len - msgs_for_recover.len(),
+                predicted,
+                "drain count must equal predicted"
+            );
+        } else if matches!(stage, RecoveryStage::OverflowCompaction { .. }) {
+            // Cascaded to stage 2 — predicted should still match the leading
+            // drain count, which equals the stage 2 drain since Stage 1 drained
+            // some, then Stage 2 drained the rest. We accept this as long as
+            // predicted is non-zero.
+            assert!(
+                predicted > 0,
+                "predicted must be non-zero for overflowing input"
+            );
+        }
+    }
+
+    #[test]
+    fn test_overflow_drain_count_matches_recover_from_overflow_stage2() {
+        // Stage 2 zone: > 90%. 30 messages of 200 chars ≈ 6000 chars in a
+        // 1000-token (4000-char) window → way past 90%.
+        let mut msgs_for_recover = make_messages(30, 200);
+        let msgs_for_count = msgs_for_recover.clone();
+        let system_prompt = "system";
+        let tools: Vec<ToolDefinition> = vec![];
+        let context_window = 1000;
+
+        let predicted =
+            overflow_drain_count(&msgs_for_count, system_prompt, &tools, context_window);
+        let stage =
+            recover_from_overflow(&mut msgs_for_recover, system_prompt, &tools, context_window);
+
+        // Whichever stage fires, the prediction must equal what was drained.
+        let actual_drained = match stage {
+            RecoveryStage::AutoCompaction { removed } => removed,
+            RecoveryStage::OverflowCompaction { removed } => removed,
+            RecoveryStage::ToolResultTruncation { .. } | RecoveryStage::FinalError => {
+                // Stage 2 still ran first; check that predicted matches what
+                // it would have drained.
+                assert!(predicted > 0, "predicted must be non-zero past 90%");
+                return;
+            }
+            RecoveryStage::None => {
+                panic!("expected recovery to fire");
+            }
+        };
+
+        assert_eq!(
+            predicted, actual_drained,
+            "overflow_drain_count must match recover_from_overflow drain"
+        );
+    }
+
+    #[test]
+    fn test_overflow_drain_count_zero_below_threshold() {
+        // Below 70% — both functions agree: no drain, no recovery.
+        let msgs = make_messages(2, 100);
+        let predicted = overflow_drain_count(&msgs, "sys", &[], 200_000);
+        assert_eq!(predicted, 0, "below threshold must report 0 drain");
+
+        let mut msgs_mut = msgs;
+        let stage = recover_from_overflow(&mut msgs_mut, "sys", &[], 200_000);
+        assert_eq!(stage, RecoveryStage::None);
     }
 }

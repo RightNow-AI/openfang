@@ -346,6 +346,7 @@ mod tests {
                 tool_blocklist: vec![],
                 cache_context: false,
                 max_history_messages: None,
+                memory: openfang_types::agent::MemoryConfig::default(),
             },
             state,
             mode: AgentMode::default(),

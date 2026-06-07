@@ -66,6 +66,15 @@ pub struct PromptContext {
     /// Read per-turn by the kernel so external writers (cron jobs, integrations)
     /// are reflected in the next LLM call. See issue #843.
     pub context_md: Option<String>,
+    /// User memory index — topic names + summaries for the session owner.
+    ///
+    /// `Some(formatted_block)` when the agent has opted in to structured
+    /// memory (`MemoryConfig::is_structured()`) AND the user has at least
+    /// one non-empty topic; `None` for default-memory agents and for empty
+    /// indexes. Injected near the top of the system prompt so the model
+    /// can decide whether to fetch full content for any topic during the
+    /// turn.
+    pub user_memory_context: Option<String>,
 }
 
 /// Build the complete system prompt from a `PromptContext`.
@@ -150,6 +159,23 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
     // Section 8 — User Personalization (skip for subagents)
     if !ctx.is_subagent {
         sections.push(build_user_section(ctx.user_name.as_deref()));
+    }
+
+    // Section 8.5 — User Memory Index (skip for subagents, only when present)
+    //
+    // Populated by the kernel only for agents that opted in to structured
+    // memory via `[memory] system = "structured"`. Default agents never
+    // produce a value here, so the section is skipped entirely.
+    if !ctx.is_subagent {
+        if let Some(ref mem_ctx) = ctx.user_memory_context {
+            if !mem_ctx.trim().is_empty() {
+                sections.push(format!(
+                    "## What I Remember About You\n\
+                     The following topics are stored in your personal memory. \
+                     You can recall any topic for more detail during the conversation.\n\n{mem_ctx}"
+                ));
+            }
+        }
     }
 
     // Section 9 — Channel Awareness (skip for subagents)

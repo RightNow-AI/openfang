@@ -186,6 +186,13 @@ pub struct UserConfig {
     /// Optional API key hash for API authentication.
     #[serde(default)]
     pub api_key_hash: Option<String>,
+    /// Marks this user as the persistent default. When `true`, the kernel
+    /// binds this user's display name and channel bindings to the persistent
+    /// default-user UUID generated at boot rather than a freshly-generated
+    /// per-config UUID. At most one `[[users]]` block should set this; if
+    /// none does, the first user in the config inherits the default identity.
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 fn default_role() -> String {
@@ -1298,6 +1305,39 @@ pub struct KernelConfig {
     /// ```
     #[serde(default)]
     pub skills: HashMap<String, HashMap<String, String>>,
+    /// Session lifecycle configuration (inactivity timeouts → dream trigger).
+    #[serde(default)]
+    pub sessions: SessionsConfig,
+}
+
+/// Session lifecycle configuration.
+///
+/// Controls how long a session can sit idle before the kernel triggers
+/// dream consolidation (structured-memory agents only).
+///
+/// ```toml
+/// [sessions]
+/// gap_secs = 900          # inactivity → session end + dream (default 300)
+/// email_gap_secs = 86400  # longer timeout for async channels
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionsConfig {
+    /// Seconds of inactivity before a session is considered ended and dream is triggered.
+    /// Default: 300 (5 minutes). Set to 0 to disable the dream lifecycle loop entirely.
+    pub gap_secs: u64,
+    /// Longer inactivity timeout for async channels like email.
+    /// Default: 86400 (24 hours). Reserved for future channel-aware gating.
+    pub email_gap_secs: u64,
+}
+
+impl Default for SessionsConfig {
+    fn default() -> Self {
+        Self {
+            gap_secs: 300,
+            email_gap_secs: 86_400,
+        }
+    }
 }
 
 /// Heartbeat monitor settings exposed in `[heartbeat]` config section.
@@ -1540,6 +1580,7 @@ impl Default for KernelConfig {
             workflows_dir: None,
             heartbeat: HeartbeatSettings::default(),
             skills: HashMap::new(),
+            sessions: SessionsConfig::default(),
         }
     }
 }
@@ -4120,12 +4161,44 @@ mod tests {
                 m
             },
             api_key_hash: None,
+            is_default: false,
         };
         let json = serde_json::to_string(&uc).unwrap();
         let back: UserConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.name, "Alice");
         assert_eq!(back.role, "owner");
         assert_eq!(back.channel_bindings.get("telegram").unwrap(), "123456");
+        assert!(!back.is_default);
+    }
+
+    #[test]
+    fn test_user_config_is_default_defaults_to_false() {
+        // TOML/JSON without `is_default` must deserialize as `false` so that
+        // existing configs are unaffected by this PR.
+        let toml_src = r#"
+            name = "Alice"
+            role = "owner"
+        "#;
+        let uc: UserConfig = toml::from_str(toml_src).unwrap();
+        assert!(!uc.is_default);
+
+        let json_src = r#"{"name":"Bob","role":"user"}"#;
+        let uc: UserConfig = serde_json::from_str(json_src).unwrap();
+        assert!(!uc.is_default);
+    }
+
+    #[test]
+    fn test_user_config_is_default_roundtrips_when_set() {
+        let uc = UserConfig {
+            name: "Owner".to_string(),
+            role: "owner".to_string(),
+            channel_bindings: std::collections::HashMap::new(),
+            api_key_hash: None,
+            is_default: true,
+        };
+        let json = serde_json::to_string(&uc).unwrap();
+        let back: UserConfig = serde_json::from_str(&json).unwrap();
+        assert!(back.is_default);
     }
 
     #[test]
