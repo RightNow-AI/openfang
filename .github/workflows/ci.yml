@@ -81,7 +81,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
-      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   fmt:
     name: Format
@@ -105,6 +105,22 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - run: cargo audit
+
+  # ── WhatsApp gateway Node dependency audit ────────────────────────────────
+  gateway-audit:
+    name: Gateway npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies (frozen lockfile)
+        working-directory: packages/whatsapp-gateway
+        run: npm ci
+      - name: Audit for high/critical vulnerabilities
+        working-directory: packages/whatsapp-gateway
+        run: npm audit --audit-level=high
 
   # ── Secrets scanning (prevent accidental credential commits) ──────────────
   secrets:
