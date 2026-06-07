@@ -15,6 +15,7 @@ use openfang_types::model_catalog::{
     ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
+use zeroize::Zeroizing;
 
 /// The model catalog — registry of all known models and providers.
 pub struct ModelCatalog {
@@ -121,7 +122,7 @@ impl ModelCatalog {
     /// Checks the provided `runtime_keys` map first, then falls back to `std::env::var()`.
     /// This avoids calling `std::env::set_var` (unsound in multithreaded contexts) while
     /// still reflecting keys that were added at runtime via the API.
-    pub fn detect_auth_with_keys(&mut self, runtime_keys: &HashMap<String, String>) {
+    pub fn detect_auth_with_keys(&mut self, runtime_keys: &HashMap<String, Zeroizing<String>>) {
         for provider in &mut self.providers {
             if provider.id == "claude-code" {
                 provider.auth_status = if crate::drivers::claude_code::claude_code_available() {

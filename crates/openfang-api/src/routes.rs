@@ -17,6 +17,7 @@ use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
+use zeroize::Zeroizing;
 
 /// Shared application state.
 ///
@@ -47,7 +48,7 @@ pub struct AppState {
     /// multithreaded contexts). Keys written here are checked by `detect_auth_with_keys`
     /// and presence checks throughout the API layer. Uses `std::sync::RwLock` (not
     /// tokio's) so synchronous helpers like `build_field_json` can read without awaiting.
-    pub api_keys: Arc<std::sync::RwLock<HashMap<String, String>>>,
+    pub api_keys: Arc<std::sync::RwLock<HashMap<String, Zeroizing<String>>>>,
 }
 
 /// POST /api/agents — Spawn a new agent.
@@ -2402,7 +2403,7 @@ fn is_channel_configured(config: &openfang_types::config::ChannelsConfig, name: 
 fn build_field_json(
     f: &ChannelField,
     config_values: Option<&serde_json::Value>,
-    api_keys: &HashMap<String, String>,
+    api_keys: &HashMap<String, Zeroizing<String>>,
 ) -> serde_json::Value {
     let has_value = f
         .env_var
@@ -2769,7 +2770,7 @@ pub async fn configure_channel(
                 .api_keys
                 .write()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(env_var.to_string(), value.to_string());
+                .insert(env_var.to_string(), Zeroizing::new(value.to_string()));
             // Also write the env var NAME to config.toml so the channel section
             // is not empty and the kernel knows which env var to read.
             config_fields.insert(
@@ -2913,7 +2914,7 @@ pub async fn test_channel(
 
     // Clone the keys map immediately so no RwLockReadGuard (which is !Send)
     // is held across any await point in this async function.
-    let api_keys: HashMap<String, String> = state
+    let api_keys: HashMap<String, Zeroizing<String>> = state
         .api_keys
         .read()
         .unwrap_or_else(|e| e.into_inner())
@@ -2992,12 +2993,12 @@ pub async fn test_channel(
 async fn send_channel_test_message(
     channel_name: &str,
     target_id: &str,
-    api_keys: &HashMap<String, String>,
+    api_keys: &HashMap<String, Zeroizing<String>>,
 ) -> Result<(), String> {
     let resolve = |var: &str| -> Result<String, String> {
         api_keys
             .get(var)
-            .cloned()
+            .map(|z| z.to_string())
             .or_else(|| std::env::var(var).ok().filter(|v| !v.is_empty()))
             .ok_or_else(|| format!("{var} not set"))
     };
@@ -7747,7 +7748,7 @@ pub async fn set_provider_key(
         .api_keys
         .write()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(env_var.clone(), key.clone());
+        .insert(env_var.clone(), Zeroizing::new(key.clone()));
 
     // Refresh auth detection
     {
@@ -7998,7 +7999,7 @@ pub async fn test_provider(
     let start = std::time::Instant::now();
     let driver_config = openfang_runtime::llm_driver::DriverConfig {
         provider: name.clone(),
-        api_key,
+        api_key: api_key.map(|z| z.to_string()),
         base_url: if base_url.is_empty() {
             None
         } else {
@@ -12124,7 +12125,10 @@ pub async fn copilot_oauth_poll(
                 .api_keys
                 .write()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert("GITHUB_TOKEN".to_string(), access_token.to_string());
+                .insert(
+                    "GITHUB_TOKEN".to_string(),
+                    Zeroizing::new(access_token.to_string()),
+                );
 
             // Refresh auth detection
             {
