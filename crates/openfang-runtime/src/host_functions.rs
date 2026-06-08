@@ -434,6 +434,7 @@ mod tests {
             tokio_handle: tokio::runtime::Handle::current(),
             ssrf_allowed_hosts: Vec::new(),
             http_client: reqwest::Client::new(),
+            memory_limiter: crate::sandbox::MemoryLimiter::new(0),
         }
     }
 
