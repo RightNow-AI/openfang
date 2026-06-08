@@ -6207,7 +6207,7 @@ pub async fn security_status(State(state): State<Arc<AppState>>) -> impl IntoRes
                 "fuel_metering": true,
                 "epoch_interruption": true,
                 "default_timeout_secs": 30,
-                "default_fuel_limit": 1_000_000u64
+                "default_fuel_limit": openfang_types::agent::ResourceQuota::default().max_cpu_time_ms * 100_000
             },
             "auth": {
                 "mode": auth_mode,
