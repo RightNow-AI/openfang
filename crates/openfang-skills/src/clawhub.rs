@@ -557,7 +557,7 @@ impl ClawHubClient {
             ".staging-{}-{}-{}",
             slug,
             std::process::id(),
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            uuid::Uuid::new_v4()
         ));
         // Pre-clean any leftover staging dir from a prior crashed install.
         let _ = std::fs::remove_dir_all(&staging_dir);
@@ -682,25 +682,44 @@ impl ClawHubClient {
 
         // Step 9: Atomic rename staging -> final. Closes the TOCTOU window
         // between extraction and enforcement (Codex Finding 1). If the final
-        // location already exists from a prior install, replace it
-        // atomically (where the filesystem allows) or fall back to
-        // remove-then-rename.
-        if final_dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&final_dir) {
+        // location already exists from a prior install, move it aside to a
+        // backup name first, then rename staging into place, then delete the
+        // backup — this way the slot is never empty between removal and
+        // rename (remove-then-rename leaves a window where the slot doesn't
+        // exist, which is unsafe on platforms like Windows).
+        let backup_dir = if final_dir.exists() {
+            let backup = target_dir.join(format!(
+                ".backup-{}-{}-{}",
+                slug,
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            if let Err(e) = std::fs::rename(&final_dir, &backup) {
                 let _ = std::fs::remove_dir_all(&skill_dir);
                 return Err(SkillError::SecurityBlocked(format!(
-                    "install: failed to clear existing {} before atomic rename: {e}",
+                    "install: failed to move aside existing {} before atomic rename: {e}",
                     final_dir.display()
                 )));
             }
-        }
+            Some(backup)
+        } else {
+            None
+        };
         if let Err(e) = std::fs::rename(&skill_dir, &final_dir) {
+            // Restore the previous install so the slot isn't left empty.
+            if let Some(backup) = &backup_dir {
+                let _ = std::fs::rename(backup, &final_dir);
+            }
             let _ = std::fs::remove_dir_all(&skill_dir);
             return Err(SkillError::SecurityBlocked(format!(
                 "install: atomic rename {} -> {} failed: {e}",
                 skill_dir.display(),
                 final_dir.display()
             )));
+        }
+        // New install is in place; clean up the old version's backup.
+        if let Some(backup) = backup_dir {
+            let _ = std::fs::remove_dir_all(&backup);
         }
         // From this point on the skill lives at final_dir, not staging.
         // (Variable kept for clarity even though unread; future tracing

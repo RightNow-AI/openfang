@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaType {
+    /// A still image.
     Image,
+    /// An audio clip.
     Audio,
+    /// A video clip.
     Video,
 }
 
@@ -26,11 +29,22 @@ impl std::fmt::Display for MediaType {
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum MediaSource {
     /// Path to a local file.
-    FilePath { path: String },
+    FilePath {
+        /// Filesystem path to the media file.
+        path: String,
+    },
     /// URL to fetch the media from (SSRF-checked).
-    Url { url: String },
+    Url {
+        /// URL to fetch the media from.
+        url: String,
+    },
     /// Base64-encoded data.
-    Base64 { data: String, mime_type: String },
+    Base64 {
+        /// Base64-encoded media bytes.
+        data: String,
+        /// MIME type of the decoded data.
+        mime_type: String,
+    },
 }
 
 /// A media attachment to be analyzed.
@@ -245,9 +259,12 @@ impl MediaAttachment {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ImageGenModel {
+    /// OpenAI DALL-E 3.
     #[default]
     DallE3,
+    /// OpenAI DALL-E 2.
     DallE2,
+    /// OpenAI GPT Image 1.
     #[serde(rename = "gpt-image-1")]
     GptImage1,
 }
@@ -293,9 +310,11 @@ fn default_image_count() -> u8 {
     1
 }
 
-/// Allowed sizes per model.
+/// Allowed sizes for DALL-E 3.
 pub const DALLE3_SIZES: &[&str] = &["1024x1024", "1792x1024", "1024x1792"];
+/// Allowed sizes for DALL-E 2.
 pub const DALLE2_SIZES: &[&str] = &["256x256", "512x512", "1024x1024"];
+/// Allowed sizes for GPT Image 1.
 pub const GPT_IMAGE1_SIZES: &[&str] = &["1024x1024", "1536x1024", "1024x1536"];
 
 impl ImageGenRequest {

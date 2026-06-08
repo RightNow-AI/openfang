@@ -36,9 +36,13 @@ const MAX_TIMEOUT_SECS: u64 = 300;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskLevel {
+    /// Routine operation; informational only.
     Low,
+    /// Operation that warrants operator awareness.
     Medium,
+    /// Potentially destructive or irreversible operation.
     High,
+    /// Severe operation that could cause major damage if misused.
     Critical,
 }
 
@@ -62,8 +66,11 @@ impl RiskLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDecision {
+    /// The operator approved the request.
     Approved,
+    /// The operator denied the request.
     Denied,
+    /// No decision was made before the timeout elapsed; treated as a denial.
     TimedOut,
 }
 
@@ -74,13 +81,19 @@ pub enum ApprovalDecision {
 /// An approval request for a dangerous agent operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRequest {
+    /// Unique identifier for this request.
     pub id: Uuid,
+    /// Identifier of the agent that triggered the request.
     pub agent_id: String,
+    /// Name of the tool requiring approval.
     pub tool_name: String,
+    /// Human-readable description of the requested operation.
     pub description: String,
     /// The specific action being requested (sanitized for display).
     pub action_summary: String,
+    /// Assessed risk level of the operation.
     pub risk_level: RiskLevel,
+    /// When the request was created.
     pub requested_at: DateTime<Utc>,
     /// Auto-deny timeout in seconds.
     pub timeout_secs: u64,
@@ -152,9 +165,13 @@ impl ApprovalRequest {
 /// Response to an approval request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalResponse {
+    /// Identifier of the [`ApprovalRequest`] this response answers.
     pub request_id: Uuid,
+    /// The decision reached.
     pub decision: ApprovalDecision,
+    /// When the decision was made.
     pub decided_at: DateTime<Utc>,
+    /// Identifier of the operator who made the decision, if known.
     pub decided_by: Option<String>,
 }
 

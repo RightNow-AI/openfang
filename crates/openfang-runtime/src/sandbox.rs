@@ -71,6 +71,10 @@ pub struct GuestState {
     pub tokio_handle: tokio::runtime::Handle,
     /// Hosts allowed to bypass SSRF private-IP checks (from config).
     pub ssrf_allowed_hosts: Vec<String>,
+    /// Shared HTTP client for `host_net_fetch` — reqwest::Client maintains an
+    /// internal connection pool, so it must be created once and reused rather
+    /// than per-call.
+    pub http_client: reqwest::Client,
 }
 
 /// Result of executing a WASM module.
@@ -103,6 +107,9 @@ pub enum SandboxError {
 /// is expensive to create but can compile/instantiate many modules.
 pub struct WasmSandbox {
     engine: Engine,
+    /// Shared HTTP client handed to every guest's `GuestState`. Created once
+    /// here so its connection pool is reused across all WASM host calls.
+    http_client: reqwest::Client,
 }
 
 impl WasmSandbox {
@@ -112,7 +119,10 @@ impl WasmSandbox {
         config.consume_fuel(true);
         config.epoch_interruption(true);
         let engine = Engine::new(&config).map_err(|e| SandboxError::Compilation(e.to_string()))?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            http_client: reqwest::Client::new(),
+        })
     }
 
     /// Execute a WASM module with the given JSON input.
@@ -129,6 +139,7 @@ impl WasmSandbox {
         agent_id: &str,
     ) -> Result<ExecutionResult, SandboxError> {
         let engine = self.engine.clone();
+        let http_client = self.http_client.clone();
         let wasm_bytes = wasm_bytes.to_vec();
         let agent_id = agent_id.to_string();
         let handle = tokio::runtime::Handle::current();
@@ -142,6 +153,7 @@ impl WasmSandbox {
                 kernel,
                 &agent_id,
                 handle,
+                http_client,
             )
         })
         .await
@@ -149,6 +161,7 @@ impl WasmSandbox {
     }
 
     /// Synchronous inner execution — runs on a blocking thread.
+    #[allow(clippy::too_many_arguments)]
     fn execute_sync(
         engine: &Engine,
         wasm_bytes: &[u8],
@@ -157,6 +170,7 @@ impl WasmSandbox {
         kernel: Option<Arc<dyn KernelHandle>>,
         agent_id: &str,
         tokio_handle: tokio::runtime::Handle,
+        http_client: reqwest::Client,
     ) -> Result<ExecutionResult, SandboxError> {
         // Compile the module (accepts both .wasm binary and .wat text)
         let module = Module::new(engine, wasm_bytes)
@@ -171,6 +185,7 @@ impl WasmSandbox {
                 agent_id: agent_id.to_string(),
                 tokio_handle,
                 ssrf_allowed_hosts: config.ssrf_allowed_hosts.clone(),
+                http_client,
             },
         );
 
