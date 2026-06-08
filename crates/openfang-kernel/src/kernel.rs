@@ -15,7 +15,7 @@ use crate::workflow::{StepAgent, Workflow, WorkflowEngine, WorkflowId, WorkflowR
 
 use openfang_memory::MemorySubstrate;
 use openfang_runtime::agent_loop::{
-    run_agent_loop, run_agent_loop_streaming, strip_provider_prefix, AgentLoopResult,
+    api_model_name, run_agent_loop, run_agent_loop_streaming, AgentLoopResult,
 };
 use openfang_runtime::audit::AuditLog;
 use openfang_runtime::drivers;
@@ -762,13 +762,14 @@ impl OpenFangKernel {
                     .resolve(&env_var)
                     .map(|z: zeroize::Zeroizing<String>| z.to_string())
             };
+            let fb_base_url = fb
+                .base_url
+                .clone()
+                .or_else(|| config.provider_urls.get(&fb.provider).cloned());
             let fb_config = DriverConfig {
                 provider: fb.provider.clone(),
                 api_key: fb_api_key,
-                base_url: fb
-                    .base_url
-                    .clone()
-                    .or_else(|| config.provider_urls.get(&fb.provider).cloned()),
+                base_url: fb_base_url.clone(),
                 skip_permissions: true,
                 subprocess_timeout_secs: fb.subprocess_timeout_secs,
             };
@@ -780,7 +781,10 @@ impl OpenFangKernel {
                         "Fallback provider configured"
                     );
                     driver_chain.push(d.clone());
-                    model_chain.push((d, strip_provider_prefix(&fb.model, &fb.provider)));
+                    model_chain.push((
+                        d,
+                        api_model_name(&fb.model, &fb.provider, fb_base_url.as_deref()),
+                    ));
                 }
                 Err(e) => {
                     warn!(
@@ -1658,6 +1662,12 @@ impl OpenFangKernel {
             }
         }
 
+        if manifest.model.base_url.is_none() {
+            if let Some(url) = self.config.provider_urls.get(&manifest.model.provider) {
+                manifest.model.base_url = Some(url.clone());
+            }
+        }
+
         // Normalize catalog-backed model labels/aliases into canonical IDs and
         // fill provider/auth hints when the manifest did not fully specify them.
         if let Ok(catalog) = self.model_catalog.read() {
@@ -1666,7 +1676,11 @@ impl OpenFangKernel {
                     manifest.model.provider.is_empty() || manifest.model.provider == "default";
                 if provider_is_default || manifest.model.provider == entry.provider {
                     manifest.model.provider = entry.provider.clone();
-                    manifest.model.model = strip_provider_prefix(&entry.id, &entry.provider);
+                    manifest.model.model = api_model_name(
+                        &entry.id,
+                        &entry.provider,
+                        manifest.model.base_url.as_deref(),
+                    );
                     if manifest.model.api_key_env.is_none() {
                         manifest.model.api_key_env =
                             Some(self.config.resolve_api_key_env(&entry.provider));
@@ -1683,7 +1697,11 @@ impl OpenFangKernel {
         }
 
         // Normalize: strip provider prefix from model name if present
-        let normalized = strip_provider_prefix(&manifest.model.model, &manifest.model.provider);
+        let normalized = api_model_name(
+            &manifest.model.model,
+            &manifest.model.provider,
+            manifest.model.base_url.as_deref(),
+        );
         if normalized != manifest.model.model {
             manifest.model.model = normalized;
         }
@@ -2892,7 +2910,11 @@ impl OpenFangKernel {
             router.resolve_aliases(&self.model_catalog.read().unwrap_or_else(|e| e.into_inner()));
             // Build a probe request to score complexity
             let probe = CompletionRequest {
-                model: strip_provider_prefix(&manifest.model.model, &manifest.model.provider),
+                model: api_model_name(
+                    &manifest.model.model,
+                    &manifest.model.provider,
+                    manifest.model.base_url.as_deref(),
+                ),
                 messages: vec![openfang_types::message::Message::user(message)],
                 tools: tools.clone(),
                 max_tokens: manifest.model.max_tokens,
@@ -3337,6 +3359,10 @@ impl OpenFangKernel {
                 catalog.find_model(model).cloned()
             }
         });
+        let existing_base_url = self
+            .registry
+            .get(agent_id)
+            .and_then(|e| e.manifest.model.base_url.clone());
         let provider = if let Some(ep) = explicit_provider {
             // User explicitly set the provider — use it as-is
             Some(ep.to_string())
@@ -3344,11 +3370,7 @@ impl OpenFangKernel {
             // Check whether the agent has a custom base_url, which indicates
             // a user-configured provider endpoint. In that case, preserve the
             // current provider name instead of overriding it with auto-detection.
-            let has_custom_url = self
-                .registry
-                .get(agent_id)
-                .map(|e| e.manifest.model.base_url.is_some())
-                .unwrap_or(false);
+            let has_custom_url = existing_base_url.is_some();
             if has_custom_url {
                 // Keep the current provider — don't let auto-detection override
                 // a deliberately configured custom endpoint.
@@ -3364,12 +3386,12 @@ impl OpenFangKernel {
         let normalized_model =
             if let (Some(entry), Some(prov)) = (catalog_entry.as_ref(), provider.as_ref()) {
                 if entry.provider == *prov {
-                    strip_provider_prefix(&entry.id, prov)
+                    api_model_name(&entry.id, prov, existing_base_url.as_deref())
                 } else {
-                    strip_provider_prefix(model, prov)
+                    api_model_name(model, prov, existing_base_url.as_deref())
                 }
             } else if let Some(ref prov) = provider {
-                strip_provider_prefix(model, prov)
+                api_model_name(model, prov, existing_base_url.as_deref())
             } else {
                 model.to_string()
             };
@@ -5724,14 +5746,18 @@ impl OpenFangKernel {
             // model to dm; inherit dm's timeout in that case. Custom-provider
             // manifest fallbacks have no per-provider config, so leave unset.
             let resolved_to_default = fb.provider.is_empty() || fb.provider == "default";
+            let fb_custom_base_url = fb
+                .base_url
+                .clone()
+                .or_else(|| dm.base_url.clone())
+                .or_else(|| self.config.provider_urls.get(&fb_provider).cloned());
+            let fb_base_url = fb_custom_base_url
+                .clone()
+                .or_else(|| self.lookup_provider_url(&fb_provider));
             let config = DriverConfig {
                 provider: fb_provider.clone(),
                 api_key: fb_api_key,
-                base_url: fb
-                    .base_url
-                    .clone()
-                    .or_else(|| dm.base_url.clone())
-                    .or_else(|| self.lookup_provider_url(&fb_provider)),
+                base_url: fb_base_url.clone(),
                 skip_permissions: true,
                 subprocess_timeout_secs: if resolved_to_default {
                     dm.subprocess_timeout_secs
@@ -5740,7 +5766,10 @@ impl OpenFangKernel {
                 },
             };
             match drivers::create_driver(&config) {
-                Ok(d) => chain.push((d, strip_provider_prefix(&fb_model_name, &fb_provider))),
+                Ok(d) => chain.push((
+                    d,
+                    api_model_name(&fb_model_name, &fb_provider, fb_custom_base_url.as_deref()),
+                )),
                 Err(e) => {
                     warn!("Fallback driver '{}' failed to init: {e}", fb_provider);
                 }
@@ -5764,19 +5793,26 @@ impl OpenFangKernel {
                 };
                 self.resolve_credential(&env_var)
             };
+            let fb_custom_base_url = fb
+                .base_url
+                .clone()
+                .or_else(|| self.config.provider_urls.get(&fb.provider).cloned());
+            let fb_base_url = fb_custom_base_url
+                .clone()
+                .or_else(|| self.lookup_provider_url(&fb.provider));
             let fb_config = DriverConfig {
                 provider: fb.provider.clone(),
                 api_key: fb_api_key,
-                base_url: fb
-                    .base_url
-                    .clone()
-                    .or_else(|| self.lookup_provider_url(&fb.provider)),
+                base_url: fb_base_url.clone(),
                 skip_permissions: true,
                 subprocess_timeout_secs: fb.subprocess_timeout_secs,
             };
             match drivers::create_driver(&fb_config) {
                 Ok(d) => {
-                    chain.push((d, strip_provider_prefix(&fb.model, &fb.provider)));
+                    chain.push((
+                        d,
+                        api_model_name(&fb.model, &fb.provider, fb_custom_base_url.as_deref()),
+                    ));
                 }
                 Err(e) => {
                     warn!(
@@ -7978,6 +8014,53 @@ mod tests {
         assert!(caps.contains(&Capability::ToolInvoke("file_read".to_string())));
         assert!(caps.contains(&Capability::AgentSpawn));
         assert_eq!(caps.len(), 3); // 2 tools + agent_spawn
+    }
+
+    #[test]
+    fn test_spawn_preserves_custom_openai_compatible_model_id() {
+        use openfang_types::config::DefaultModelConfig;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tmp.path().join("openfang-1195-custom-openai-model");
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            default_model: DefaultModelConfig {
+                provider: "ollama".to_string(),
+                model: "test".to_string(),
+                api_key_env: String::new(),
+                base_url: None,
+                subprocess_timeout_secs: None,
+            },
+            ..KernelConfig::default()
+        };
+        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+
+        let manifest = AgentManifest {
+            name: "featherless".to_string(),
+            module: "builtin:chat".to_string(),
+            model: ModelConfig {
+                provider: "openai".to_string(),
+                model: "openai/gpt-oss-120b".to_string(),
+                api_key_env: Some("FEATHERLESS_API_KEY".to_string()),
+                base_url: Some("https://api.featherless.ai/v1".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let agent_id = kernel.spawn_agent(manifest).expect("agent spawns");
+        let entry = kernel.registry.get(agent_id).expect("agent registered");
+        assert_eq!(entry.manifest.model.provider, "openai");
+        assert_eq!(entry.manifest.model.model, "openai/gpt-oss-120b");
+        assert_eq!(
+            entry.manifest.model.base_url.as_deref(),
+            Some("https://api.featherless.ai/v1")
+        );
+
+        kernel.shutdown();
     }
 
     /// Regression for #1087: when the user edits any field in agent.toml

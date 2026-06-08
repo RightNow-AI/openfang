@@ -221,6 +221,20 @@ pub fn strip_provider_prefix(model: &str, provider: &str) -> String {
     }
 }
 
+/// Return the model ID that should be sent to the provider API.
+///
+/// OpenFang catalog IDs may include a provider prefix for routing. OpenAI-
+/// compatible gateways behind `provider = "openai"` often use namespaced model
+/// IDs such as `openai/gpt-oss-120b`, so a custom endpoint must receive the
+/// configured model string exactly.
+pub fn api_model_name(model: &str, provider: &str, base_url: Option<&str>) -> String {
+    if provider == "openai" && base_url.is_some_and(|url| !url.trim().is_empty()) {
+        model.to_string()
+    } else {
+        strip_provider_prefix(model, provider)
+    }
+}
+
 /// Default context window size (tokens) for token-based trimming.
 const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
 
@@ -524,8 +538,13 @@ pub async fn run_agent_loop(
         // Context guard: compact oversized tool results before LLM call
         apply_context_guard(&mut messages, &context_budget, available_tools);
 
-        // Strip provider prefix: "openrouter/google/gemini-2.5-flash" → "google/gemini-2.5-flash"
-        let api_model = strip_provider_prefix(&manifest.model.model, &manifest.model.provider);
+        // Strip catalog provider prefixes unless the configured endpoint treats
+        // model names as opaque OpenAI-compatible IDs (#1195).
+        let api_model = api_model_name(
+            &manifest.model.model,
+            &manifest.model.provider,
+            manifest.model.base_url.as_deref(),
+        );
 
         let request = CompletionRequest {
             model: api_model,
@@ -1761,8 +1780,13 @@ pub async fn run_agent_loop_streaming(
         // Context guard: compact oversized tool results before LLM call
         apply_context_guard(&mut messages, &context_budget, available_tools);
 
-        // Strip provider prefix: "openrouter/google/gemini-2.5-flash" → "google/gemini-2.5-flash"
-        let api_model = strip_provider_prefix(&manifest.model.model, &manifest.model.provider);
+        // Strip catalog provider prefixes unless the configured endpoint treats
+        // model names as opaque OpenAI-compatible IDs (#1195).
+        let api_model = api_model_name(
+            &manifest.model.model,
+            &manifest.model.provider,
+            manifest.model.base_url.as_deref(),
+        );
 
         let request = CompletionRequest {
             model: api_model,
@@ -3232,11 +3256,40 @@ mod tests {
     use crate::llm_driver::{CompletionResponse, LlmError};
     use async_trait::async_trait;
     use openfang_types::tool::ToolCall;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Mutex,
+    };
 
     #[test]
     fn test_max_iterations_constant() {
         assert_eq!(MAX_ITERATIONS, 50);
+    }
+
+    #[test]
+    fn test_api_model_name_preserves_openai_compatible_custom_ids() {
+        assert_eq!(
+            api_model_name(
+                "openai/gpt-oss-120b",
+                "openai",
+                Some("https://api.featherless.ai/v1")
+            ),
+            "openai/gpt-oss-120b"
+        );
+        assert_eq!(
+            api_model_name("openai/gpt-4o", "openai", None),
+            "gpt-4o",
+            "official OpenAI path keeps legacy prefix normalization"
+        );
+        assert_eq!(
+            api_model_name(
+                "openrouter/openai/gpt-oss-120b:free",
+                "openrouter",
+                Some("https://openrouter.ai/api/v1")
+            ),
+            "openai/gpt-oss-120b:free",
+            "non-openai catalog prefixes are still internal routing labels"
+        );
     }
 
     /// Issue #1098: when a response carries Thinking blocks, the persisted
@@ -3783,6 +3836,85 @@ mod tests {
                 },
             })
         }
+    }
+
+    struct CapturingModelDriver {
+        seen_model: Arc<Mutex<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl LlmDriver for CapturingModelDriver {
+        async fn complete(
+            &self,
+            request: CompletionRequest,
+        ) -> Result<CompletionResponse, LlmError> {
+            *self.seen_model.lock().unwrap() = Some(request.model);
+            Ok(CompletionResponse {
+                content: vec![ContentBlock::Text {
+                    text: "ok".to_string(),
+                    provider_metadata: None,
+                }],
+                stop_reason: StopReason::EndTurn,
+                tool_calls: vec![],
+                usage: TokenUsage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_custom_openai_base_url_preserves_request_model_id() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let mut manifest = test_manifest();
+        manifest.model.provider = "openai".to_string();
+        manifest.model.model = "openai/gpt-oss-120b".to_string();
+        manifest.model.base_url = Some("https://api.featherless.ai/v1".to_string());
+
+        let seen_model = Arc::new(Mutex::new(None));
+        let driver: Arc<dyn LlmDriver> = Arc::new(CapturingModelDriver {
+            seen_model: seen_model.clone(),
+        });
+
+        run_agent_loop(
+            &manifest,
+            "hello",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // on_phase
+            None, // media_engine
+            None, // tts_engine
+            None, // docker_config
+            None, // hooks
+            None, // context_window_tokens
+            None, // process_manager
+            None, // user_content_blocks
+        )
+        .await
+        .expect("agent loop should complete");
+
+        assert_eq!(
+            seen_model.lock().unwrap().as_deref(),
+            Some("openai/gpt-oss-120b")
+        );
     }
 
     #[tokio::test]
