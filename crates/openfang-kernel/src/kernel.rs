@@ -609,7 +609,7 @@ impl OpenFangKernel {
                 let key = key.trim().to_string();
                 if !key.is_empty() {
                     info!("Using API key from OPENFANG_API_KEY environment variable");
-                    config.api_key = key;
+                    config.api_key = zeroize::Zeroizing::new(key);
                 }
             }
         }
@@ -2511,7 +2511,7 @@ impl OpenFangKernel {
             fuel_limit: entry.manifest.resources.max_cpu_time_ms * 100_000,
             max_memory_bytes: entry.manifest.resources.max_memory_bytes as usize,
             capabilities: caps,
-            timeout_secs: Some(30),
+            timeout_secs: Some((entry.manifest.resources.max_cpu_time_ms / 1000).max(30)),
             ssrf_allowed_hosts: self.config.web.fetch.ssrf_allowed_hosts.clone(),
         };
 
@@ -5289,12 +5289,11 @@ impl OpenFangKernel {
     /// the boot-time snapshot). This helper checks both sources so that custom
     /// providers work immediately without a daemon restart.
     /// Resolve a credential by env var name using the vault → dotenv → env var chain.
-    pub fn resolve_credential(&self, key: &str) -> Option<String> {
+    pub fn resolve_credential(&self, key: &str) -> Option<zeroize::Zeroizing<String>> {
         self.credential_resolver
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .resolve(key)
-            .map(|z| z.to_string())
     }
 
     /// Store a credential in the vault (best-effort — falls through silently if no vault).
@@ -5654,7 +5653,7 @@ impl OpenFangKernel {
 
             let driver_config = DriverConfig {
                 provider: agent_provider.clone(),
-                api_key,
+                api_key: api_key.map(|z| z.to_string()),
                 base_url,
                 skip_permissions: true,
                 subprocess_timeout_secs: primary_timeout,
@@ -5731,7 +5730,7 @@ impl OpenFangKernel {
             let resolved_to_default = fb.provider.is_empty() || fb.provider == "default";
             let config = DriverConfig {
                 provider: fb_provider.clone(),
-                api_key: fb_api_key,
+                api_key: fb_api_key.map(|z| z.to_string()),
                 base_url: fb
                     .base_url
                     .clone()
@@ -5771,7 +5770,7 @@ impl OpenFangKernel {
             };
             let fb_config = DriverConfig {
                 provider: fb.provider.clone(),
-                api_key: fb_api_key,
+                api_key: fb_api_key.map(|z| z.to_string()),
                 base_url: fb
                     .base_url
                     .clone()
@@ -5829,7 +5828,7 @@ impl OpenFangKernel {
             for var_name in &server_config.env {
                 if std::env::var(var_name).is_err() {
                     if let Some(val) = self.resolve_credential(var_name) {
-                        std::env::set_var(var_name, &val);
+                        std::env::set_var(var_name, val.as_str());
                     }
                 }
             }
