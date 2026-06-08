@@ -13,6 +13,7 @@ use openfang_api::routes::{self, AppState};
 use openfang_api::ws;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::cors::CorsLayer;
@@ -80,6 +81,7 @@ async fn start_test_server_with_provider(
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(Default::default())),
+        api_keys: Arc::new(std::sync::RwLock::new(HashMap::new())),
     });
 
     let app = Router::new()
@@ -925,6 +927,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(Default::default())),
+        api_keys: Arc::new(std::sync::RwLock::new(HashMap::new())),
     });
 
     let api_key = state.kernel.config.api_key.trim().to_string();

@@ -328,8 +328,8 @@ pub async fn execute_tool(
         "image_analyze" => tool_image_analyze(input).await,
 
         // Media understanding tools
-        "media_describe" => tool_media_describe(input, media_engine).await,
-        "media_transcribe" => tool_media_transcribe(input, media_engine).await,
+        "media_describe" => tool_media_describe(input, media_engine, workspace_root).await,
+        "media_transcribe" => tool_media_transcribe(input, media_engine, workspace_root).await,
 
         // Image generation tool
         "image_generate" => tool_image_generate(input, workspace_root, media_engine).await,
@@ -2993,19 +2993,20 @@ fn tool_system_time() -> String {
 async fn tool_media_describe(
     input: &serde_json::Value,
     media_engine: Option<&crate::media_understanding::MediaEngine>,
+    workspace_root: Option<&Path>,
 ) -> Result<String, String> {
     use base64::Engine;
     let engine = media_engine.ok_or("Media engine not available. Check media configuration.")?;
     let path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let _ = validate_path(path)?;
+    let resolved = resolve_file_path(path, workspace_root)?;
 
     // Read image file
-    let data = tokio::fs::read(path)
+    let data = tokio::fs::read(&resolved)
         .await
         .map_err(|e| format!("Failed to read image file: {e}"))?;
 
     // Detect MIME type from extension
-    let ext = std::path::Path::new(path)
+    let ext = resolved
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
@@ -3038,19 +3039,20 @@ async fn tool_media_describe(
 async fn tool_media_transcribe(
     input: &serde_json::Value,
     media_engine: Option<&crate::media_understanding::MediaEngine>,
+    workspace_root: Option<&Path>,
 ) -> Result<String, String> {
     use base64::Engine;
     let engine = media_engine.ok_or("Media engine not available. Check media configuration.")?;
     let path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let _ = validate_path(path)?;
+    let resolved = resolve_file_path(path, workspace_root)?;
 
     // Read audio file
-    let data = tokio::fs::read(path)
+    let data = tokio::fs::read(&resolved)
         .await
         .map_err(|e| format!("Failed to read audio file: {e}"))?;
 
     // Detect MIME type from extension
-    let ext = std::path::Path::new(path)
+    let ext = resolved
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")

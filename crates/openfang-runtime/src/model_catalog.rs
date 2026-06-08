@@ -116,6 +116,69 @@ impl ModelCatalog {
         }
     }
 
+    /// Detect which providers have API keys configured, also checking a runtime key map.
+    ///
+    /// Checks the provided `runtime_keys` map first, then falls back to `std::env::var()`.
+    /// This avoids calling `std::env::set_var` (unsound in multithreaded contexts) while
+    /// still reflecting keys that were added at runtime via the API.
+    pub fn detect_auth_with_keys(&mut self, runtime_keys: &HashMap<String, String>) {
+        for provider in &mut self.providers {
+            if provider.id == "claude-code" {
+                provider.auth_status = if crate::drivers::claude_code::claude_code_available() {
+                    AuthStatus::Configured
+                } else {
+                    AuthStatus::Missing
+                };
+                continue;
+            }
+            if provider.id == "qwen-code" {
+                provider.auth_status = if crate::drivers::qwen_code::qwen_code_available() {
+                    AuthStatus::Configured
+                } else {
+                    AuthStatus::Missing
+                };
+                continue;
+            }
+            if provider.id == "github-copilot" || provider.id == "copilot" {
+                let openfang_dir = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .map(|h| std::path::PathBuf::from(h).join(".openfang"))
+                    .unwrap_or_else(|_| std::path::PathBuf::from(".openfang"));
+                provider.auth_status = if runtime_keys.contains_key("GITHUB_TOKEN")
+                    || crate::drivers::copilot::copilot_auth_available(&openfang_dir)
+                {
+                    AuthStatus::Configured
+                } else {
+                    AuthStatus::Missing
+                };
+                continue;
+            }
+            if !provider.key_required {
+                provider.auth_status = AuthStatus::NotRequired;
+                continue;
+            }
+            let has_key = runtime_keys.contains_key(&provider.api_key_env)
+                || std::env::var(&provider.api_key_env).is_ok();
+            let has_fallback = match provider.id.as_str() {
+                "gemini" => {
+                    runtime_keys.contains_key("GOOGLE_API_KEY")
+                        || std::env::var("GOOGLE_API_KEY").is_ok()
+                }
+                "codex" => {
+                    runtime_keys.contains_key("OPENAI_API_KEY")
+                        || std::env::var("OPENAI_API_KEY").is_ok()
+                        || read_codex_credential().is_some()
+                }
+                _ => false,
+            };
+            provider.auth_status = if has_key || has_fallback {
+                AuthStatus::Configured
+            } else {
+                AuthStatus::Missing
+            };
+        }
+    }
+
     /// List all models in the catalog.
     pub fn list_models(&self) -> &[ModelCatalogEntry] {
         &self.models
