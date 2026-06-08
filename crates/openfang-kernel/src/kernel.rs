@@ -990,10 +990,27 @@ impl OpenFangKernel {
                     configured_model.as_str()
                 };
                 let api_key_env = config.memory.embedding_api_key_env.as_deref().unwrap_or("");
+                // URL resolution (highest priority first):
+                //   1. [memory] embedding_base_url — explicit embedding-specific override
+                //   2. [provider_urls] <provider>  — global per-provider override
+                //   3. [default_model] base_url    — when embedding_provider matches the LLM provider
                 let custom_url = config
-                    .provider_urls
-                    .get(provider.as_str())
-                    .map(|s| s.as_str());
+                    .memory
+                    .embedding_base_url
+                    .as_deref()
+                    .or_else(|| {
+                        config
+                            .provider_urls
+                            .get(provider.as_str())
+                            .map(|s| s.as_str())
+                    })
+                    .or_else(|| {
+                        if config.default_model.provider == *provider {
+                            config.default_model.base_url.as_deref()
+                        } else {
+                            None
+                        }
+                    });
                 match create_embedding_driver(provider, model, api_key_env, custom_url) {
                     Ok(d) => {
                         info!(provider = %provider, model = %model, "Embedding driver configured from memory config");
@@ -1025,7 +1042,18 @@ impl OpenFangKernel {
                         } else {
                             configured_model.as_str()
                         };
-                        let custom_url = config.provider_urls.get(*provider).map(|s| s.as_str());
+                        let custom_url = config
+                            .memory
+                            .embedding_base_url
+                            .as_deref()
+                            .or_else(|| config.provider_urls.get(*provider).map(|s| s.as_str()))
+                            .or_else(|| {
+                                if config.default_model.provider == *provider {
+                                    config.default_model.base_url.as_deref()
+                                } else {
+                                    None
+                                }
+                            });
                         match create_embedding_driver(provider, model, env_var, custom_url) {
                             Ok(d) => {
                                 info!(provider = %provider, model = %model, "Embedding driver auto-detected via {}", env_var);
@@ -1052,7 +1080,18 @@ impl OpenFangKernel {
                         } else {
                             configured_model.as_str()
                         };
-                        let custom_url = config.provider_urls.get(*provider).map(|s| s.as_str());
+                        let custom_url = config
+                            .memory
+                            .embedding_base_url
+                            .as_deref()
+                            .or_else(|| config.provider_urls.get(*provider).map(|s| s.as_str()))
+                            .or_else(|| {
+                                if config.default_model.provider == *provider {
+                                    config.default_model.base_url.as_deref()
+                                } else {
+                                    None
+                                }
+                            });
                         match create_embedding_driver(provider, model, "", custom_url) {
                             Ok(d) => {
                                 info!(provider = %provider, model = %model, "Embedding driver auto-detected: {} (local)", provider);
