@@ -35,7 +35,7 @@ use wasmtime::*;
 pub struct SandboxConfig {
     /// Maximum fuel (CPU instruction budget). 0 = unlimited.
     pub fuel_limit: u64,
-    /// Maximum WASM linear memory in bytes (reserved for future enforcement).
+    /// Maximum WASM linear memory in bytes. 0 = unlimited.
     pub max_memory_bytes: usize,
     /// Capabilities granted to this sandbox instance.
     pub capabilities: Vec<Capability>,
@@ -75,6 +75,9 @@ pub struct GuestState {
     /// internal connection pool, so it must be created once and reused rather
     /// than per-call.
     pub http_client: reqwest::Client,
+    /// Memory growth limiter — enforces `max_memory_bytes` via `Store::limiter`
+    /// and records whether a grow was rejected so errors can be classified.
+    pub(crate) memory_limiter: MemoryLimiter,
 }
 
 /// Result of executing a WASM module.
@@ -97,8 +100,60 @@ pub enum SandboxError {
     Execution(String),
     #[error("Fuel exhausted: skill exceeded CPU budget")]
     FuelExhausted,
+    #[error("Memory limit exceeded: skill exceeded memory budget")]
+    MemoryExceeded,
     #[error("Guest ABI violation: {0}")]
     AbiError(String),
+}
+
+/// Wasmtime `ResourceLimiter` that caps linear memory growth to `max_bytes`.
+///
+/// When `max_bytes` is 0 all grows are allowed (unlimited). When a grow is
+/// rejected the `rejected` flag is set so the host can return
+/// `SandboxError::MemoryExceeded` rather than a generic trap error.
+pub(crate) struct MemoryLimiter {
+    max_bytes: usize,
+    /// Set to `true` the first time a memory grow is rejected.
+    pub(crate) rejected: bool,
+}
+
+impl MemoryLimiter {
+    pub(crate) fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            rejected: false,
+        }
+    }
+}
+
+impl ResourceLimiter for MemoryLimiter {
+    /// Called whenever WASM linear memory attempts to grow.
+    ///
+    /// `desired` is the new total size in bytes after the grow. Returns
+    /// `Ok(true)` to allow, `Ok(false)` to deny (guest's `memory.grow`
+    /// instruction returns -1).
+    fn memory_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> Result<bool> {
+        if self.max_bytes > 0 && desired > self.max_bytes {
+            self.rejected = true;
+            Ok(false)
+        } else {
+            Ok(true)
+        }
+    }
+
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        _desired: usize,
+        _maximum: Option<usize>,
+    ) -> Result<bool> {
+        Ok(true)
+    }
 }
 
 /// The WASM sandbox engine.
@@ -186,6 +241,7 @@ impl WasmSandbox {
                 tokio_handle,
                 ssrf_allowed_hosts: config.ssrf_allowed_hosts.clone(),
                 http_client,
+                memory_limiter: MemoryLimiter::new(config.max_memory_bytes),
             },
         );
 
@@ -204,6 +260,10 @@ impl WasmSandbox {
             std::thread::sleep(std::time::Duration::from_secs(timeout));
             engine_clone.increment_epoch();
         });
+
+        // Enforce the per-sandbox linear memory cap. Must be registered before
+        // instantiation so the initial memory allocation is also subject to the limit.
+        store.limiter(|state| &mut state.memory_limiter);
 
         // Build linker with host function imports
         let mut linker = Linker::new(engine);
@@ -253,6 +313,13 @@ impl WasmSandbox {
         let packed = match execute_fn.call(&mut store, (input_ptr, input_bytes.len() as i32)) {
             Ok(v) => v,
             Err(e) => {
+                // Memory rejection must be checked first: the limiter sets
+                // `rejected` when it denies a grow, after which the guest
+                // typically traps via `unreachable` or an OOB access — the
+                // trap code alone doesn't tell us *why* it fired.
+                if store.data().memory_limiter.rejected {
+                    return Err(SandboxError::MemoryExceeded);
+                }
                 // Check for fuel exhaustion via trap code
                 if let Some(Trap::OutOfFuel) = e.downcast_ref::<Trap>() {
                     return Err(SandboxError::FuelExhausted);
@@ -624,6 +691,61 @@ mod tests {
         assert!(
             err_msg.contains("Unknown"),
             "Expected unknown method error, got: {err_msg}"
+        );
+    }
+
+    /// Module that attempts to grow memory by 10 pages (640 KB) during execute.
+    /// When the limiter denies the grow, `memory.grow` returns -1; the module
+    /// traps via `unreachable` so the host can detect `SandboxError::MemoryExceeded`.
+    const MEMORY_GROW_WAT: &str = r#"
+        (module
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 1024))
+
+            (func (export "alloc") (param $size i32) (result i32)
+                (local $ptr i32)
+                (local.set $ptr (global.get $bump))
+                (global.set $bump (i32.add (global.get $bump) (local.get $size)))
+                (local.get $ptr)
+            )
+
+            (func (export "execute") (param $ptr i32) (param $len i32) (result i64)
+                ;; Attempt to grow by 10 pages (640 KB).
+                ;; If the limiter rejects it, memory.grow returns -1; trap explicitly.
+                (memory.grow (i32.const 10))
+                (i32.const -1)
+                (i32.eq)
+                (if (then unreachable))
+                (i64.const 0)
+            )
+        )
+    "#;
+
+    #[tokio::test]
+    async fn test_memory_limit_exceeded() {
+        let sandbox = WasmSandbox::new().unwrap();
+        let input = serde_json::json!({});
+        // Allow exactly 1 page (64 KB) — the module's initial allocation.
+        // Growing by 10 more pages would bring the total to 704 KB, well over the cap.
+        let config = SandboxConfig {
+            max_memory_bytes: 64 * 1024,
+            ..Default::default()
+        };
+
+        let err = sandbox
+            .execute(
+                MEMORY_GROW_WAT.as_bytes(),
+                input,
+                config,
+                None,
+                "test-agent",
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, SandboxError::MemoryExceeded),
+            "Expected MemoryExceeded, got: {err}"
         );
     }
 }
