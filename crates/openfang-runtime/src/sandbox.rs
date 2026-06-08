@@ -26,6 +26,7 @@
 use crate::host_functions;
 use crate::kernel_handle::KernelHandle;
 use openfang_types::capability::Capability;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::debug;
 use wasmtime::*;
@@ -256,9 +257,26 @@ impl WasmSandbox {
         store.set_epoch_deadline(1);
         let engine_clone = engine.clone();
         let timeout = config.timeout_secs.unwrap_or(30);
+
+        // Cancellable watchdog: polls every 100ms so it exits promptly when
+        // WASM finishes early rather than sleeping the full timeout duration.
+        // Without cancellation, one 30-second sleeping thread accumulates per
+        // invocation under load.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_watchdog = Arc::clone(&cancel);
         let _watchdog = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(timeout));
-            engine_clone.increment_epoch();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+            loop {
+                if cancel_watchdog.load(Ordering::Acquire) {
+                    return;
+                }
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    engine_clone.increment_epoch();
+                    return;
+                }
+                std::thread::sleep(remaining.min(std::time::Duration::from_millis(100)));
+            }
         });
 
         // Enforce the per-sandbox linear memory cap. Must be registered before
@@ -309,8 +327,12 @@ impl WasmSandbox {
         }
         mem_data[start..end].copy_from_slice(&input_bytes);
 
-        // Call guest execute
-        let packed = match execute_fn.call(&mut store, (input_ptr, input_bytes.len() as i32)) {
+        // Call guest execute, then immediately signal the watchdog to stop —
+        // WASM has finished regardless of success, fuel exhaustion, or timeout.
+        let packed_result = execute_fn.call(&mut store, (input_ptr, input_bytes.len() as i32));
+        cancel.store(true, Ordering::Release);
+
+        let packed = match packed_result {
             Ok(v) => v,
             Err(e) => {
                 // Memory rejection must be checked first: the limiter sets
