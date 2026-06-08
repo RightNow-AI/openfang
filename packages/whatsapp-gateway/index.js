@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,10 +20,51 @@ const OPENFANG_URL = (process.env.OPENFANG_URL || 'http://127.0.0.1:4200').repla
 const DEFAULT_AGENT = process.env.OPENFANG_DEFAULT_AGENT || 'assistant';
 
 // ---------------------------------------------------------------------------
+// Auth — shared-secret bearer token
+// ---------------------------------------------------------------------------
+// Generated fresh on every startup and printed once so the Rust kernel (which
+// spawned this process) can capture it and attach it to every request. This
+// is a localhost service-to-service API, not a browser-facing one — there is
+// no session/cookie auth, just a static bearer token for the process lifetime.
+const GATEWAY_TOKEN = randomBytes(32).toString('hex');
+console.log(`[gateway] Auth token: ${GATEWAY_TOKEN}`);
+
+// ---------------------------------------------------------------------------
+// Log sanitization helpers — never write raw PII or attacker-controlled
+// strings (push names come from the sender's WhatsApp profile) to stdout.
+// ---------------------------------------------------------------------------
+function redactPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length <= 4) return '***' + digits;
+  return '***' + digits.slice(-4);
+}
+
+function sanitizeForLog(text) {
+  // Strip C0/C1 control characters (including ANSI escapes) so log output
+  // can't be forged or split by attacker-controlled push names.
+  // eslint-disable-next-line no-control-regex
+  return String(text || '').replace(/[\x00-\x1f\x7f-\x9f]/g, '');
+}
+
+function isAuthorized(req) {
+  const header = req.headers['authorization'] || '';
+  const prefix = 'Bearer ';
+  if (!header.startsWith(prefix)) return false;
+
+  const provided = Buffer.from(header.slice(prefix.length));
+  const expected = Buffer.from(GATEWAY_TOKEN);
+  // timingSafeEqual requires equal-length buffers — mismatched length means
+  // the token is wrong, but we still need a constant-time comparison for the
+  // case where lengths happen to match.
+  if (provided.length !== expected.length) return false;
+  return timingSafeEqual(provided, expected);
+}
+
+// ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 let sock = null;          // Baileys socket
-let sessionId = '';       // current session identifier
+let connectionId = '';    // current connection identifier (informational only — not a credential)
 let qrDataUrl = '';       // latest QR code as data:image/png;base64,...
 let connStatus = 'disconnected'; // disconnected | qr_ready | connected
 let qrExpired = false;
@@ -39,9 +80,21 @@ async function startConnection() {
   const authDir = path.join(__dirname, 'auth_store');
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
+
+  // SECURITY: auth_store contains the WhatsApp session's private keys in
+  // plaintext JSON. Restrict it to the owning user (POSIX only — Windows
+  // ACLs default to the owning user's profile and chmod is a no-op there).
+  if (process.platform !== 'win32') {
+    try {
+      fs.chmodSync(authDir, 0o700);
+    } catch (err) {
+      console.error('[gateway] Failed to restrict auth_store permissions:', err.message);
+    }
+  }
+
   const { version } = await fetchLatestBaileysVersion();
 
-  sessionId = randomUUID();
+  connectionId = randomUUID();
   qrDataUrl = '';
   qrExpired = false;
   connStatus = 'disconnected';
@@ -51,7 +104,6 @@ async function startConnection() {
     version,
     auth: state,
     logger,
-    printQRInTerminal: true,
     browser: ['OpenFang', 'Desktop', '1.0.0'],
   });
 
@@ -153,12 +205,14 @@ async function startConnection() {
         sender: phone,
         sender_name: pushName,
       };
+      const logName = sanitizeForLog(pushName);
+      const logPhone = redactPhone(phone);
       if (isGroup) {
         metadata.group_jid = remoteJid;
         metadata.is_group = true;
-        console.log(`[gateway] Group msg from ${pushName} (${phone}) in ${remoteJid}: ${text.substring(0, 80)}`);
+        console.log(`[gateway] Group msg from ${logName} (${logPhone}) in ${remoteJid}: ${text.substring(0, 80)}`);
       } else {
-        console.log(`[gateway] Incoming from ${pushName} (${phone}): ${text.substring(0, 80)}`);
+        console.log(`[gateway] Incoming from ${logName} (${logPhone}): ${text.substring(0, 80)}`);
       }
 
       // Forward to OpenFang agent
@@ -168,7 +222,7 @@ async function startConnection() {
           // Reply in the same context: group → group, DM → DM
           const replyJid = isGroup ? remoteJid : senderJid.replace(/@.*$/, '') + '@s.whatsapp.net';
           await sock.sendMessage(replyJid, { text: response });
-          console.log(`[gateway] Replied to ${pushName}${isGroup ? ' in group ' + remoteJid : ''}`);
+          console.log(`[gateway] Replied to ${logName}${isGroup ? ' in group ' + remoteJid : ''}`);
         }
       } catch (err) {
         console.error(`[gateway] Forward/reply failed:`, err.message);
@@ -267,20 +321,17 @@ function jsonResponse(res, status, data) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
-    'Access-Control-Allow-Origin': '*',
   });
   res.end(body);
 }
 
 const server = http.createServer(async (req, res) => {
-  // CORS preflight
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    });
-    return res.end();
+  // SECURITY: this is a localhost service-to-service API consumed only by the
+  // Rust kernel that spawned us — not a browser API. No CORS headers are sent
+  // (a browser page must never be able to call these endpoints), and every
+  // request must present the shared-secret bearer token printed at startup.
+  if (!isAuthorized(req)) {
+    return jsonResponse(res, 401, { error: 'Unauthorized' });
   }
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -293,7 +344,7 @@ const server = http.createServer(async (req, res) => {
       if (connStatus === 'connected') {
         return jsonResponse(res, 200, {
           qr_data_url: '',
-          session_id: sessionId,
+          connection_id: connectionId,
           message: 'Already connected to WhatsApp',
           connected: true,
         });
@@ -311,7 +362,7 @@ const server = http.createServer(async (req, res) => {
 
       return jsonResponse(res, 200, {
         qr_data_url: qrDataUrl,
-        session_id: sessionId,
+        connection_id: connectionId,
         message: statusMessage,
         connected: connStatus === 'connected',
       });
@@ -344,15 +395,15 @@ const server = http.createServer(async (req, res) => {
       return jsonResponse(res, 200, {
         status: 'ok',
         connected: connStatus === 'connected',
-        session_id: sessionId || null,
+        connection_id: connectionId || null,
       });
     }
 
     // 404
     jsonResponse(res, 404, { error: 'Not found' });
   } catch (err) {
-    console.error(`[gateway] ${req.method} ${pathname} error:`, err.message);
-    jsonResponse(res, 500, { error: err.message });
+    console.error(`[gateway] ${req.method} ${pathname} error:`, err);
+    jsonResponse(res, 500, { error: 'internal error' });
   }
 });
 
