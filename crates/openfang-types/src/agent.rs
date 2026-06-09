@@ -516,6 +516,61 @@ pub struct AgentManifest {
     /// `agent_send` results stay focused. See issue #871.
     #[serde(default)]
     pub max_history_messages: Option<usize>,
+    /// Per-agent memory system selection. Omitted in TOML → defaults to
+    /// `MemorySystem::Summarization` (current OpenFang behavior). Set to
+    /// `structured` to enable the LLM-driven structured memory pipeline
+    /// (extractions, dream consolidation, context injection). The default
+    /// is skipped on serialization so manifests that don't opt in stay
+    /// clean.
+    #[serde(default, skip_serializing_if = "MemoryConfig::is_default")]
+    pub memory: MemoryConfig,
+}
+
+/// Per-agent memory system selection.
+///
+/// Agents opt in to advanced memory features here. The default
+/// (`Summarization`) preserves existing OpenFang behavior — LLM summarization
+/// of older messages when the message count or token threshold is exceeded,
+/// with no structured fact extraction and no background dream consolidation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemorySystem {
+    /// Current OpenFang behavior: LLM summarization of old messages when
+    /// message count or token threshold is exceeded. No structured extraction,
+    /// no dreamer.
+    #[default]
+    Summarization,
+    /// Structured memory: LLM extracts facts/preferences/decisions/tasks/
+    /// open_items during compaction and on overflow drain, with periodic
+    /// dream consolidation during inactivity. Opt-in per agent. The producer
+    /// (extraction + dreamer) lands in a later PR — this PR only wires the
+    /// storage layer and the gate.
+    Structured,
+}
+
+/// Per-agent memory configuration.
+///
+/// All fields default so existing agent manifests that omit `[memory]`
+/// deserialize unchanged — preserving upstream behavior.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryConfig {
+    /// Memory system to use for this agent.
+    pub system: MemorySystem,
+}
+
+impl MemoryConfig {
+    /// Returns true if the structured memory system is enabled for this agent.
+    pub fn is_structured(&self) -> bool {
+        matches!(self.system, MemorySystem::Structured)
+    }
+
+    /// Returns true when this config equals the default. Used by
+    /// `skip_serializing_if` on `AgentManifest::memory` to keep round-trip
+    /// TOML clean for the no-opt-in case.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Runtime default for `AgentManifest::max_history_messages` when the agent
@@ -569,6 +624,7 @@ impl Default for AgentManifest {
             tool_blocklist: Vec::new(),
             cache_context: false,
             max_history_messages: None,
+            memory: MemoryConfig::default(),
         }
     }
 }
@@ -829,6 +885,7 @@ mod tests {
             tool_blocklist: Vec::new(),
             cache_context: false,
             max_history_messages: None,
+            memory: MemoryConfig::default(),
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let deserialized: AgentManifest = serde_json::from_str(&json).unwrap();
@@ -1345,6 +1402,102 @@ memory_write = ["self.*"]
         assert_eq!(
             manifest.capabilities.memory_write,
             vec!["self.*".to_string()]
+        );
+    }
+
+    // --- Per-agent memory system selection ---
+
+    #[test]
+    fn test_manifest_memory_defaults_to_summarization() {
+        // No [memory] block → default to Summarization (current upstream behavior).
+        let toml_str = r#"
+name = "no-memory-block"
+
+[model]
+provider = "groq"
+model = "llama-3.3-70b-versatile"
+system_prompt = "hi"
+"#;
+        let manifest: AgentManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.memory.system, MemorySystem::Summarization);
+        assert!(!manifest.memory.is_structured());
+    }
+
+    #[test]
+    fn test_manifest_memory_opt_in_to_structured() {
+        // Explicit [memory] system = "structured" turns on the extraction+dream path.
+        let toml_str = r#"
+name = "structured-memory-agent"
+
+[model]
+provider = "groq"
+model = "llama-3.3-70b-versatile"
+system_prompt = "hi"
+
+[memory]
+system = "structured"
+"#;
+        let manifest: AgentManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.memory.system, MemorySystem::Structured);
+        assert!(manifest.memory.is_structured());
+    }
+
+    #[test]
+    fn test_manifest_memory_explicit_summarization() {
+        // Explicit summarization should also parse and equal the default.
+        let toml_str = r#"
+name = "summ-agent"
+
+[model]
+provider = "groq"
+model = "llama-3.3-70b-versatile"
+system_prompt = "hi"
+
+[memory]
+system = "summarization"
+"#;
+        let manifest: AgentManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.memory.system, MemorySystem::Summarization);
+    }
+
+    #[test]
+    fn test_memory_config_default_is_summarization() {
+        let cfg = MemoryConfig::default();
+        assert_eq!(cfg.system, MemorySystem::Summarization);
+        assert!(!cfg.is_structured());
+        assert!(cfg.is_default());
+    }
+
+    #[test]
+    fn test_memory_config_skip_serializing_default() {
+        // Manifest with default memory config should not include [memory] in
+        // TOML output, so existing manifests round-trip clean.
+        let mut manifest = AgentManifest {
+            name: "round-trip".into(),
+            model: ModelConfig {
+                provider: "groq".into(),
+                model: "llama-3.3-70b-versatile".into(),
+                system_prompt: "hi".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = toml::to_string(&manifest).unwrap();
+        assert!(
+            !out.contains("[memory]"),
+            "default MemoryConfig should be skipped in TOML output, got:\n{out}"
+        );
+
+        // Opt in → [memory] reappears.
+        manifest.memory.system = MemorySystem::Structured;
+        let out = toml::to_string(&manifest).unwrap();
+        assert!(
+            out.contains("[memory]"),
+            "structured opt-in should serialize [memory]; got:\n{out}"
+        );
+        assert!(
+            out.contains("system = \"structured\""),
+            "structured opt-in should emit `system = \"structured\"`; got:\n{out}"
         );
     }
 }

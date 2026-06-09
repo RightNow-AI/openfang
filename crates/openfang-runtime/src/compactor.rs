@@ -13,11 +13,17 @@
 use crate::llm_driver::{CompletionRequest, LlmDriver};
 use crate::str_utils::safe_truncate_str;
 use openfang_memory::session::Session;
-use openfang_types::message::{ContentBlock, Message, MessageContent, Role};
+use openfang_types::message::{ContentBlock, Message, MessageContent, MessageSource, Role};
 use openfang_types::tool::ToolDefinition;
 use serde::Serialize;
 use std::sync::Arc;
 use tracing::{info, warn};
+
+// Re-export so callers can use `openfang_runtime::compactor::SessionExtraction`
+// without pulling in openfang-memory directly. The struct itself lives in
+// openfang-memory (PR 2) because the storage layer needs it; runtime callers
+// reach it through this re-export.
+pub use openfang_memory::session::SessionExtraction;
 
 /// Configuration for session compaction.
 #[derive(Debug, Clone)]
@@ -44,6 +50,12 @@ pub struct CompactionConfig {
     pub token_threshold_ratio: f64,
     /// Model context window size in tokens.
     pub context_window_tokens: usize,
+    /// Number of tool calls between structured extraction passes.
+    /// Used by `needs_extraction` to gate the mini-dream / extractor flow.
+    pub tool_calls_between_extractions: usize,
+    /// Trigger continuous compaction every N user exchanges. 0 = disabled.
+    /// Mirrors `[compaction].continuous_interval` from `KernelConfig`.
+    pub continuous_interval: usize,
 }
 
 impl Default for CompactionConfig {
@@ -60,8 +72,30 @@ impl Default for CompactionConfig {
             max_retries: 3,
             token_threshold_ratio: 0.7,
             context_window_tokens: 200_000,
+            tool_calls_between_extractions: 10,
+            continuous_interval: 0,
         }
     }
+}
+
+/// Check whether continuous compaction should fire on this exchange.
+///
+/// Returns `true` when all of:
+/// - continuous compaction is enabled (`continuous_interval > 0`)
+/// - the session is long enough that compacting it makes sense
+///   (`session_message_count > keep_recent`)
+/// - the exchange counter has reached a multiple of `continuous_interval`
+///
+/// The exchange counter is owned by the kernel (per agent + user); callers
+/// pass the post-increment value.
+pub fn needs_continuous_compaction(
+    exchange_count: usize,
+    session_message_count: usize,
+    config: &CompactionConfig,
+) -> bool {
+    config.continuous_interval > 0
+        && session_message_count > config.keep_recent
+        && exchange_count.is_multiple_of(config.continuous_interval)
 }
 
 /// Result of a compaction operation.
@@ -82,6 +116,192 @@ pub struct CompactionResult {
 /// Check whether a session needs compaction (message-count trigger).
 pub fn needs_compaction(session: &Session, config: &CompactionConfig) -> bool {
     session.messages.len() > config.threshold
+}
+
+/// Check whether a session needs structured extraction.
+/// Triggers on token count OR tool call count since last extraction.
+///
+/// TODO(PR4-or-later): wire this in once `agent_loop` tracks per-session
+/// `tokens_since_last_extraction` / `tool_calls_since_last_extraction`
+/// counters. Today the extraction is gated by the context-overflow path
+/// (`overflow_drain_count` → mini-dream), which is a different signal —
+/// proximity to the context window, not extraction cadence. Keeping this
+/// helper here so the policy lives next to `CompactionConfig`, but
+/// `#[allow(dead_code)]` until the call site lands.
+#[allow(dead_code)]
+pub fn needs_extraction(
+    _messages_since_last: usize,
+    tokens_since_last: usize,
+    tool_calls_since_last: usize,
+    config: &CompactionConfig,
+) -> bool {
+    let token_threshold = (config.context_window_tokens as f64 * 0.3) as usize;
+    tokens_since_last > token_threshold
+        || tool_calls_since_last >= config.tool_calls_between_extractions
+}
+
+/// Count the number of tool calls (ToolUse blocks) in a slice of messages.
+///
+/// TODO(PR4-or-later): wire into `agent_loop` alongside `needs_extraction`
+/// once per-session counters are tracked. See `needs_extraction` above.
+#[allow(dead_code)]
+pub fn count_tool_calls(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .map(|msg| match &msg.content {
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .filter(|b| matches!(b, ContentBlock::ToolUse { .. }))
+                .count(),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Extract structured memory from a slice of messages using the LLM.
+///
+/// Produces facts, preferences, decisions, tasks, and open items.
+/// Skips messages tagged as context injections (MessageSource::ContextInjection)
+/// so calendar / email summaries do not get re-extracted into long-term memory.
+///
+/// On LLM error or persistent parse failure, returns the `existing` extraction
+/// (or `SessionExtraction::default()`) rather than propagating an error — the
+/// extraction path is non-critical and must never fail the agent turn.
+///
+/// Signature is infallible by design: every failure mode falls back to the
+/// existing extraction (or an empty one). Callers do not need error handling.
+pub async fn extract_structured(
+    driver: Arc<dyn LlmDriver>,
+    model: &str,
+    messages: &[Message],
+    existing: Option<&SessionExtraction>,
+    config: &CompactionConfig,
+) -> SessionExtraction {
+    // Filter out context injection messages
+    let filtered: Vec<&Message> = messages
+        .iter()
+        .filter(|m| m.source != Some(MessageSource::ContextInjection))
+        .collect();
+
+    let owned: Vec<Message> = filtered.into_iter().cloned().collect();
+    let conversation_text = build_conversation_text(&owned, config);
+
+    let existing_section = if let Some(ext) = existing {
+        format!(
+            "Current memory state (update this, don't just append):\n\
+             Facts: {}\n\
+             Preferences: {}\n\
+             Decisions: {}\n\
+             Tasks: {}\n\
+             Open items: {}\n\n",
+            ext.facts.join("; "),
+            ext.preferences.join("; "),
+            ext.decisions.join("; "),
+            ext.tasks.join("; "),
+            ext.open_items.join("; "),
+        )
+    } else {
+        String::new()
+    };
+
+    let prompt = format!(
+        "You are analyzing a conversation to extract structured memory for long-term storage.\n\n\
+         {existing_section}\
+         New conversation to integrate:\n\
+         ---\n\
+         {conversation_text}\
+         ---\n\n\
+         Extract or update the following. Each item should be a concise, self-contained statement.\n\
+         Return ONLY valid JSON with this exact structure:\n\
+         {{\n\
+           \"facts\": [\"...\"],\n\
+           \"preferences\": [\"...\"],\n\
+           \"decisions\": [\"...\"],\n\
+           \"tasks\": [\"...\"],\n\
+           \"open_items\": [\"...\"]\n\
+         }}\n\n\
+         Where:\n\
+         - facts: Facts stated or confirmed about the user or their world\n\
+         - preferences: User preferences, working style, communication preferences\n\
+         - decisions: Decisions made or conclusions reached\n\
+         - tasks: Tasks completed or delegated\n\
+         - open_items: Unresolved questions or pending actions"
+    );
+
+    // Structured extraction emits a JSON object whose size scales with the
+    // conversation. The prose-summary budget (`max_summary_tokens`, default
+    // 1024) truncates it mid-JSON, which fails `serde_json` parsing and — since
+    // every retry re-sent the identical request — silently disabled compaction
+    // (the "EOF while parsing a string" failures, leading to history bloat).
+    // Budget it generously and grow it on each retry so a one-off large session
+    // recovers instead of failing deterministically.
+    const EXTRACTION_MIN_TOKENS: u32 = 4096;
+    const EXTRACTION_MAX_TOKENS: u32 = 16384;
+    let mut request = CompletionRequest {
+        model: model.to_string(),
+        messages: vec![Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::Text {
+                text: prompt,
+                provider_metadata: None,
+            }]),
+            source: None,
+            ..Default::default()
+        }],
+        tools: vec![],
+        max_tokens: config.max_summary_tokens.max(EXTRACTION_MIN_TOKENS),
+        temperature: 0.3,
+        system: Some(
+            "You are a memory extraction assistant. Extract structured information from conversations \
+             and return ONLY valid JSON. Do not include any text outside the JSON object."
+                .to_string(),
+        ),
+        thinking: None,
+    };
+
+    let fallback = || existing.cloned().unwrap_or_default();
+
+    for attempt in 0..config.max_retries {
+        match driver.complete(request.clone()).await {
+            Ok(response) => {
+                let text = response.text();
+                if text.is_empty() {
+                    warn!(attempt, "Empty response from LLM for structured extraction");
+                    continue;
+                }
+                // Strip markdown code fences if present
+                let json_str = text
+                    .trim()
+                    .trim_start_matches("```json")
+                    .trim_start_matches("```")
+                    .trim_end_matches("```")
+                    .trim();
+                match serde_json::from_str::<SessionExtraction>(json_str) {
+                    Ok(extraction) => {
+                        info!("Structured extraction complete");
+                        return extraction;
+                    }
+                    Err(e) => {
+                        warn!(attempt, error = %e, "Failed to parse structured extraction JSON, retrying");
+                        // The dominant failure is a truncated JSON (response hit
+                        // max_tokens). Grow the budget so the retry isn't a
+                        // deterministic repeat of the same truncation.
+                        request.max_tokens = request
+                            .max_tokens
+                            .saturating_mul(2)
+                            .min(EXTRACTION_MAX_TOKENS);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(attempt, error = %e, "LLM call failed during structured extraction");
+            }
+        }
+    }
+
+    // All retries failed — return existing or empty rather than erroring
+    warn!("Structured extraction failed after all retries, returning fallback");
+    fallback()
 }
 
 /// Estimate token count for a set of messages, optional system prompt, and tool definitions.
@@ -324,7 +544,7 @@ fn is_oversized(message: &Message, config: &CompactionConfig) -> bool {
 ///
 /// Handles all content block types: text, tool use, tool result, image, unknown.
 /// Oversized messages are truncated inline with a marker.
-fn build_conversation_text(messages: &[Message], config: &CompactionConfig) -> String {
+pub(crate) fn build_conversation_text(messages: &[Message], config: &CompactionConfig) -> String {
     let mut conversation_text = String::new();
 
     for msg in messages {
@@ -444,9 +664,10 @@ async fn summarize_messages(
         conversation_text = conversation_text[safe_start..].to_string();
     }
 
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
     let summarize_prompt = format!(
-        "Summarize the following conversation preserving key facts, decisions, user preferences, \
-         and important context. Be concise but thorough. Output only the summary, no preamble.\n\n\
+        "Current time: {now}\n\n\
+         Summarize the following conversation. Output only the summary, no preamble.\n\n\
          ---\n{conversation_text}---"
     );
 
@@ -464,8 +685,13 @@ async fn summarize_messages(
         max_tokens: config.max_summary_tokens,
         temperature: 0.3,
         system: Some(
-            "You are a conversation summarizer. Produce a concise summary that captures \
-             all key facts, decisions, and context from the conversation."
+            "You are a conversation summarizer. Produce a concise summary that:\n\
+             - Preserves key facts, decisions, user preferences, and ongoing tasks\n\
+             - Drops facts and events that are no longer relevant to current context\n\
+             - For calendar data: keep only events from the last 6h and next 24h\n\
+             - For email data: keep only notable unread emails, drop ads and promotions\n\
+             - Uses absolute dates/times (YYYY-MM-DD HH:MM), never relative\n\
+             - Is concise — only what's still relevant matters"
                 .to_string(),
         ),
         thinking: None,
@@ -777,6 +1003,8 @@ mod tests {
         let session = Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id: openfang_types::agent::AgentId::new(),
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: vec![Message::user("hello")],
             context_window_tokens: 0,
             label: None,
@@ -793,6 +1021,8 @@ mod tests {
         let session = Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id: openfang_types::agent::AgentId::new(),
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages,
             context_window_tokens: 0,
             label: None,
@@ -809,6 +1039,62 @@ mod tests {
         assert_eq!(config.max_summary_tokens, 1024);
         assert!((config.token_threshold_ratio - 0.7).abs() < f64::EPSILON);
         assert_eq!(config.context_window_tokens, 200_000);
+        assert_eq!(
+            config.continuous_interval, 0,
+            "continuous compaction must be opt-in by default"
+        );
+    }
+
+    // ── needs_continuous_compaction ─────────────────────────────────────────
+    //
+    // The trigger predicate balances three gates:
+    //   1. continuous_interval > 0 (feature enabled)
+    //   2. session is long enough that compaction is worthwhile
+    //   3. exchange count has hit a multiple of the interval
+    //
+    // All three must hold; missing any one returns false.
+
+    #[test]
+    fn test_continuous_compaction_disabled_when_interval_zero() {
+        let config = CompactionConfig {
+            continuous_interval: 0,
+            keep_recent: 6,
+            ..Default::default()
+        };
+        // Even with a long session and any exchange count, interval=0 disables.
+        assert!(!needs_continuous_compaction(5, 100, &config));
+        assert!(!needs_continuous_compaction(50, 100, &config));
+    }
+
+    #[test]
+    fn test_continuous_compaction_fires_on_interval_multiple() {
+        let config = CompactionConfig {
+            continuous_interval: 5,
+            keep_recent: 6,
+            ..Default::default()
+        };
+        // session must exceed keep_recent
+        assert!(needs_continuous_compaction(5, 10, &config));
+        assert!(needs_continuous_compaction(10, 10, &config));
+        assert!(needs_continuous_compaction(15, 10, &config));
+        // not a multiple of 5 → false
+        assert!(!needs_continuous_compaction(4, 10, &config));
+        assert!(!needs_continuous_compaction(6, 10, &config));
+        assert!(!needs_continuous_compaction(9, 10, &config));
+    }
+
+    #[test]
+    fn test_continuous_compaction_skips_short_sessions() {
+        let config = CompactionConfig {
+            continuous_interval: 5,
+            keep_recent: 6,
+            ..Default::default()
+        };
+        // exchange_count=5 is a multiple, but session has only keep_recent (6)
+        // messages — nothing meaningful to compact. Boundary: == keep_recent.
+        assert!(!needs_continuous_compaction(5, 6, &config));
+        // Strictly greater than keep_recent → fires.
+        assert!(needs_continuous_compaction(5, 7, &config));
     }
 
     #[tokio::test]
@@ -842,6 +1128,8 @@ mod tests {
         let session = Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id: openfang_types::agent::AgentId::new(),
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages: vec![Message::user("hello"), Message::assistant("hi")],
             context_window_tokens: 0,
             label: None,
@@ -931,6 +1219,8 @@ mod tests {
         let session = Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id: openfang_types::agent::AgentId::new(),
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages,
             context_window_tokens: 0,
             label: None,
@@ -1002,6 +1292,8 @@ mod tests {
         let session = Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id: openfang_types::agent::AgentId::new(),
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages,
             context_window_tokens: 0,
             label: None,
@@ -1129,6 +1421,8 @@ mod tests {
         let session = Session {
             id: openfang_types::agent::SessionId::new(),
             agent_id: openfang_types::agent::AgentId::new(),
+            user_id: openfang_memory::session::default_user_id(),
+            parent_session_id: None,
             messages,
             context_window_tokens: 0,
             label: None,
@@ -1516,5 +1810,151 @@ mod tests {
         assert_eq!(adjust_split_for_tool_pairs(&messages, 0), 0);
         assert_eq!(adjust_split_for_tool_pairs(&messages, 1), 1);
         assert_eq!(adjust_split_for_tool_pairs(&messages, 5), 5);
+    }
+
+    // --- Structured extraction tests (PR 3) ---
+
+    #[test]
+    fn test_extract_structured_filters_context_injections() {
+        use openfang_types::message::MessageSource;
+
+        // Build a mix of normal and context-injection messages
+        let messages = vec![
+            Message::user("I prefer dark mode."),
+            Message::context_injection("Here is your calendar: meeting at 3pm"),
+            Message::assistant("Noted!"),
+            Message::context_injection("Email summary: 5 unread emails"),
+        ];
+
+        // Count tool_calls is 0 for these messages
+        assert_eq!(count_tool_calls(&messages), 0);
+
+        // Context injections should be filtered out; verify by checking that
+        // the context_injection messages are tagged correctly
+        let filtered: Vec<&Message> = messages
+            .iter()
+            .filter(|m| m.source != Some(MessageSource::ContextInjection))
+            .collect();
+        assert_eq!(
+            filtered.len(),
+            2,
+            "Should filter out 2 context injection messages"
+        );
+        assert!(filtered[0].content.text_content().contains("dark mode"));
+        assert!(filtered[1].content.text_content().contains("Noted"));
+    }
+
+    #[test]
+    fn test_needs_extraction_token_threshold() {
+        let config = CompactionConfig {
+            context_window_tokens: 100_000,
+            ..CompactionConfig::default()
+        };
+        // 30% of 100_000 = 30_000
+        assert!(!needs_extraction(0, 29_999, 0, &config));
+        assert!(needs_extraction(0, 30_001, 0, &config));
+    }
+
+    #[test]
+    fn test_needs_extraction_tool_calls_threshold() {
+        let config = CompactionConfig {
+            tool_calls_between_extractions: 10,
+            ..CompactionConfig::default()
+        };
+        assert!(!needs_extraction(0, 0, 9, &config));
+        assert!(needs_extraction(0, 0, 10, &config));
+        assert!(needs_extraction(0, 0, 15, &config));
+    }
+
+    #[test]
+    fn test_count_tool_calls() {
+        let messages = vec![
+            Message::user("hello"),
+            Message {
+                msg_id: uuid::Uuid::new_v4().to_string(),
+                provider_msg_id: None,
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::Text {
+                        text: "searching".to_string(),
+                        provider_metadata: None,
+                    },
+                    ContentBlock::ToolUse {
+                        id: "t1".to_string(),
+                        name: "web_search".to_string(),
+                        input: serde_json::json!({}),
+                        provider_metadata: None,
+                    },
+                ]),
+                source: None,
+            },
+            Message {
+                msg_id: uuid::Uuid::new_v4().to_string(),
+                provider_msg_id: None,
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                    id: "t2".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({}),
+                    provider_metadata: None,
+                }]),
+                source: None,
+            },
+            Message::assistant("Done."),
+        ];
+        assert_eq!(count_tool_calls(&messages), 2);
+    }
+
+    #[tokio::test]
+    async fn test_extract_structured_fallback_on_empty_response() {
+        use crate::llm_driver::{CompletionResponse, LlmError};
+        use async_trait::async_trait;
+
+        struct EmptyDriver;
+
+        #[async_trait]
+        impl LlmDriver for EmptyDriver {
+            async fn complete(
+                &self,
+                _req: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "this is not valid json {{{".to_string(),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: openfang_types::message::StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    },
+                })
+            }
+        }
+
+        let messages = vec![Message::user("I like Rust.")];
+        let existing = SessionExtraction {
+            facts: vec!["User likes Rust".to_string()],
+            ..SessionExtraction::default()
+        };
+
+        let config = CompactionConfig {
+            max_retries: 2,
+            ..CompactionConfig::default()
+        };
+
+        // Should fall back to existing extraction without erroring
+        let result = extract_structured(
+            Arc::new(EmptyDriver),
+            "test-model",
+            &messages,
+            Some(&existing),
+            &config,
+        )
+        .await;
+
+        // Returns the existing extraction as fallback
+        assert_eq!(result.facts, vec!["User likes Rust".to_string()]);
     }
 }

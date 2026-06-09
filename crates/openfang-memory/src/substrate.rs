@@ -7,12 +7,16 @@ use crate::consolidation::ConsolidationEngine;
 use crate::knowledge::KnowledgeStore;
 use crate::migration::run_migrations;
 use crate::semantic::SemanticStore;
-use crate::session::{Session, SessionStore};
+use crate::session::{Session, SessionExtraction, SessionExtractionStore, SessionStore};
 use crate::structured::StructuredStore;
 use crate::usage::UsageStore;
+use crate::user_agent_memory::{
+    UserAgentMemoryStore, UserAgentMemoryTopic, UserAgentTopicIndexEntry,
+};
+use crate::user_memory::{MemoryTopic, TopicIndexEntry, UserMemoryStore};
 
 use async_trait::async_trait;
-use openfang_types::agent::{AgentEntry, AgentId, SessionId};
+use openfang_types::agent::{AgentEntry, AgentId, SessionId, UserId};
 use openfang_types::config::MemoryConfig;
 use openfang_types::error::{OpenFangError, OpenFangResult};
 use openfang_types::memory::{
@@ -25,6 +29,29 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 
+/// Per-bucket row counts returned by [`MemorySubstrate::wipe_user`].
+///
+/// Mirrors the response body of `DELETE /api/users/:user_id/memory` so the
+/// handler can forward the struct verbatim. All three buckets are reported
+/// even when zero so the UI can render "0 deleted" rather than guessing.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WipeUserCounts {
+    /// Rows deleted from `user_memory_topics`.
+    pub topics_deleted: usize,
+    /// Rows deleted from `user_agent_memory_topics`.
+    pub agent_topics_deleted: usize,
+    /// Rows deleted from `session_extractions` (audit log).
+    pub extractions_deleted: usize,
+}
+
+/// Row shape returned by [`MemorySubstrate::list_user_extraction_audit`].
+///
+/// Fields, in order: `extraction_id`, `session_id`, `agent_id`,
+/// `created_at_rfc3339`, `session_deleted`. The control-API handler maps
+/// this to a JSON entry; keeping the substrate-layer return as a tuple
+/// keeps the substrate JSON-free.
+pub type ExtractionAuditRow = (String, String, String, String, bool);
+
 /// The unified memory substrate. Implements the `Memory` trait by delegating
 /// to specialized stores backed by a shared SQLite connection.
 pub struct MemorySubstrate {
@@ -33,6 +60,9 @@ pub struct MemorySubstrate {
     semantic: SemanticStore,
     knowledge: KnowledgeStore,
     sessions: SessionStore,
+    extractions: SessionExtractionStore,
+    user_memory: UserMemoryStore,
+    user_agent_memory: UserAgentMemoryStore,
     consolidation: ConsolidationEngine,
     usage: UsageStore,
 }
@@ -62,6 +92,9 @@ impl MemorySubstrate {
             semantic,
             knowledge: KnowledgeStore::new(Arc::clone(&shared)),
             sessions: SessionStore::new(Arc::clone(&shared)),
+            extractions: SessionExtractionStore::new(Arc::clone(&shared)),
+            user_memory: UserMemoryStore::new(Arc::clone(&shared)),
+            user_agent_memory: UserAgentMemoryStore::new(Arc::clone(&shared)),
             usage: UsageStore::new(Arc::clone(&shared)),
             consolidation: ConsolidationEngine::new(shared, decay_rate),
         })
@@ -116,6 +149,9 @@ impl MemorySubstrate {
             semantic: SemanticStore::new(Arc::clone(&shared)),
             knowledge: KnowledgeStore::new(Arc::clone(&shared)),
             sessions: SessionStore::new(Arc::clone(&shared)),
+            extractions: SessionExtractionStore::new(Arc::clone(&shared)),
+            user_memory: UserMemoryStore::new(Arc::clone(&shared)),
+            user_agent_memory: UserAgentMemoryStore::new(Arc::clone(&shared)),
             usage: UsageStore::new(Arc::clone(&shared)),
             consolidation: ConsolidationEngine::new(shared, decay_rate),
         })
@@ -207,9 +243,51 @@ impl MemorySubstrate {
             .map_err(|e| OpenFangError::Internal(e.to_string()))?
     }
 
-    /// Create a new empty session for an agent.
-    pub fn create_session(&self, agent_id: AgentId) -> OpenFangResult<Session> {
-        self.sessions.create_session(agent_id)
+    /// Create a new empty session for an agent owned by `user_id`.
+    ///
+    /// Callers without a specific user pass `default_user_id()` so the
+    /// session attaches to the kernel's persistent default identity.
+    pub fn create_session(&self, agent_id: AgentId, user_id: UserId) -> OpenFangResult<Session> {
+        self.sessions.create_session(agent_id, user_id)
+    }
+
+    /// Rewrite all sessions that are still tagged with the nil-UUID owner
+    /// (the legacy "anonymous bucket" default) to the given `target` user.
+    ///
+    /// Returns the number of sessions updated. Called once at kernel boot
+    /// after the persistent default-user UUID is determined; subsequent calls
+    /// are no-ops because no nil-UUID rows remain.
+    ///
+    /// The UPDATE runs inside an explicit transaction so a crash or lock
+    /// failure mid-flight rolls back cleanly — the caller's bootstrap
+    /// sentinel relies on this being all-or-nothing to avoid permanently
+    /// stranding sessions on the nil bucket.
+    pub fn rewrite_nil_user_sessions(&self, target: UserId) -> OpenFangResult<usize> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        let nil_str = uuid::Uuid::nil().to_string();
+        let target_str = target.0.to_string();
+
+        let tx = conn
+            .transaction()
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        let sessions_updated = tx
+            .execute(
+                "UPDATE sessions SET user_id = ?1 WHERE user_id = ?2 OR user_id IS NULL",
+                rusqlite::params![target_str, nil_str],
+            )
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        tx.commit()
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        info!(
+            sessions_updated = sessions_updated,
+            target = %target.0,
+            "Rewrote nil-UUID sessions to persistent default user"
+        );
+        Ok(sessions_updated)
     }
 
     /// List all sessions with metadata.
@@ -312,6 +390,262 @@ impl MemorySubstrate {
         self.sessions
             .append_canonical(agent_id, messages, compaction_threshold)?;
         Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Structured memory: extractions
+    // -----------------------------------------------------------------
+
+    /// Append a structured extraction for a session.
+    ///
+    /// No producer in this PR — this is the storage surface that PR 3's
+    /// `extract_structured` calls into. Default agents never reach this
+    /// path because the producer is gated on `MemoryConfig::is_structured()`.
+    pub fn append_extraction(
+        &self,
+        session_id: SessionId,
+        extraction: &SessionExtraction,
+    ) -> OpenFangResult<()> {
+        self.extractions.append(session_id, extraction)
+    }
+
+    /// Load all structured extractions for a session, oldest first.
+    pub fn load_extractions(
+        &self,
+        session_id: SessionId,
+    ) -> OpenFangResult<Vec<SessionExtraction>> {
+        self.extractions.load_all(session_id)
+    }
+
+    /// Delete all extractions for a session.
+    pub fn delete_extractions(&self, session_id: SessionId) -> OpenFangResult<()> {
+        self.extractions.delete_for_session(session_id)
+    }
+
+    /// Delete every extraction event attributed to `user_id`.
+    ///
+    /// Used by the user-memory wipe endpoint so that "wipe all memory" actually
+    /// wipes everything — the audit log is part of what the user is asking us
+    /// to forget. Returns the number of rows deleted.
+    ///
+    /// Uses the denormalized `session_extractions.user_id` column, so rows
+    /// orphaned by a prior session delete are still caught. The
+    /// JOIN-through-sessions clause is kept as a belt-and-suspenders
+    /// fallback in case a row was somehow inserted without the
+    /// denormalized column populated.
+    pub fn delete_user_extractions(&self, user_id: UserId) -> OpenFangResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        let uid = user_id.0.to_string();
+        let n = conn
+            .execute(
+                "DELETE FROM session_extractions \
+                 WHERE user_id = ?1 \
+                    OR session_id IN (SELECT id FROM sessions WHERE user_id = ?1)",
+                rusqlite::params![uid],
+            )
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        Ok(n)
+    }
+
+    /// List extraction events for a user, newest first, with a `session_deleted`
+    /// flag derived from a LEFT JOIN against `sessions`.
+    ///
+    /// Returned tuple shape: `(extraction_id, session_id, agent_id,
+    /// created_at_rfc3339, session_deleted)`. Caller is the control API,
+    /// which serialises this to JSON.
+    pub fn list_user_extraction_audit(
+        &self,
+        user_id: UserId,
+        limit: usize,
+    ) -> OpenFangResult<Vec<ExtractionAuditRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT se.id, se.session_id, se.agent_id, se.created_at, \
+                        CASE WHEN s.id IS NULL THEN 1 ELSE 0 END AS deleted \
+                 FROM session_extractions se \
+                 LEFT JOIN sessions s ON s.id = se.session_id \
+                 WHERE se.user_id = ?1 \
+                 ORDER BY se.created_at DESC \
+                 LIMIT ?2",
+            )
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![user_id.0.to_string(), limit as i64],
+                |row| {
+                    let id: String = row.get(0)?;
+                    let sid: String = row.get(1)?;
+                    let aid: String = row.get(2)?;
+                    let created: String = row.get(3)?;
+                    let deleted: i64 = row.get(4)?;
+                    Ok((id, sid, aid, created, deleted != 0))
+                },
+            )
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| OpenFangError::Memory(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    // -----------------------------------------------------------------
+    // Structured memory: per-user topics
+    // -----------------------------------------------------------------
+
+    /// Upsert a user memory topic.
+    pub fn upsert_user_topic(&self, topic: &MemoryTopic) -> OpenFangResult<()> {
+        self.user_memory.upsert_topic(topic)
+    }
+
+    /// Delete a single user memory topic (used by conflict resolution).
+    pub fn delete_user_topic(&self, user_id: UserId, topic: &str) -> OpenFangResult<()> {
+        self.user_memory.delete_topic(user_id, topic)
+    }
+
+    /// Get the per-user topic index (no content) for session-start injection.
+    pub fn user_topic_index(&self, user_id: UserId) -> OpenFangResult<Vec<TopicIndexEntry>> {
+        self.user_memory.get_index(user_id)
+    }
+
+    /// Fetch full content for one user memory topic. `None` when missing or
+    /// expired.
+    pub fn user_topic(&self, user_id: UserId, topic: &str) -> OpenFangResult<Option<MemoryTopic>> {
+        self.user_memory.get_topic(user_id, topic)
+    }
+
+    /// Store an embedding for a user topic. No-op when the topic doesn't exist.
+    pub fn store_user_topic_embedding(
+        &self,
+        user_id: UserId,
+        topic: &str,
+        embedding: &[f32],
+    ) -> OpenFangResult<()> {
+        self.user_memory.store_embedding(user_id, topic, embedding)
+    }
+
+    /// Search user topics by cosine similarity against a query embedding.
+    pub fn search_user_topics_by_embedding(
+        &self,
+        user_id: UserId,
+        query: &[f32],
+        top_k: usize,
+    ) -> OpenFangResult<Vec<String>> {
+        self.user_memory.search_by_embedding(user_id, query, top_k)
+    }
+
+    /// Prune expired topics for a user (called opportunistically).
+    pub fn prune_expired_user_topics(&self, user_id: UserId) -> OpenFangResult<usize> {
+        self.user_memory.prune_expired(user_id)
+    }
+
+    // -----------------------------------------------------------------
+    // Structured memory: per-(user, agent) topics
+    // -----------------------------------------------------------------
+
+    /// Upsert a per-(user, agent) memory topic.
+    pub fn upsert_user_agent_topic(&self, topic: &UserAgentMemoryTopic) -> OpenFangResult<()> {
+        self.user_agent_memory.upsert_topic(topic)
+    }
+
+    /// Get the per-(user, agent) topic index for session-start injection.
+    pub fn user_agent_topic_index(
+        &self,
+        user_id: UserId,
+        agent_id: AgentId,
+    ) -> OpenFangResult<Vec<UserAgentTopicIndexEntry>> {
+        self.user_agent_memory.get_index(user_id, agent_id)
+    }
+
+    /// Fetch full content for one per-(user, agent) memory topic.
+    pub fn user_agent_topic(
+        &self,
+        user_id: UserId,
+        agent_id: AgentId,
+        topic: &str,
+    ) -> OpenFangResult<Option<UserAgentMemoryTopic>> {
+        self.user_agent_memory.get_topic(user_id, agent_id, topic)
+    }
+
+    /// Delete per-(user, agent) memory for one agent. Returns rows deleted.
+    pub fn delete_user_agent_memory(
+        &self,
+        user_id: UserId,
+        agent_id: AgentId,
+    ) -> OpenFangResult<usize> {
+        self.user_agent_memory
+            .delete_user_agent_memory(user_id, agent_id)
+    }
+
+    // -----------------------------------------------------------------
+    // Atomic user wipe (general + per-agent + audit)
+    // -----------------------------------------------------------------
+
+    /// Atomically wipe everything attributed to `user_id` across the three
+    /// structured-memory buckets.
+    ///
+    /// The three DELETEs run inside a single SQLite transaction so a partial
+    /// failure rolls back — callers never observe a half-wiped user.
+    /// The previous shape (three independent single-table deletes with
+    /// early-return on each error) could leave the user partially wiped if
+    /// the second or third call failed. Returns a per-bucket count so the
+    /// control-API handler can forward it verbatim.
+    pub fn wipe_user(&self, user_id: UserId) -> OpenFangResult<WipeUserCounts> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+        let uid = user_id.0.to_string();
+        let tx = conn
+            .transaction()
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        let topics_deleted = tx
+            .execute(
+                "DELETE FROM user_memory_topics WHERE user_id = ?1",
+                rusqlite::params![uid],
+            )
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        let agent_topics_deleted = tx
+            .execute(
+                "DELETE FROM user_agent_memory_topics WHERE user_id = ?1",
+                rusqlite::params![uid],
+            )
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        let extractions_deleted = tx
+            .execute(
+                "DELETE FROM session_extractions \
+                 WHERE user_id = ?1 \
+                    OR session_id IN (SELECT id FROM sessions WHERE user_id = ?1)",
+                rusqlite::params![uid],
+            )
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        tx.commit()
+            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+
+        Ok(WipeUserCounts {
+            topics_deleted,
+            agent_topics_deleted,
+            extractions_deleted,
+        })
+    }
+
+    /// Delete the session subtree rooted at `session_id` (the session itself
+    /// plus any descendants linked via `parent_session_id`). Returns the
+    /// number of sessions removed.
+    ///
+    /// Forks land in a later PR; this is wired here so the control API can
+    /// surface a single recursive delete now without coupling to forks.
+    pub fn delete_session_tree(&self, session_id: SessionId) -> OpenFangResult<usize> {
+        self.sessions.delete_session_tree(session_id)
     }
 
     // -----------------------------------------------------------------
@@ -731,6 +1065,109 @@ impl Memory for MemorySubstrate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::default_user_id;
+
+    #[test]
+    fn test_rewrite_nil_user_sessions_is_idempotent_and_targeted() {
+        // The one-shot fixup must rewrite ONLY the nil-UUID rows and leave
+        // every other session alone; a second call after the rewrite must
+        // find zero matching rows and behave as a no-op.
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let agent_id = AgentId::new();
+        let other_user = UserId::new();
+        let target = UserId::new();
+        let nil_user = UserId(uuid::Uuid::nil());
+
+        // Two nil-bucket sessions (the legacy default) + one explicit-user session.
+        let s1 = substrate
+            .sessions
+            .create_session(agent_id, nil_user)
+            .unwrap();
+        let s2 = substrate
+            .sessions
+            .create_session(agent_id, nil_user)
+            .unwrap();
+        let s3 = substrate
+            .sessions
+            .create_session(agent_id, other_user)
+            .unwrap();
+
+        let updated = substrate.rewrite_nil_user_sessions(target).unwrap();
+        assert_eq!(
+            updated, 2,
+            "exactly the two nil-UUID sessions must be rewritten"
+        );
+
+        let s1 = substrate.sessions.get_session(s1.id).unwrap().unwrap();
+        let s2 = substrate.sessions.get_session(s2.id).unwrap().unwrap();
+        let s3 = substrate.sessions.get_session(s3.id).unwrap().unwrap();
+        assert_eq!(s1.user_id, target);
+        assert_eq!(s2.user_id, target);
+        assert_eq!(
+            s3.user_id, other_user,
+            "non-nil sessions must NOT be touched"
+        );
+
+        // Second call is a no-op (no nil rows left).
+        let updated2 = substrate.rewrite_nil_user_sessions(target).unwrap();
+        assert_eq!(updated2, 0);
+    }
+
+    #[test]
+    fn test_rewrite_nil_user_sessions_returns_err_when_table_missing() {
+        // When the `sessions` table is missing, the UPDATE cannot run and the
+        // caller must observe an error — not a silent success. This is what
+        // lets `bootstrap_default_user` skip setting the
+        // `default_user_bootstrap_done` sentinel on failure so the rewrite is
+        // retried on the next boot.
+        //
+        // NOTE: This test does NOT exercise transactional atomicity. A single
+        // `UPDATE` is implicitly all-or-nothing under SQLite, so there is no
+        // partial-commit state to roll back from. True multi-statement
+        // atomicity becomes testable in PR 2 when the `extractions` table
+        // joins the same transaction — at that point we add a dedicated
+        // `…_is_atomic_on_partial_failure` test that forces the second
+        // statement to fail and verifies the first one is rolled back.
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let agent_id = AgentId::new();
+        let target = UserId::new();
+        let nil_user = UserId(uuid::Uuid::nil());
+
+        let _s1 = substrate
+            .sessions
+            .create_session(agent_id, nil_user)
+            .unwrap();
+
+        // Drop the only table the UPDATE touches; the next call must error.
+        {
+            let conn = substrate.conn.lock().unwrap();
+            conn.execute("DROP TABLE sessions", [])
+                .expect("drop sessions");
+        }
+
+        let err = substrate.rewrite_nil_user_sessions(target);
+        assert!(
+            err.is_err(),
+            "rewrite must fail when the UPDATE cannot complete"
+        );
+    }
+
+    #[test]
+    fn test_create_session_via_substrate_routes_user_id() {
+        // The substrate's `create_session` proxy must forward the user_id
+        // through to the session store rather than silently dropping it.
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let agent_id = AgentId::new();
+        let user = UserId::new();
+
+        let session = substrate.create_session(agent_id, user).unwrap();
+        assert_eq!(session.user_id, user);
+
+        let default_session = substrate
+            .create_session(agent_id, default_user_id())
+            .unwrap();
+        assert_eq!(default_session.user_id, default_user_id());
+    }
 
     #[tokio::test]
     async fn test_substrate_kv() {
@@ -820,5 +1257,135 @@ mod tests {
         let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
         let claimed = substrate.task_claim("nobody").await.unwrap();
         assert!(claimed.is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // wipe_user — atomic per-user delete across the three structured-memory
+    // buckets. Must be scoped to the target user and never touch siblings.
+    // -----------------------------------------------------------------
+
+    fn seed_memory(substrate: &MemorySubstrate, user_id: UserId, agent_id: AgentId) {
+        substrate
+            .upsert_user_topic(&MemoryTopic {
+                user_id,
+                topic: "prefs".into(),
+                summary: "summary".into(),
+                content: "content".into(),
+                updated_at: chrono::Utc::now(),
+                expires_at: None,
+            })
+            .unwrap();
+        substrate
+            .upsert_user_agent_topic(&UserAgentMemoryTopic {
+                user_id,
+                agent_id,
+                topic: "with-jeeves".into(),
+                summary: "summary".into(),
+                content: "content".into(),
+                updated_at: chrono::Utc::now(),
+            })
+            .unwrap();
+        let session = substrate
+            .sessions
+            .create_session(agent_id, user_id)
+            .unwrap();
+        substrate
+            .append_extraction(
+                session.id,
+                &SessionExtraction {
+                    facts: vec!["a fact".into()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn test_wipe_user_returns_per_bucket_counts() {
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let user = UserId::new();
+        let agent = AgentId::new();
+        seed_memory(&substrate, user, agent);
+
+        let counts = substrate.wipe_user(user).unwrap();
+        assert_eq!(counts.topics_deleted, 1);
+        assert_eq!(counts.agent_topics_deleted, 1);
+        assert_eq!(counts.extractions_deleted, 1);
+
+        // Confirm the buckets are actually empty.
+        assert!(substrate.user_topic_index(user).unwrap().is_empty());
+        assert!(substrate
+            .user_agent_topic_index(user, agent)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_wipe_user_is_scoped_to_target() {
+        // Wiping user A must not touch user B's data in any of the three
+        // buckets.
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let agent = AgentId::new();
+        let user_a = UserId::new();
+        let user_b = UserId::new();
+
+        seed_memory(&substrate, user_a, agent);
+        seed_memory(&substrate, user_b, agent);
+
+        let counts = substrate.wipe_user(user_a).unwrap();
+        assert_eq!(counts.topics_deleted, 1);
+        assert_eq!(counts.agent_topics_deleted, 1);
+        assert_eq!(counts.extractions_deleted, 1);
+
+        // User B still has everything.
+        assert_eq!(substrate.user_topic_index(user_b).unwrap().len(), 1);
+        assert_eq!(
+            substrate
+                .user_agent_topic_index(user_b, agent)
+                .unwrap()
+                .len(),
+            1
+        );
+        let audit = substrate.list_user_extraction_audit(user_b, 10).unwrap();
+        assert_eq!(audit.len(), 1);
+    }
+
+    #[test]
+    fn test_wipe_user_idempotent_zero_counts() {
+        // Re-running wipe on an already-clean user returns 0/0/0 without
+        // erroring.
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let user = UserId::new();
+        let counts = substrate.wipe_user(user).unwrap();
+        assert_eq!(counts.topics_deleted, 0);
+        assert_eq!(counts.agent_topics_deleted, 0);
+        assert_eq!(counts.extractions_deleted, 0);
+    }
+
+    #[test]
+    fn test_audit_surfaces_session_deleted_flag() {
+        // Deleting the originating session must NOT lose the audit row —
+        // attribution survives via the denormalized user_id column, and the
+        // LEFT JOIN flips `session_deleted` to true.
+        let substrate = MemorySubstrate::open_in_memory(0.1).unwrap();
+        let user = UserId::new();
+        let agent = AgentId::new();
+        let session = substrate.sessions.create_session(agent, user).unwrap();
+        substrate
+            .append_extraction(session.id, &SessionExtraction::default())
+            .unwrap();
+
+        // Before delete: session_deleted = false.
+        let audit = substrate.list_user_extraction_audit(user, 10).unwrap();
+        assert_eq!(audit.len(), 1);
+        assert!(!audit[0].4, "session_deleted should start false");
+
+        // Delete the session.
+        substrate.sessions.delete_session(session.id).unwrap();
+
+        // After delete: extraction row still attributed to `user`, flag flips.
+        let audit = substrate.list_user_extraction_audit(user, 10).unwrap();
+        assert_eq!(audit.len(), 1, "extraction must survive session delete");
+        assert!(audit[0].4, "session_deleted should flip to true");
     }
 }
