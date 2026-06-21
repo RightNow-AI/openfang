@@ -21,6 +21,7 @@ pub mod pairing;
 pub mod registry;
 pub mod scheduler;
 pub mod supervisor;
+pub mod tool_error;
 pub mod triggers;
 pub mod whatsapp_gateway;
 pub mod wizard;

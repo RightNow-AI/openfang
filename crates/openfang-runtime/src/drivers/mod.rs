@@ -14,6 +14,7 @@ pub mod openai;
 pub mod qwen_code;
 pub mod vertex;
 
+use crate::bridge_auth::TokenIssuer;
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
     AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL,
@@ -330,7 +331,18 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
 /// - `replicate` — Replicate
 /// - `chutes` — Chutes.ai (serverless open-source model inference)
 /// - Any custom provider with `base_url` set uses OpenAI-compatible format
-pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmError> {
+///
+/// `token_issuer` is the daemon's bridge-token issuer (`Arc<BridgeAuthority>` in
+/// production). When `Some`, the Claude Code driver uses it to mint per-spawn,
+/// short-lived bridge tokens registered with the IPC dispatcher. When `None`,
+/// the driver falls back to the legacy ANAI-30 UUID path — the daemon treats
+/// any non-empty token as authenticated. The non-claude-code branches ignore
+/// the issuer today; future subprocess drivers (qwen-code, etc.) will opt in
+/// individually.
+pub fn create_driver(
+    config: &DriverConfig,
+    token_issuer: Option<Arc<dyn TokenIssuer>>,
+) -> Result<Arc<dyn LlmDriver>, LlmError> {
     let provider = config.provider.as_str();
 
     // Anthropic uses a different API format — special case
@@ -404,12 +416,17 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .or(config.subprocess_timeout_secs);
-        return Ok(Arc::new(match timeout {
+        let driver = match timeout {
             Some(secs) => {
                 claude_code::ClaudeCodeDriver::with_timeout(cli_path, config.skip_permissions, secs)
             }
             None => claude_code::ClaudeCodeDriver::new(cli_path, config.skip_permissions),
-        }));
+        };
+        let driver = match token_issuer {
+            Some(issuer) => driver.with_token_issuer(issuer),
+            None => driver,
+        };
+        return Ok(Arc::new(driver));
     }
 
     // Qwen Code CLI — subprocess-based, uses Qwen OAuth (free tier)
@@ -780,7 +797,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(driver.is_ok());
     }
 
@@ -793,7 +810,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(driver.is_err());
     }
 
@@ -914,7 +931,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(
             driver.is_ok(),
             "Novita provider with env var should succeed"
@@ -932,7 +949,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(driver.is_err());
     }
 
@@ -949,7 +966,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(
             driver.is_ok(),
             "NVIDIA provider with env var should succeed"
@@ -968,7 +985,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(driver.is_err());
     }
 
@@ -985,7 +1002,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let result = create_driver(&config);
+        let result = create_driver(&config, None);
         assert!(result.is_err());
         let err = result.err().unwrap().to_string();
         assert!(
@@ -1013,7 +1030,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(driver.is_ok());
     }
 
@@ -1041,7 +1058,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(driver.is_ok(), "Azure driver with key + URL should succeed");
     }
 
@@ -1054,7 +1071,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let result = create_driver(&config);
+        let result = create_driver(&config, None);
         assert!(result.is_err(), "Azure driver without key should error");
         let err = result.err().unwrap().to_string();
         assert!(
@@ -1073,7 +1090,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let result = create_driver(&config);
+        let result = create_driver(&config, None);
         assert!(result.is_err(), "Azure driver without URL should error");
         let err = result.err().unwrap().to_string();
         assert!(
@@ -1092,7 +1109,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(
             driver.is_ok(),
             "azure-openai alias should create driver successfully"
@@ -1118,7 +1135,7 @@ mod tests {
             subprocess_timeout_secs: None,
         };
         // Should succeed because api_key is provided
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(
             driver.is_ok(),
             "Bedrock with explicit api_key should construct successfully"
@@ -1136,7 +1153,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(driver.is_ok(), "claude-code driver should construct");
     }
 
@@ -1151,7 +1168,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: Some(480),
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(
             driver.is_ok(),
             "claude-code driver should construct with custom timeout"
@@ -1171,7 +1188,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: Some(120),
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         std::env::remove_var("OPENFANG_SUBPROCESS_TIMEOUT_SECS");
         assert!(
             driver.is_ok(),
@@ -1190,7 +1207,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: Some(420),
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         std::env::remove_var("OPENFANG_SUBPROCESS_TIMEOUT_SECS");
         assert!(
             driver.is_ok(),
@@ -1280,7 +1297,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(
             driver.is_ok(),
             "ollama with OLLAMA_HOST set and no API key should construct: {:?}",
@@ -1304,7 +1321,7 @@ mod tests {
             skip_permissions: true,
             subprocess_timeout_secs: None,
         };
-        let driver = create_driver(&config);
+        let driver = create_driver(&config, None);
         assert!(driver.is_ok(), "lmstudio default should construct");
     }
 }

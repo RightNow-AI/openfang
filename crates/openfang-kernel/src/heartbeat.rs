@@ -318,6 +318,7 @@ mod tests {
             id: AgentId::new(),
             name: name.to_string(),
             manifest: AgentManifest {
+                file_policy: None,
                 name: name.to_string(),
                 version: "0.1.0".to_string(),
                 description: "test".to_string(),

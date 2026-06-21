@@ -65,6 +65,8 @@ pub enum Action {
     ViewUsage,
     /// Manage users (create, delete, change roles).
     ManageUsers,
+    /// Resolve (approve/deny) a pending execution-approval request.
+    ApproveExecution,
 }
 
 impl Action {
@@ -79,6 +81,10 @@ impl Action {
             Action::InstallSkill => UserRole::Admin,
             Action::ModifyConfig => UserRole::Owner,
             Action::ManageUsers => UserRole::Owner,
+            // Approving a dangerous tool call is an operator action; Admin is
+            // the floor. (#2a binding-owner gate — role-based proxy until
+            // per-binding ownership lands as its own schema change.)
+            Action::ApproveExecution => UserRole::Admin,
         }
     }
 }
@@ -295,6 +301,75 @@ mod tests {
         let manager = AuthManager::new(&test_configs());
         let fake_id = UserId::new();
         assert!(manager.authorize(fake_id, &Action::ChatWithAgent).is_err());
+    }
+
+    /// Build a config with one user per role, all bound on discord.
+    fn rbac_role_configs() -> Vec<UserConfig> {
+        let bind = |id: &str| {
+            let mut m = HashMap::new();
+            m.insert("discord".to_string(), id.to_string());
+            m
+        };
+        vec![
+            UserConfig {
+                name: "Owner".to_string(),
+                role: "owner".to_string(),
+                channel_bindings: bind("owner-1"),
+                api_key_hash: None,
+            },
+            UserConfig {
+                name: "Admin".to_string(),
+                role: "admin".to_string(),
+                channel_bindings: bind("admin-1"),
+                api_key_hash: None,
+            },
+            UserConfig {
+                name: "Member".to_string(),
+                role: "user".to_string(),
+                channel_bindings: bind("user-1"),
+                api_key_hash: None,
+            },
+            UserConfig {
+                name: "Viewer".to_string(),
+                role: "viewer".to_string(),
+                channel_bindings: bind("viewer-1"),
+                api_key_hash: None,
+            },
+        ]
+    }
+
+    // #2a (ANAI-81) M3: the ApproveExecution gate authorizes approval
+    // resolution at an Admin floor. Recognized Admin/Owner resolve; recognized
+    // below-floor roles are denied.
+    #[test]
+    fn test_approve_execution_admin_floor() {
+        let manager = AuthManager::new(&rbac_role_configs());
+
+        let owner = manager.identify("discord", "owner-1").unwrap();
+        let admin = manager.identify("discord", "admin-1").unwrap();
+        assert!(manager.authorize(owner, &Action::ApproveExecution).is_ok());
+        assert!(manager.authorize(admin, &Action::ApproveExecution).is_ok());
+
+        let member = manager.identify("discord", "user-1").unwrap();
+        let viewer = manager.identify("discord", "viewer-1").unwrap();
+        assert!(manager
+            .authorize(member, &Action::ApproveExecution)
+            .is_err());
+        assert!(manager
+            .authorize(viewer, &Action::ApproveExecution)
+            .is_err());
+    }
+
+    // #2a (ANAI-81) M3: unrecognized channel identity yields no UserId (the
+    // resolve path rejects before authorize), and an unknown UserId is denied.
+    #[test]
+    fn test_approve_execution_unrecognized_denied() {
+        let manager = AuthManager::new(&rbac_role_configs());
+
+        assert!(manager.identify("discord", "stranger").is_none());
+
+        let fake = UserId::new();
+        assert!(manager.authorize(fake, &Action::ApproveExecution).is_err());
     }
 
     #[test]

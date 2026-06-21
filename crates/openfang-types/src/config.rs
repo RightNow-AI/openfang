@@ -934,6 +934,230 @@ impl Default for CanvasConfig {
     }
 }
 
+/// Per-tier filesystem access level for a path rule.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileAccessTier {
+    /// No access: file_read / file_list / file_write / apply_patch /
+    /// create_directory are all rejected for matching paths.
+    Deny,
+    /// Read-only: file_read and file_list allowed; mutating verbs rejected.
+    Read,
+    /// Full read + write.
+    Write,
+    /// Gated: route through the human-approval surface before allowing.
+    /// Fail-closed (== Deny) when the approval surface is unavailable.
+    #[default]
+    Prompt,
+}
+
+impl FileAccessTier {
+    /// Restrictiveness rank — higher means less access. Used to pick the more
+    /// restrictive of two tiers when imposing a hard floor (F2).
+    const fn restrictiveness(self) -> u8 {
+        match self {
+            Self::Write => 0,
+            Self::Read => 1,
+            Self::Prompt => 2,
+            Self::Deny => 3,
+        }
+    }
+
+    /// Return the more restrictive (lower-access) of `self` and `other`.
+    #[must_use]
+    pub fn floor(self, other: Self) -> Self {
+        if other.restrictiveness() > self.restrictiveness() {
+            other
+        } else {
+            self
+        }
+    }
+}
+
+/// Expand a leading `~` (`~` or `~/...`) in a file-rule path against the user's
+/// home directory, turning it into an absolute path. Done once at load time
+/// (see [`deserialize_tilde_path`]) so the longest-prefix matcher in
+/// [`FilePolicy::own_tier_for`] compares an absolute rule against canonical
+/// targets instead of silently joining `~` onto the workspace root — the cause
+/// of grants like `path = "~/work"` never matching under `default_tier = deny`.
+///
+/// Only a *leading* tilde is special; `~user` and embedded tildes are left
+/// untouched (no shell-style user lookup). When the home directory cannot be
+/// resolved the path is returned unchanged.
+fn expand_tilde(path: &str) -> String {
+    expand_tilde_with(path, dirs::home_dir())
+}
+
+/// Pure core of [`expand_tilde`] with an injectable home dir for testing.
+fn expand_tilde_with(path: &str, home: Option<PathBuf>) -> String {
+    let Some(home) = home else {
+        return path.to_string();
+    };
+    if path == "~" {
+        return home.to_string_lossy().into_owned();
+    }
+    match path.strip_prefix("~/") {
+        Some(rest) => home.join(rest).to_string_lossy().into_owned(),
+        None => path.to_string(),
+    }
+}
+
+/// Serde hook: expand a leading `~` in a [`FileRule`] path during
+/// deserialization. Option B — normalize once at load time rather than at every
+/// match — so a config like `path = "~/work"` becomes an absolute prefix the
+/// matcher can actually hit.
+fn deserialize_tilde_path<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    Ok(expand_tilde(&raw))
+}
+
+/// One filesystem path rule: a path prefix and the access tier granted to it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FileRule {
+    /// Path prefix. Relative entries resolve against the agent's workspace
+    /// root at match time; absolute entries match canonical absolute paths.
+    /// A leading `~` is expanded to the user's home directory at load time.
+    #[serde(deserialize_with = "deserialize_tilde_path")]
+    pub path: String,
+    /// Access tier for paths under `path`.
+    pub tier: FileAccessTier,
+}
+
+/// Filesystem access policy. Mirrors `ExecPolicy`'s config ergonomics.
+///
+/// When `enabled` is false (the default) the policy is inert and the legacy
+/// workspace clamp applies — existing agents are unaffected. When enabled, the
+/// clamp is replaced by longest-prefix tier evaluation against the resolved
+/// canonical path; an absolute, non-overridable sensitive-path floor still
+/// runs first and always wins.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct FilePolicy {
+    /// Opt-in switch. False => inert (legacy workspace clamp), byte-for-byte.
+    pub enabled: bool,
+    /// Tier for any path not matched by a rule. Defaults to `Deny`
+    /// (fail-closed) so an enabled policy never silently widens.
+    pub default_tier: FileAccessTier,
+    /// Path rules. Longest matching `path` prefix wins (not file order).
+    pub rules: Vec<FileRule>,
+    /// Runtime-resolved global floor (F2). When set, this policy may only
+    /// *narrow* access relative to the floor — never widen past it. Populated
+    /// by the kernel at spawn/restart from the global `[file_policy]`; never
+    /// serialized, and re-derived from current config on every boot.
+    #[serde(skip)]
+    floor: Option<Box<FilePolicy>>,
+}
+
+impl Default for FilePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_tier: FileAccessTier::Deny,
+            rules: Vec::new(),
+            floor: None,
+        }
+    }
+}
+
+impl FilePolicy {
+    /// Construct a policy from its public configuration. No floor is attached;
+    /// the kernel attaches one at spawn/restart via [`Self::resolve_under_floor`].
+    #[must_use]
+    pub fn new(enabled: bool, default_tier: FileAccessTier, rules: Vec<FileRule>) -> Self {
+        Self {
+            enabled,
+            default_tier,
+            rules,
+            floor: None,
+        }
+    }
+
+    /// Longest-prefix tier match for `canon_path`, capped by any hard floor.
+    ///
+    /// Evaluates this policy's own rules and, when a global floor is attached
+    /// (F2), returns the *more restrictive* of the two — a per-agent policy can
+    /// only narrow access, never widen past the floor. A disabled policy
+    /// imposes no cap of its own and defers entirely to its floor.
+    pub fn tier_for(
+        &self,
+        canon_path: &std::path::Path,
+        canon_workspace_root: &std::path::Path,
+    ) -> FileAccessTier {
+        let own = if self.enabled {
+            self.own_tier_for(canon_path, canon_workspace_root)
+        } else {
+            FileAccessTier::Write
+        };
+        match &self.floor {
+            Some(floor) => own.floor(floor.tier_for(canon_path, canon_workspace_root)),
+            None => own,
+        }
+    }
+
+    /// True when this policy (or its floor) must be enforced rather than
+    /// falling back to the legacy workspace clamp.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.enabled || self.floor.as_ref().is_some_and(|f| f.enabled)
+    }
+
+    /// Attach `floor` as a hard floor beneath this override. A disabled floor
+    /// imposes no constraint and is dropped.
+    #[must_use]
+    pub fn with_floor(mut self, floor: FilePolicy) -> Self {
+        if floor.enabled {
+            self.floor = Some(Box::new(floor));
+        }
+        self
+    }
+
+    /// Resolve the effective in-memory policy for an agent: the global
+    /// `[file_policy]` is a hard floor beneath the agent's optional manifest
+    /// override. With no override the global applies wholesale; with one, the
+    /// override may only narrow it (F2).
+    #[must_use]
+    pub fn resolve_under_floor(
+        global: &FilePolicy,
+        manifest_override: Option<FilePolicy>,
+    ) -> FilePolicy {
+        match manifest_override {
+            None => global.clone(),
+            Some(ov) => ov.with_floor(global.clone()),
+        }
+    }
+
+    /// Raw longest-prefix match against this policy's own rules (no floor).
+    /// Relative rule paths resolve against `canon_workspace_root`; absolute
+    /// rule paths match as-is. Returns `default_tier` when no rule matches.
+    fn own_tier_for(
+        &self,
+        canon_path: &std::path::Path,
+        canon_workspace_root: &std::path::Path,
+    ) -> FileAccessTier {
+        let mut best: Option<(usize, FileAccessTier)> = None;
+        for rule in &self.rules {
+            let rule_path = std::path::Path::new(&rule.path);
+            let resolved = if rule_path.is_absolute() {
+                rule_path.to_path_buf()
+            } else if rule.path.is_empty() || rule.path == "." {
+                canon_workspace_root.to_path_buf()
+            } else {
+                canon_workspace_root.join(rule_path)
+            };
+            if canon_path.starts_with(&resolved) {
+                let len = resolved.as_os_str().len();
+                if best.is_none_or(|(blen, _)| len > blen) {
+                    best = Some((len, rule.tier));
+                }
+            }
+        }
+        best.map_or(self.default_tier, |(_, t)| t)
+    }
+}
+
 /// Shell/exec security mode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1229,6 +1453,9 @@ pub struct KernelConfig {
     /// Shell/exec security policy.
     #[serde(default)]
     pub exec_policy: ExecPolicy,
+    /// Filesystem access policy (path-tier governance).
+    #[serde(default)]
+    pub file_policy: FilePolicy,
     /// Agent bindings for multi-account routing.
     #[serde(default)]
     pub bindings: Vec<AgentBinding>,
@@ -1523,6 +1750,7 @@ impl Default for KernelConfig {
             max_cron_jobs: default_max_cron_jobs(),
             include: Vec::new(),
             exec_policy: ExecPolicy::default(),
+            file_policy: FilePolicy::default(),
             bindings: Vec::new(),
             broadcast: BroadcastConfig::default(),
             auto_reply: AutoReplyConfig::default(),
@@ -1635,6 +1863,7 @@ impl std::fmt::Debug for KernelConfig {
             .field("max_cron_jobs", &self.max_cron_jobs)
             .field("include", &format!("{} file(s)", self.include.len()))
             .field("exec_policy", &self.exec_policy.mode)
+            .field("file_policy", &self.file_policy.enabled)
             .field("bindings", &format!("{} binding(s)", self.bindings.len()))
             .field(
                 "broadcast",
@@ -1975,7 +2204,9 @@ pub struct DiscordConfig {
     pub allowed_users: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
-    /// Gateway intents bitmask (default: 37376 = GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT).
+    /// Gateway intents bitmask (default: 37377 = GUILDS | GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT).
+    /// GUILDS is required for GUILD_CREATE / CHANNEL_* events, which populate the
+    /// (guild_id, channel_name) → channel_id cache used by ANAI-55 recipient resolution.
     pub intents: u64,
     /// Ignore messages from other bots (default: true).
     /// Set to false to allow bot-to-bot interactions in multi-agent setups.
@@ -2004,7 +2235,7 @@ impl Default for DiscordConfig {
             allowed_guilds: vec![],
             allowed_users: vec![],
             default_agent: None,
-            intents: 37376,
+            intents: 37377,
             ignore_bots: true,
             default_channel_id: None,
             free_response_channels: vec![],
@@ -4038,7 +4269,7 @@ mod tests {
         let dc = DiscordConfig::default();
         assert_eq!(dc.bot_token_env, "DISCORD_BOT_TOKEN");
         assert!(dc.allowed_guilds.is_empty());
-        assert_eq!(dc.intents, 37376);
+        assert_eq!(dc.intents, 37377);
         assert!(dc.ignore_bots);
     }
 
@@ -4697,5 +4928,221 @@ shell_env_passthrough = ["*"]
 "#;
         let policy: ExecPolicy = toml::from_str(toml_str).unwrap();
         assert_eq!(policy.shell_env_passthrough, vec!["*"]);
+    }
+
+    // ── F2: file_policy hard-floor inheritance ────────────────────────
+
+    fn frule(path: &str, tier: FileAccessTier) -> FileRule {
+        FileRule {
+            path: path.to_string(),
+            tier,
+        }
+    }
+
+    #[test]
+    fn file_access_tier_floor_picks_more_restrictive() {
+        use FileAccessTier::{Deny, Prompt, Read, Write};
+        assert_eq!(Write.floor(Read), Read);
+        assert_eq!(Read.floor(Write), Read);
+        assert_eq!(Read.floor(Prompt), Prompt);
+        assert_eq!(Prompt.floor(Deny), Deny);
+        assert_eq!(Write.floor(Deny), Deny);
+        assert_eq!(Read.floor(Read), Read);
+    }
+
+    #[test]
+    fn file_policy_no_override_inherits_global_wholesale() {
+        let global = FilePolicy {
+            enabled: true,
+            default_tier: FileAccessTier::Deny,
+            rules: vec![frule("/data", FileAccessTier::Read)],
+            floor: None,
+        };
+        let eff = FilePolicy::resolve_under_floor(&global, None);
+        assert_eq!(eff, global);
+    }
+
+    #[test]
+    fn file_policy_override_cannot_widen_past_global() {
+        let root = std::path::Path::new("/ws");
+        let global = FilePolicy {
+            enabled: true,
+            default_tier: FileAccessTier::Deny,
+            rules: vec![frule("/data", FileAccessTier::Read)],
+            floor: None,
+        };
+        // Agent tries to widen /data to Write and open /secret (global-denied).
+        let ov = FilePolicy {
+            enabled: true,
+            default_tier: FileAccessTier::Write,
+            rules: vec![
+                frule("/data", FileAccessTier::Write),
+                frule("/secret", FileAccessTier::Write),
+            ],
+            floor: None,
+        };
+        let eff = FilePolicy::resolve_under_floor(&global, Some(ov));
+        // /data: global Read caps the agent's Write.
+        assert_eq!(
+            eff.tier_for(std::path::Path::new("/data/x"), root),
+            FileAccessTier::Read
+        );
+        // /secret: global default Deny caps the agent's Write.
+        assert_eq!(
+            eff.tier_for(std::path::Path::new("/secret/x"), root),
+            FileAccessTier::Deny
+        );
+    }
+
+    #[test]
+    fn file_policy_override_may_narrow() {
+        let root = std::path::Path::new("/ws");
+        let global = FilePolicy {
+            enabled: true,
+            default_tier: FileAccessTier::Write,
+            rules: vec![],
+            floor: None,
+        };
+        let ov = FilePolicy {
+            enabled: true,
+            default_tier: FileAccessTier::Read,
+            rules: vec![frule("/secret", FileAccessTier::Deny)],
+            floor: None,
+        };
+        let eff = FilePolicy::resolve_under_floor(&global, Some(ov));
+        assert_eq!(
+            eff.tier_for(std::path::Path::new("/x"), root),
+            FileAccessTier::Read
+        );
+        assert_eq!(
+            eff.tier_for(std::path::Path::new("/secret/y"), root),
+            FileAccessTier::Deny
+        );
+    }
+
+    #[test]
+    fn file_policy_disabled_override_cannot_escape_enabled_floor() {
+        let root = std::path::Path::new("/ws");
+        let global = FilePolicy {
+            enabled: true,
+            default_tier: FileAccessTier::Read,
+            rules: vec![],
+            floor: None,
+        };
+        // A disabled override must NOT drop back to the legacy clamp when an
+        // enabled global floor exists.
+        let ov = FilePolicy {
+            enabled: false,
+            default_tier: FileAccessTier::Write,
+            rules: vec![],
+            floor: None,
+        };
+        let eff = FilePolicy::resolve_under_floor(&global, Some(ov));
+        assert!(
+            eff.is_active(),
+            "enabled global floor must force enforcement"
+        );
+        assert_eq!(
+            eff.tier_for(std::path::Path::new("/anything"), root),
+            FileAccessTier::Read
+        );
+    }
+
+    #[test]
+    fn file_policy_disabled_global_imposes_no_floor() {
+        let root = std::path::Path::new("/ws");
+        let global = FilePolicy::default(); // enabled = false
+        let ov = FilePolicy {
+            enabled: true,
+            default_tier: FileAccessTier::Write,
+            rules: vec![],
+            floor: None,
+        };
+        let eff = FilePolicy::resolve_under_floor(&global, Some(ov.clone()));
+        // Disabled floor is dropped; the override stands unmodified.
+        assert_eq!(eff, ov);
+        assert_eq!(
+            eff.tier_for(std::path::Path::new("/x"), root),
+            FileAccessTier::Write
+        );
+    }
+
+    // ---- tilde-path expansion (Option B: normalize at load time) ----
+
+    #[test]
+    fn expand_tilde_leading_slash_form() {
+        assert_eq!(
+            expand_tilde_with("~/work/proj", Some(PathBuf::from("/home/ben"))),
+            "/home/ben/work/proj"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_bare_tilde() {
+        assert_eq!(
+            expand_tilde_with("~", Some(PathBuf::from("/home/ben"))),
+            "/home/ben"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_trailing_slash_home_no_double_sep() {
+        // PathBuf::join normalizes the separator regardless of a trailing slash.
+        assert_eq!(
+            expand_tilde_with("~/x", Some(PathBuf::from("/home/ben/"))),
+            "/home/ben/x"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_user_form_left_literal() {
+        // No shell-style `~user` lookup: only a leading `~` or `~/` is special.
+        assert_eq!(
+            expand_tilde_with("~secret/x", Some(PathBuf::from("/home/ben"))),
+            "~secret/x"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_absolute_and_relative_unchanged() {
+        let home = Some(PathBuf::from("/home/ben"));
+        assert_eq!(expand_tilde_with("/abs/path", home.clone()), "/abs/path");
+        assert_eq!(expand_tilde_with("rel/path", home), "rel/path");
+    }
+
+    #[test]
+    fn expand_tilde_no_home_passthrough() {
+        // Fail-safe: when home can't be resolved the path is left untouched
+        // (it simply won't match — never silently widens).
+        assert_eq!(expand_tilde_with("~/foo", None), "~/foo");
+    }
+
+    #[test]
+    fn file_rule_tilde_expands_on_deserialize() {
+        let rule: FileRule = toml::from_str("path = \"~/work\"\ntier = \"write\"").unwrap();
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(rule.path, home.join("work").to_string_lossy());
+            assert!(std::path::Path::new(&rule.path).is_absolute());
+        }
+        assert_eq!(rule.tier, FileAccessTier::Write);
+    }
+
+    #[test]
+    fn tilde_rule_matches_target_after_expansion() {
+        // The regression: under `default_tier = deny`, a `~/grant` write rule
+        // must actually grant write to a canonical path under $HOME/grant.
+        let Some(home) = dirs::home_dir() else {
+            return; // no home in this env; nothing to prove
+        };
+        let fp: FilePolicy = toml::from_str(
+            "enabled = true\ndefault_tier = \"deny\"\n[[rules]]\npath = \"~/grant\"\ntier = \"write\"\n",
+        )
+        .unwrap();
+        let target = home.join("grant").join("file.txt");
+        let ws = std::path::Path::new("/some/other/workspace");
+        assert_eq!(fp.tier_for(&target, ws), FileAccessTier::Write);
+        // A sibling outside the grant still hits the deny default.
+        let ungranted = home.join("ungranted").join("file.txt");
+        assert_eq!(fp.tier_for(&ungranted, ws), FileAccessTier::Deny);
     }
 }

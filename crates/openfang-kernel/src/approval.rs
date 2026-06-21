@@ -13,12 +13,19 @@ use uuid::Uuid;
 const MAX_PENDING_PER_AGENT: usize = 5;
 /// Max recent approval records to retain for history and UI visibility.
 const MAX_RECENT_APPROVALS: usize = 100;
+/// Capacity of the additive approval-lifecycle broadcast channel. Sized to
+/// absorb bursts without lagging slow surfacers; on overflow the oldest events
+/// are dropped (lossy by design — decision semantics never depend on delivery).
+const APPROVAL_EVENT_BUFFER: usize = 256;
 
 /// Manages approval requests with oneshot channels for blocking resolution.
 pub struct ApprovalManager {
     pending: DashMap<Uuid, PendingRequest>,
     recent: std::sync::Mutex<VecDeque<ApprovalRecord>>,
     policy: std::sync::RwLock<ApprovalPolicy>,
+    /// Additive lifecycle event source. Emitting requires no subscribers; if
+    /// none are listening, sends fail silently and approval flow is unaffected.
+    events: tokio::sync::broadcast::Sender<ApprovalEvent>,
 }
 
 struct PendingRequest {
@@ -34,13 +41,47 @@ pub struct ApprovalRecord {
     pub decided_by: Option<String>,
 }
 
+/// Lifecycle events emitted by the [`ApprovalManager`] so out-of-band
+/// surfacers (e.g. the channel bridge) can push prompts and post follow-ups.
+///
+/// Purely additive: delivered on a `tokio::sync::broadcast` channel that
+/// requires no subscribers. With no listener, sends are dropped silently and
+/// the approve / deny / timeout decision path is completely unaffected. The
+/// carried [`ApprovalRequest`] includes its `origin`, which a surfacer may use
+/// to resolve a push destination — `origin` is audit/targeting only and is
+/// never an authorization carrier.
+#[derive(Debug, Clone)]
+pub enum ApprovalEvent {
+    /// A new request was parked and is awaiting human resolution.
+    Submitted(ApprovalRequest),
+    /// A request was resolved by an operator (approved or denied).
+    Resolved {
+        request: ApprovalRequest,
+        decision: ApprovalDecision,
+        decided_by: Option<String>,
+    },
+    /// A request expired before any operator resolved it.
+    TimedOut(ApprovalRequest),
+}
+
 impl ApprovalManager {
     pub fn new(policy: ApprovalPolicy) -> Self {
+        let (events, _) = tokio::sync::broadcast::channel(APPROVAL_EVENT_BUFFER);
         Self {
             pending: DashMap::new(),
             recent: std::sync::Mutex::new(VecDeque::new()),
             policy: std::sync::RwLock::new(policy),
+            events,
         }
+    }
+
+    /// Subscribe to the additive approval-lifecycle event stream.
+    ///
+    /// Returns a fresh `broadcast::Receiver`. Subscribing is the only way to
+    /// observe [`ApprovalEvent`]s; not subscribing leaves all existing behavior
+    /// untouched. The channel is lossy under load (see [`APPROVAL_EVENT_BUFFER`]).
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<ApprovalEvent> {
+        self.events.subscribe()
     }
 
     /// Check if a tool requires approval based on current policy.
@@ -65,6 +106,7 @@ impl ApprovalManager {
         let timeout = std::time::Duration::from_secs(req.timeout_secs);
         let id = req.id;
         let req_for_timeout = req.clone();
+        let req_for_event = req.clone();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.insert(
@@ -76,6 +118,8 @@ impl ApprovalManager {
         );
 
         info!(request_id = %id, "Approval request submitted, waiting for resolution");
+        // Additive surfacing hook: lossy, non-blocking, no-op without subscribers.
+        let _ = self.events.send(ApprovalEvent::Submitted(req_for_event));
 
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(decision)) => {
@@ -88,6 +132,7 @@ impl ApprovalManager {
                     .remove(&id)
                     .map(|(_, pending)| pending.request)
                     .unwrap_or(req_for_timeout);
+                let _ = self.events.send(ApprovalEvent::TimedOut(request.clone()));
                 self.push_recent(request, ApprovalDecision::TimedOut, None, Utc::now());
                 warn!(request_id = %id, "Approval request timed out");
                 ApprovalDecision::TimedOut
@@ -118,6 +163,12 @@ impl ApprovalManager {
                 );
                 // Send decision to waiting agent (ignore error if receiver dropped)
                 let _ = pending.sender.send(decision);
+                // Additive surfacing hook: lossy, non-blocking, no-op without subscribers.
+                let _ = self.events.send(ApprovalEvent::Resolved {
+                    request: pending.request,
+                    decision,
+                    decided_by: response.decided_by.clone(),
+                });
                 info!(request_id = %request_id, ?decision, "Approval request resolved");
                 Ok(response)
             }
@@ -211,6 +262,7 @@ mod tests {
             risk_level: RiskLevel::High,
             requested_at: Utc::now(),
             timeout_secs,
+            origin: None,
         }
     }
 
@@ -330,6 +382,97 @@ mod tests {
     fn test_pending_count() {
         let mgr = default_manager();
         assert_eq!(mgr.pending_count(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // subscribe — additive lifecycle events (Y step 5 substrate)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_subscribe_receives_submitted_and_resolved() {
+        let mgr = Arc::new(default_manager());
+        let mut rx = mgr.subscribe();
+        let req = make_request("agent-evt", "shell_exec", 60);
+        let id = req.id;
+
+        let mgr2 = Arc::clone(&mgr);
+        let join = tokio::spawn(async move { mgr2.request_approval(req).await });
+
+        match rx.recv().await.expect("submitted event") {
+            ApprovalEvent::Submitted(r) => assert_eq!(r.id, id),
+            other => panic!("expected Submitted, got {other:?}"),
+        }
+
+        mgr.resolve(id, ApprovalDecision::Approved, Some("ben".to_string()))
+            .expect("resolve");
+
+        match rx.recv().await.expect("resolved event") {
+            ApprovalEvent::Resolved {
+                request,
+                decision,
+                decided_by,
+            } => {
+                assert_eq!(request.id, id);
+                assert_eq!(decision, ApprovalDecision::Approved);
+                assert_eq!(decided_by.as_deref(), Some("ben"));
+            }
+            other => panic!("expected Resolved, got {other:?}"),
+        }
+
+        assert_eq!(join.await.unwrap(), ApprovalDecision::Approved);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_subscribe_receives_timed_out() {
+        let mgr = Arc::new(default_manager());
+        let mut rx = mgr.subscribe();
+        let req = make_request("agent-evt", "shell_exec", 10);
+        let id = req.id;
+
+        let decision = mgr.request_approval(req).await;
+        assert_eq!(decision, ApprovalDecision::TimedOut);
+
+        match rx.recv().await.expect("submitted event") {
+            ApprovalEvent::Submitted(r) => assert_eq!(r.id, id),
+            other => panic!("expected Submitted, got {other:?}"),
+        }
+        match rx.recv().await.expect("timed-out event") {
+            ApprovalEvent::TimedOut(r) => assert_eq!(r.id, id),
+            other => panic!("expected TimedOut, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_origin_carried_on_submitted() {
+        // origin rides the event verbatim — audit/targeting only, never authz.
+        let mgr = Arc::new(default_manager());
+        let mut rx = mgr.subscribe();
+        let mut req = make_request("agent-evt", "shell_exec", 60);
+        req.origin = Some(openfang_types::approval::ApprovalOrigin {
+            channel_type: "discord".to_string(),
+            channel_id: Some("chan-123".to_string()),
+            thread_id: Some("thread-9".to_string()),
+            recipient: Some("peer-7".to_string()),
+        });
+        let id = req.id;
+
+        let mgr2 = Arc::clone(&mgr);
+        let join = tokio::spawn(async move { mgr2.request_approval(req).await });
+
+        match rx.recv().await.expect("submitted event") {
+            ApprovalEvent::Submitted(r) => {
+                assert_eq!(r.id, id);
+                let o = r.origin.expect("origin present");
+                assert_eq!(o.channel_type, "discord");
+                assert_eq!(o.channel_id.as_deref(), Some("chan-123"));
+                assert_eq!(o.thread_id.as_deref(), Some("thread-9"));
+                assert_eq!(o.recipient.as_deref(), Some("peer-7"));
+            }
+            other => panic!("expected Submitted, got {other:?}"),
+        }
+
+        mgr.resolve(id, ApprovalDecision::Denied, None).expect("resolve");
+        assert_eq!(join.await.unwrap(), ApprovalDecision::Denied);
     }
 
     // -----------------------------------------------------------------------

@@ -4,6 +4,7 @@
 //! calling the LLM, executing tool calls, and saving the conversation.
 
 use crate::auth_cooldown::{CooldownVerdict, ProviderCooldown};
+use crate::bridge_auth::TokenIssuer;
 use crate::context_budget::{apply_context_guard, truncate_tool_result_dynamic, ContextBudget};
 use crate::context_overflow::{recover_from_overflow, RecoveryStage};
 use crate::embedding::EmbeddingDriver;
@@ -312,6 +313,7 @@ pub async fn run_agent_loop(
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
+    origin: Option<&openfang_types::approval::ApprovalOrigin>,
 ) -> OpenFangResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting agent loop");
 
@@ -535,6 +537,15 @@ pub async fn run_agent_loop(
             temperature: manifest.model.temperature,
             system: Some(system_prompt.clone()),
             thinking: None,
+            caller_agent_id: Some(agent_id_str.clone()),
+            // Per-agent allowlist for the bridge subprocess: the names of
+            // every tool this agent is currently permitted to invoke,
+            // derived from the kernel-resolved `available_tools` (sourced
+            // from `agent.toml`'s `[capabilities]`/`[exec_policy]`).
+            // Subprocess drivers thread this into `OPENFANG_BRIDGE_ALLOWED`
+            // so the bridge's advertised surface matches the agent's
+            // permissions instead of falling back to the static default.
+            allowed_tools: Some(available_tools.iter().map(|t| t.name.clone()).collect()),
         };
 
         // Notify phase: Thinking
@@ -556,6 +567,7 @@ pub async fn run_agent_loop(
             Some(provider_name),
             None,
             &manifest.fallback_models,
+            kernel.as_ref().and_then(|k| k.token_issuer()),
         )
         .await?;
 
@@ -922,6 +934,7 @@ pub async fn run_agent_loop(
 
                     // Resolve effective exec policy (per-agent override or global)
                     let effective_exec_policy = manifest.exec_policy.as_ref();
+                    let effective_file_policy = manifest.file_policy.as_ref();
 
                     // Timeout-wrapped execution. `tool_timeout_for` returns None
                     // when the operator disabled the timeout (issue #1125).
@@ -945,9 +958,11 @@ pub async fn run_agent_loop(
                         workspace_root,
                         media_engine,
                         effective_exec_policy,
+                        effective_file_policy,
                         tts_engine,
                         docker_config,
                         process_manager,
+                        origin,
                     );
                     let result = match timeout_opt {
                         Some(timeout) => {
@@ -1158,6 +1173,7 @@ async fn call_with_retry(
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
     fallback_models: &[FallbackModel],
+    token_issuer: Option<Arc<dyn TokenIssuer>>,
 ) -> OpenFangResult<crate::llm_driver::CompletionResponse> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
@@ -1268,19 +1284,25 @@ async fn call_with_retry(
                             skip_permissions: true,
                             subprocess_timeout_secs: None,
                         };
-                        let fb_driver = match crate::drivers::create_driver(&fb_config) {
-                            Ok(d) => d,
-                            Err(driver_err) => {
-                                warn!(
-                                    fallback_index = fb_idx,
-                                    provider = %fb.provider,
-                                    model = %fb.model,
-                                    error = %driver_err,
-                                    "Failed to create fallback driver, skipping"
-                                );
-                                continue;
-                            }
-                        };
+                        // Fallback driver inherits the daemon's bridge
+                        // `TokenIssuer` (plumbed in from the caller via the
+                        // `token_issuer` arg, which the agent loop sources
+                        // from `KernelHandle::token_issuer()`) so these
+                        // sessions stay on the hardened bridge auth path.
+                        let fb_driver =
+                            match crate::drivers::create_driver(&fb_config, token_issuer.clone()) {
+                                Ok(d) => d,
+                                Err(driver_err) => {
+                                    warn!(
+                                        fallback_index = fb_idx,
+                                        provider = %fb.provider,
+                                        model = %fb.model,
+                                        error = %driver_err,
+                                        "Failed to create fallback driver, skipping"
+                                    );
+                                    continue;
+                                }
+                            };
                         let mut fb_request = request.clone();
                         fb_request.model = fb.model.clone();
                         warn!(
@@ -1343,6 +1365,7 @@ async fn stream_with_retry(
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
     fallback_models: &[FallbackModel],
+    token_issuer: Option<Arc<dyn TokenIssuer>>,
 ) -> OpenFangResult<crate::llm_driver::CompletionResponse> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
@@ -1452,19 +1475,25 @@ async fn stream_with_retry(
                             skip_permissions: true,
                             subprocess_timeout_secs: None,
                         };
-                        let fb_driver = match crate::drivers::create_driver(&fb_config) {
-                            Ok(d) => d,
-                            Err(driver_err) => {
-                                warn!(
-                                    fallback_index = fb_idx,
-                                    provider = %fb.provider,
-                                    model = %fb.model,
-                                    error = %driver_err,
-                                    "Failed to create fallback stream driver, skipping"
-                                );
-                                continue;
-                            }
-                        };
+                        // Fallback driver inherits the daemon's bridge
+                        // `TokenIssuer` (plumbed in from the caller via the
+                        // `token_issuer` arg, which the agent loop sources
+                        // from `KernelHandle::token_issuer()`) so these
+                        // sessions stay on the hardened bridge auth path.
+                        let fb_driver =
+                            match crate::drivers::create_driver(&fb_config, token_issuer.clone()) {
+                                Ok(d) => d,
+                                Err(driver_err) => {
+                                    warn!(
+                                        fallback_index = fb_idx,
+                                        provider = %fb.provider,
+                                        model = %fb.model,
+                                        error = %driver_err,
+                                        "Failed to create fallback stream driver, skipping"
+                                    );
+                                    continue;
+                                }
+                            };
                         let mut fb_request = request.clone();
                         fb_request.model = fb.model.clone();
                         warn!(
@@ -1540,6 +1569,7 @@ pub async fn run_agent_loop_streaming(
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
+    origin: Option<&openfang_types::approval::ApprovalOrigin>,
 ) -> OpenFangResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting streaming agent loop");
 
@@ -1772,6 +1802,15 @@ pub async fn run_agent_loop_streaming(
             temperature: manifest.model.temperature,
             system: Some(system_prompt.clone()),
             thinking: None,
+            caller_agent_id: Some(agent_id_str.clone()),
+            // Per-agent allowlist for the bridge subprocess: the names of
+            // every tool this agent is currently permitted to invoke,
+            // derived from the kernel-resolved `available_tools` (sourced
+            // from `agent.toml`'s `[capabilities]`/`[exec_policy]`).
+            // Subprocess drivers thread this into `OPENFANG_BRIDGE_ALLOWED`
+            // so the bridge's advertised surface matches the agent's
+            // permissions instead of falling back to the static default.
+            allowed_tools: Some(available_tools.iter().map(|t| t.name.clone()).collect()),
         };
 
         // Notify phase: on first iteration emit Streaming; on subsequent
@@ -1800,6 +1839,7 @@ pub async fn run_agent_loop_streaming(
             Some(provider_name),
             None,
             &manifest.fallback_models,
+            kernel.as_ref().and_then(|k| k.token_issuer()),
         )
         .await?;
 
@@ -2131,6 +2171,7 @@ pub async fn run_agent_loop_streaming(
 
                     // Resolve effective exec policy (per-agent override or global)
                     let effective_exec_policy = manifest.exec_policy.as_ref();
+                    let effective_file_policy = manifest.file_policy.as_ref();
 
                     // Timeout-wrapped execution. `tool_timeout_for` returns None
                     // when the operator disabled the timeout (issue #1125).
@@ -2154,9 +2195,11 @@ pub async fn run_agent_loop_streaming(
                         workspace_root,
                         media_engine,
                         effective_exec_policy,
+                        effective_file_policy,
                         tts_engine,
                         docker_config,
                         process_manager,
+                        origin,
                     );
                     let result = match timeout_opt {
                         Some(timeout) => {
@@ -3602,6 +3645,7 @@ mod tests {
         ContentBlock::Image {
             media_type: "image/png".to_string(),
             data: "aGVsbG8=".to_string(),
+            source_url: None,
         }
     }
 
@@ -3821,6 +3865,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // origin
         )
         .await
         .expect("Loop should complete without error");
@@ -3874,6 +3919,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // origin
         )
         .await
         .expect("Loop should complete without error");
@@ -3929,6 +3975,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // origin
         )
         .await
         .expect("Loop should complete without error");
@@ -3982,6 +4029,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // origin
         )
         .await
         .expect("Loop should complete without error");
@@ -4028,6 +4076,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // origin
         )
         .await
         .expect("Streaming loop should complete without error");
@@ -4152,6 +4201,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // origin
         )
         .await
         .expect("Loop should recover via retry");
@@ -4199,6 +4249,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // origin
         )
         .await
         .expect("Loop should complete with fallback");
@@ -4254,6 +4305,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // origin
         )
         .await
         .expect("Streaming loop should complete without error");
@@ -5230,6 +5282,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // origin
         )
         .await
         .expect("Agent loop should complete");
@@ -5300,6 +5353,7 @@ mod tests {
             None,
             None,
             None,
+            None, // origin
         )
         .await
         .expect("Agent loop should recover nested XML tool calls");
@@ -5372,6 +5426,7 @@ mod tests {
             None,
             None,
             None, // user_content_blocks
+            None, // origin
         )
         .await
         .expect("Normal loop should complete");
@@ -5435,6 +5490,7 @@ mod tests {
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
+            None, // origin
         )
         .await
         .expect("Streaming loop should complete");

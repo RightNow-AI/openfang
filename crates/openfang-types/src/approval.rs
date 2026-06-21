@@ -28,6 +28,9 @@ const MIN_TIMEOUT_SECS: u64 = 10;
 /// Maximum approval timeout in seconds.
 const MAX_TIMEOUT_SECS: u64 = 300;
 
+/// Maximum length of an origin routing field (channel_id / thread_id / recipient), chars.
+const MAX_ORIGIN_FIELD_LEN: usize = 256;
+
 // ---------------------------------------------------------------------------
 // RiskLevel
 // ---------------------------------------------------------------------------
@@ -68,6 +71,31 @@ pub enum ApprovalDecision {
 }
 
 // ---------------------------------------------------------------------------
+// ApprovalOrigin
+// ---------------------------------------------------------------------------
+
+/// Where an agent run originated — carried so an approval prompt can be pushed
+/// back to the exact channel/conversation that triggered the run.
+///
+/// `None` on [`ApprovalRequest::origin`] ⇒ a non-channel trigger (cron, API
+/// direct, agent_send): the emit site must fall back to the text
+/// `/approve <id>` path (no proactive push).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApprovalOrigin {
+    /// Adapter key, e.g. `"discord"`, `"slack"`. Maps to `channel_type_str()`.
+    pub channel_type: String,
+    /// Per-channel/conversation routing ID (Discord channel/thread, Slack
+    /// conversation, Telegram chat). Sourced from `ChannelMessage::channel_id()`.
+    pub channel_id: Option<String>,
+    /// Thread/sub-conversation, if the trigger arrived inside one.
+    pub thread_id: Option<String>,
+    /// Platform user identity of the triggering sender (peer_id). Used ONLY for
+    /// audit/recipient targeting — NEVER as an authz carrier (the clicker is
+    /// re-authorized from the platform-attested interaction identity).
+    pub recipient: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // ApprovalRequest
 // ---------------------------------------------------------------------------
 
@@ -84,6 +112,9 @@ pub struct ApprovalRequest {
     pub requested_at: DateTime<Utc>,
     /// Auto-deny timeout in seconds.
     pub timeout_secs: u64,
+    /// Origin of the triggering run. `None` ⇒ fall back to the text approve path.
+    #[serde(default)]
+    pub origin: Option<ApprovalOrigin>,
 }
 
 impl ApprovalRequest {
@@ -139,6 +170,30 @@ impl ApprovalRequest {
                 "timeout_secs too large ({}, max {MAX_TIMEOUT_SECS})",
                 self.timeout_secs
             ));
+        }
+
+        // -- origin (optional) --
+        if let Some(origin) = &self.origin {
+            if origin.channel_type.len() > MAX_ORIGIN_FIELD_LEN {
+                return Err(format!(
+                    "origin.channel_type too long ({} chars, max {MAX_ORIGIN_FIELD_LEN})",
+                    origin.channel_type.len()
+                ));
+            }
+            for (label, value) in [
+                ("origin.channel_id", &origin.channel_id),
+                ("origin.thread_id", &origin.thread_id),
+                ("origin.recipient", &origin.recipient),
+            ] {
+                if let Some(v) = value {
+                    if v.len() > MAX_ORIGIN_FIELD_LEN {
+                        return Err(format!(
+                            "{label} too long ({} chars, max {MAX_ORIGIN_FIELD_LEN})",
+                            v.len()
+                        ));
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -299,6 +354,7 @@ mod tests {
             risk_level: RiskLevel::High,
             requested_at: Utc::now(),
             timeout_secs: 60,
+            origin: None,
         }
     }
 
@@ -389,6 +445,20 @@ mod tests {
         let mut req = valid_request();
         req.tool_name = "a".repeat(65);
         let err = req.validate().unwrap_err();
+        assert!(err.contains("too long"), "{err}");
+    }
+
+    #[test]
+    fn request_origin_channel_type_too_long_rejected() {
+        let mut req = valid_request();
+        req.origin = Some(ApprovalOrigin {
+            channel_type: "a".repeat(257),
+            channel_id: None,
+            thread_id: None,
+            recipient: None,
+        });
+        let err = req.validate().unwrap_err();
+        assert!(err.contains("origin.channel_type"), "{err}");
         assert!(err.contains("too long"), "{err}");
     }
 
@@ -675,6 +745,82 @@ mod tests {
         assert_eq!(back.action_summary, req.action_summary);
         assert_eq!(back.risk_level, req.risk_level);
         assert_eq!(back.timeout_secs, req.timeout_secs);
+    }
+
+    // -----------------------------------------------------------------------
+    // ApprovalOrigin
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn origin_serde_roundtrip() {
+        let origin = ApprovalOrigin {
+            channel_type: "discord".into(),
+            channel_id: Some("123456789".into()),
+            thread_id: Some("987654321".into()),
+            recipient: Some("user-42".into()),
+        };
+        let json = serde_json::to_string(&origin).unwrap();
+        let back: ApprovalOrigin = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, origin);
+    }
+
+    #[test]
+    fn request_with_origin_roundtrip() {
+        let mut req = valid_request();
+        req.origin = Some(ApprovalOrigin {
+            channel_type: "discord".into(),
+            channel_id: Some("chan-1".into()),
+            thread_id: None,
+            recipient: Some("peer-1".into()),
+        });
+        let json = serde_json::to_string(&req).unwrap();
+        let back: ApprovalRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.origin, req.origin);
+    }
+
+    #[test]
+    fn request_legacy_json_without_origin_defaults_none() {
+        // A persisted/in-flight request from before the `origin` field existed
+        // must still deserialize (→ None) via #[serde(default)].
+        let legacy = r#"{
+            "id": "00000000-0000-0000-0000-000000000000",
+            "agent_id": "agent-001",
+            "tool_name": "shell_exec",
+            "description": "legacy",
+            "action_summary": "rm -rf /tmp/x",
+            "risk_level": "high",
+            "requested_at": "2026-06-14T00:00:00Z",
+            "timeout_secs": 60
+        }"#;
+        let req: ApprovalRequest = serde_json::from_str(legacy).unwrap();
+        assert_eq!(req.origin, None);
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn request_origin_channel_id_too_long_rejected() {
+        let mut req = valid_request();
+        req.origin = Some(ApprovalOrigin {
+            channel_type: "discord".into(),
+            channel_id: Some("a".repeat(257)),
+            thread_id: None,
+            recipient: None,
+        });
+        let err = req.validate().unwrap_err();
+        assert!(err.contains("origin.channel_id"), "{err}");
+        assert!(err.contains("too long"), "{err}");
+    }
+
+    #[test]
+    fn request_origin_field_max_len_ok() {
+        let mut req = valid_request();
+        req.origin = Some(ApprovalOrigin {
+            channel_type: "discord".into(),
+            channel_id: Some("a".repeat(256)),
+            thread_id: Some("b".repeat(256)),
+            recipient: Some("c".repeat(256)),
+        });
+        assert!(req.validate().is_ok());
     }
 
     // -----------------------------------------------------------------------

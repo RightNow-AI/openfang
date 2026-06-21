@@ -18,6 +18,31 @@ use tracing::{debug, warn};
 /// Maximum inter-agent call depth to prevent infinite recursion (A->B->C->...).
 const MAX_AGENT_CALL_DEPTH: u32 = 5;
 
+/// Tools whose invocation **must** be scoped to the calling agent's
+/// `workspace_root`. Canonical source of truth, consumed by both bridge
+/// surfaces (IPC + HTTP `/mcp`) to decide whether a given call's path
+/// arguments require workspace-rewriting and whether the call should
+/// fail-closed when no workspace is registered.
+///
+/// History: this list was duplicated in `openfang_api::bridge_ipc` and
+/// `openfang_api::routes`, drifted (5 vs 4 tools), and missed
+/// `create_directory` on the IPC side + `shell_exec`/`apply_patch` on the
+/// HTTP side — both real sandbox gaps. Unified here so additions land in
+/// one place.
+///
+/// Membership criteria: the tool touches the filesystem via a path arg
+/// (or, for `shell_exec`, uses `workspace_root` as cwd). Tools that do
+/// not touch the FS (`web_fetch`, `agent_*`, `memory_*`, `web_search`,
+/// `channel_send`) are intentionally absent.
+pub const FS_SANDBOXED_TOOLS: &[&str] = &[
+    "file_read",
+    "file_list",
+    "file_write",
+    "create_directory",
+    "shell_exec",
+    "apply_patch",
+];
+
 /// Check if a tool name refers to a shell execution tool.
 ///
 /// Used to determine whether exec_policy settings should bypass the approval gate.
@@ -121,9 +146,11 @@ pub async fn execute_tool(
     workspace_root: Option<&Path>,
     media_engine: Option<&crate::media_understanding::MediaEngine>,
     exec_policy: Option<&openfang_types::config::ExecPolicy>,
+    file_policy: Option<&openfang_types::config::FilePolicy>,
     tts_engine: Option<&crate::tts::TtsEngine>,
     docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
+    origin: Option<&openfang_types::approval::ApprovalOrigin>,
 ) -> ToolResult {
     // Normalize the tool name through compat mappings so LLM-hallucinated aliases
     // (e.g. "fs-write" → "file_write") resolve to the canonical OpenFang name.
@@ -172,7 +199,7 @@ pub async fn execute_tool(
                 tool_name,
                 openfang_types::truncate_str(&input_str, 200)
             );
-            match kh.request_approval(agent_id_str, tool_name, &summary).await {
+            match kh.request_approval(agent_id_str, tool_name, &summary, origin).await {
                 Ok(true) => {
                     debug!(tool_name, "Approval granted — proceeding with execution");
                 }
@@ -199,14 +226,107 @@ pub async fn execute_tool(
         }
     }
 
+    // file_policy prompt-tier pre-pass (D1-a / Q1=B): for single-path fs tools
+    // whose resolved path falls under a `prompt` rule, route through the same
+    // approval primitive the shell path uses. Approve => proceed (the path
+    // helper treats an already-approved prompt as write); deny / timeout /
+    // no-kernel => fail closed. apply_patch is multi-path and is governed
+    // per-target in its helper (prompt-tier fails closed there for v1).
+    let mut prevalidated_path: Option<PathBuf> = None;
+    if let Some(fp) = file_policy {
+        if fp.is_active() {
+            if let Some((_needs_write, raw_path)) = fs_tool_single_path(tool_name, input) {
+                if let Some(root) = workspace_root {
+                    if let (Ok(canon), Ok(canon_root)) = (
+                        crate::workspace_sandbox::sandbox_floor(raw_path, root),
+                        root.canonicalize(),
+                    ) {
+                        if fp.tier_for(&canon, &canon_root)
+                            == openfang_types::config::FileAccessTier::Prompt
+                        {
+                            let approved = match kernel {
+                                Some(kh) => {
+                                    let summary = format!(
+                                        "{} -> {} (file_policy prompt tier)",
+                                        tool_name,
+                                        canon.display()
+                                    );
+                                    matches!(
+                                        kh.request_approval(
+                                            caller_agent_id.unwrap_or("unknown"),
+                                            tool_name,
+                                            &summary,
+                                            None,
+                                        )
+                                        .await,
+                                        Ok(true)
+                                    )
+                                }
+                                None => false,
+                            };
+                            if !approved {
+                                warn!(tool_name, "file_policy prompt tier denied or unapproved");
+                                return ToolResult {
+                                    tool_use_id: tool_use_id.to_string(),
+                                    content: format!(
+                                        "Execution denied: '{}' targets a prompt-tier path and approval was denied, timed out, or was unavailable.",
+                                        tool_name
+                                    ),
+                                    is_error: true,
+                                };
+                            }
+                        }
+                        // F5: remember the canonical path validated (and prompt-
+                        // approved) here so the tool can assert its own I/O
+                        // target matches — a swap during the approval window
+                        // makes them differ and fails closed.
+                        prevalidated_path = Some(canon);
+                    }
+                }
+            }
+        }
+    }
+
     debug!(tool_name, "Executing tool");
     let result = match tool_name {
         // Filesystem tools
-        "file_read" => tool_file_read(input, workspace_root).await,
-        "file_write" => tool_file_write(input, workspace_root).await,
-        "file_list" => tool_file_list(input, workspace_root).await,
-        "create_directory" => tool_create_directory(input, workspace_root).await,
-        "apply_patch" => tool_apply_patch(input, workspace_root).await,
+        "file_read" => {
+            tool_file_read(
+                input,
+                workspace_root,
+                file_policy,
+                prevalidated_path.as_deref(),
+            )
+            .await
+        }
+        "file_write" => {
+            tool_file_write(
+                input,
+                workspace_root,
+                file_policy,
+                prevalidated_path.as_deref(),
+            )
+            .await
+        }
+        "file_list" => {
+            tool_file_list(
+                input,
+                workspace_root,
+                file_policy,
+                prevalidated_path.as_deref(),
+            )
+            .await
+        }
+        "create_directory" => {
+            tool_create_directory(
+                input,
+                workspace_root,
+                file_policy,
+                prevalidated_path.as_deref(),
+            )
+            .await
+        }
+        "apply_patch" => tool_apply_patch(input, workspace_root, file_policy).await,
 
         // Web tools (upgraded: multi-provider search, SSRF-protected fetch)
         "web_fetch" => {
@@ -263,6 +383,7 @@ pub async fn execute_tool(
                 if let Err(reason) =
                     crate::subprocess_sandbox::validate_command_allowlist(command, policy)
                 {
+                    let reason = reason.trim_end_matches('.');
                     return ToolResult {
                         tool_use_id: tool_use_id.to_string(),
                         content: format!(
@@ -1107,7 +1228,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         // --- Channel send tool (proactive outbound messaging) ---
         ToolDefinition {
             name: "channel_send".to_string(),
-            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url, file_url, or file_path to send an image or file instead of (or alongside) text. Use thread_id to reply in a specific thread/topic.".to_string(),
+            description: "Send a message or media to a user on a configured channel (email, telegram, slack, etc). For email: recipient is the email address; optionally set subject. For media: set image_url, file_url, or file_path to send an image or file instead of (or alongside) text. Use `attachments` to send one or more local files alongside the message (workspace-relative paths preferred). Use thread_id to reply in a specific thread/topic.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1119,6 +1240,11 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "file_url": { "type": "string", "description": "URL of a file to send as attachment" },
                     "file_path": { "type": "string", "description": "Local file path to send as attachment (reads from disk; use instead of file_url for local files)" },
                     "filename": { "type": "string", "description": "Filename for file attachments (defaults to the basename of file_path, or 'file')" },
+                    "attachments": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Array of file paths to attach alongside the message. Workspace-relative paths are preferred (resolved against the agent's workspace root); absolute paths are also accepted. Routes through the outbound attachment parser with the same `allow_roots` security gating as inline `<openfang:attach path=\"...\"/>` directives. Composes with inline directives in `message`."
+                    },
                     "thread_id": { "type": "string", "description": "Thread/topic ID to reply in (e.g., Telegram message_thread_id, Slack thread_ts)" }
                 },
                 "required": ["channel", "recipient"]
@@ -1366,10 +1492,41 @@ fn validate_path(path: &str) -> Result<&str, String> {
     Ok(path)
 }
 
-/// Resolve a file path through the workspace sandbox (if available) or legacy validation.
-fn resolve_file_path(raw_path: &str, workspace_root: Option<&Path>) -> Result<PathBuf, String> {
+/// For single-path filesystem tools, return `(needs_write, path)` so the
+/// file_policy prompt pre-pass can evaluate the target's tier. Multi-path
+/// tools (apply_patch) return None and are governed per-target in their helper.
+fn fs_tool_single_path<'a>(
+    tool_name: &str,
+    input: &'a serde_json::Value,
+) -> Option<(bool, &'a str)> {
+    let needs_write = match tool_name {
+        "file_read" | "file_list" => false,
+        "file_write" | "create_directory" => true,
+        _ => return None,
+    };
+    input["path"].as_str().map(|p| (needs_write, p))
+}
+
+/// Resolve a file path through the workspace sandbox (if available) or legacy
+/// validation. When a `file_policy` is active it governs the resolved path via
+/// tier evaluation; otherwise the legacy workspace clamp applies. `needs_write`
+/// distinguishes read verbs from mutating verbs for the `read` tier. The prompt
+/// tier is pre-approved by execute_tool's pre-pass for single-path tools, so
+/// `prompt_preapproved = true` here.
+fn resolve_file_path(
+    raw_path: &str,
+    workspace_root: Option<&Path>,
+    file_policy: Option<&openfang_types::config::FilePolicy>,
+    needs_write: bool,
+) -> Result<PathBuf, String> {
     if let Some(root) = workspace_root {
-        crate::workspace_sandbox::resolve_sandbox_path(raw_path, root)
+        crate::workspace_sandbox::resolve_with_policy(
+            raw_path,
+            root,
+            file_policy,
+            needs_write,
+            true,
+        )
     } else {
         let _ = validate_path(raw_path)?;
         Ok(PathBuf::from(raw_path))
@@ -1379,9 +1536,12 @@ fn resolve_file_path(raw_path: &str, workspace_root: Option<&Path>) -> Result<Pa
 async fn tool_file_read(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    file_policy: Option<&openfang_types::config::FilePolicy>,
+    prevalidated: Option<&Path>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root)?;
+    let resolved = resolve_file_path(raw_path, workspace_root, file_policy, false)?;
+    crate::workspace_sandbox::assert_prevalidated(&resolved, prevalidated)?;
     tokio::fs::read_to_string(&resolved)
         .await
         .map_err(|e| format!("Failed to read file: {e}"))
@@ -1390,9 +1550,12 @@ async fn tool_file_read(
 async fn tool_file_write(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    file_policy: Option<&openfang_types::config::FilePolicy>,
+    prevalidated: Option<&Path>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root)?;
+    let resolved = resolve_file_path(raw_path, workspace_root, file_policy, true)?;
+    crate::workspace_sandbox::assert_prevalidated(&resolved, prevalidated)?;
     let content = input["content"]
         .as_str()
         .ok_or("Missing 'content' parameter")?;
@@ -1475,12 +1638,57 @@ fn resolve_directory_path_for_create(
 async fn tool_create_directory(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    file_policy: Option<&openfang_types::config::FilePolicy>,
+    prevalidated: Option<&Path>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
     if raw_path.is_empty() {
         return Err("'path' parameter is empty".to_string());
     }
     let resolved = resolve_directory_path_for_create(raw_path, workspace_root)?;
+    crate::workspace_sandbox::assert_prevalidated(&resolved, prevalidated)?;
+    // Sensitive-path floor parity: resolve_directory_path_for_create has its own
+    // clamp and does not run sandbox_floor, so apply the sensitive-path deny here.
+    if let Some(reason) = crate::workspace_sandbox::is_sensitive_openfang_path(&resolved)
+        .or_else(|| crate::workspace_sandbox::is_sensitive_home_path(&resolved))
+    {
+        return Err(format!(
+            "Access denied: path '{}' resolves to a protected resource ({reason}). \
+             These paths are never accessible to agents.",
+            resolved.display()
+        ));
+    }
+    // file_policy governs directory creation as a write verb (prompt-tier is
+    // pre-approved by execute_tool's pre-pass for this single-path tool).
+    // F4: enforce via is_active() (so a disabled per-agent override cannot
+    // escape an enabled global floor) and fail closed when an active policy has
+    // no workspace root to evaluate against — previously this path fell open.
+    if let Some(fp) = file_policy {
+        if fp.is_active() {
+            let Some(root) = workspace_root else {
+                return Err("Access denied: create_directory requires a workspace root when a file_policy is active".to_string());
+            };
+            let canon_root = root
+                .canonicalize()
+                .map_err(|e| format!("Failed to resolve workspace root: {e}"))?;
+            match fp.tier_for(&resolved, &canon_root) {
+                openfang_types::config::FileAccessTier::Write
+                | openfang_types::config::FileAccessTier::Prompt => {}
+                openfang_types::config::FileAccessTier::Read => {
+                    return Err(format!(
+                        "Access denied by file_policy: '{}' is read-only",
+                        resolved.display()
+                    ));
+                }
+                openfang_types::config::FileAccessTier::Deny => {
+                    return Err(format!(
+                        "Access denied by file_policy: '{}' (deny tier)",
+                        resolved.display()
+                    ));
+                }
+            }
+        }
+    }
     tokio::fs::create_dir_all(&resolved)
         .await
         .map_err(|e| format!("Failed to create directory: {e}"))?;
@@ -1490,9 +1698,12 @@ async fn tool_create_directory(
 async fn tool_file_list(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    file_policy: Option<&openfang_types::config::FilePolicy>,
+    prevalidated: Option<&Path>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root)?;
+    let resolved = resolve_file_path(raw_path, workspace_root, file_policy, false)?;
+    crate::workspace_sandbox::assert_prevalidated(&resolved, prevalidated)?;
     let mut entries = tokio::fs::read_dir(&resolved)
         .await
         .map_err(|e| format!("Failed to list directory: {e}"))?;
@@ -1521,11 +1732,12 @@ async fn tool_file_list(
 async fn tool_apply_patch(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    file_policy: Option<&openfang_types::config::FilePolicy>,
 ) -> Result<String, String> {
     let patch_str = input["patch"].as_str().ok_or("Missing 'patch' parameter")?;
     let root = workspace_root.ok_or("apply_patch requires a workspace root")?;
     let ops = crate::apply_patch::parse_patch(patch_str)?;
-    let result = crate::apply_patch::apply_patch(&ops, root).await;
+    let result = crate::apply_patch::apply_patch(&ops, root, file_policy).await;
     if result.is_ok() {
         Ok(result.summary())
     } else {
@@ -2520,7 +2732,7 @@ async fn tool_channel_send(
 
     // Local file attachment: read from disk and send as FileData
     if let Some(raw_path) = file_path {
-        let resolved = resolve_file_path(raw_path, workspace_root)?;
+        let resolved = resolve_file_path(raw_path, workspace_root, None, false)?;
         let data = tokio::fs::read(&resolved)
             .await
             .map_err(|e| format!("Failed to read file '{}': {e}", resolved.display()))?;
@@ -2573,13 +2785,26 @@ async fn tool_channel_send(
             .await;
     }
 
-    // Text-only message
-    let message = input["message"]
-        .as_str()
-        .ok_or("Missing 'message' parameter (required for text messages)")?;
+    // Text + optional `attachments: string[]` (ANAI-53). The attachments
+    // array is sugar over the inline `<openfang:attach .../>` directive
+    // mechanism — we synthesize directives here, prepend them to the
+    // message body, and let `kernel::send_channel_message` →
+    // `bridge::send_parsed` → `outbound_attach::parse` handle resolution,
+    // workspace allow-root gating, and multipart construction. Composes
+    // with any inline directives the agent already wrote into `message`.
+    let message_raw = input["message"].as_str().unwrap_or("");
+    let attachments_raw = input.get("attachments");
+    let has_attachments = attachments_raw
+        .and_then(|v| v.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
 
-    if message.is_empty() {
-        return Err("Message cannot be empty".to_string());
+    if message_raw.is_empty() && !has_attachments {
+        return Err(
+            "Missing 'message' parameter (required for text-only sends; \
+             pass non-empty 'attachments' to send files without a body)"
+                .to_string(),
+        );
     }
 
     // For email channels, validate email format and prepend subject
@@ -2589,19 +2814,101 @@ async fn tool_channel_send(
         }
         if let Some(subject) = input["subject"].as_str() {
             if !subject.is_empty() {
-                format!("Subject: {subject}\n\n{message}")
+                format!("Subject: {subject}\n\n{message_raw}")
             } else {
-                message.to_string()
+                message_raw.to_string()
             }
         } else {
-            message.to_string()
+            message_raw.to_string()
         }
     } else {
-        message.to_string()
+        message_raw.to_string()
     };
 
-    kh.send_channel_message(&channel, recipient, &final_message, thread_id)
-        .await
+    let final_message = synthesize_attach_directives(&final_message, attachments_raw)?;
+
+    kh.send_channel_message(
+        &channel,
+        recipient,
+        &final_message,
+        thread_id,
+        workspace_root,
+    )
+    .await
+}
+
+/// Prepend synthesized `<openfang:attach path="…"/>` directives from an
+/// `attachments` JSON array to the message body.
+///
+/// The outbound parser downstream extracts the directives, resolves each
+/// path against the calling agent's `workspace_root`, applies the same
+/// `allow_roots` security gating used by inline directives, and dispatches
+/// multipart payloads on the wire. This helper is pure sugar over that
+/// mechanism — no security policy here, just text synthesis.
+///
+/// Behavior:
+/// - `None` or `Null` `attachments` → returns `message` unchanged.
+/// - `attachments` present but not a JSON array → error (caller passed
+///   wrong shape).
+/// - Empty array → returns `message` unchanged (explicit no-op).
+/// - Each element must be a non-empty string. Path characters that would
+///   break the directive boundary (`"`, `<`, `>`, `\n`, `\r`) are
+///   rejected outright rather than silently escaped — these are
+///   pathological in filenames and silent escaping would obscure the
+///   failure mode.
+/// - Synthesized directives are prepended to `message` (one per line,
+///   followed by the original body). Composes additively with any inline
+///   directives the caller already embedded in `message`.
+///
+/// Path resolution and authorisation happen entirely downstream in
+/// `outbound_attach::resolve_directive` — this helper does not touch the
+/// filesystem.
+fn synthesize_attach_directives(
+    message: &str,
+    attachments: Option<&serde_json::Value>,
+) -> Result<String, String> {
+    let arr = match attachments {
+        Some(v) if v.is_null() => return Ok(message.to_string()),
+        Some(v) => v
+            .as_array()
+            .ok_or("'attachments' must be an array of file path strings")?,
+        None => return Ok(message.to_string()),
+    };
+    if arr.is_empty() {
+        return Ok(message.to_string());
+    }
+
+    let mut directives = String::new();
+    for (i, item) in arr.iter().enumerate() {
+        let path = item
+            .as_str()
+            .ok_or_else(|| format!("'attachments[{i}]' must be a string"))?;
+        if path.is_empty() {
+            return Err(format!("'attachments[{i}]' is an empty string"));
+        }
+        if let Some(bad) = path
+            .chars()
+            .find(|c| matches!(c, '"' | '<' | '>' | '\n' | '\r'))
+        {
+            return Err(format!(
+                "'attachments[{i}]' contains character {bad:?} which would break \
+                 the directive boundary; use an inline `<openfang:attach .../>` \
+                 directive or the `file_path` parameter instead"
+            ));
+        }
+        directives.push_str("<openfang:attach path=\"");
+        directives.push_str(path);
+        directives.push_str("\"/>\n");
+    }
+
+    if message.is_empty() {
+        // Trim the trailing newline so an attachments-only send doesn't
+        // emit a phantom blank line through the formatter.
+        Ok(directives.trim_end().to_string())
+    } else {
+        directives.push_str(message);
+        Ok(directives)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3223,7 +3530,7 @@ async fn tool_speech_to_text(
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
     let _language = input["language"].as_str();
 
-    let resolved = resolve_file_path(raw_path, workspace_root)?;
+    let resolved = resolve_file_path(raw_path, workspace_root, None, false)?;
 
     // Read the audio file
     let data = tokio::fs::read(&resolved)
@@ -3382,6 +3689,7 @@ async fn tool_process_start(
     if let Some(policy) = exec_policy {
         if let Err(reason) = crate::subprocess_sandbox::validate_command_allowlist(command, policy)
         {
+            let reason = reason.trim_end_matches('.');
             return Err(format!(
                 "process_start blocked: {reason}. Current exec_policy.mode = '{:?}'. \
                  To allow this command, add it to exec_policy.allowed_commands or \
@@ -3922,9 +4230,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         assert!(
@@ -3951,9 +4261,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         assert!(result.is_error);
@@ -3977,9 +4289,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         assert!(result.is_error);
@@ -4003,9 +4317,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         assert!(result.is_error);
@@ -4016,7 +4332,13 @@ mod tests {
     async fn test_create_directory_creates_nested() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
-        let result = tool_create_directory(&serde_json::json!({"path": "a/b/c"}), Some(root)).await;
+        let result = tool_create_directory(
+            &serde_json::json!({"path": "a/b/c"}),
+            Some(root),
+            None,
+            None,
+        )
+        .await;
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
         let expected = root.join("a").join("b").join("c");
         assert!(
@@ -4031,16 +4353,71 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         // First create
-        let r1 = tool_create_directory(&serde_json::json!({"path": "data/logs"}), Some(root)).await;
+        let r1 = tool_create_directory(
+            &serde_json::json!({"path": "data/logs"}),
+            Some(root),
+            None,
+            None,
+        )
+        .await;
         assert!(r1.is_ok());
         // Second create on existing dir should also succeed
-        let r2 = tool_create_directory(&serde_json::json!({"path": "data/logs"}), Some(root)).await;
+        let r2 = tool_create_directory(
+            &serde_json::json!({"path": "data/logs"}),
+            Some(root),
+            None,
+            None,
+        )
+        .await;
         assert!(r2.is_ok(), "Expected idempotent success, got: {:?}", r2);
     }
 
     #[tokio::test]
+    async fn test_create_directory_f4_denied_tier_blocks() {
+        use openfang_types::config::{FileAccessTier, FilePolicy, FileRule};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let policy = FilePolicy::new(
+            true,
+            FileAccessTier::Write,
+            vec![FileRule {
+                path: "secret".to_string(),
+                tier: FileAccessTier::Deny,
+            }],
+        );
+        let r = tool_create_directory(
+            &serde_json::json!({"path": "secret/sub"}),
+            Some(root),
+            Some(&policy),
+            None,
+        )
+        .await;
+        assert!(r.is_err(), "deny-tier directory must be refused: {:?}", r);
+        assert!(!root.join("secret").join("sub").exists());
+    }
+
+    #[tokio::test]
+    async fn test_create_directory_f4_active_policy_no_root_fails_closed() {
+        use openfang_types::config::{FileAccessTier, FilePolicy};
+        let policy = FilePolicy::new(true, FileAccessTier::Write, vec![]);
+        let r = tool_create_directory(
+            &serde_json::json!({"path": "anywhere"}),
+            None,
+            Some(&policy),
+            None,
+        )
+        .await;
+        assert!(
+            r.is_err(),
+            "active policy with no workspace root must fail closed: {:?}",
+            r
+        );
+        assert!(r.unwrap_err().contains("workspace root"));
+    }
+
+    #[tokio::test]
     async fn test_create_directory_missing_path_param() {
-        let result = tool_create_directory(&serde_json::json!({}), None).await;
+        let result = tool_create_directory(&serde_json::json!({}), None, None, None).await;
         assert!(result.is_err());
         let msg = result.unwrap_err();
         assert!(msg.contains("Missing 'path'"), "got: {msg}");
@@ -4065,9 +4442,11 @@ mod tests {
             Some(root.as_path()), // workspace_root
             None,                 // media_engine
             None,                 // exec_policy
+            None,                 // file_policy
             None,                 // tts_engine
             None,                 // docker_config
             None,                 // process_manager
+            None,                 // origin
         )
         .await;
         assert!(
@@ -4095,9 +4474,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         assert!(result.is_error);
@@ -4121,9 +4502,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         // web_search now attempts a real fetch; may succeed or fail depending on network
@@ -4147,9 +4530,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         assert!(result.is_error);
@@ -4173,9 +4558,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         assert!(result.is_error);
@@ -4200,9 +4587,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         assert!(result.is_error);
@@ -4231,9 +4620,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         // Should fail for file-not-found, NOT for permission denied
@@ -4276,9 +4667,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         // Should NOT be the capability-enforcement "Permission denied" — it should
@@ -4311,9 +4704,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         assert!(result.is_error);
@@ -4480,9 +4875,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         assert!(result.is_error);
@@ -4525,9 +4922,11 @@ mod tests {
             None,
             None, // media_engine
             None, // exec_policy
+            None, // file_policy
             None, // tts_engine
             None, // docker_config
             None, // process_manager
+            None, // origin
         )
         .await;
         assert!(result.is_error);
@@ -5010,5 +5409,128 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_lowercase().contains("kernel"));
+    }
+
+    // -----------------------------------------------------------------
+    // ANAI-53: synthesize_attach_directives — pure helper tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn synth_attach_none_is_noop() {
+        let out = super::synthesize_attach_directives("hello", None).unwrap();
+        assert_eq!(out, "hello");
+    }
+
+    #[test]
+    fn synth_attach_null_is_noop() {
+        let v = serde_json::Value::Null;
+        let out = super::synthesize_attach_directives("hello", Some(&v)).unwrap();
+        assert_eq!(out, "hello");
+    }
+
+    #[test]
+    fn synth_attach_empty_array_is_noop() {
+        let v = serde_json::json!([]);
+        let out = super::synthesize_attach_directives("hello", Some(&v)).unwrap();
+        assert_eq!(out, "hello");
+    }
+
+    #[test]
+    fn synth_attach_single_relative_path() {
+        let v = serde_json::json!(["report.pdf"]);
+        let out = super::synthesize_attach_directives("see attached", Some(&v)).unwrap();
+        assert_eq!(out, "<openfang:attach path=\"report.pdf\"/>\nsee attached");
+    }
+
+    #[test]
+    fn synth_attach_single_absolute_path() {
+        let v = serde_json::json!(["/tmp/file.png"]);
+        let out = super::synthesize_attach_directives("", Some(&v)).unwrap();
+        // Empty message → trailing newline trimmed.
+        assert_eq!(out, "<openfang:attach path=\"/tmp/file.png\"/>");
+    }
+
+    #[test]
+    fn synth_attach_multiple_paths_preserve_order() {
+        let v = serde_json::json!(["a.pdf", "b.png", "c.opus"]);
+        let out = super::synthesize_attach_directives("caption", Some(&v)).unwrap();
+        assert_eq!(
+            out,
+            "<openfang:attach path=\"a.pdf\"/>\n<openfang:attach path=\"b.png\"/>\n<openfang:attach path=\"c.opus\"/>\ncaption"
+        );
+    }
+
+    #[test]
+    fn synth_attach_composes_with_inline_directive() {
+        // Caller wrote one inline directive, then also passed an
+        // attachments param. Both must survive; downstream parser sees
+        // two directives in the final message.
+        let v = serde_json::json!(["b.pdf"]);
+        let msg = "<openfang:attach path=\"a.pdf\"/>\nhere are two files";
+        let out = super::synthesize_attach_directives(msg, Some(&v)).unwrap();
+        assert_eq!(
+            out,
+            "<openfang:attach path=\"b.pdf\"/>\n<openfang:attach path=\"a.pdf\"/>\nhere are two files"
+        );
+        // And the parser regex finds both.
+        let re = regex_lite::Regex::new(r#"<openfang:attach\s+([^>]*?)/>"#).unwrap();
+        assert_eq!(re.find_iter(&out).count(), 2);
+    }
+
+    #[test]
+    fn synth_attach_rejects_non_array() {
+        let v = serde_json::json!("not-an-array");
+        let err = super::synthesize_attach_directives("hi", Some(&v)).unwrap_err();
+        assert!(err.contains("must be an array"), "err = {err}");
+    }
+
+    #[test]
+    fn synth_attach_rejects_non_string_element() {
+        let v = serde_json::json!(["ok.pdf", 42]);
+        let err = super::synthesize_attach_directives("hi", Some(&v)).unwrap_err();
+        assert!(err.contains("attachments[1]"), "err = {err}");
+        assert!(err.contains("must be a string"), "err = {err}");
+    }
+
+    #[test]
+    fn synth_attach_rejects_empty_path_element() {
+        let v = serde_json::json!(["ok.pdf", ""]);
+        let err = super::synthesize_attach_directives("hi", Some(&v)).unwrap_err();
+        assert!(err.contains("attachments[1]"), "err = {err}");
+        assert!(err.contains("empty"), "err = {err}");
+    }
+
+    #[test]
+    fn synth_attach_rejects_quote_in_path() {
+        let v = serde_json::json!(["weird\".pdf"]);
+        let err = super::synthesize_attach_directives("hi", Some(&v)).unwrap_err();
+        assert!(err.contains("directive boundary"), "err = {err}");
+    }
+
+    #[test]
+    fn synth_attach_rejects_newline_in_path() {
+        let v = serde_json::json!(["line1\nline2.pdf"]);
+        let err = super::synthesize_attach_directives("hi", Some(&v)).unwrap_err();
+        assert!(err.contains("directive boundary"), "err = {err}");
+    }
+
+    #[test]
+    fn synth_attach_rejects_angle_bracket_in_path() {
+        let v = serde_json::json!(["foo<bar>.pdf"]);
+        let err = super::synthesize_attach_directives("hi", Some(&v)).unwrap_err();
+        assert!(err.contains("directive boundary"), "err = {err}");
+    }
+
+    #[test]
+    fn synth_attach_traversal_path_still_synthesized() {
+        // Synthesis is pure — no path policy here. The downstream
+        // outbound_attach parser is what rejects traversal/escape paths
+        // (covered by its own test suite). This test pins down that the
+        // helper does NOT pre-filter — security is downstream.
+        let v = serde_json::json!(["../../../etc/hosts"]);
+        let out = super::synthesize_attach_directives("hi", Some(&v)).unwrap();
+        assert!(out.contains("<openfang:attach path=\"../../../etc/hosts\"/>"));
+        // Defence in depth lives in outbound_attach::resolve_directive,
+        // which canonicalises and applies allow_roots — see its tests.
     }
 }

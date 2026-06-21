@@ -298,7 +298,9 @@ fn convert_messages(
                                 thought_signature,
                             });
                         }
-                        ContentBlock::Image { media_type, data } => {
+                        ContentBlock::Image {
+                            media_type, data, ..
+                        } => {
                             parts.push(GeminiPart::InlineData {
                                 inline_data: GeminiInlineData {
                                     mime_type: media_type.clone(),
@@ -1340,6 +1342,8 @@ mod tests {
             temperature: 0.7,
             system: None,
             thinking: None,
+            caller_agent_id: None,
+            allowed_tools: None,
         };
 
         let tools = convert_tools(&request);
@@ -1358,6 +1362,8 @@ mod tests {
             temperature: 0.7,
             system: None,
             thinking: None,
+            caller_agent_id: None,
+            allowed_tools: None,
         };
 
         let tools = convert_tools(&request);

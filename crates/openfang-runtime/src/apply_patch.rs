@@ -271,41 +271,90 @@ pub fn parse_patch(input: &str) -> Result<Vec<PatchOp>, String> {
     Ok(ops)
 }
 
-/// Resolve a patch path through workspace confinement.
-fn resolve_patch_path(raw: &str, workspace_root: &Path) -> Result<PathBuf, String> {
-    crate::workspace_sandbox::resolve_sandbox_path(raw, workspace_root)
+/// Resolve a patch path through workspace confinement and `file_policy`.
+/// Patch targets are always writes; prompt-tier is fail-closed here because
+/// apply_patch is multi-path and per-target interactive approval is out of
+/// scope for v1.
+fn resolve_patch_path(
+    raw: &str,
+    workspace_root: &Path,
+    file_policy: Option<&openfang_types::config::FilePolicy>,
+) -> Result<PathBuf, String> {
+    crate::workspace_sandbox::resolve_with_policy(raw, workspace_root, file_policy, true, false)
+}
+
+/// Raw target path(s) an op will touch — for the pre-application policy pass.
+fn op_targets(op: &PatchOp) -> Vec<&str> {
+    match op {
+        PatchOp::AddFile { path, .. } | PatchOp::DeleteFile { path } => vec![path.as_str()],
+        PatchOp::UpdateFile { path, move_to, .. } => {
+            let mut v = vec![path.as_str()];
+            if let Some(m) = move_to {
+                v.push(m.as_str());
+            }
+            v
+        }
+    }
 }
 
 /// Apply parsed patch operations against the filesystem.
 ///
-/// All file paths are confined to `workspace_root` via sandbox resolution.
-pub async fn apply_patch(ops: &[PatchOp], workspace_root: &Path) -> PatchResult {
+/// All file paths are confined to `workspace_root` via sandbox resolution and
+/// governed by `file_policy` when active.
+///
+/// F3: a policy pre-pass validates *every* target against workspace
+/// confinement and `file_policy` before any write, so a denied target later in
+/// the patch cannot leave earlier targets partially written. This is a policy
+/// pre-check, not filesystem-transactional rollback — a mid-apply I/O failure
+/// can still leave partial writes (std offers no clean rollback) — but no write
+/// occurs past a policy-*denied* target.
+pub async fn apply_patch(
+    ops: &[PatchOp],
+    workspace_root: &Path,
+    file_policy: Option<&openfang_types::config::FilePolicy>,
+) -> PatchResult {
     let mut result = PatchResult::default();
+
+    // F3: policy pre-pass — reject the whole patch if any target is denied.
+    let mut precheck_errors = Vec::new();
+    for op in ops {
+        for raw in op_targets(op) {
+            if let Err(e) = resolve_patch_path(raw, workspace_root, file_policy) {
+                precheck_errors.push(format!("{}: {}", raw, e));
+            }
+        }
+    }
+    if !precheck_errors.is_empty() {
+        result.errors = precheck_errors;
+        return result;
+    }
 
     for op in ops {
         match op {
-            PatchOp::AddFile { path, content } => match resolve_patch_path(path, workspace_root) {
-                Ok(resolved) => {
-                    if let Some(parent) = resolved.parent() {
-                        if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                            result.errors.push(format!("mkdir {}: {}", path, e));
-                            continue;
+            PatchOp::AddFile { path, content } => {
+                match resolve_patch_path(path, workspace_root, file_policy) {
+                    Ok(resolved) => {
+                        if let Some(parent) = resolved.parent() {
+                            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                                result.errors.push(format!("mkdir {}: {}", path, e));
+                                continue;
+                            }
+                        }
+                        match tokio::fs::write(&resolved, content).await {
+                            Ok(()) => result.files_added += 1,
+                            Err(e) => result.errors.push(format!("write {}: {}", path, e)),
                         }
                     }
-                    match tokio::fs::write(&resolved, content).await {
-                        Ok(()) => result.files_added += 1,
-                        Err(e) => result.errors.push(format!("write {}: {}", path, e)),
-                    }
+                    Err(e) => result.errors.push(format!("{}: {}", path, e)),
                 }
-                Err(e) => result.errors.push(format!("{}: {}", path, e)),
-            },
+            }
 
             PatchOp::UpdateFile {
                 path,
                 move_to,
                 hunks,
             } => {
-                let resolved = match resolve_patch_path(path, workspace_root) {
+                let resolved = match resolve_patch_path(path, workspace_root, file_policy) {
                     Ok(r) => r,
                     Err(e) => {
                         result.errors.push(format!("{}: {}", path, e));
@@ -327,7 +376,7 @@ pub async fn apply_patch(ops: &[PatchOp], workspace_root: &Path) -> PatchResult 
                     Ok(patched) => {
                         // Determine target path (move or in-place)
                         let target = if let Some(new_path) = move_to {
-                            match resolve_patch_path(new_path, workspace_root) {
+                            match resolve_patch_path(new_path, workspace_root, file_policy) {
                                 Ok(t) => {
                                     result.files_moved += 1;
                                     t
@@ -364,15 +413,17 @@ pub async fn apply_patch(ops: &[PatchOp], workspace_root: &Path) -> PatchResult 
                 }
             }
 
-            PatchOp::DeleteFile { path } => match resolve_patch_path(path, workspace_root) {
-                Ok(resolved) => match tokio::fs::remove_file(&resolved).await {
-                    Ok(()) => result.files_deleted += 1,
-                    Err(e) => {
-                        result.errors.push(format!("delete {}: {}", path, e));
-                    }
-                },
-                Err(e) => result.errors.push(format!("{}: {}", path, e)),
-            },
+            PatchOp::DeleteFile { path } => {
+                match resolve_patch_path(path, workspace_root, file_policy) {
+                    Ok(resolved) => match tokio::fs::remove_file(&resolved).await {
+                        Ok(()) => result.files_deleted += 1,
+                        Err(e) => {
+                            result.errors.push(format!("delete {}: {}", path, e));
+                        }
+                    },
+                    Err(e) => result.errors.push(format!("{}: {}", path, e)),
+                }
+            }
         }
     }
 
@@ -736,7 +787,7 @@ mod tests {
             },
         ];
 
-        let result = apply_patch(&ops, &dir).await;
+        let result = apply_patch(&ops, &dir, None).await;
         assert!(result.is_ok());
         assert_eq!(result.files_added, 1);
         assert_eq!(result.files_updated, 1);
@@ -770,10 +821,56 @@ mod tests {
             path: "doomed.txt".to_string(),
         }];
 
-        let result = apply_patch(&ops, &dir).await;
+        let result = apply_patch(&ops, &dir, None).await;
         assert!(result.is_ok());
         assert_eq!(result.files_deleted, 1);
         assert!(!dir.join("doomed.txt").exists());
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_f3_denied_target_blocks_all_writes() {
+        use openfang_types::config::{FileAccessTier, FilePolicy, FileRule};
+        let dir = std::env::temp_dir().join("openfang_patch_f3_test");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(dir.join("secret")).await.unwrap();
+
+        // Workspace writable, but a `secret/` subtree is denied.
+        let policy = FilePolicy::new(
+            true,
+            FileAccessTier::Write,
+            vec![FileRule {
+                path: "secret".to_string(),
+                tier: FileAccessTier::Deny,
+            }],
+        );
+
+        // First op is allowed; second targets the denied subtree.
+        let ops = vec![
+            PatchOp::AddFile {
+                path: "allowed.txt".to_string(),
+                content: "hi".to_string(),
+            },
+            PatchOp::AddFile {
+                path: "secret/leak.txt".to_string(),
+                content: "x".to_string(),
+            },
+        ];
+
+        let result = apply_patch(&ops, &dir, Some(&policy)).await;
+        assert!(
+            !result.is_ok(),
+            "patch must be rejected when any target is policy-denied"
+        );
+        assert_eq!(
+            result.files_added, 0,
+            "no writes past a policy-denied target (pre-pass)"
+        );
+        assert!(
+            !dir.join("allowed.txt").exists(),
+            "the allowed target must not be written when the patch is rejected"
+        );
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }

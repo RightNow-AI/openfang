@@ -227,6 +227,47 @@ where
     deserializer.deserialize_any(ExecPolicyVisitor)
 }
 
+/// Lenient deserializer for an optional `FilePolicy` (per-agent override).
+///
+/// Mirrors [`exec_policy_lenient`]: a `[file_policy]` table deserializes to
+/// `Some(FilePolicy)`, an absent/null value to `None`. Kept as a sibling so the
+/// agent-manifest field reads exactly like `exec_policy`.
+pub fn file_policy_lenient<'de, D>(
+    deserializer: D,
+) -> Result<Option<crate::config::FilePolicy>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct FilePolicyVisitor;
+
+    impl<'de> Visitor<'de> for FilePolicyVisitor {
+        type Value = Option<crate::config::FilePolicy>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a FilePolicy table or null")
+        }
+
+        fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let policy =
+                crate::config::FilePolicy::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(Some(policy))
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(FilePolicyVisitor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

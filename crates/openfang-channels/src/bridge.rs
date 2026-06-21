@@ -13,10 +13,11 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
 use openfang_types::agent::AgentId;
-use openfang_types::approval::ApprovalRequest;
+use openfang_types::approval::{ApprovalOrigin, ApprovalRequest};
 use openfang_types::commands::{self as slash_commands, Surfaces};
 use openfang_types::config::{ChannelOverrides, DmPolicy, GroupPolicy, OutputFormat, PrefixStyle};
 use openfang_types::message::ContentBlock;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -120,6 +121,39 @@ pub trait ChannelBridgeHandle: Send + Sync {
             .collect::<Vec<_>>()
             .join("\n");
         self.send_message(agent_id, &text).await
+    }
+
+    /// Send a message to an agent, carrying the live origin of the triggering
+    /// run so a downstream approval prompt can be pushed back to the exact
+    /// channel/conversation it came from.
+    ///
+    /// Default implementation ignores `origin` and delegates to
+    /// [`send_message`](Self::send_message) — preserving current behavior for
+    /// every adapter and caller that does not override it. Only the real kernel
+    /// impl (openfang-api) overrides this to thread `origin` into the run.
+    async fn send_message_with_origin(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        origin: ApprovalOrigin,
+    ) -> Result<String, String> {
+        let _ = origin;
+        self.send_message(agent_id, message).await
+    }
+
+    /// Origin-carrying counterpart to
+    /// [`send_message_with_blocks`](Self::send_message_with_blocks).
+    ///
+    /// Default implementation ignores `origin` and delegates to the non-origin
+    /// block variant.
+    async fn send_message_with_blocks_and_origin(
+        &self,
+        agent_id: AgentId,
+        blocks: Vec<ContentBlock>,
+        origin: ApprovalOrigin,
+    ) -> Result<String, String> {
+        let _ = origin;
+        self.send_message_with_blocks(agent_id, blocks).await
     }
 
     /// Find an agent by name, returning its ID.
@@ -314,7 +348,14 @@ pub trait ChannelBridgeHandle: Send + Sync {
     }
 
     /// Approve or reject a pending approval by UUID prefix.
-    async fn resolve_approval_text(&self, _id_prefix: &str, _approve: bool) -> String {
+    async fn resolve_approval_text(
+        &self,
+        _id_prefix: &str,
+        _approve: bool,
+        _channel_type: &str,
+        _approver_user_id: &str,
+        _approver_display: &str,
+    ) -> String {
         "Approvals not available.".to_string()
     }
 
@@ -404,6 +445,23 @@ impl BridgeManager {
     /// Return a reference to the underlying agent router.
     pub fn router(&self) -> &Arc<AgentRouter> {
         &self.router
+    }
+
+    /// A receiver for this bridge's shutdown signal.
+    ///
+    /// Lets an externally-spawned side-effect task (e.g. the approval surfacer
+    /// in openfang-api, which needs the kernel's `ApprovalManager`) observe the
+    /// same shutdown as the adapter dispatch loops, so it is torn down on
+    /// `stop()` / channel reload rather than leaking across reloads.
+    pub fn shutdown_receiver(&self) -> watch::Receiver<bool> {
+        self.shutdown_rx.clone()
+    }
+
+    /// Hand the manager ownership of an externally-spawned task so it is awaited
+    /// during `stop()`. The task is expected to observe
+    /// [`shutdown_receiver`](Self::shutdown_receiver) and exit on signal.
+    pub fn attach_task(&mut self, task: tokio::task::JoinHandle<()>) {
+        self.tasks.push(task);
     }
 
     /// Start an adapter: subscribe to its message stream and spawn a dispatch task.
@@ -593,7 +651,79 @@ async fn maybe_prefix_response(
     }
 }
 
+/// Compute the per-agent workspace root for outbound attachment scoping.
+///
+/// Returns the canonical path to `~/.openfang/workspaces/<agent_name>/` if
+/// the agent name can be resolved and the directory exists; `None`
+/// otherwise. A `None` result causes the attachment parser to fall back to
+/// its (empty) default allow-roots — i.e. attachments are dropped fail-
+/// closed rather than escalated. The text portion of the message is still
+/// delivered.
+async fn agent_workspace_root(
+    handle: &Arc<dyn ChannelBridgeHandle>,
+    agent_id: AgentId,
+) -> Option<PathBuf> {
+    let name = resolve_agent_name(handle, agent_id).await?;
+    let home = std::env::var_os("HOME")?;
+    let mut p = PathBuf::from(home);
+    p.push(".openfang");
+    p.push("workspaces");
+    p.push(&name);
+    std::fs::canonicalize(&p).ok()
+}
+
+/// Send an *agent-authored* response: resolves the agent's workspace root,
+/// parses outbound `<openfang:attach .../>` markers scoped to that root,
+/// then formats and dispatches.
+///
+/// This is the only send path on which agent-generated text reaches the
+/// adapter; system-authored text (rate-limit notices, help, errors) goes
+/// through [`send_response`], which uses empty allow-roots and therefore
+/// silently strips any markers (system text never contains them, but
+/// defense-in-depth).
+async fn send_agent_response(
+    handle: &Arc<dyn ChannelBridgeHandle>,
+    agent_id: AgentId,
+    adapter: &dyn ChannelAdapter,
+    user: &ChannelUser,
+    text: String,
+    thread_id: Option<&str>,
+    output_format: OutputFormat,
+) {
+    let workspace_root = agent_workspace_root(handle, agent_id).await;
+    let _ = send_parsed(
+        adapter,
+        user,
+        text,
+        thread_id,
+        output_format,
+        SendOptions { workspace_root },
+    )
+    .await;
+}
+
+/// Caller-supplied context for an outbound send.
+///
+/// Carries the per-agent workspace root used to scope outbound
+/// `<openfang:attach .../>` marker resolution. `None` means "no allow-roots"
+/// — the parser is fail-closed against missing context, so attachments are
+/// silently dropped while text still goes through. Callers that want
+/// attachments to work MUST set `workspace_root` (typically
+/// `~/.openfang/workspaces/<agent>/`).
+#[derive(Clone, Debug, Default)]
+pub struct SendOptions {
+    /// Per-agent workspace root. When `Some`, the outbound attachment
+    /// parser is restricted to paths under this root. When `None`,
+    /// attachments are dropped fail-closed.
+    pub workspace_root: Option<PathBuf>,
+}
+
 /// Send a response, applying output formatting and optional threading.
+///
+/// Bridge reply-path entrypoint. Delegates to [`send_parsed`] with default
+/// [`SendOptions`] — kept for source-compatibility with the many call sites
+/// inside this module; new code (kernel proactive-send) should call
+/// [`send_parsed`] directly with an explicit `workspace_root`.
 async fn send_response(
     adapter: &dyn ChannelAdapter,
     user: &ChannelUser,
@@ -601,25 +731,136 @@ async fn send_response(
     thread_id: Option<&str>,
     output_format: OutputFormat,
 ) {
-    let formatted = if adapter.name() == "wecom" {
-        formatter::format_for_wecom(&text, output_format)
-    } else {
-        formatter::format_for_channel(&text, output_format)
-    };
-    let content = ChannelContent::Text(formatted);
+    let _ = send_parsed(
+        adapter,
+        user,
+        text,
+        thread_id,
+        output_format,
+        SendOptions::default(),
+    )
+    .await;
+}
 
-    let result = if let Some(tid) = thread_id {
-        adapter.send_in_thread(user, content, tid).await
-    } else {
-        adapter.send(user, content).await
+/// Parse outbound `<openfang:attach .../>` markers, apply channel
+/// formatting, and dispatch to the adapter.
+///
+/// Shared by the bridge reply-path ([`send_response`]) and the kernel
+/// proactive-send path (commit 3). The `options.workspace_root`, when
+/// set, is forwarded to [`outbound_attach::parse`] as the sole allow-root,
+/// scoping attachment resolution to that agent's workspace.
+/// Returns the list of `<openfang:attach .../>` directives whose paths
+/// parsed but whose resolution failed (missing file, outside allow-roots,
+/// oversized, …) — `(directive_path, reason)` per entry. Callers that
+/// surface a tool-call result back to the agent (e.g.
+/// `kernel::send_channel_message` for the `channel_send` tool) should
+/// include this list so the agent can react to silent drops. The bridge
+/// reply-path discards it; the WARN log inside `outbound_attach::parse`
+/// remains the operator-facing record.
+pub async fn send_parsed(
+    adapter: &dyn ChannelAdapter,
+    user: &ChannelUser,
+    text: String,
+    thread_id: Option<&str>,
+    output_format: OutputFormat,
+    options: SendOptions,
+) -> Vec<(String, String)> {
+    // Parse `<openfang:attach .../>` markers BEFORE formatting — channel
+    // formatters (telegram HTML, slack mrkdwn) escape `<` and would break
+    // marker detection downstream.
+    //
+    // `workspace_root` plays two distinct roles in the parser:
+    //   - `allow_roots`: authorisation. The canonicalised target must
+    //     live under this root.
+    //   - `base`: resolution context for *relative* directive paths.
+    //     Without an explicit base the parser refuses to fall back to
+    //     process CWD (see outbound_attach module docs).
+    // Bridge currently passes the same workspace for both; that's a
+    // caller convention, not a parser invariant.
+    let allow_roots_override: Option<Vec<PathBuf>> =
+        options.workspace_root.as_ref().map(|p| vec![p.clone()]);
+    let parse_opts = crate::outbound_attach::ParseOptions {
+        allow_roots: allow_roots_override.as_deref(),
+        base: options.workspace_root.as_deref(),
     };
+    let (text_to_format, attachment_blocks, skipped): (
+        String,
+        Vec<ChannelContent>,
+        Vec<(String, String)>,
+    ) = match crate::outbound_attach::parse(&text, parse_opts).await {
+        crate::outbound_attach::Parsed::NoMarkers => (text, Vec::new(), Vec::new()),
+        crate::outbound_attach::Parsed::WithAttachments {
+            stripped_text,
+            files,
+            skipped,
+        } => (stripped_text, files, skipped),
+    };
+
+    let formatted = if adapter.name() == "wecom" {
+        formatter::format_for_wecom(&text_to_format, output_format)
+    } else {
+        formatter::format_for_channel(&text_to_format, output_format)
+    };
+
+    let content = if attachment_blocks.is_empty() {
+        ChannelContent::Text(formatted)
+    } else {
+        let mut blocks = Vec::with_capacity(attachment_blocks.len() + 1);
+        if !formatted.trim().is_empty() {
+            blocks.push(ChannelContent::Text(formatted));
+        }
+        blocks.extend(attachment_blocks);
+        if blocks.len() == 1 {
+            blocks.remove(0)
+        } else {
+            ChannelContent::Multipart(blocks)
+        }
+    };
+
+    let result = dispatch_content(adapter, user, content, thread_id).await;
 
     if let Err(e) = result {
         error!("Failed to send response: {e}");
     }
+
+    skipped
 }
 
-fn default_output_format_for_channel(channel_type: &str) -> OutputFormat {
+/// Degrade-aware dispatch chokepoint (ANAI-82 Piece 1).
+///
+/// Single point through which outbound [`ChannelContent`] reaches an adapter.
+/// If the content is [`ChannelContent::Interactive`] (action buttons) but the
+/// target adapter cannot render it (`!supports_interactive()`), collapse it to
+/// its plain-text body via [`ChannelContent::degrade_to_text`] before sending.
+/// This keeps the ~50 non-Discord adapters from ever receiving a variant they
+/// cannot render, and gives the interactive approval-prompt emit path (Piece 2)
+/// a safe sink on every channel.
+async fn dispatch_content(
+    adapter: &dyn ChannelAdapter,
+    user: &ChannelUser,
+    content: ChannelContent,
+    thread_id: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let content = if matches!(content, ChannelContent::Interactive { .. })
+        && !adapter.supports_interactive()
+    {
+        debug!(
+            adapter = adapter.name(),
+            "degrading Interactive content to text (adapter lacks button support)"
+        );
+        content.degrade_to_text()
+    } else {
+        content
+    };
+
+    if let Some(tid) = thread_id {
+        adapter.send_in_thread(user, content, tid).await
+    } else {
+        adapter.send(user, content).await
+    }
+}
+
+pub fn default_output_format_for_channel(channel_type: &str) -> OutputFormat {
     match channel_type {
         "telegram" => OutputFormat::TelegramHtml,
         "slack" => OutputFormat::SlackMrkdwn,
@@ -706,6 +947,25 @@ fn binding_context_for(message: &ChannelMessage) -> BindingContext {
             .and_then(|v| v.as_str())
             .map(String::from),
         roles: Vec::new(),
+    }
+}
+
+/// Build the live [`ApprovalOrigin`] for an incoming message so a downstream
+/// approval prompt can be pushed back to the exact channel/conversation that
+/// triggered the run.
+///
+/// `channel_type` / `channel_id` / `recipient` are sourced from the same
+/// single-source-of-truth as routing ([`binding_context_for`]); `thread_id`
+/// carries the resolved (possibly auto-created) thread the run is replying in.
+/// `recipient` is audit/targeting only — never an authz carrier (the clicker is
+/// re-authorized from the platform-attested interaction identity).
+fn approval_origin_for(message: &ChannelMessage, thread_id: Option<&str>) -> ApprovalOrigin {
+    let ctx = binding_context_for(message);
+    ApprovalOrigin {
+        channel_type: ctx.channel,
+        channel_id: ctx.channel_id,
+        thread_id: thread_id.map(String::from),
+        recipient: Some(ctx.peer_id),
     }
 }
 
@@ -892,6 +1152,7 @@ async fn dispatch_message(
             router,
             &message.sender,
             sender_user_id(message),
+            channel_type_str(&message.channel),
         )
         .await;
         send_response(adapter, &message.sender, result, thread_id, output_format).await;
@@ -949,6 +1210,14 @@ async fn dispatch_message(
                 ChannelContent::Command { name, args } => {
                     blocks.push(ContentBlock::Text {
                         text: format!("/{name} {}", args.join(" ")),
+                        provider_metadata: None,
+                    });
+                }
+                // Outbound-only variant; never expected inbound. Render
+                // its text body defensively rather than drop the message.
+                ChannelContent::Interactive { text, .. } => {
+                    blocks.push(ContentBlock::Text {
+                        text: text.clone(),
                         provider_metadata: None,
                     });
                 }
@@ -1022,6 +1291,8 @@ async fn dispatch_message(
 
     let text = match &message.content {
         ChannelContent::Text(t) => t.clone(),
+        // Outbound-only variant; never expected inbound. Fall back to text.
+        ChannelContent::Interactive { text, .. } => text.clone(),
         ChannelContent::Command { .. } => unreachable!(), // handled above
         ChannelContent::Image {
             ref url,
@@ -1076,6 +1347,8 @@ async fn dispatch_message(
                 ChannelContent::Command { name, args } => {
                     format!("/{name} {}", args.join(" "))
                 }
+                // Outbound-only; never expected inbound. Fall back to text.
+                ChannelContent::Interactive { text, .. } => text.clone(),
                 // Nesting is rejected by adapters; emit empty so the join
                 // doesn't insert spurious separators.
                 ChannelContent::Multipart(_) => String::new(),
@@ -1103,6 +1376,7 @@ async fn dispatch_message(
                 router,
                 &message.sender,
                 sender_user_id(message),
+                channel_type_str(&message.channel),
             )
             .await;
             send_response(adapter, &message.sender, result, thread_id, output_format).await;
@@ -1277,7 +1551,16 @@ async fn dispatch_message(
     // If auto-reply is enabled but suppressed for this message, skip agent call entirely.
     if let Some(reply) = handle.check_auto_reply(agent_id, &text).await {
         let reply = maybe_prefix_response(handle, overrides.as_ref(), agent_id, reply).await;
-        send_response(adapter, &message.sender, reply, thread_id, output_format).await;
+        send_agent_response(
+            handle,
+            agent_id,
+            adapter,
+            &message.sender,
+            reply,
+            thread_id,
+            output_format,
+        )
+        .await;
         handle
             .record_delivery(
                 agent_id,
@@ -1330,8 +1613,15 @@ async fn dispatch_message(
         text.clone()
     };
 
+    // Carry the live origin so a downstream approval prompt can be pushed back
+    // to this exact channel/conversation. Nothing reads `origin` until the emit
+    // site (step 5) — this is behavior-preserving on every existing path.
+    let origin = approval_origin_for(message, thread_id);
+
     // Send to agent and relay response
-    let result = handle.send_message(agent_id, &prefixed_text).await;
+    let result = handle
+        .send_message_with_origin(agent_id, &prefixed_text, origin.clone())
+        .await;
 
     // Stop the typing refresh now that we have a response
     typing_task.abort();
@@ -1343,7 +1633,16 @@ async fn dispatch_message(
             }
             let response =
                 maybe_prefix_response(handle, overrides.as_ref(), agent_id, response).await;
-            send_response(adapter, &message.sender, response, thread_id, output_format).await;
+            send_agent_response(
+                handle,
+                agent_id,
+                adapter,
+                &message.sender,
+                response,
+                thread_id,
+                output_format,
+            )
+            .await;
             handle
                 .record_delivery(
                     agent_id,
@@ -1359,7 +1658,9 @@ async fn dispatch_message(
             // Try re-resolution before reporting error
             if let Some(new_id) = try_reresolution(&e, &channel_key, handle, router).await {
                 let typing_task2 = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
-                let retry = handle.send_message(new_id, &text).await;
+                let retry = handle
+                    .send_message_with_origin(new_id, &text, origin.clone())
+                    .await;
                 typing_task2.abort();
                 match retry {
                     Ok(response) => {
@@ -1375,8 +1676,16 @@ async fn dispatch_message(
                         let response =
                             maybe_prefix_response(handle, overrides.as_ref(), new_id, response)
                                 .await;
-                        send_response(adapter, &message.sender, response, thread_id, output_format)
-                            .await;
+                        send_agent_response(
+                            handle,
+                            new_id,
+                            adapter,
+                            &message.sender,
+                            response,
+                            thread_id,
+                            output_format,
+                        )
+                        .await;
                         handle
                             .record_delivery(
                                 new_id,
@@ -1688,7 +1997,14 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
         }
     }
 
-    blocks.push(ContentBlock::Image { media_type, data });
+    blocks.push(ContentBlock::Image {
+        media_type,
+        data,
+        // Preserve the original CDN/source URL so text-only drivers (e.g.
+        // Claude Code) can reference it, and vision-capable drivers retain
+        // it for diagnostics.
+        source_url: Some(url.to_string()),
+    });
 
     blocks
 }
@@ -1784,8 +2100,11 @@ async fn dispatch_with_blocks(
     // Continuous typing indicator (see spawn_typing_loop doc)
     let typing_task = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
 
+    // Carry the live origin (see text path) — behavior-preserving until emit.
+    let origin = approval_origin_for(message, thread_id);
+
     let result = handle
-        .send_message_with_blocks(agent_id, blocks.clone())
+        .send_message_with_blocks_and_origin(agent_id, blocks.clone(), origin.clone())
         .await;
 
     typing_task.abort();
@@ -1807,7 +2126,16 @@ async fn dispatch_with_blocks(
                 Some(name) => apply_agent_prefix(prefix_style, name, &response),
                 None => response,
             };
-            send_response(adapter, &message.sender, response, thread_id, output_format).await;
+            send_agent_response(
+                handle,
+                agent_id,
+                adapter,
+                &message.sender,
+                response,
+                thread_id,
+                output_format,
+            )
+            .await;
             handle
                 .record_delivery(
                     agent_id,
@@ -1823,7 +2151,9 @@ async fn dispatch_with_blocks(
             // Try re-resolution before reporting error
             if let Some(new_id) = try_reresolution(&e, &channel_key, handle, router).await {
                 let typing_task2 = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
-                let retry = handle.send_message_with_blocks(new_id, blocks).await;
+                let retry = handle
+                    .send_message_with_blocks_and_origin(new_id, blocks, origin.clone())
+                    .await;
                 typing_task2.abort();
                 match retry {
                     Ok(response) => {
@@ -1845,8 +2175,16 @@ async fn dispatch_with_blocks(
                             Some(name) => apply_agent_prefix(prefix_style, name, &response),
                             None => response,
                         };
-                        send_response(adapter, &message.sender, response, thread_id, output_format)
-                            .await;
+                        send_agent_response(
+                            handle,
+                            new_id,
+                            adapter,
+                            &message.sender,
+                            response,
+                            thread_id,
+                            output_format,
+                        )
+                        .await;
                         handle
                             .record_delivery(
                                 new_id,
@@ -1938,6 +2276,7 @@ async fn handle_command(
     router: &Arc<AgentRouter>,
     sender: &ChannelUser,
     user_id: &str,
+    channel_type: &str,
 ) -> String {
     // Canonicalise through the unified command registry: aliases resolve to
     // their canonical name and matching is case-insensitive. If the command
@@ -2164,14 +2503,30 @@ async fn handle_command(
             if args.is_empty() {
                 "Usage: /approve <id-prefix>".to_string()
             } else {
-                handle.resolve_approval_text(&args[0], true).await
+                handle
+                    .resolve_approval_text(
+                        &args[0],
+                        true,
+                        channel_type,
+                        user_id,
+                        &sender.display_name,
+                    )
+                    .await
             }
         }
         "reject" => {
             if args.is_empty() {
                 "Usage: /reject <id-prefix>".to_string()
             } else {
-                handle.resolve_approval_text(&args[0], false).await
+                handle
+                    .resolve_approval_text(
+                        &args[0],
+                        false,
+                        channel_type,
+                        user_id,
+                        &sender.display_name,
+                    )
+                    .await
             }
         }
 
@@ -2190,7 +2545,7 @@ async fn handle_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ChannelType;
+    use crate::types::{ButtonStyle, ChannelType, InteractiveButton};
     use std::sync::Mutex;
 
     /// Mock kernel handle for testing.
@@ -2231,6 +2586,133 @@ mod tests {
         assert_eq!(args, vec!["hello-world"]);
     }
 
+    /// The origin-carrying trait method must, by default, ignore `origin` and
+    /// behave exactly like `send_message` — so the ~50 adapters and all existing
+    /// callers are unaffected until the real kernel impl overrides it (ANAI-82
+    /// Piece 2, Option Y plumbing).
+    #[tokio::test]
+    async fn send_message_with_origin_defaults_to_send_message() {
+        let handle = MockHandle {
+            agents: Mutex::new(Vec::new()),
+        };
+        let origin = ApprovalOrigin {
+            channel_type: "discord".to_string(),
+            channel_id: Some("chan-1".to_string()),
+            thread_id: None,
+            recipient: Some("peer-1".to_string()),
+        };
+        let out = handle
+            .send_message_with_origin(AgentId::new(), "hello", origin)
+            .await
+            .unwrap();
+        assert_eq!(out, "Echo: hello");
+    }
+
+    /// Records every [`ChannelContent`] handed to `send` so dispatch-path tests
+    /// can assert what the adapter actually received. `interactive` toggles
+    /// [`ChannelAdapter::supports_interactive`] to exercise both branches of the
+    /// degrade chokepoint (ANAI-82 Piece 1).
+    struct RecordingAdapter {
+        interactive: bool,
+        received: Mutex<Vec<ChannelContent>>,
+    }
+
+    #[async_trait]
+    impl ChannelAdapter for RecordingAdapter {
+        fn name(&self) -> &str {
+            "recording-mock"
+        }
+        fn channel_type(&self) -> ChannelType {
+            ChannelType::Custom("recording-mock".to_string())
+        }
+        async fn start(
+            &self,
+        ) -> Result<
+            std::pin::Pin<Box<dyn futures::Stream<Item = ChannelMessage> + Send>>,
+            Box<dyn std::error::Error>,
+        > {
+            Err("mock adapter does not stream".into())
+        }
+        async fn send(
+            &self,
+            _user: &ChannelUser,
+            content: ChannelContent,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            self.received.lock().unwrap().push(content);
+            Ok(())
+        }
+        async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
+            Ok(())
+        }
+        fn supports_interactive(&self) -> bool {
+            self.interactive
+        }
+    }
+
+    fn sample_interactive() -> ChannelContent {
+        ChannelContent::Interactive {
+            text: "Approve request? /approve abc123".to_string(),
+            buttons: vec![InteractiveButton {
+                custom_id: "ap:abc123".to_string(),
+                label: "Approve".to_string(),
+                style: ButtonStyle::Success,
+            }],
+        }
+    }
+
+    fn test_user() -> ChannelUser {
+        ChannelUser {
+            platform_id: "u1".to_string(),
+            display_name: "tester".to_string(),
+            openfang_user: None,
+        }
+    }
+
+    /// Adapter WITHOUT button support: Interactive must be degraded to its text
+    /// body before it ever reaches `send` (the ~50 non-Discord adapters).
+    #[tokio::test]
+    async fn dispatch_degrades_interactive_when_unsupported() {
+        let adapter = RecordingAdapter {
+            interactive: false,
+            received: Mutex::new(Vec::new()),
+        };
+        let user = test_user();
+
+        dispatch_content(&adapter, &user, sample_interactive(), None)
+            .await
+            .unwrap();
+
+        let received = adapter.received.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        match &received[0] {
+            ChannelContent::Text(t) => {
+                assert!(t.contains("/approve abc123"), "text body must survive degrade");
+            }
+            other => panic!("expected degraded Text, got {other:?}"),
+        }
+    }
+
+    /// Adapter WITH button support (Discord): Interactive passes through intact.
+    #[tokio::test]
+    async fn dispatch_preserves_interactive_when_supported() {
+        let adapter = RecordingAdapter {
+            interactive: true,
+            received: Mutex::new(Vec::new()),
+        };
+        let user = test_user();
+
+        dispatch_content(&adapter, &user, sample_interactive(), None)
+            .await
+            .unwrap();
+
+        let received = adapter.received.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert!(
+            matches!(received[0], ChannelContent::Interactive { .. }),
+            "interactive-capable adapter must receive Interactive unchanged"
+        );
+    }
+
     #[tokio::test]
     async fn test_dispatch_routes_to_correct_agent() {
         let agent_id = AgentId::new();
@@ -2265,10 +2747,10 @@ mod tests {
             openfang_user: None,
         };
 
-        let result = handle_command("agents", &[], &handle, &router, &sender, "user1").await;
+        let result = handle_command("agents", &[], &handle, &router, &sender, "user1", "cli").await;
         assert!(result.contains("coder"));
 
-        let result = handle_command("help", &[], &handle, &router, &sender, "user1").await;
+        let result = handle_command("help", &[], &handle, &router, &sender, "user1", "cli").await;
         assert!(result.contains("/agents"));
     }
 
@@ -2293,6 +2775,7 @@ mod tests {
             &router,
             &sender,
             "user1",
+            "telegram",
         )
         .await;
         assert!(result.contains("Now talking to agent: coder"));
@@ -2328,6 +2811,7 @@ mod tests {
             &router,
             &sender,
             user_id,
+            "discord",
         )
         .await;
         assert!(result.contains("Now talking to agent: coder"));
@@ -2357,7 +2841,7 @@ mod tests {
             openfang_user: None,
         };
 
-        let result = handle_command("agent", &[], &handle, &router, &sender, "user1").await;
+        let result = handle_command("agent", &[], &handle, &router, &sender, "user1", "cli").await;
         assert!(result.contains("Usage: /agent <name>"));
         assert!(result.contains("coder"));
     }
@@ -2585,6 +3069,7 @@ mod tests {
             ContentBlock::Image {
                 media_type: "image/jpeg".to_string(),
                 data: "base64data".to_string(),
+                source_url: None,
             },
         ];
 
@@ -2607,6 +3092,7 @@ mod tests {
         let blocks = vec![ContentBlock::Image {
             media_type: "image/png".to_string(),
             data: "base64data".to_string(),
+            source_url: None,
         }];
 
         // Default impl sends empty text when no text blocks
@@ -2809,5 +3295,66 @@ mod tests {
             media_type_from_url("https://api.telegram.org/file/bot123/photos/file_42"),
             "image/jpeg"
         );
+    }
+
+    /// Regression test: `download_image_to_blocks` must populate the
+    /// `source_url` field on the resulting `ContentBlock::Image`. Text-only
+    /// drivers (e.g. Claude Code) rely on this URL to reference the image
+    /// without re-uploading bytes; a regression here silently breaks vision
+    /// for those drivers.
+    ///
+    /// Spins up a local TCP listener that serves a stub PNG response so we
+    /// can drive the function end-to-end without external dependencies.
+    #[tokio::test]
+    async fn download_image_to_blocks_populates_source_url() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/test.png");
+
+        // Body is arbitrary — the function trusts the Content-Type header
+        // when it starts with `image/`. PNG signature is included so any
+        // future magic-byte fallback also matches.
+        let body: &[u8] = b"\x89PNG\r\n\x1a\nfakepngbytes";
+        let response_head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            // Drain the request — we don't care what reqwest sent.
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            sock.write_all(response_head.as_bytes()).await.unwrap();
+            sock.write_all(body).await.unwrap();
+            let _ = sock.shutdown().await;
+        });
+
+        let blocks = download_image_to_blocks(&url, Some("hello")).await;
+
+        // Caption first, image second.
+        assert_eq!(blocks.len(), 2, "expected caption + image blocks");
+        match &blocks[0] {
+            ContentBlock::Text { text, .. } => assert_eq!(text, "hello"),
+            other => panic!("expected text caption block, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::Image {
+                source_url,
+                media_type,
+                ..
+            } => {
+                assert_eq!(
+                    source_url.as_deref(),
+                    Some(url.as_str()),
+                    "source_url must round-trip the fetched URL"
+                );
+                assert_eq!(media_type, "image/png");
+            }
+            other => panic!("expected image block, got {other:?}"),
+        }
     }
 }

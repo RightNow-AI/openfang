@@ -497,6 +497,9 @@ pub struct AgentManifest {
     /// Accepts string shorthand ("allow", "deny", "full", "allowlist") or full table.
     #[serde(default, deserialize_with = "crate::serde_compat::exec_policy_lenient")]
     pub exec_policy: Option<crate::config::ExecPolicy>,
+    /// Per-agent file policy override. If None, uses global file_policy.
+    #[serde(default, deserialize_with = "crate::serde_compat::file_policy_lenient")]
+    pub file_policy: Option<crate::config::FilePolicy>,
     /// Tool allowlist — only these tools are available (empty = all tools).
     #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
     pub tool_allowlist: Vec<String>,
@@ -565,6 +568,7 @@ impl Default for AgentManifest {
             state_dir: None,
             generate_identity_files: true,
             exec_policy: None,
+            file_policy: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
             cache_context: false,
@@ -825,6 +829,7 @@ mod tests {
             state_dir: None,
             generate_identity_files: true,
             exec_policy: None,
+            file_policy: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
             cache_context: false,

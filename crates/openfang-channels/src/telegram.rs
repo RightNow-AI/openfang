@@ -540,6 +540,11 @@ impl TelegramAdapter {
                 self.api_send_message(chat_id, text.trim(), thread_id)
                     .await?;
             }
+            ChannelContent::Interactive { text, .. } => {
+                // Telegram has no interactive-button rendering here; degrade to
+                // the self-sufficient text body (which carries /approve <id>).
+                self.api_send_message(chat_id, &text, thread_id).await?;
+            }
             ChannelContent::Multipart(parts) => {
                 // Send each child as its own Telegram message. Nested
                 // Multipart is rejected by adapters; flatten defensively.

@@ -69,6 +69,67 @@ pub struct KernelBridgeAdapter {
     started_at: Instant,
 }
 
+/// #2a (ANAI-81) authz decision for resolving a channel approval.
+///
+/// Returns `Ok((audit_label, channel_echo))` for an authorized resolver, or
+/// `Err(message)` carrying the channel-facing rejection text. Extracted
+/// verbatim from `resolve_approval_text` so the gate's branching is
+/// unit-testable against a cheap `AuthManager` fixture without standing up a
+/// full kernel (see the `classify_approver_*` tests below).
+///
+/// - `audit_label` is the stable `uid:name` recorded in `decided_by` (UUID
+///   anchor, name as decoration).
+/// - `channel_echo` is the name only — we never leak the internal UserId UUID
+///   back to the channel.
+fn classify_approver(
+    auth: &openfang_kernel::auth::AuthManager,
+    channel_type: &str,
+    approver_user_id: &str,
+    approver_display: &str,
+) -> Result<(String, String), String> {
+    if auth.is_enabled() {
+        match auth.identify(channel_type, approver_user_id) {
+            Some(uid) => {
+                if let Err(e) =
+                    auth.authorize(uid, &openfang_kernel::auth::Action::ApproveExecution)
+                {
+                    return Err(format!("Not authorized to resolve approvals: {e}"));
+                }
+                // M1 (ANAI-81): anchor decided_by on the stable UserId (UUID),
+                // not the mutable display name. Names are non-unique and change
+                // across reloads; anchoring the audit record on uid preserves
+                // correlation. Format `uid:name` for a human-readable record
+                // without losing the stable key.
+                let name = auth
+                    .get_user(uid)
+                    .map(|u| u.name)
+                    .unwrap_or_else(|| approver_display.to_string());
+                Ok((format!("{uid}:{name}"), name))
+            }
+            None => {
+                Err("Unrecognized user — not authorized to resolve approvals.".to_string())
+            }
+        }
+    } else {
+        // RBAC disabled: fail-open-but-recorded (security-openfang verdict A).
+        // We record the real channel identity but do NOT gate, matching the
+        // bridge's allow-when-unconfigured posture. WARN so operators see an
+        // approval was resolved without identity verification on a possibly
+        // shared channel. (True shared-vs-DM discrimination would need a
+        // channel-scope signal threaded here; tracked as follow-up.)
+        warn!(
+            channel_type = %channel_type,
+            approver = %approver_user_id,
+            "Approval resolved with RBAC disabled — resolver identity \
+             unverified; enable users/RBAC to gate /approve on shared channels"
+        );
+        Ok((
+            format!("{channel_type}:{approver_user_id} ({approver_display})"),
+            approver_display.to_string(),
+        ))
+    }
+}
+
 #[async_trait]
 impl ChannelBridgeHandle for KernelBridgeAdapter {
     async fn send_message(&self, agent_id: AgentId, message: &str) -> Result<String, String> {
@@ -620,33 +681,35 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
     }
 
     async fn list_approvals_text(&self) -> String {
-        let pending = self.kernel.approval_manager.list_pending();
-        if pending.is_empty() {
-            return "No pending approvals.".to_string();
-        }
-        let mut msg = format!("Pending approvals ({}):\n", pending.len());
-        for req in &pending {
-            let id_str = req.id.to_string();
-            let id_short = safe_truncate_str(&id_str, 8);
-            let age_secs = (chrono::Utc::now() - req.requested_at).num_seconds();
-            let age = if age_secs >= 60 {
-                format!("{}m", age_secs / 60)
-            } else {
-                format!("{age_secs}s")
-            };
-            msg.push_str(&format!(
-                "  [{}] {} — {} ({:?}) age:{}\n",
-                id_short, req.agent_id, req.tool_name, req.risk_level, age,
-            ));
-            if !req.action_summary.is_empty() {
-                msg.push_str(&format!("    {}\n", req.action_summary));
-            }
-        }
-        msg.push_str("\nUse /approve <id> or /reject <id>");
-        msg
+        render_pending_approvals(&self.kernel.approval_manager.list_pending())
     }
 
-    async fn resolve_approval_text(&self, id_prefix: &str, approve: bool) -> String {
+    async fn resolve_approval_text(
+        &self,
+        id_prefix: &str,
+        approve: bool,
+        channel_type: &str,
+        approver_user_id: &str,
+        approver_display: &str,
+    ) -> String {
+        // ── #2a authz gate ──────────────────────────────
+        // Pre-#2a this stamped `decided_by = "channel"` with NO identity check:
+        // any user on a bound channel could resolve another agent's approval and
+        // the audit trail recorded only the literal "channel". The gate now
+        // requires an identified, authorized operator and records the REAL
+        // approver. Branching logic + the RBAC-disabled fail-open posture
+        // (security-openfang verdict A) live in `classify_approver`, which is
+        // unit-tested below.
+        let (approver_label, approver_echo): (String, String) = match classify_approver(
+            &self.kernel.auth,
+            channel_type,
+            approver_user_id,
+            approver_display,
+        ) {
+            Ok(pair) => pair,
+            Err(msg) => return msg,
+        };
+
         let pending = self.kernel.approval_manager.list_pending();
         let matched: Vec<_> = pending
             .iter()
@@ -664,17 +727,18 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                 match self.kernel.approval_manager.resolve(
                     req.id,
                     decision,
-                    Some("channel".to_string()),
+                    Some(approver_label.clone()),
                 ) {
                     Ok(_) => {
                         let verb = if approve { "Approved" } else { "Rejected" };
                         let id_str = req.id.to_string();
                         format!(
-                            "{} [{}] {} — {}",
+                            "{} [{}] {} — {} (by {})",
                             verb,
                             safe_truncate_str(&id_str, 8),
                             req.tool_name,
-                            req.agent_id
+                            req.agent_id,
+                            approver_echo
                         )
                     }
                     Err(e) => format!("Failed to resolve approval: {e}"),
@@ -906,6 +970,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             channel_type,
             recipient,
             message,
+            None,
             None,
         )
         .await
@@ -1831,6 +1896,49 @@ pub async fn start_channel_bridge_with_config(
     if started_names.is_empty() {
         (None, Vec::new())
     } else {
+        // §8 step 5 — emit consumer. Subscribe to the approval lifecycle event
+        // stream and push a prompt back to the originating conversation when a
+        // request is submitted. This is the ONLY place `ApprovalRequest.origin`
+        // goes live, and it is a pure side-effect: the surfacer never resolves
+        // a request (resolution stays on the text `/approve` and button paths,
+        // which re-authorize from the platform-attested interaction identity)
+        // and never feeds `origin`/`recipient` into authorization.
+        let mut approval_rx = kernel.approval_manager.subscribe();
+        let mut surfacer_shutdown = manager.shutdown_receiver();
+        let surfacer_kernel = kernel.clone();
+        let surfacer = tokio::spawn(async move {
+            use openfang_kernel::approval::ApprovalEvent;
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                tokio::select! {
+                    ev = approval_rx.recv() => match ev {
+                        Ok(ApprovalEvent::Submitted(req)) => {
+                            surfacer_kernel.surface_approval_prompt(&req).await;
+                        }
+                        // Resolved / TimedOut carry no proactive push in this step.
+                        Ok(_) => {}
+                        // Lossy broadcast: a dropped/lagged event means "no
+                        // proactive prompt", never "no approval". The decision
+                        // path (await/timeout in request_approval) is wholly
+                        // independent of this listener. Log and keep going.
+                        Err(RecvError::Lagged(n)) => {
+                            warn!(
+                                missed = n,
+                                "approval surfacer lagged; {n} prompt(s) not pushed (approvals unaffected)"
+                            );
+                        }
+                        Err(RecvError::Closed) => break,
+                    },
+                    _ = surfacer_shutdown.changed() => {
+                        if *surfacer_shutdown.borrow() {
+                            break;
+                        }
+                    }
+                }
+            }
+            info!("approval surfacer task stopped");
+        });
+        manager.attach_task(surfacer);
         (Some(manager), started_names)
     }
 }
@@ -1903,8 +2011,77 @@ pub async fn reload_channels_from_disk(
     Ok(started)
 }
 
+/// Render the `/approvals` listing text from a pending snapshot.
+///
+/// Pure (no kernel/IO) so the marker-neutralization invariant is unit-testable.
+/// Agent-controlled fields (`agent_id`, `tool_name`, `action_summary`) are run
+/// through `neutralize_markers` because this text returns through `send_parsed`
+/// → `outbound_attach::parse` (ANAI-82): without it a queued request's
+/// `<openfang:attach …/>` marker would be stripped and its caption promoted at
+/// the exact moment an operator inspects the queue to decide.
+fn render_pending_approvals(pending: &[openfang_types::approval::ApprovalRequest]) -> String {
+    if pending.is_empty() {
+        return "No pending approvals.".to_string();
+    }
+    let n = openfang_channels::outbound_attach::neutralize_markers;
+    let mut msg = format!("Pending approvals ({}):\n", pending.len());
+    for req in pending {
+        let id_str = req.id.to_string();
+        let id_short = safe_truncate_str(&id_str, 8);
+        let age_secs = (chrono::Utc::now() - req.requested_at).num_seconds();
+        let age = if age_secs >= 60 {
+            format!("{}m", age_secs / 60)
+        } else {
+            format!("{age_secs}s")
+        };
+        msg.push_str(&format!(
+            "  [{}] {} — {} ({:?}) age:{}\n",
+            id_short,
+            n(&req.agent_id),
+            n(&req.tool_name),
+            req.risk_level,
+            age,
+        ));
+        if !req.action_summary.is_empty() {
+            msg.push_str(&format!("    {}\n", n(&req.action_summary)));
+        }
+    }
+    msg.push_str("\nUse /approve <id> or /reject <id>");
+    msg
+}
+
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn approvals_listing_neutralizes_attach_markers() {
+        use openfang_channels::outbound_attach::{parse, ParseOptions, Parsed};
+        use openfang_types::approval::{ApprovalRequest, RiskLevel};
+
+        let req = ApprovalRequest {
+            id: uuid::Uuid::new_v4(),
+            agent_id: "agent-x".to_string(),
+            tool_name: "shell_exec".to_string(),
+            description: "d".to_string(),
+            action_summary:
+                "rm -rf /important <openfang:attach path=\"/dev/null\" caption=\"(dry-run only)\"/>"
+                    .to_string(),
+            risk_level: RiskLevel::High,
+            requested_at: chrono::Utc::now(),
+            timeout_secs: 300,
+            origin: None,
+        };
+
+        // An operator running /approvals must see the request verbatim, never a
+        // stripped + caption-promoted version: the composed text carries no
+        // parseable attach marker.
+        let listing = super::render_pending_approvals(std::slice::from_ref(&req));
+        assert!(matches!(
+            parse(&listing, ParseOptions::default()).await,
+            Parsed::NoMarkers
+        ));
+        assert!(listing.contains("&lt;openfang:attach"));
+    }
+
     #[tokio::test]
     async fn test_bridge_skips_when_no_config() {
         let config = openfang_types::config::KernelConfig::default();
@@ -1982,5 +2159,105 @@ mod tests {
 
         let feishu = config.channels.feishu.expect("feishu config should exist");
         assert_eq!(feishu.mode, openfang_types::config::FeishuMode::Websocket);
+    }
+
+    // ── #2a (ANAI-81) classify_approver gate ────────────────────────────
+    // The kernel-layer authorize() matrix (admin floor, unrecognized-denied)
+    // is covered in openfang-kernel's auth.rs tests. These cover the bridge
+    // glue that the kernel tests can't see: the RBAC-enabled/disabled
+    // branching, the stable `uid:name` audit label, the name-only channel echo
+    // (no UserId UUID leak), and the rejection strings — all without standing
+    // up a full OpenFangKernel fixture.
+    use super::classify_approver;
+    use openfang_kernel::auth::AuthManager;
+    use openfang_types::config::UserConfig;
+    use std::collections::HashMap;
+
+    /// One user per role, each bound on discord. Mirrors the kernel auth.rs
+    /// fixture so the two layers exercise the same role matrix.
+    fn rbac_role_configs() -> Vec<UserConfig> {
+        let bind = |id: &str| {
+            let mut m = HashMap::new();
+            m.insert("discord".to_string(), id.to_string());
+            m
+        };
+        vec![
+            UserConfig {
+                name: "Owner".to_string(),
+                role: "owner".to_string(),
+                channel_bindings: bind("owner-1"),
+                api_key_hash: None,
+            },
+            UserConfig {
+                name: "Admin".to_string(),
+                role: "admin".to_string(),
+                channel_bindings: bind("admin-1"),
+                api_key_hash: None,
+            },
+            UserConfig {
+                name: "Member".to_string(),
+                role: "user".to_string(),
+                channel_bindings: bind("user-1"),
+                api_key_hash: None,
+            },
+            UserConfig {
+                name: "Viewer".to_string(),
+                role: "viewer".to_string(),
+                channel_bindings: bind("viewer-1"),
+                api_key_hash: None,
+            },
+        ]
+    }
+
+    // Authorized resolvers (Admin floor) get Ok((uid:name, name)). The audit
+    // label is anchored on the stable UserId; the channel echo is name-only.
+    #[test]
+    fn test_classify_approver_admin_floor_records_uid_name() {
+        let auth = AuthManager::new(&rbac_role_configs());
+
+        for (bind_id, name) in [("admin-1", "Admin"), ("owner-1", "Owner")] {
+            let uid = auth
+                .identify("discord", bind_id)
+                .expect("bound user resolves");
+            let (label, echo) = classify_approver(&auth, "discord", bind_id, "ignored-display")
+                .expect("authorized resolver");
+            assert_eq!(label, format!("{uid}:{name}"), "audit label is uid:name");
+            assert_eq!(echo, name, "channel echo is name-only");
+            assert!(!echo.contains(':'), "echo must not leak the UserId UUID");
+        }
+    }
+
+    // Recognized-but-below-floor roles (user, viewer) are denied.
+    #[test]
+    fn test_classify_approver_below_floor_denied() {
+        let auth = AuthManager::new(&rbac_role_configs());
+        for bind_id in ["user-1", "viewer-1"] {
+            let err = classify_approver(&auth, "discord", bind_id, "d")
+                .expect_err("below-floor role denied");
+            assert!(err.contains("Not authorized"), "got: {err}");
+        }
+    }
+
+    // An unrecognized channel identity is rejected before authorize().
+    #[test]
+    fn test_classify_approver_unrecognized_denied() {
+        let auth = AuthManager::new(&rbac_role_configs());
+        let err = classify_approver(&auth, "discord", "stranger", "d")
+            .expect_err("unrecognized user denied");
+        assert!(err.contains("Unrecognized"), "got: {err}");
+    }
+
+    // RBAC disabled (no users configured): fail-open-but-recorded. No gate,
+    // but the real channel identity is stamped into the audit label and the
+    // display name is echoed. (security-openfang verdict A.)
+    #[test]
+    fn test_classify_approver_rbac_disabled_fail_open_records_channel_identity() {
+        let auth = AuthManager::new(&[]);
+        assert!(!auth.is_enabled(), "no users => RBAC disabled");
+
+        let (label, echo) = classify_approver(&auth, "discord", "raw-123", "Ben")
+            .expect("fail-open records without gating");
+        assert_eq!(label, "discord:raw-123 (Ben)");
+        assert_eq!(echo, "Ben");
     }
 }

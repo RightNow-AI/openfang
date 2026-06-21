@@ -6,6 +6,9 @@
 //! it into the agent loop.
 
 use async_trait::async_trait;
+use std::sync::Arc;
+
+use crate::bridge_auth::TokenIssuer;
 
 /// Agent info returned by list and discovery operations.
 #[derive(Debug, Clone)]
@@ -139,8 +142,9 @@ pub trait KernelHandle: Send + Sync {
         agent_id: &str,
         tool_name: &str,
         action_summary: &str,
+        origin: Option<&openfang_types::approval::ApprovalOrigin>,
     ) -> Result<bool, String> {
-        let _ = (agent_id, tool_name, action_summary);
+        let _ = (agent_id, tool_name, action_summary, origin);
         Ok(true) // Default: auto-approve
     }
 
@@ -207,8 +211,9 @@ pub trait KernelHandle: Send + Sync {
         recipient: &str,
         message: &str,
         thread_id: Option<&str>,
+        workspace_root: Option<&std::path::Path>,
     ) -> Result<String, String> {
-        let _ = (channel, recipient, message, thread_id);
+        let _ = (channel, recipient, message, thread_id, workspace_root);
         Err("Channel send not available".to_string())
     }
 
@@ -251,6 +256,16 @@ pub trait KernelHandle: Send + Sync {
     /// Called by the agent loop before long LLM calls to prevent heartbeat false-positives.
     fn touch_agent(&self, agent_id: &str) {
         let _ = agent_id;
+    }
+
+    /// Return the daemon's bridge `TokenIssuer`, if one has been wired.
+    ///
+    /// The agent loop calls this when constructing fallback drivers so they
+    /// can participate in the hardened bridge handshake. The default returns
+    /// `None`, keeping mock/test impls (e.g. `FakeKernelHandle`) on the legacy
+    /// UUID path; `OpenFangKernel` overrides it to expose its authority.
+    fn token_issuer(&self) -> Option<Arc<dyn TokenIssuer>> {
+        None
     }
 
     /// Spawn an agent with capability inheritance enforcement.
