@@ -424,7 +424,11 @@ pub async fn build_router(
         )
         .route(
             "/api/loops/{id}",
-            axum::routing::delete(routes::delete_loop),
+            axum::routing::delete(routes::delete_loop).put(routes::update_loop),
+        )
+        .route(
+            "/api/loops/{id}/enable",
+            axum::routing::post(routes::enable_loop),
         )
         .route(
             "/api/loops/{id}/run",

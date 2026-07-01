@@ -9703,6 +9703,20 @@ pub struct SetLoopLevelRequest {
     pub turn_prompt: String,
 }
 
+/// Request body for PUT /api/loops/{id} — full loop update.
+///
+/// workspace and pattern_id are immutable; all other fields may be replaced.
+#[derive(serde::Deserialize)]
+pub struct UpdateLoopRequest {
+    pub trigger_kind: String,
+    pub trigger_param: String,
+    #[serde(default)]
+    pub safety: Option<LoopSafety>,
+    pub level: String,
+    pub manifest_toml: String,
+    pub turn_prompt: String,
+}
+
 /// Sanitize a client-supplied pattern id into a valid cron job name fragment.
 ///
 /// `CronJob::validate` only permits alphanumeric characters plus space, hyphen,
@@ -10166,5 +10180,299 @@ pub async fn loop_runs(
     (
         StatusCode::OK,
         Json(serde_json::json!({"log": content, "path": log_path.to_string_lossy()})),
+    )
+}
+
+/// POST /api/loops/{id}/enable — enable or disable the binding that drives a loop.
+///
+/// Mirrors toggle_cron_job (routes.rs:8673) for cron bindings and the
+/// set_trigger_enabled pattern (routes.rs:4554) for event bindings.
+pub async fn enable_loop(
+    State(state): State<Arc<AppState>>,
+    Path(loop_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let enabled = match body.get("enabled").and_then(|v| v.as_bool()) {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "'enabled' boolean field is required"})),
+            );
+        }
+    };
+
+    let record = match state.loop_registry.get(&loop_id) {
+        Some(r) => r,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Loop not found"})),
+            );
+        }
+    };
+
+    let binding_id = match record.binding_id {
+        Some(ref id) => id.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Loop has no binding (not fully initialised)"})),
+            );
+        }
+    };
+
+    // Toggle the underlying scheduler/trigger binding.
+    match record.trigger_kind {
+        TriggerKind::Every | TriggerKind::Cron => {
+            // set_enabled mirrors toggle_cron_job (routes.rs:8682).
+            let uuid = match uuid::Uuid::parse_str(&binding_id) {
+                Ok(u) => u,
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "Stored binding_id is not a valid UUID"})),
+                    );
+                }
+            };
+            let job_id = openfang_types::scheduler::CronJobId(uuid);
+            if let Err(e) = state.kernel.cron_scheduler.set_enabled(job_id, enabled) {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": format!("Cron job not found: {e}")})),
+                );
+            }
+            // Persist scheduler state; non-fatal on failure (mirrors delete_loop, routes.rs:9908).
+            let _ = state.kernel.cron_scheduler.persist();
+        }
+        TriggerKind::Event => {
+            // set_trigger_enabled mirrors routes.rs:4554.
+            let uuid = match uuid::Uuid::parse_str(&binding_id) {
+                Ok(u) => u,
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "Stored binding_id is not a valid UUID"})),
+                    );
+                }
+            };
+            let trigger_id = openfang_kernel::triggers::TriggerId(uuid);
+            if !state.kernel.set_trigger_enabled(trigger_id, enabled) {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "Event trigger not found"})),
+                );
+            }
+        }
+    }
+
+    // Persist the updated enabled flag in the loop record.
+    let mut updated = record.clone();
+    updated.enabled = enabled;
+    if let Err(e) = state.loop_registry.update(&loop_id, updated) {
+        tracing::warn!("enable_loop: registry persist failed: {e}");
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"id": loop_id, "enabled": enabled})),
+    )
+}
+
+/// PUT /api/loops/{id} — replace trigger, safety, level, manifest, and prompt.
+///
+/// Kills the old agent and removes the old binding, then spawns a fresh agent
+/// and creates a new binding.  workspace and pattern_id are immutable.
+///
+/// Mirrors set_loop_level (routes.rs:10000) but extends it to also replace
+/// trigger_kind/trigger_param and safety, not just the manifest/level/prompt.
+pub async fn update_loop(
+    State(state): State<Arc<AppState>>,
+    Path(loop_id): Path<String>,
+    Json(req): Json<UpdateLoopRequest>,
+) -> impl IntoResponse {
+    let record = match state.loop_registry.get(&loop_id) {
+        Some(r) => r,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Loop not found"})),
+            );
+        }
+    };
+
+    // Parse new manifest before touching anything that can't be undone.
+    let manifest: AgentManifest = match toml::from_str(&req.manifest_toml) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid manifest TOML: {e}")})),
+            );
+        }
+    };
+
+    // Validate new trigger_kind before mutating state.
+    let new_trigger_kind = match req.trigger_kind.as_str() {
+        "every" => TriggerKind::Every,
+        "cron" => TriggerKind::Cron,
+        "event" => TriggerKind::Event,
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Unknown trigger_kind '{other}', expected every/cron/event")})),
+            );
+        }
+    };
+
+    // Remove OLD binding (mirrors set_loop_level, routes.rs:10027).
+    if let Some(ref binding_id) = record.binding_id {
+        match record.trigger_kind {
+            TriggerKind::Every | TriggerKind::Cron => {
+                if let Ok(uuid) = uuid::Uuid::parse_str(binding_id) {
+                    let job_id = openfang_types::scheduler::CronJobId(uuid);
+                    if state.kernel.cron_scheduler.remove_job(job_id).is_ok() {
+                        let _ = state.kernel.cron_scheduler.persist();
+                    }
+                }
+            }
+            TriggerKind::Event => {
+                if let Ok(trigger_uuid) = uuid::Uuid::parse_str(binding_id) {
+                    let trigger_id = openfang_kernel::triggers::TriggerId(trigger_uuid);
+                    state.kernel.remove_trigger(trigger_id);
+                }
+            }
+        }
+    }
+
+    // Kill OLD agent (mirrors set_loop_level, routes.rs:10045).
+    if let Some(ref old_agent_id_str) = record.agent_id {
+        if let Ok(old_agent_id) = old_agent_id_str.parse::<AgentId>() {
+            if let Err(e) = state.kernel.kill_agent(old_agent_id) {
+                tracing::warn!("update_loop: kill old agent {old_agent_id_str} failed: {e}");
+            }
+        }
+    }
+
+    // Spawn NEW agent.  On failure: record agent_id=None so it doesn't point
+    // at the killed agent, then return 500.
+    let new_agent_id = match state.kernel.spawn_agent(manifest) {
+        Ok(id) => id,
+        Err(e) => {
+            // Old agent is dead; clear agent_id to avoid stale reference.
+            let mut cleared = record.clone();
+            cleared.agent_id = None;
+            cleared.binding_id = None;
+            if let Err(persist_err) = state.loop_registry.update(&loop_id, cleared) {
+                tracing::warn!("update_loop: could not clear stale agent_id: {persist_err}");
+            }
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to spawn new agent: {e}")})),
+            );
+        }
+    };
+    let new_agent_id_str = new_agent_id.to_string();
+
+    // Create NEW binding with the new trigger_kind/param (mirrors create_loop binding
+    // block, routes.rs:9773, using sanitize_cron_name for cron names).
+    let new_binding_id: Option<String> = match new_trigger_kind {
+        TriggerKind::Every | TriggerKind::Cron => {
+            let schedule = if new_trigger_kind == TriggerKind::Every {
+                let every_secs: u64 = match req.trigger_param.parse() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        // New agent spawned but binding failed; record what we have.
+                        let mut partial = record.clone();
+                        partial.agent_id = Some(new_agent_id_str.clone());
+                        partial.binding_id = None;
+                        partial.trigger_kind = new_trigger_kind;
+                        partial.trigger_param = req.trigger_param.clone();
+                        partial.safety = req.safety.unwrap_or(record.safety.clone());
+                        partial.level = req.level;
+                        partial.manifest_toml = req.manifest_toml;
+                        partial.turn_prompt = req.turn_prompt;
+                        if let Err(e) = state.loop_registry.update(&loop_id, partial) {
+                            tracing::warn!("update_loop: persist after bad trigger_param: {e}");
+                        }
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({"error": "trigger_param must be a positive integer (seconds) for trigger_kind 'every'"})),
+                        );
+                    }
+                };
+                serde_json::json!({"kind": "every", "every_secs": every_secs})
+            } else {
+                serde_json::json!({"kind": "cron", "expr": req.trigger_param})
+            };
+
+            let job_json = serde_json::json!({
+                "agent_id": new_agent_id_str,
+                "name": format!("loop-{}", sanitize_cron_name(&record.pattern_id)),
+                "schedule": schedule,
+                "action": {
+                    "kind": "agent_turn",
+                    "message": req.turn_prompt,
+                    "timeout_secs": 300
+                },
+                "delivery": {"kind": "none"},
+                "one_shot": false
+            });
+            match state.kernel.cron_create(&new_agent_id_str, job_json).await {
+                Ok(result_str) => {
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(&result_str).unwrap_or_default();
+                    parsed["job_id"].as_str().map(String::from)
+                }
+                Err(e) => {
+                    tracing::warn!("update_loop: cron rebind failed: {e}");
+                    None
+                }
+            }
+        }
+        TriggerKind::Event => {
+            match serde_json::from_str::<TriggerPattern>(&req.trigger_param) {
+                Ok(pattern) => {
+                    match state
+                        .kernel
+                        .register_trigger(new_agent_id, pattern, req.turn_prompt.clone(), 0)
+                    {
+                        Ok(tid) => Some(tid.to_string()),
+                        Err(e) => {
+                            tracing::warn!("update_loop: trigger rebind failed: {e}");
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("update_loop: cannot parse trigger_param as TriggerPattern: {e}");
+                    None
+                }
+            }
+        }
+    };
+
+    // Persist updated record; keep id, pattern_id, workspace, created_at immutable.
+    let mut updated = record.clone();
+    updated.trigger_kind = new_trigger_kind;
+    updated.trigger_param = req.trigger_param;
+    updated.safety = req.safety.unwrap_or(record.safety);
+    updated.level = req.level;
+    updated.manifest_toml = req.manifest_toml;
+    updated.turn_prompt = req.turn_prompt;
+    updated.agent_id = Some(new_agent_id_str.clone());
+    updated.binding_id = new_binding_id.clone();
+
+    if let Err(e) = state.loop_registry.update(&loop_id, updated) {
+        tracing::warn!("update_loop: registry persist failed: {e}");
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "id": loop_id,
+            "agent_id": new_agent_id_str,
+            "binding_id": new_binding_id,
+        })),
     )
 }
