@@ -106,6 +106,9 @@ async fn test_full_daemon_lifecycle() {
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
+    let loop_registry = Arc::new(openfang_api::loops::LoopRegistry::load(
+        kernel.config.home_dir.join("loops.json"),
+    ));
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
         started_at: Instant::now(),
@@ -113,6 +116,7 @@ async fn test_full_daemon_lifecycle() {
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+        loop_registry,
     });
 
     let app = Router::new()
@@ -229,6 +233,9 @@ async fn test_server_immediate_responsiveness() {
     let kernel = OpenFangKernel::boot_with_config(config).unwrap();
     let kernel = Arc::new(kernel);
 
+    let loop_registry = Arc::new(openfang_api::loops::LoopRegistry::load(
+        kernel.config.home_dir.join("loops.json"),
+    ));
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
         started_at: Instant::now(),
@@ -236,6 +243,7 @@ async fn test_server_immediate_responsiveness() {
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+        loop_registry,
     });
 
     let app = Router::new()

@@ -50,6 +50,9 @@ async fn start_test_server() -> TestServer {
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
+    let loop_registry = Arc::new(openfang_api::loops::LoopRegistry::load(
+        kernel.config.home_dir.join("loops.json"),
+    ));
     let state = Arc::new(AppState {
         kernel,
         started_at: Instant::now(),
@@ -57,6 +60,7 @@ async fn start_test_server() -> TestServer {
         bridge_manager: tokio::sync::Mutex::new(None),
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+        loop_registry,
     });
 
     let app = Router::new()

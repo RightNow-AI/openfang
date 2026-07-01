@@ -1,5 +1,6 @@
 //! Route handlers for the OpenFang API.
 
+use crate::loops::{LoopRegistry, LoopRecord, LoopSafety, TriggerKind};
 use crate::types::*;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -33,6 +34,9 @@ pub struct AppState {
     pub channels_config: tokio::sync::RwLock<openfang_types::config::ChannelsConfig>,
     /// Notify handle to trigger graceful HTTP server shutdown from the API.
     pub shutdown_notify: Arc<tokio::sync::Notify>,
+    /// Persistent registry of Loop records (agent + binding pairs).
+    /// Mirrors CronScheduler persistence: JSON file under config.home_dir (kernel.rs:820).
+    pub loop_registry: Arc<LoopRegistry>,
 }
 
 /// POST /api/agents — Spawn a new agent.
@@ -9663,4 +9667,504 @@ pub async fn comms_task(
             Json(serde_json::json!({"error": format!("Failed to post task: {e}")})),
         ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Loop endpoints  —  /api/loops
+// ---------------------------------------------------------------------------
+
+/// Request body for POST /api/loops.
+#[derive(serde::Deserialize)]
+pub struct CreateLoopRequest {
+    /// Human-readable name / pattern tag.
+    pub pattern_id: String,
+    /// Workspace root the loop operates on.
+    pub workspace: String,
+    /// Steering level label (e.g. "low", "medium", "high").
+    pub level: String,
+    /// "every", "cron", or "event".
+    pub trigger_kind: String,
+    /// Seconds (every), cron expr (cron), or JSON-encoded TriggerPattern (event).
+    pub trigger_param: String,
+    /// Safety limits; all fields are optional with sensible defaults.
+    #[serde(default)]
+    pub safety: Option<LoopSafety>,
+    /// Raw TOML agent manifest.
+    pub manifest_toml: String,
+    /// Message sent on each scheduled fire / event match.
+    pub turn_prompt: String,
+}
+
+/// Request body for PUT /api/loops/{id}/level.
+#[derive(serde::Deserialize)]
+pub struct SetLoopLevelRequest {
+    pub level: String,
+    pub manifest_toml: String,
+    pub turn_prompt: String,
+}
+
+/// Sanitize a client-supplied pattern id into a valid cron job name fragment.
+///
+/// `CronJob::validate` only permits alphanumeric characters plus space, hyphen,
+/// and underscore (openfang-types/scheduler.rs). Any other character (e.g. `:`,
+/// `/`) would make `cron_create` fail at runtime, so we fold them to `-`.
+fn sanitize_cron_name(pattern_id: &str) -> String {
+    let cleaned: String = pattern_id
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "unnamed".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// POST /api/loops — create a new loop (spawn agent + bind schedule/event).
+pub async fn create_loop(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateLoopRequest>,
+) -> impl IntoResponse {
+    // Parse manifest_toml → AgentManifest (same as spawn_agent handler)
+    let manifest: AgentManifest = match toml::from_str(&req.manifest_toml) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid manifest TOML: {e}")})),
+            );
+        }
+    };
+
+    // Spawn the agent (kernel.rs:973)
+    let agent_id = match state.kernel.spawn_agent(manifest) {
+        Ok(id) => id,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to spawn agent: {e}")})),
+            );
+        }
+    };
+    let agent_id_str = agent_id.to_string();
+
+    // Determine trigger_kind
+    let trigger_kind_parsed = match req.trigger_kind.as_str() {
+        "every" => TriggerKind::Every,
+        "cron" => TriggerKind::Cron,
+        "event" => TriggerKind::Event,
+        other => {
+            // Agent was spawned; kill it before returning error to avoid orphan.
+            let _ = state.kernel.kill_agent(agent_id);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Unknown trigger_kind '{other}', expected every/cron/event")})),
+            );
+        }
+    };
+
+    // Bind: create cron job or event trigger
+    let binding_id: Option<String> = match trigger_kind_parsed {
+        TriggerKind::Every | TriggerKind::Cron => {
+            // Build job_json matching the shape cron_create expects (kernel.rs:4749).
+            let schedule = if trigger_kind_parsed == TriggerKind::Every {
+                let every_secs: u64 = match req.trigger_param.parse() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        let _ = state.kernel.kill_agent(agent_id);
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({"error": "trigger_param must be a positive integer (seconds) for trigger_kind 'every'"})),
+                        );
+                    }
+                };
+                serde_json::json!({"kind": "every", "every_secs": every_secs})
+            } else {
+                serde_json::json!({"kind": "cron", "expr": req.trigger_param})
+            };
+
+            let job_json = serde_json::json!({
+                "agent_id": agent_id_str,
+                "name": format!("loop-{}", sanitize_cron_name(&req.pattern_id)),
+                "schedule": schedule,
+                "action": {
+                    "kind": "agent_turn",
+                    "message": req.turn_prompt,
+                    "timeout_secs": 300
+                },
+                "delivery": {"kind": "none"},
+                "one_shot": false
+            });
+
+            match state.kernel.cron_create(&agent_id_str, job_json).await {
+                Ok(result_str) => {
+                    // cron_create returns JSON string: {"job_id": "...", "status": "created"} (kernel.rs:4801)
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(&result_str).unwrap_or_default();
+                    parsed["job_id"].as_str().map(String::from)
+                }
+                Err(e) => {
+                    let _ = state.kernel.kill_agent(agent_id);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": format!("Failed to create cron binding: {e}")})),
+                    );
+                }
+            }
+        }
+        TriggerKind::Event => {
+            // Parse TriggerPattern from trigger_param JSON (create_trigger handler: routes.rs:696)
+            let pattern: TriggerPattern = match serde_json::from_str(&req.trigger_param) {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = state.kernel.kill_agent(agent_id);
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": format!("Invalid TriggerPattern JSON: {e}")})),
+                    );
+                }
+            };
+            match state
+                .kernel
+                .register_trigger(agent_id, pattern, req.turn_prompt.clone(), 0)
+            {
+                Ok(trigger_id) => Some(trigger_id.to_string()),
+                Err(e) => {
+                    let _ = state.kernel.kill_agent(agent_id);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": format!("Failed to register trigger: {e}")})),
+                    );
+                }
+            }
+        }
+    };
+
+    let loop_id = uuid::Uuid::new_v4().to_string();
+    let record = LoopRecord {
+        id: loop_id.clone(),
+        pattern_id: req.pattern_id,
+        workspace: req.workspace,
+        level: req.level,
+        trigger_kind: trigger_kind_parsed,
+        trigger_param: req.trigger_param,
+        safety: req.safety.unwrap_or_default(),
+        manifest_toml: req.manifest_toml,
+        turn_prompt: req.turn_prompt,
+        agent_id: Some(agent_id_str.clone()),
+        binding_id: binding_id.clone(),
+        enabled: true,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+
+    if let Err(e) = state.loop_registry.insert(record) {
+        tracing::warn!("Failed to persist loop record {loop_id}: {e}");
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": loop_id,
+            "agent_id": agent_id_str,
+            "binding_id": binding_id,
+        })),
+    )
+}
+
+/// GET /api/loops — list all loop records.
+pub async fn list_loops(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!(state.loop_registry.list())))
+}
+
+/// DELETE /api/loops/{id} — remove binding, kill agent, delete record.
+pub async fn delete_loop(
+    State(state): State<Arc<AppState>>,
+    Path(loop_id): Path<String>,
+) -> impl IntoResponse {
+    let record = match state.loop_registry.get(&loop_id) {
+        Some(r) => r,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Loop not found"})),
+            );
+        }
+    };
+
+    // Remove binding first
+    if let Some(ref binding_id) = record.binding_id {
+        match record.trigger_kind {
+            TriggerKind::Every | TriggerKind::Cron => {
+                // Remove cron job (delete_cron_job pattern: routes.rs:8644)
+                if let Ok(uuid) = uuid::Uuid::parse_str(binding_id) {
+                    let job_id = openfang_types::scheduler::CronJobId(uuid);
+                    if state.kernel.cron_scheduler.remove_job(job_id).is_ok() {
+                        let _ = state.kernel.cron_scheduler.persist();
+                    }
+                }
+            }
+            TriggerKind::Event => {
+                // Remove event trigger (kernel.rs:3002)
+                if let Ok(trigger_uuid) = uuid::Uuid::parse_str(binding_id) {
+                    let trigger_id = openfang_kernel::triggers::TriggerId(trigger_uuid);
+                    state.kernel.remove_trigger(trigger_id);
+                }
+            }
+        }
+    }
+
+    // Kill the agent if still alive (kernel.rs:2645)
+    if let Some(ref agent_id_str) = record.agent_id {
+        if let Ok(agent_id) = agent_id_str.parse::<AgentId>() {
+            if let Err(e) = state.kernel.kill_agent(agent_id) {
+                tracing::warn!("delete_loop: kill_agent {agent_id_str} failed: {e}");
+            }
+        }
+    }
+
+    match state.loop_registry.remove(&loop_id) {
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status": "deleted"}))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Registry persist failed: {e}")})),
+        ),
+    }
+}
+
+/// POST /api/loops/{id}/run — send turn_prompt to the loop agent immediately.
+pub async fn run_loop(
+    State(state): State<Arc<AppState>>,
+    Path(loop_id): Path<String>,
+) -> impl IntoResponse {
+    let record = match state.loop_registry.get(&loop_id) {
+        Some(r) => r,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Loop not found"})),
+            );
+        }
+    };
+
+    let agent_id_str = match record.agent_id {
+        Some(ref id) => id.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Loop has no agent (not fully initialised)"})),
+            );
+        }
+    };
+
+    let agent_id: AgentId = match agent_id_str.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Stored agent_id is not a valid UUID"})),
+            );
+        }
+    };
+
+    // send_message pattern (routes.rs:263): pass Arc<kernel> as KernelHandle
+    let kernel_handle: Arc<dyn openfang_runtime::kernel_handle::KernelHandle> =
+        state.kernel.clone() as Arc<dyn openfang_runtime::kernel_handle::KernelHandle>;
+    match state
+        .kernel
+        .send_message_with_handle(agent_id, &record.turn_prompt, Some(kernel_handle))
+        .await
+    {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "response": result.response,
+                "input_tokens": result.total_usage.input_tokens,
+                "output_tokens": result.total_usage.output_tokens,
+                "iterations": result.iterations,
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Run failed: {e}")})),
+        ),
+    }
+}
+
+/// PUT /api/loops/{id}/level — replace agent + rebind with new manifest/prompt/level.
+pub async fn set_loop_level(
+    State(state): State<Arc<AppState>>,
+    Path(loop_id): Path<String>,
+    Json(req): Json<SetLoopLevelRequest>,
+) -> impl IntoResponse {
+    let record = match state.loop_registry.get(&loop_id) {
+        Some(r) => r,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Loop not found"})),
+            );
+        }
+    };
+
+    // Parse new manifest
+    let manifest: AgentManifest = match toml::from_str(&req.manifest_toml) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid manifest TOML: {e}")})),
+            );
+        }
+    };
+
+    // Kill old agent + remove old binding
+    if let Some(ref binding_id) = record.binding_id {
+        match record.trigger_kind {
+            TriggerKind::Every | TriggerKind::Cron => {
+                if let Ok(uuid) = uuid::Uuid::parse_str(binding_id) {
+                    let job_id = openfang_types::scheduler::CronJobId(uuid);
+                    if state.kernel.cron_scheduler.remove_job(job_id).is_ok() {
+                        let _ = state.kernel.cron_scheduler.persist();
+                    }
+                }
+            }
+            TriggerKind::Event => {
+                if let Ok(trigger_uuid) = uuid::Uuid::parse_str(binding_id) {
+                    let trigger_id = openfang_kernel::triggers::TriggerId(trigger_uuid);
+                    state.kernel.remove_trigger(trigger_id);
+                }
+            }
+        }
+    }
+    if let Some(ref old_agent_id_str) = record.agent_id {
+        if let Ok(old_agent_id) = old_agent_id_str.parse::<AgentId>() {
+            if let Err(e) = state.kernel.kill_agent(old_agent_id) {
+                tracing::warn!("set_loop_level: kill old agent {old_agent_id_str} failed: {e}");
+            }
+        }
+    }
+
+    // Spawn new agent
+    let new_agent_id = match state.kernel.spawn_agent(manifest) {
+        Ok(id) => id,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to spawn new agent: {e}")})),
+            );
+        }
+    };
+    let new_agent_id_str = new_agent_id.to_string();
+
+    // Rebind using same trigger_kind + trigger_param from original record
+    let new_binding_id: Option<String> = match record.trigger_kind {
+        TriggerKind::Every | TriggerKind::Cron => {
+            let schedule = if record.trigger_kind == TriggerKind::Every {
+                let every_secs: u64 = record.trigger_param.parse().unwrap_or(3600);
+                serde_json::json!({"kind": "every", "every_secs": every_secs})
+            } else {
+                serde_json::json!({"kind": "cron", "expr": record.trigger_param})
+            };
+            let job_json = serde_json::json!({
+                "agent_id": new_agent_id_str,
+                "name": format!("loop-{}", sanitize_cron_name(&record.pattern_id)),
+                "schedule": schedule,
+                "action": {
+                    "kind": "agent_turn",
+                    "message": req.turn_prompt,
+                    "timeout_secs": 300
+                },
+                "delivery": {"kind": "none"},
+                "one_shot": false
+            });
+            match state.kernel.cron_create(&new_agent_id_str, job_json).await {
+                Ok(result_str) => {
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(&result_str).unwrap_or_default();
+                    parsed["job_id"].as_str().map(String::from)
+                }
+                Err(e) => {
+                    tracing::warn!("set_loop_level: cron rebind failed: {e}");
+                    None
+                }
+            }
+        }
+        TriggerKind::Event => {
+            match serde_json::from_str::<TriggerPattern>(&record.trigger_param) {
+                Ok(pattern) => {
+                    match state
+                        .kernel
+                        .register_trigger(new_agent_id, pattern, req.turn_prompt.clone(), 0)
+                    {
+                        Ok(tid) => Some(tid.to_string()),
+                        Err(e) => {
+                            tracing::warn!("set_loop_level: trigger rebind failed: {e}");
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("set_loop_level: cannot parse stored trigger_param: {e}");
+                    None
+                }
+            }
+        }
+    };
+
+    let mut updated = record.clone();
+    updated.level = req.level;
+    updated.manifest_toml = req.manifest_toml;
+    updated.turn_prompt = req.turn_prompt;
+    updated.agent_id = Some(new_agent_id_str.clone());
+    updated.binding_id = new_binding_id.clone();
+
+    if let Err(e) = state.loop_registry.update(&loop_id, updated) {
+        tracing::warn!("set_loop_level: persist failed: {e}");
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "id": loop_id,
+            "agent_id": new_agent_id_str,
+            "binding_id": new_binding_id,
+        })),
+    )
+}
+
+/// GET /api/loops/{id}/runs — read the loop run log from the workspace.
+///
+/// Log lives at `<workspace>/.antidev/loops/<loop_id>/loop-run-log.md`.
+pub async fn loop_runs(
+    State(state): State<Arc<AppState>>,
+    Path(loop_id): Path<String>,
+) -> impl IntoResponse {
+    let record = match state.loop_registry.get(&loop_id) {
+        Some(r) => r,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Loop not found"})),
+            );
+        }
+    };
+
+    let log_path = std::path::PathBuf::from(&record.workspace)
+        .join(".antidev")
+        .join("loops")
+        .join(&loop_id)
+        .join("loop-run-log.md");
+
+    let content = std::fs::read_to_string(&log_path).unwrap_or_else(|_| String::from("no runs"));
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"log": content, "path": log_path.to_string_lossy()})),
+    )
 }

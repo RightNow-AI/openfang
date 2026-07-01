@@ -1,6 +1,7 @@
 //! OpenFang daemon server — boots the kernel and serves the HTTP API.
 
 use crate::channel_bridge;
+use crate::loops::LoopRegistry;
 use crate::middleware;
 use crate::rate_limiter;
 use crate::routes::{self, AppState};
@@ -42,6 +43,10 @@ pub async fn build_router(
     let bridge = channel_bridge::start_channel_bridge(kernel.clone()).await;
 
     let channels_config = kernel.config.channels.clone();
+    // Load loop registry from <home_dir>/loops.json (same pattern as CronScheduler: kernel.rs:820)
+    let loops_path = kernel.config.home_dir.join("loops.json");
+    let loop_registry = Arc::new(LoopRegistry::load(loops_path));
+
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
         started_at: Instant::now(),
@@ -49,6 +54,7 @@ pub async fn build_router(
         bridge_manager: tokio::sync::Mutex::new(bridge),
         channels_config: tokio::sync::RwLock::new(channels_config),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+        loop_registry,
     });
 
     // CORS: allow localhost origins by default. If API key is set, the API
@@ -410,6 +416,27 @@ pub async fn build_router(
         .route(
             "/api/comms/task",
             axum::routing::post(routes::comms_task),
+        )
+        // Loop endpoints
+        .route(
+            "/api/loops",
+            axum::routing::get(routes::list_loops).post(routes::create_loop),
+        )
+        .route(
+            "/api/loops/{id}",
+            axum::routing::delete(routes::delete_loop),
+        )
+        .route(
+            "/api/loops/{id}/run",
+            axum::routing::post(routes::run_loop),
+        )
+        .route(
+            "/api/loops/{id}/level",
+            axum::routing::put(routes::set_loop_level),
+        )
+        .route(
+            "/api/loops/{id}/runs",
+            axum::routing::get(routes::loop_runs),
         )
         // Tools endpoint
         .route("/api/tools", axum::routing::get(routes::list_tools))
