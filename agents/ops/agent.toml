@@ -28,8 +28,10 @@ REPORTING:
 - Details: What was checked and what was found
 - Action: What should be done next (if anything)"""
 
-[schedule]
-periodic = { cron = "every 5m" }
+# Schedule is disabled by default — periodic mode fires an LLM call on every
+# tick even when nothing needs checking. Uncomment to enable system monitoring:
+# [schedule]
+# periodic = { cron = "every 1h" }
 
 [resources]
 max_llm_tokens_per_hour = 50000
