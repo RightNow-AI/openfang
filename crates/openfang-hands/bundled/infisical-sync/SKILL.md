@@ -2,7 +2,7 @@
 name: infisical-sync-skill
 version: "1.0.0"
 description: "Expert knowledge for the Infisical Sync Hand — Infisical API reference, vault operations, error patterns, security guidance"
-author: OpenFang
+author: OMTAE
 tags: [secrets, infisical, vault, security, sync]
 tools: [shell_exec, vault_set, vault_get, vault_list, vault_delete, memory_store, memory_recall]
 runtime: prompt_only

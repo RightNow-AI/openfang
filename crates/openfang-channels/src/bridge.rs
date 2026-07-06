@@ -1,6 +1,6 @@
-//! Channel bridge — connects channel adapters to the OpenFang kernel.
+//! Channel bridge — connects channel adapters to the OMTAE kernel.
 //!
-//! Defines `ChannelBridgeHandle` (implemented by openfang-api on the kernel) and
+//! Defines `ChannelBridgeHandle` (implemented by omtae-api on the kernel) and
 //! `BridgeManager` which owns running adapters and dispatches messages.
 
 use crate::formatter;
@@ -12,11 +12,11 @@ use crate::types::{
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
-use openfang_types::agent::AgentId;
-use openfang_types::approval::ApprovalRequest;
-use openfang_types::commands::{self as slash_commands, Surfaces};
-use openfang_types::config::{ChannelOverrides, DmPolicy, GroupPolicy, OutputFormat, PrefixStyle};
-use openfang_types::message::ContentBlock;
+use omtae_types::agent::AgentId;
+use omtae_types::approval::ApprovalRequest;
+use omtae_types::commands::{self as slash_commands, Surfaces};
+use omtae_types::config::{ChannelOverrides, DmPolicy, GroupPolicy, OutputFormat, PrefixStyle};
+use omtae_types::message::ContentBlock;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -70,7 +70,7 @@ fn is_channel_command(name: &str) -> bool {
 
 fn format_channel_help() -> String {
     let sections = ["General", "Session", "Info", "Automation", "Monitoring"];
-    let mut msg = String::from("OpenFang Bot Commands:");
+    let mut msg = String::from("OMTAE Bot Commands:");
 
     for section in sections {
         let commands: Vec<&ChatCommandSpec> = channel_command_specs()
@@ -95,8 +95,8 @@ fn format_channel_help() -> String {
 
 /// Kernel operations needed by channel adapters.
 ///
-/// Defined here to avoid circular deps (openfang-channels can't depend on openfang-kernel).
-/// Implemented in openfang-api on the actual kernel.
+/// Defined here to avoid circular deps (omtae-channels can't depend on omtae-kernel).
+/// Implemented in omtae-api on the actual kernel.
 #[async_trait]
 pub trait ChannelBridgeHandle: Send + Sync {
     /// Send a message to an agent and get the text response.
@@ -685,14 +685,14 @@ fn sender_user_id(message: &ChannelMessage) -> &str {
 /// can route to dedicated agents. The channel ID source is delegated to
 /// [`ChannelMessage::channel_id`] — the single source of truth shared with
 /// config validation (see `CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL` in
-/// `openfang-types::config`). `peer_id` uses the resolved user ID, not
+/// `omtae-types::config`). `peer_id` uses the resolved user ID, not
 /// `sender.platform_id`, so user-scoped bindings still match correctly on
 /// Discord/Slack/etc. where `platform_id` holds the channel.
 ///
 /// This replaces the earlier heuristic `sender_channel_id()` (which inferred
 /// "platform_id is the channel" from "metadata has `sender_user_id`"). The
 /// allowlist is explicit, the metadata-fallback path is documented, and
-/// adapters can be added or removed in one place (`openfang-types::config`)
+/// adapters can be added or removed in one place (`omtae-types::config`)
 /// without touching this file.
 fn binding_context_for(message: &ChannelMessage) -> BindingContext {
     BindingContext {
@@ -1142,7 +1142,7 @@ async fn dispatch_message(
             let mut responses = Vec::new();
 
             match strategy {
-                openfang_types::config::BroadcastStrategy::Parallel => {
+                omtae_types::config::BroadcastStrategy::Parallel => {
                     let mut handles_vec = Vec::new();
                     for (name, maybe_id) in &targets {
                         if let Some(aid) = maybe_id {
@@ -1165,7 +1165,7 @@ async fn dispatch_message(
                         }
                     }
                 }
-                openfang_types::config::BroadcastStrategy::Sequential => {
+                omtae_types::config::BroadcastStrategy::Sequential => {
                     for (name, maybe_id) in &targets {
                         if let Some(aid) = maybe_id {
                             match handle.send_message(*aid, &text).await {
@@ -1214,7 +1214,7 @@ async fn dispatch_message(
         router.resolve_with_context(
             &message.channel,
             sender_user_id(message),
-            message.sender.openfang_user.as_deref(),
+            message.sender.omtae_user.as_deref(),
             &binding_ctx,
         )
     });
@@ -1610,7 +1610,7 @@ async fn download_image_to_blocks(url: &str, caption: Option<&str>) -> Vec<Conte
                 .no_gzip()
                 .no_deflate()
                 .no_brotli()
-                .user_agent("openfang/0.1 (+https://openfang.ai)")
+                .user_agent("omtae/0.1 (+https://omtae.ai)")
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new());
@@ -1716,7 +1716,7 @@ async fn dispatch_with_blocks(
     let agent_id = router.resolve_with_context(
         &message.channel,
         sender_user_id(message),
-        message.sender.openfang_user.as_deref(),
+        message.sender.omtae_user.as_deref(),
         &binding_ctx,
     );
 
@@ -1950,7 +1950,7 @@ async fn handle_command(
     match canonical {
         "start" => {
             let agents = handle.list_agents().await.unwrap_or_default();
-            let mut msg = "Welcome to OpenFang! I connect you to AI agents.\n\nAvailable agents:\n"
+            let mut msg = "Welcome to OMTAE! I connect you to AI agents.\n\nAvailable agents:\n"
                 .to_string();
             if agents.is_empty() {
                 msg.push_str("  (none running)\n");
@@ -2017,7 +2017,7 @@ async fn handle_command(
             let agent_id = router.resolve(
                 &crate::types::ChannelType::CLI,
                 user_id,
-                sender.openfang_user.as_deref(),
+                sender.omtae_user.as_deref(),
             );
             match agent_id {
                 Some(aid) => handle
@@ -2031,7 +2031,7 @@ async fn handle_command(
             let agent_id = router.resolve(
                 &crate::types::ChannelType::CLI,
                 user_id,
-                sender.openfang_user.as_deref(),
+                sender.omtae_user.as_deref(),
             );
             match agent_id {
                 Some(aid) => handle
@@ -2045,7 +2045,7 @@ async fn handle_command(
             let agent_id = router.resolve(
                 &crate::types::ChannelType::CLI,
                 user_id,
-                sender.openfang_user.as_deref(),
+                sender.omtae_user.as_deref(),
             );
             match agent_id {
                 Some(aid) => {
@@ -2069,7 +2069,7 @@ async fn handle_command(
             let agent_id = router.resolve(
                 &crate::types::ChannelType::CLI,
                 user_id,
-                sender.openfang_user.as_deref(),
+                sender.omtae_user.as_deref(),
             );
             match agent_id {
                 Some(aid) => handle
@@ -2083,7 +2083,7 @@ async fn handle_command(
             let agent_id = router.resolve(
                 &crate::types::ChannelType::CLI,
                 user_id,
-                sender.openfang_user.as_deref(),
+                sender.omtae_user.as_deref(),
             );
             match agent_id {
                 Some(aid) => handle
@@ -2097,7 +2097,7 @@ async fn handle_command(
             let agent_id = router.resolve(
                 &crate::types::ChannelType::CLI,
                 user_id,
-                sender.openfang_user.as_deref(),
+                sender.omtae_user.as_deref(),
             );
             match agent_id {
                 Some(aid) => {
@@ -2262,7 +2262,7 @@ mod tests {
         let sender = ChannelUser {
             platform_id: "user1".to_string(),
             display_name: "Test".to_string(),
-            openfang_user: None,
+            omtae_user: None,
         };
 
         let result = handle_command("agents", &[], &handle, &router, &sender, "user1").await;
@@ -2282,7 +2282,7 @@ mod tests {
         let sender = ChannelUser {
             platform_id: "user1".to_string(),
             display_name: "Test".to_string(),
-            openfang_user: None,
+            omtae_user: None,
         };
 
         // Select existing agent
@@ -2317,7 +2317,7 @@ mod tests {
         let sender = ChannelUser {
             platform_id: "channel-123".to_string(),
             display_name: "Test".to_string(),
-            openfang_user: None,
+            omtae_user: None,
         };
         let user_id = "user-789";
 
@@ -2354,7 +2354,7 @@ mod tests {
         let sender = ChannelUser {
             platform_id: "user1".to_string(),
             display_name: "Test".to_string(),
-            openfang_user: None,
+            omtae_user: None,
         };
 
         let result = handle_command("agent", &[], &handle, &router, &sender, "user1").await;
@@ -2437,7 +2437,7 @@ mod tests {
             sender: crate::types::ChannelUser {
                 platform_id: platform_id.to_string(),
                 display_name: "Tester".to_string(),
-                openfang_user: None,
+                omtae_user: None,
             },
             content: ChannelContent::Text("hi".to_string()),
             target_agent: None,

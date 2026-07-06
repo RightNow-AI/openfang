@@ -1,4 +1,4 @@
-//! Mattermost channel adapter for the OpenFang channel bridge.
+//! Mattermost channel adapter for the OMTAE channel bridge.
 //!
 //! Uses the Mattermost WebSocket API v4 for real-time message reception and the
 //! REST API v4 for sending messages. No external Mattermost crate — just
@@ -215,7 +215,7 @@ fn parse_mattermost_event(
         sender: ChannelUser {
             platform_id: channel_id.to_string(),
             display_name: sender_name.to_string(),
-            openfang_user: None,
+            omtae_user: None,
         },
         content,
         target_agent: None,
@@ -626,7 +626,7 @@ mod tests {
             "data": {
                 "post": serde_json::to_string(&post).unwrap(),
                 "channel_type": "O",
-                "sender_name": "openfang-bot"
+                "sender_name": "omtae-bot"
             }
         });
 

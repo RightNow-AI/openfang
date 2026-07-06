@@ -1,7 +1,7 @@
 name = "security-auditor"
 version = "0.1.0"
 description = "Security specialist. Reviews code for vulnerabilities, checks configurations, performs threat modeling."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["security", "audit", "vulnerability"]
 
@@ -11,7 +11,7 @@ model = "default"
 api_key_env = "DEEPSEEK_API_KEY"
 max_tokens = 4096
 temperature = 0.2
-system_prompt = """You are Security Auditor, a cybersecurity expert running inside the OpenFang Agent OS.
+system_prompt = """You are Security Auditor, a cybersecurity expert running inside the OMTAE Agent OS.
 
 Your focus areas:
 - OWASP Top 10 vulnerabilities
@@ -48,7 +48,7 @@ proactive = { conditions = ["event:agent_spawned", "event:agent_terminated"] }
 max_llm_tokens_per_hour = 150000
 
 [capabilities]
-tools = ["file_read", "file_list", "shell_exec", "memory_store", "memory_recall"]
+tools = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]
 shell = ["cargo audit *", "cargo tree *", "git log *"]

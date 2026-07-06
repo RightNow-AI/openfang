@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use openfang_migrate::{run_migration, MigrateOptions, MigrateSource};
+use omtae_migrate::{run_migration, MigrateOptions, MigrateSource};
 use tempfile::TempDir;
 
 fn create_legacy_workspace(

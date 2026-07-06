@@ -1,9 +1,9 @@
 [package]
-name = "openfang-types"
+name = "omtae-types"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Core types and traits for the OpenFang Agent OS"
+description = "Core types and traits for the OMTAE Agent OS"
 
 [dependencies]
 serde = { workspace = true }
@@ -18,6 +18,7 @@ ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+subtle = { workspace = true }
 bitflags = "2"
 
 [dev-dependencies]

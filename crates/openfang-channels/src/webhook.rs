@@ -23,7 +23,7 @@ const MAX_MESSAGE_LEN: usize = 65535;
 
 /// Generic HTTP webhook channel adapter.
 ///
-/// The most flexible adapter in the OpenFang channel suite. Any system that
+/// The most flexible adapter in the OMTAE channel suite. Any system that
 /// can send/receive HTTP requests with HMAC-SHA256 signatures can integrate
 /// through this adapter.
 ///
@@ -252,7 +252,7 @@ impl ChannelAdapter for WebhookAdapter {
                                     sender: ChannelUser {
                                         platform_id: sender_id,
                                         display_name: sender_name,
-                                        openfang_user: None,
+                                        omtae_user: None,
                                     },
                                     content,
                                     target_agent: None,
@@ -321,8 +321,8 @@ impl ChannelAdapter for WebhookAdapter {
 
         for chunk in chunks {
             let body = serde_json::json!({
-                "sender_id": "openfang",
-                "sender_name": "OpenFang",
+                "sender_id": "omtae",
+                "sender_name": "OMTAE",
                 "recipient_id": user.platform_id,
                 "recipient_name": user.display_name,
                 "message": chunk,

@@ -42,12 +42,12 @@ pub fn error(msg: &str) {
 // New themed output helpers
 // ---------------------------------------------------------------------------
 
-/// Brand banner: ">> OpenFang Agent OS"
+/// Brand banner: ">> OMTAE Agent OS"
 pub fn banner() {
     println!(
         "  {} {}",
         ">>".bright_cyan().bold(),
-        "OpenFang Agent OS".bold()
+        "OMTAE Agent OS".bold()
     );
     println!("     {}", "The open-source agent operating system".dimmed());
 }

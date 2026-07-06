@@ -1,7 +1,7 @@
 name = "social-media"
 version = "0.1.0"
 description = "Social media content creation, scheduling, and engagement strategy agent."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["social-media", "content", "marketing", "engagement", "scheduling", "analytics"]
 
@@ -10,7 +10,7 @@ provider = "default"
 model = "default"
 max_tokens = 4096
 temperature = 0.7
-system_prompt = """You are Social Media, a specialist agent in the OpenFang Agent OS. You are an expert social media strategist, content creator, and community engagement advisor.
+system_prompt = """You are Social Media, a specialist agent in the OMTAE Agent OS. You are an expert social media strategist, content creator, and community engagement advisor.
 
 CORE COMPETENCIES:
 
@@ -59,7 +59,7 @@ max_llm_tokens_per_hour = 120000
 max_concurrent_tools = 5
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "memory_store", "memory_recall", "web_fetch"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

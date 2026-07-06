@@ -7,7 +7,7 @@
 
 use crate::triggers::TriggerPattern;
 use dashmap::DashMap;
-use openfang_types::agent::{AgentId, ScheduleMode};
+use omtae_types::agent::{AgentId, ScheduleMode};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -21,6 +21,8 @@ const MAX_CONCURRENT_BG_LLM: usize = 5;
 pub struct BackgroundExecutor {
     /// Running background task handles, keyed by agent ID.
     tasks: DashMap<AgentId, JoinHandle<()>>,
+    /// Agents whose background loop is paused (user clicked Stop or `/stop`).
+    paused: Arc<DashMap<AgentId, ()>>,
     /// Shutdown signal receiver (from Supervisor).
     shutdown_rx: watch::Receiver<bool>,
     /// SECURITY: Global semaphore to limit concurrent background LLM calls.
@@ -32,9 +34,28 @@ impl BackgroundExecutor {
     pub fn new(shutdown_rx: watch::Receiver<bool>) -> Self {
         Self {
             tasks: DashMap::new(),
+            paused: Arc::new(DashMap::new()),
             shutdown_rx,
             llm_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BG_LLM)),
         }
+    }
+
+    /// Returns true when continuous/periodic ticks are paused for this agent.
+    pub fn is_paused(&self, agent_id: AgentId) -> bool {
+        self.paused.contains_key(&agent_id)
+    }
+
+    /// Pause background ticks and abort any running loop task.
+    pub fn pause_agent(&self, agent_id: AgentId) {
+        self.paused.insert(agent_id, ());
+        self.stop_agent(agent_id);
+        info!(id = %agent_id, "Background loop paused");
+    }
+
+    /// Resume background ticks (clears pause flag; caller must restart the loop).
+    pub fn resume_agent(&self, agent_id: AgentId) {
+        self.paused.remove(&agent_id);
+        info!(id = %agent_id, "Background loop pause cleared");
     }
 
     /// Start a background loop for an agent based on its schedule mode.
@@ -44,7 +65,7 @@ impl BackgroundExecutor {
     /// For `Proactive` mode, registers triggers — no dedicated task needed.
     ///
     /// `send_message` is a closure that sends a message to the given agent
-    /// and returns a result. It captures an `Arc<OpenFangKernel>` from the caller.
+    /// and returns a result. It captures an `Arc<OMTAEKernel>` from the caller.
     pub fn start_agent<F>(
         &self,
         agent_id: AgentId,
@@ -64,6 +85,7 @@ impl BackgroundExecutor {
                 let mut shutdown = self.shutdown_rx.clone();
                 let busy = Arc::new(AtomicBool::new(false));
                 let semaphore = self.llm_semaphore.clone();
+                let pause_map = Arc::clone(&self.paused);
 
                 info!(
                     agent = %name, id = %agent_id,
@@ -79,6 +101,11 @@ impl BackgroundExecutor {
                                 info!(agent = %name, "Continuous loop: shutdown signal received");
                                 break;
                             }
+                        }
+
+                        if pause_map.contains_key(&agent_id) {
+                            debug!(agent = %name, "Continuous loop: paused — skipping tick");
+                            continue;
                         }
 
                         // Skip if previous tick is still running
@@ -101,8 +128,10 @@ impl BackgroundExecutor {
 
                         let prompt = format!(
                             "[AUTONOMOUS TICK] You are running in continuous mode. \
-                             Check your goals, review shared memory for pending tasks, \
-                             and take any necessary actions. Agent: {name}"
+                             Check your goals and shared memory for pending tasks. \
+                             If nothing needs action, respond with exactly NO_REPLY. \
+                             Do not spawn agents or delegate unless a task is explicitly pending. \
+                             Agent: {name}"
                         );
                         debug!(agent = %name, "Continuous loop: sending self-prompt");
                         let busy_clone = busy.clone();
@@ -126,6 +155,7 @@ impl BackgroundExecutor {
                 let mut shutdown = self.shutdown_rx.clone();
                 let busy = Arc::new(AtomicBool::new(false));
                 let semaphore = self.llm_semaphore.clone();
+                let pause_map = Arc::clone(&self.paused);
 
                 info!(
                     agent = %name, id = %agent_id,
@@ -141,6 +171,11 @@ impl BackgroundExecutor {
                                 info!(agent = %name, "Periodic loop: shutdown signal received");
                                 break;
                             }
+                        }
+
+                        if pause_map.contains_key(&agent_id) {
+                            debug!(agent = %name, "Periodic loop: paused — skipping tick");
+                            continue;
                         }
 
                         if busy
@@ -427,6 +462,18 @@ mod tests {
         assert_eq!(ticks, 1, "Expected 1 tick (skip-if-busy), got {ticks}");
 
         executor.stop_agent(agent_id);
+    }
+
+    #[test]
+    fn test_pause_and_resume() {
+        let (_tx, rx) = watch::channel(false);
+        let executor = BackgroundExecutor::new(rx);
+        let id = AgentId::new();
+        assert!(!executor.is_paused(id));
+        executor.pause_agent(id);
+        assert!(executor.is_paused(id));
+        executor.resume_agent(id);
+        assert!(!executor.is_paused(id));
     }
 
     #[test]

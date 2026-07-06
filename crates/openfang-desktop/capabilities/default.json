@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/refs/heads/dev/crates/tauri-utils/schema.json",
   "identifier": "default",
-  "description": "Default permissions for the OpenFang desktop app",
+  "description": "Default permissions for the OMTAE desktop app",
   "windows": ["main"],
   "permissions": [
     "core:default",

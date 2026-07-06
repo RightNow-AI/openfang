@@ -2,7 +2,7 @@
 //!
 //! Auto-cascades through available providers based on configured API keys.
 
-use openfang_types::config::TtsConfig;
+use omtae_types::config::TtsConfig;
 
 /// Maximum audio response size (10MB).
 const MAX_AUDIO_RESPONSE_BYTES: usize = 10 * 1024 * 1024;

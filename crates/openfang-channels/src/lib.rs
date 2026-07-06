@@ -1,4 +1,4 @@
-//! Channel Bridge Layer for the OpenFang Agent OS.
+//! Channel Bridge Layer for the OMTAE Agent OS.
 //!
 //! Provides 40 pluggable messaging integrations that convert platform messages
 //! into unified `ChannelMessage` events for the kernel.

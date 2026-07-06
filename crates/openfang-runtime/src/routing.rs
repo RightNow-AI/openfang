@@ -5,7 +5,7 @@
 //! model that can handle the task.
 
 use crate::llm_driver::CompletionRequest;
-use openfang_types::agent::ModelRoutingConfig;
+use omtae_types::agent::ModelRoutingConfig;
 
 /// Task complexity tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,8 +166,8 @@ impl ModelRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openfang_types::message::{Message, MessageContent, Role};
-    use openfang_types::tool::ToolDefinition;
+    use omtae_types::message::{Message, MessageContent, Role};
+    use omtae_types::tool::ToolDefinition;
 
     fn default_config() -> ModelRoutingConfig {
         ModelRoutingConfig {

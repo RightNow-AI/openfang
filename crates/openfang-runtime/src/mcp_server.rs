@@ -1,12 +1,12 @@
-//! MCP Server — expose OpenFang tools via the Model Context Protocol.
+//! MCP Server — expose OMTAE tools via the Model Context Protocol.
 //!
 //! Implements the server-side MCP protocol so external MCP clients
-//! (Claude Desktop, VS Code, etc.) can use OpenFang's built-in tools.
+//! (Claude Desktop, VS Code, etc.) can use OMTAE's built-in tools.
 //!
 //! This module provides a reusable handler function — the CLI team
 //! wires it into a stdio transport.
 
-use openfang_types::tool::ToolDefinition;
+use omtae_types::tool::ToolDefinition;
 use serde_json::json;
 
 /// MCP protocol version supported by this server.
@@ -32,7 +32,7 @@ pub async fn handle_mcp_request(
                     "tools": {}
                 },
                 "serverInfo": {
-                    "name": "openfang",
+                    "name": "omtae",
                     "version": env!("CARGO_PKG_VERSION")
                 }
             }),
@@ -181,6 +181,6 @@ mod tests {
         assert!(response["result"]["serverInfo"]["name"]
             .as_str()
             .unwrap()
-            .contains("openfang"));
+            .contains("omtae"));
     }
 }

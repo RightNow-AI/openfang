@@ -1,7 +1,7 @@
 name = "home-automation"
 version = "0.1.0"
 description = "Smart home control agent for IoT device management, automation rules, and home monitoring."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["smart-home", "iot", "automation", "devices", "monitoring", "home"]
 
@@ -10,7 +10,7 @@ provider = "default"
 model = "default"
 max_tokens = 4096
 temperature = 0.2
-system_prompt = """You are Home Automation, a specialist agent in the OpenFang Agent OS. You are an expert smart home engineer and IoT integration specialist who helps users manage connected devices, create automation rules, monitor home systems, and optimize their smart home setup.
+system_prompt = """You are Home Automation, a specialist agent in the OMTAE Agent OS. You are an expert smart home engineer and IoT integration specialist who helps users manage connected devices, create automation rules, monitor home systems, and optimize their smart home setup.
 
 CORE COMPETENCIES:
 
@@ -60,7 +60,7 @@ max_llm_tokens_per_hour = 100000
 max_concurrent_tools = 10
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "memory_store", "memory_recall", "shell_exec", "web_fetch"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

@@ -4,26 +4,30 @@
 //! calling the LLM, executing tool calls, and saving the conversation.
 
 use crate::auth_cooldown::{CooldownVerdict, ProviderCooldown};
+use crate::compactor::cap_max_output_tokens;
 use crate::context_budget::{apply_context_guard, truncate_tool_result_dynamic, ContextBudget};
 use crate::context_overflow::{recover_from_overflow, RecoveryStage};
 use crate::embedding::EmbeddingDriver;
 use crate::kernel_handle::KernelHandle;
 use crate::llm_driver::{CompletionRequest, DriverConfig, LlmDriver, LlmError, StreamEvent};
 use crate::llm_errors;
-use crate::loop_guard::{LoopGuard, LoopGuardConfig, LoopGuardVerdict};
+use crate::loop_guard::{
+    check_planning_loop, check_verification_gate, LoopGuard, LoopGuardConfig, LoopGuardVerdict,
+    PlanningLoopAction,
+};
 use crate::mcp::McpConnection;
 use crate::tool_runner;
 use crate::web_search::WebToolsContext;
-use openfang_memory::session::Session;
-use openfang_memory::MemorySubstrate;
-use openfang_skills::registry::SkillRegistry;
-use openfang_types::agent::{AgentManifest, FallbackModel};
-use openfang_types::error::{OpenFangError, OpenFangResult};
-use openfang_types::memory::{Memory, MemoryFilter, MemorySource};
-use openfang_types::message::{
+use omtae_memory::session::Session;
+use omtae_memory::MemorySubstrate;
+use omtae_skills::registry::SkillRegistry;
+use omtae_types::agent::{AgentManifest, FallbackModel};
+use omtae_types::error::{OMTAEError, OMTAEResult};
+use omtae_types::memory::{Memory, MemoryFilter, MemorySource};
+use omtae_types::message::{
     ContentBlock, Message, MessageContent, Role, StopReason, TokenUsage,
 };
-use openfang_types::tool::{ToolCall, ToolDefinition};
+use omtae_types::tool::{ToolCall, ToolDefinition};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -36,6 +40,25 @@ const MAX_ITERATIONS: u32 = 50;
 
 /// Maximum retries for rate-limited or overloaded API calls.
 const MAX_RETRIES: u32 = 3;
+
+fn is_context_overflow_error(err: &OMTAEError) -> Option<String> {
+    match err {
+        OMTAEError::LlmDriver(msg) => {
+            let msg_lower = msg.to_lowercase();
+            if msg_lower.contains("context too long")
+                || msg_lower.contains("context length")
+                || msg_lower.contains("too long")
+                || msg_lower.contains("context window")
+            {
+                Some(msg.clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 
 /// Base delay for exponential backoff (milliseconds).
 const BASE_RETRY_DELAY_MS: u64 = 1000;
@@ -87,7 +110,7 @@ const MAX_CONTINUATIONS: u32 = 5;
 /// Default maximum message history size before auto-trimming to prevent context overflow.
 /// Per-agent overrides come from `AgentManifest::max_history_messages` (issue #871).
 #[allow(dead_code)]
-const MAX_HISTORY_MESSAGES: usize = openfang_types::agent::DEFAULT_MAX_HISTORY_MESSAGES;
+const MAX_HISTORY_MESSAGES: usize = omtae_types::agent::DEFAULT_MAX_HISTORY_MESSAGES;
 
 /// Detect when the LLM claims to have performed an action (sent, posted, emailed)
 /// without actually calling any tools. Prevents hallucinated completions.
@@ -110,6 +133,149 @@ fn phantom_action_detected(text: &str) -> bool {
     has_action && has_channel
 }
 
+const RESEARCH_INTEGRITY_DISCLAIMER: &str = "\n\n---\n⚠️ **Verification notice:** Some website or business details above were not confirmed by web_search/web_fetch tool results. Treat listed names, addresses, and URLs as unverified.";
+
+/// Extract https URLs from free text (tool results or agent replies).
+fn extract_https_urls(text: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    for token in text.split_whitespace() {
+        if let Some(start) = token.find("https://") {
+            let raw = &token[start..];
+            let end = raw
+                .char_indices()
+                .find(|(_, c)| !c.is_ascii_alphanumeric() && *c != '/' && *c != ':' && *c != '.' && *c != '-' && *c != '_' && *c != '?' && *c != '=' && *c != '&' && *c != '%')
+                .map(|(i, _)| i)
+                .unwrap_or(raw.len());
+            let url = raw[..end].trim_end_matches(|c: char| c == ')' || c == ']' || c == ',' || c == '.');
+            if !url.is_empty() && !urls.iter().any(|u| u == url) {
+                urls.push(url.to_string());
+            }
+        }
+    }
+    urls
+}
+
+/// Collect https URLs from ToolResult blocks in the conversation history.
+fn collect_tool_result_urls(messages: &[Message]) -> Vec<String> {
+    let mut urls = Vec::new();
+    for msg in messages {
+        let blocks = match &msg.content {
+            MessageContent::Blocks(blocks) => blocks,
+            MessageContent::Text(text) => {
+                for url in extract_https_urls(text) {
+                    if !urls.contains(&url) {
+                        urls.push(url);
+                    }
+                }
+                continue;
+            }
+        };
+        for block in blocks {
+            if let ContentBlock::ToolResult { content, .. } = block {
+                for url in extract_https_urls(content) {
+                    if !urls.contains(&url) {
+                        urls.push(url);
+                    }
+                }
+            }
+        }
+    }
+    urls
+}
+
+fn url_cited_in_tool_results(url: &str, tool_urls: &[String]) -> bool {
+    let normalized = url.trim_end_matches('/');
+    tool_urls.iter().any(|t| {
+        let t_norm = t.trim_end_matches('/');
+        t_norm == normalized || t_norm.starts_with(normalized) || normalized.starts_with(t_norm)
+    })
+}
+
+/// Detect unverified website lines or high-confidence lists without tool backing.
+fn research_integrity_issue(
+    text: &str,
+    tool_urls: &[String],
+    any_tools_executed: bool,
+    has_web_tools: bool,
+) -> bool {
+    if !has_web_tools {
+        return false;
+    }
+
+    for line in text.lines() {
+        if !line.to_lowercase().contains("website:") {
+            continue;
+        }
+        let line_urls = extract_https_urls(line);
+        if line_urls.is_empty() {
+            return true;
+        }
+        if tool_urls.is_empty() {
+            return true;
+        }
+        if !line_urls.iter().all(|u| url_cited_in_tool_results(u, tool_urls)) {
+            return true;
+        }
+    }
+
+    let lower = text.to_lowercase();
+    let claims_high_confidence = lower.contains("confidence level: high")
+        || lower.contains("confidence: high")
+        || lower.contains("confidence level:** high");
+    if claims_high_confidence && tool_urls.is_empty() && !text.contains("https://") {
+        return true;
+    }
+
+    if !any_tools_executed && looks_like_enumerated_research_list(text) {
+        return true;
+    }
+
+    false
+}
+
+fn looks_like_enumerated_research_list(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    if lower.contains("top ") && (lower.contains(" in ") || lower.contains(" list")) {
+        return true;
+    }
+    let numbered = text
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+                && (trimmed.contains(". ") || trimmed.contains(") "))
+        })
+        .count();
+    numbered >= 3
+}
+
+fn agent_has_web_tools(available_tools: &[ToolDefinition]) -> bool {
+    available_tools
+        .iter()
+        .any(|t| t.name == "web_search" || t.name == "web_fetch")
+}
+
+fn apply_research_integrity_check(
+    text: String,
+    messages: &[Message],
+    any_tools_executed: bool,
+    available_tools: &[ToolDefinition],
+) -> String {
+    if !agent_has_web_tools(available_tools) {
+        return text;
+    }
+    let tool_urls = collect_tool_result_urls(messages);
+    if research_integrity_issue(&text, &tool_urls, any_tools_executed, true) {
+        warn!("Research integrity check triggered — appending verification disclaimer");
+        format!("{text}{RESEARCH_INTEGRITY_DISCLAIMER}")
+    } else {
+        text
+    }
+}
+
 /// Returns true when the agent response text indicates an intentional silent completion.
 /// Matches `NO_REPLY` (exact) and `[SILENT]` (case-insensitive).
 fn is_silent_token(text: &str) -> bool {
@@ -119,7 +285,7 @@ fn is_silent_token(text: &str) -> bool {
 
 /// Extra guidance injected after failed tool calls to prevent fabricated follow-up actions.
 const TOOL_ERROR_GUIDANCE: &str =
-    "[System: One or more tool calls failed. Failed tools did not produce usable data. Do NOT invent missing results, cite nonexistent search results, or pretend failed tools succeeded. If your next steps depend on a failed tool, either retry with a materially different approach or explain the failure to the user and stop. Do not write files, store memory, or take downstream actions based on failed tool outputs.]";
+    "[System: One or more tool calls failed. Failed tools did not produce usable data. Do NOT invent missing results, cite nonexistent search results, or pretend failed tools succeeded. For agent_send: if the result is not exactly \"agent_send OK\" with specialist text, report delegation FAILED with the verbatim error — never claim agents \"heard\" each other. If your next steps depend on a failed tool, either retry with a materially different approach or explain the failure to the user and stop. Do not write files, store memory, or take downstream actions based on failed tool outputs.]";
 
 fn append_tool_error_guidance(tool_result_blocks: &mut Vec<ContentBlock>) {
     let has_tool_error = tool_result_blocks
@@ -258,7 +424,7 @@ pub struct AgentLoopResult {
     /// True when the agent intentionally chose not to reply (NO_REPLY token or [[silent]]).
     pub silent: bool,
     /// Reply directives extracted from the agent's response.
-    pub directives: openfang_types::message::ReplyDirectives,
+    pub directives: omtae_types::message::ReplyDirectives,
 }
 
 /// Build the user-turn message, combining text with any image content blocks.
@@ -287,7 +453,7 @@ fn build_user_turn_message(user_message: &str, blocks: Option<Vec<ContentBlock>>
 
 /// Run the agent execution loop for a single user message.
 ///
-/// This is the core of OpenFang: it loads session context, recalls memories,
+/// This is the core of OMTAE: it loads session context, recalls memories,
 /// runs the LLM in a tool-use loop, and saves the updated session.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_agent_loop(
@@ -307,12 +473,12 @@ pub async fn run_agent_loop(
     on_phase: Option<&PhaseCallback>,
     media_engine: Option<&crate::media_understanding::MediaEngine>,
     tts_engine: Option<&crate::tts::TtsEngine>,
-    docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
+    docker_config: Option<&omtae_types::config::DockerSandboxConfig>,
     hooks: Option<&crate::hooks::HookRegistry>,
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
-) -> OpenFangResult<AgentLoopResult> {
+) -> OMTAEResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting agent loop");
 
     // Extract hand-allowed env vars from manifest metadata (set by kernel for hand settings)
@@ -375,7 +541,7 @@ pub async fn run_agent_loop(
         let ctx = crate::hooks::HookContext {
             agent_name: &manifest.name,
             agent_id: agent_id_str.as_str(),
-            event: openfang_types::agent::HookEvent::BeforePromptBuild,
+            event: omtae_types::agent::HookEvent::BeforePromptBuild,
             data: serde_json::json!({
                 "system_prompt": &manifest.model.system_prompt,
                 "user_message": user_message,
@@ -478,7 +644,10 @@ pub async fn run_agent_loop(
         // assistant turn at position 0, which strict providers (e.g. Gemini)
         // reject with INVALID_ARGUMENT on function-call turns.
         messages = crate::session_repair::ensure_starts_with_user(messages);
+        messages = crate::session_repair::ensure_has_user_text(messages);
     }
+
+    messages = crate::session_repair::ensure_has_user_text(messages);
 
     // Use autonomous config max_iterations if set, else default
     let max_iterations = manifest
@@ -493,10 +662,20 @@ pub async fn run_agent_loop(
         if max_iterations > cfg.global_circuit_breaker {
             cfg.global_circuit_breaker = max_iterations * 3;
         }
+        // Meta-agent: cap delegation churn (agent_send × nested loops → stuck "Generating…")
+        if manifest.name == "orchestrator" {
+            cfg.global_circuit_breaker = cfg.global_circuit_breaker.min(15);
+            cfg.max_agent_send_per_loop = Some(5);
+            cfg.warn_threshold = 2;
+            cfg.block_threshold = 4;
+            cfg.ping_pong_min_repeats = 2;
+        }
         cfg
     };
     let mut loop_guard = LoopGuard::new(loop_guard_config);
     let mut consecutive_max_tokens: u32 = 0;
+    let mut planning_reprompts: u32 = 0;
+    let mut verification_reprompts: u32 = 0;
 
     // Build context budget from model's actual context window (or fallback to default)
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
@@ -523,6 +702,7 @@ pub async fn run_agent_loop(
 
         // Context guard: compact oversized tool results before LLM call
         apply_context_guard(&mut messages, &context_budget, available_tools);
+        messages = crate::session_repair::ensure_has_user_text(messages);
 
         // Strip provider prefix: "openrouter/google/gemini-2.5-flash" → "google/gemini-2.5-flash"
         let api_model = strip_provider_prefix(&manifest.model.model, &manifest.model.provider);
@@ -531,7 +711,7 @@ pub async fn run_agent_loop(
             model: api_model,
             messages: messages.clone(),
             tools: available_tools.to_vec(),
-            max_tokens: manifest.model.max_tokens,
+            max_tokens: cap_max_output_tokens(manifest.model.max_tokens, context_window_tokens),
             temperature: manifest.model.temperature,
             system: Some(system_prompt.clone()),
             thinking: None,
@@ -550,14 +730,65 @@ pub async fn run_agent_loop(
 
         // Call LLM with retry, error classification, and circuit breaker
         let provider_name = manifest.model.provider.as_str();
-        let mut response = call_with_retry(
-            &*driver,
-            request,
-            Some(provider_name),
-            None,
-            &manifest.fallback_models,
-        )
-        .await?;
+        let mut response = {
+            let mut active_request = request.clone();
+            let mut overflow_attempts = 0;
+            loop {
+                match call_with_retry(
+                    &*driver,
+                    active_request.clone(),
+                    Some(provider_name),
+                    None,
+                    &manifest.fallback_models,
+                )
+                .await
+                {
+                    Ok(resp) => break resp,
+                    Err(e) => {
+                        if let Some(err_msg) = is_context_overflow_error(&e) {
+                            if overflow_attempts < 3 {
+                                overflow_attempts += 1;
+                                warn!(
+                                    overflow_attempts,
+                                    "Context overflow detected in agent loop. Attempting recovery..."
+                                );
+                                // 1. Attempt to extract a safe limit using the error message
+                                let cap = crate::drivers::openai::extract_max_tokens_limit(&err_msg);
+                                // 2. Update max_tokens
+                                if let Some(safe_cap) = cap {
+                                    warn!(old = active_request.max_tokens, new = safe_cap, "Reducing request max_tokens");
+                                    active_request.max_tokens = safe_cap;
+                                } else {
+                                    // Otherwise reduce max_tokens by 25%
+                                    let new_max = (active_request.max_tokens * 3) / 4;
+                                    warn!(old = active_request.max_tokens, new = new_max, "Reducing request max_tokens by 25%");
+                                    active_request.max_tokens = new_max.max(256);
+                                }
+                                // 3. Trim the messages using recover_from_overflow.
+                                // We simulate a smaller context window to force truncation!
+                                // Reduce the effective context window by 15% on each attempt.
+                                let reduced_ctx = ((ctx_window as f64) * (1.0 - 0.15 * (overflow_attempts as f64))) as usize;
+                                warn!(reduced_ctx, "Running recover_from_overflow with reduced context window");
+                                let recovery = recover_from_overflow(
+                                    &mut messages,
+                                    &system_prompt,
+                                    available_tools,
+                                    reduced_ctx,
+                                );
+                                if recovery != RecoveryStage::None {
+                                    messages = crate::session_repair::validate_and_repair(&messages);
+                                    messages = crate::session_repair::ensure_starts_with_user(messages);
+                                    messages = crate::session_repair::ensure_has_user_text(messages);
+                                }
+                                active_request.messages = messages.clone();
+                                continue;
+                            }
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+        };
 
         total_usage.input_tokens += response.usage.input_tokens;
         total_usage.output_tokens += response.usage.output_tokens;
@@ -611,14 +842,14 @@ pub async fn run_agent_loop(
                     memory
                         .save_session_async(session)
                         .await
-                        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+                        .map_err(|e| OMTAEError::Memory(e.to_string()))?;
                     return Ok(AgentLoopResult {
                         response: String::new(),
                         total_usage,
                         iterations: iteration + 1,
                         cost_usd: None,
                         silent: true,
-                        directives: openfang_types::message::ReplyDirectives {
+                        directives: omtae_types::message::ReplyDirectives {
                             reply_to: parsed_directives.reply_to,
                             current_thread: parsed_directives.current_thread,
                             silent: true,
@@ -703,7 +934,79 @@ pub async fn run_agent_loop(
                     text
                 };
 
-                final_response = text.clone();
+                // Verification gate: factual claims without tool evidence (ECC-inspired).
+                if let Some(action) = check_verification_gate(
+                    &messages,
+                    &text,
+                    any_tools_executed,
+                    verification_reprompts,
+                ) {
+                    match action {
+                        PlanningLoopAction::Reprompt(nudge) => {
+                            warn!(agent = %manifest.name, verification_reprompts, "Verification gate — TOOL_REQUIRED reprompt");
+                            verification_reprompts += 1;
+                            messages.push(Message::assistant(text));
+                            messages.push(Message::user(nudge.to_string()));
+                            continue;
+                        }
+                        PlanningLoopAction::ForceEnd(response) => {
+                            warn!(agent = %manifest.name, "Verification gate exhausted — ending turn");
+                            final_response = response;
+                            session.messages.push(Message::assistant(final_response.clone()));
+                            memory
+                                .save_session_async(session)
+                                .await
+                                .map_err(|e| OMTAEError::Memory(e.to_string()))?;
+                            return Ok(AgentLoopResult {
+                                response: final_response,
+                                total_usage,
+                                iterations: iteration + 1,
+                                cost_usd: None,
+                                silent: false,
+                                directives: omtae_types::message::ReplyDirectives::default(),
+                            });
+                        }
+                    }
+                }
+
+                // Planning loop guard: repeated planning prose without tool calls.
+                if let Some(action) =
+                    check_planning_loop(&messages, &text, any_tools_executed, planning_reprompts)
+                {
+                    match action {
+                        PlanningLoopAction::Reprompt(nudge) => {
+                            warn!(agent = %manifest.name, planning_reprompts, "Planning loop detected — re-prompting for tool use");
+                            planning_reprompts += 1;
+                            messages.push(Message::assistant(text));
+                            messages.push(Message::user(nudge.to_string()));
+                            continue;
+                        }
+                        PlanningLoopAction::ForceEnd(response) => {
+                            warn!(agent = %manifest.name, "Planning loop exhausted — ending turn");
+                            final_response = response;
+                            session.messages.push(Message::assistant(final_response.clone()));
+                            memory
+                                .save_session_async(session)
+                                .await
+                                .map_err(|e| OMTAEError::Memory(e.to_string()))?;
+                            return Ok(AgentLoopResult {
+                                response: final_response,
+                                total_usage,
+                                iterations: iteration + 1,
+                                cost_usd: None,
+                                silent: false,
+                                directives: omtae_types::message::ReplyDirectives::default(),
+                            });
+                        }
+                    }
+                }
+
+                final_response = apply_research_integrity_check(
+                    text,
+                    &messages,
+                    any_tools_executed,
+                    available_tools,
+                );
                 // Issue #1098: persist Thinking blocks alongside the text so
                 // reasoning models retain state across turns.  When the
                 // response carries any Thinking content (Anthropic extended
@@ -712,7 +1015,7 @@ pub async fn run_agent_loop(
                 // full content blocks; otherwise fall back to the legacy
                 // Text shape so existing sessions/snapshots stay readable.
                 let assistant_msg =
-                    build_assistant_message_preserving_thinking(&response.content, &text);
+                    build_assistant_message_preserving_thinking(&response.content, &final_response);
                 session.messages.push(assistant_msg);
 
                 // Prune NO_REPLY heartbeat turns to save context budget
@@ -722,7 +1025,7 @@ pub async fn run_agent_loop(
                 memory
                     .save_session_async(session)
                     .await
-                    .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+                    .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
                 // Remember this interaction (with embedding if available)
                 let interaction_text = format!(
@@ -785,7 +1088,7 @@ pub async fn run_agent_loop(
                     let ctx = crate::hooks::HookContext {
                         agent_name: &manifest.name,
                         agent_id: agent_id_str.as_str(),
-                        event: openfang_types::agent::HookEvent::AgentLoopEnd,
+                        event: omtae_types::agent::HookEvent::AgentLoopEnd,
                         data: serde_json::json!({
                             "iterations": iteration + 1,
                             "response_length": final_response.len(),
@@ -857,7 +1160,7 @@ pub async fn run_agent_loop(
                                 let ctx = crate::hooks::HookContext {
                                     agent_name: &manifest.name,
                                     agent_id: agent_id_str.as_str(),
-                                    event: openfang_types::agent::HookEvent::AgentLoopEnd,
+                                    event: omtae_types::agent::HookEvent::AgentLoopEnd,
                                     data: serde_json::json!({
                                         "reason": "circuit_break",
                                         "error": msg.as_str(),
@@ -865,7 +1168,7 @@ pub async fn run_agent_loop(
                                 };
                                 let _ = hook_reg.fire(&ctx);
                             }
-                            return Err(OpenFangError::Internal(msg.clone()));
+                            return Err(OMTAEError::Internal(msg.clone()));
                         }
                         LoopGuardVerdict::Block(msg) => {
                             warn!(tool = %tool_call.name, "Tool call blocked by loop guard");
@@ -900,7 +1203,7 @@ pub async fn run_agent_loop(
                         let ctx = crate::hooks::HookContext {
                             agent_name: &manifest.name,
                             agent_id: &caller_id_str,
-                            event: openfang_types::agent::HookEvent::BeforeToolCall,
+                            event: omtae_types::agent::HookEvent::BeforeToolCall,
                             data: serde_json::json!({
                                 "tool_name": &tool_call.name,
                                 "input": &tool_call.input,
@@ -956,7 +1259,7 @@ pub async fn run_agent_loop(
                                 Ok(result) => result,
                                 Err(_) => {
                                     warn!(tool = %tool_call.name, "Tool execution timed out after {}s", timeout_secs);
-                                    openfang_types::tool::ToolResult {
+                                    omtae_types::tool::ToolResult {
                                         tool_use_id: tool_call.id.clone(),
                                         content: format!(
                                             "Tool '{}' timed out after {}s.",
@@ -975,7 +1278,7 @@ pub async fn run_agent_loop(
                         let ctx = crate::hooks::HookContext {
                             agent_name: &manifest.name,
                             agent_id: caller_id_str.as_str(),
-                            event: openfang_types::agent::HookEvent::AfterToolCall,
+                            event: omtae_types::agent::HookEvent::AfterToolCall,
                             data: serde_json::json!({
                                 "tool_name": &tool_call.name,
                                 "result": &result.content,
@@ -1090,7 +1393,7 @@ pub async fn run_agent_loop(
                         let ctx = crate::hooks::HookContext {
                             agent_name: &manifest.name,
                             agent_id: agent_id_str.as_str(),
-                            event: openfang_types::agent::HookEvent::AgentLoopEnd,
+                            event: omtae_types::agent::HookEvent::AgentLoopEnd,
                             data: serde_json::json!({
                                 "iterations": iteration + 1,
                                 "reason": "max_continuations",
@@ -1133,7 +1436,7 @@ pub async fn run_agent_loop(
         let ctx = crate::hooks::HookContext {
             agent_name: &manifest.name,
             agent_id: agent_id_str.as_str(),
-            event: openfang_types::agent::HookEvent::AgentLoopEnd,
+            event: omtae_types::agent::HookEvent::AgentLoopEnd,
             data: serde_json::json!({
                 "reason": "max_iterations_exceeded",
                 "iterations": max_iterations,
@@ -1142,7 +1445,7 @@ pub async fn run_agent_loop(
         let _ = hook_reg.fire(&ctx);
     }
 
-    Err(OpenFangError::MaxIterationsExceeded(max_iterations))
+    Err(OMTAEError::MaxIterationsExceeded(max_iterations))
 }
 
 /// Call an LLM driver with automatic retry on rate-limit and overload errors.
@@ -1158,7 +1461,7 @@ async fn call_with_retry(
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
     fallback_models: &[FallbackModel],
-) -> OpenFangResult<crate::llm_driver::CompletionResponse> {
+) -> OMTAEResult<crate::llm_driver::CompletionResponse> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
         match cooldown.check(provider) {
@@ -1166,7 +1469,7 @@ async fn call_with_retry(
                 reason,
                 retry_after_secs,
             } => {
-                return Err(OpenFangError::LlmDriver(format!(
+                return Err(OMTAEError::LlmDriver(format!(
                     "Provider '{provider}' is in cooldown ({reason}). Retry in {retry_after_secs}s."
                 )));
             }
@@ -1193,7 +1496,7 @@ async fn call_with_retry(
                     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                         cooldown.record_failure(provider, false);
                     }
-                    return Err(OpenFangError::LlmDriver(format!(
+                    return Err(OMTAEError::LlmDriver(format!(
                         "Rate limited after {} retries",
                         MAX_RETRIES
                     )));
@@ -1212,7 +1515,7 @@ async fn call_with_retry(
                     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                         cooldown.record_failure(provider, false);
                     }
-                    return Err(OpenFangError::LlmDriver(format!(
+                    return Err(OMTAEError::LlmDriver(format!(
                         "Model overloaded after {} retries",
                         MAX_RETRIES
                     )));
@@ -1320,12 +1623,12 @@ async fn call_with_retry(
                 } else {
                     classified.sanitized_message
                 };
-                return Err(OpenFangError::LlmDriver(user_msg));
+                return Err(OMTAEError::LlmDriver(user_msg));
             }
         }
     }
 
-    Err(OpenFangError::LlmDriver(
+    Err(OMTAEError::LlmDriver(
         last_error.unwrap_or_else(|| "Unknown error".to_string()),
     ))
 }
@@ -1343,7 +1646,7 @@ async fn stream_with_retry(
     provider: Option<&str>,
     cooldown: Option<&ProviderCooldown>,
     fallback_models: &[FallbackModel],
-) -> OpenFangResult<crate::llm_driver::CompletionResponse> {
+) -> OMTAEResult<crate::llm_driver::CompletionResponse> {
     // Check circuit breaker before calling
     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
         match cooldown.check(provider) {
@@ -1351,7 +1654,7 @@ async fn stream_with_retry(
                 reason,
                 retry_after_secs,
             } => {
-                return Err(OpenFangError::LlmDriver(format!(
+                return Err(OMTAEError::LlmDriver(format!(
                     "Provider '{provider}' is in cooldown ({reason}). Retry in {retry_after_secs}s."
                 )));
             }
@@ -1380,7 +1683,7 @@ async fn stream_with_retry(
                     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                         cooldown.record_failure(provider, false);
                     }
-                    return Err(OpenFangError::LlmDriver(format!(
+                    return Err(OMTAEError::LlmDriver(format!(
                         "Rate limited after {} retries",
                         MAX_RETRIES
                     )));
@@ -1399,7 +1702,7 @@ async fn stream_with_retry(
                     if let (Some(provider), Some(cooldown)) = (provider, cooldown) {
                         cooldown.record_failure(provider, false);
                     }
-                    return Err(OpenFangError::LlmDriver(format!(
+                    return Err(OMTAEError::LlmDriver(format!(
                         "Model overloaded after {} retries",
                         MAX_RETRIES
                     )));
@@ -1501,12 +1804,12 @@ async fn stream_with_retry(
                 } else {
                     classified.sanitized_message
                 };
-                return Err(OpenFangError::LlmDriver(user_msg));
+                return Err(OMTAEError::LlmDriver(user_msg));
             }
         }
     }
 
-    Err(OpenFangError::LlmDriver(
+    Err(OMTAEError::LlmDriver(
         last_error.unwrap_or_else(|| "Unknown error".to_string()),
     ))
 }
@@ -1535,12 +1838,12 @@ pub async fn run_agent_loop_streaming(
     on_phase: Option<&PhaseCallback>,
     media_engine: Option<&crate::media_understanding::MediaEngine>,
     tts_engine: Option<&crate::tts::TtsEngine>,
-    docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
+    docker_config: Option<&omtae_types::config::DockerSandboxConfig>,
     hooks: Option<&crate::hooks::HookRegistry>,
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
-) -> OpenFangResult<AgentLoopResult> {
+) -> OMTAEResult<AgentLoopResult> {
     info!(agent = %manifest.name, "Starting streaming agent loop");
 
     // Extract hand-allowed env vars from manifest metadata (set by kernel for hand settings)
@@ -1603,7 +1906,7 @@ pub async fn run_agent_loop_streaming(
         let ctx = crate::hooks::HookContext {
             agent_name: &manifest.name,
             agent_id: agent_id_str.as_str(),
-            event: openfang_types::agent::HookEvent::BeforePromptBuild,
+            event: omtae_types::agent::HookEvent::BeforePromptBuild,
             data: serde_json::json!({
                 "system_prompt": &manifest.model.system_prompt,
                 "user_message": user_message,
@@ -1697,7 +2000,10 @@ pub async fn run_agent_loop_streaming(
         // assistant turn at position 0, which strict providers (e.g. Gemini)
         // reject with INVALID_ARGUMENT on function-call turns.
         messages = crate::session_repair::ensure_starts_with_user(messages);
+        messages = crate::session_repair::ensure_has_user_text(messages);
     }
+
+    messages = crate::session_repair::ensure_has_user_text(messages);
 
     // Use autonomous config max_iterations if set, else default
     let max_iterations = manifest
@@ -1712,10 +2018,19 @@ pub async fn run_agent_loop_streaming(
         if max_iterations > cfg.global_circuit_breaker {
             cfg.global_circuit_breaker = max_iterations * 3;
         }
+        if manifest.name == "orchestrator" {
+            cfg.global_circuit_breaker = cfg.global_circuit_breaker.min(15);
+            cfg.max_agent_send_per_loop = Some(5);
+            cfg.warn_threshold = 2;
+            cfg.block_threshold = 4;
+            cfg.ping_pong_min_repeats = 2;
+        }
         cfg
     };
     let mut loop_guard = LoopGuard::new(loop_guard_config);
     let mut consecutive_max_tokens: u32 = 0;
+    let mut planning_reprompts: u32 = 0;
+    let mut verification_reprompts: u32 = 0;
 
     // Build context budget from model's actual context window (or fallback to default)
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
@@ -1756,10 +2071,12 @@ pub async fn run_agent_loop_streaming(
             messages = crate::session_repair::validate_and_repair(&messages);
             // Ensure history starts with a user turn after overflow recovery.
             messages = crate::session_repair::ensure_starts_with_user(messages);
+            messages = crate::session_repair::ensure_has_user_text(messages);
         }
 
         // Context guard: compact oversized tool results before LLM call
         apply_context_guard(&mut messages, &context_budget, available_tools);
+        messages = crate::session_repair::ensure_has_user_text(messages);
 
         // Strip provider prefix: "openrouter/google/gemini-2.5-flash" → "google/gemini-2.5-flash"
         let api_model = strip_provider_prefix(&manifest.model.model, &manifest.model.provider);
@@ -1768,7 +2085,7 @@ pub async fn run_agent_loop_streaming(
             model: api_model,
             messages: messages.clone(),
             tools: available_tools.to_vec(),
-            max_tokens: manifest.model.max_tokens,
+            max_tokens: cap_max_output_tokens(manifest.model.max_tokens, context_window_tokens),
             temperature: manifest.model.temperature,
             system: Some(system_prompt.clone()),
             thinking: None,
@@ -1793,15 +2110,66 @@ pub async fn run_agent_loop_streaming(
 
         // Stream LLM call with retry, error classification, and circuit breaker
         let provider_name = manifest.model.provider.as_str();
-        let mut response = stream_with_retry(
-            &*driver,
-            request,
-            stream_tx.clone(),
-            Some(provider_name),
-            None,
-            &manifest.fallback_models,
-        )
-        .await?;
+        let mut response = {
+            let mut active_request = request.clone();
+            let mut overflow_attempts = 0;
+            loop {
+                match stream_with_retry(
+                    &*driver,
+                    active_request.clone(),
+                    stream_tx.clone(),
+                    Some(provider_name),
+                    None,
+                    &manifest.fallback_models,
+                )
+                .await
+                {
+                    Ok(resp) => break resp,
+                    Err(e) => {
+                        if let Some(err_msg) = is_context_overflow_error(&e) {
+                            if overflow_attempts < 3 {
+                                overflow_attempts += 1;
+                                warn!(
+                                    overflow_attempts,
+                                    "Context overflow detected in agent loop (stream). Attempting recovery..."
+                                );
+                                // 1. Attempt to extract a safe limit using the error message
+                                let cap = crate::drivers::openai::extract_max_tokens_limit(&err_msg);
+                                // 2. Update max_tokens
+                                if let Some(safe_cap) = cap {
+                                    warn!(old = active_request.max_tokens, new = safe_cap, "Reducing request max_tokens");
+                                    active_request.max_tokens = safe_cap;
+                                } else {
+                                    // Otherwise reduce max_tokens by 25%
+                                    let new_max = (active_request.max_tokens * 3) / 4;
+                                    warn!(old = active_request.max_tokens, new = new_max, "Reducing request max_tokens by 25%");
+                                    active_request.max_tokens = new_max.max(256);
+                                }
+                                // 3. Trim the messages using recover_from_overflow.
+                                // We simulate a smaller context window to force truncation!
+                                // Reduce the effective context window by 15% on each attempt.
+                                let reduced_ctx = ((ctx_window as f64) * (1.0 - 0.15 * (overflow_attempts as f64))) as usize;
+                                warn!(reduced_ctx, "Running recover_from_overflow with reduced context window");
+                                let recovery = recover_from_overflow(
+                                    &mut messages,
+                                    &system_prompt,
+                                    available_tools,
+                                    reduced_ctx,
+                                );
+                                if recovery != RecoveryStage::None {
+                                    messages = crate::session_repair::validate_and_repair(&messages);
+                                    messages = crate::session_repair::ensure_starts_with_user(messages);
+                                    messages = crate::session_repair::ensure_has_user_text(messages);
+                                }
+                                active_request.messages = messages.clone();
+                                continue;
+                            }
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+        };
 
         total_usage.input_tokens += response.usage.input_tokens;
         total_usage.output_tokens += response.usage.output_tokens;
@@ -1852,14 +2220,14 @@ pub async fn run_agent_loop_streaming(
                     memory
                         .save_session_async(session)
                         .await
-                        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+                        .map_err(|e| OMTAEError::Memory(e.to_string()))?;
                     return Ok(AgentLoopResult {
                         response: String::new(),
                         total_usage,
                         iterations: iteration + 1,
                         cost_usd: None,
                         silent: true,
-                        directives: openfang_types::message::ReplyDirectives {
+                        directives: omtae_types::message::ReplyDirectives {
                             reply_to: parsed_directives_s.reply_to,
                             current_thread: parsed_directives_s.current_thread,
                             silent: true,
@@ -1923,13 +2291,86 @@ pub async fn run_agent_loop_streaming(
                 } else {
                     text
                 };
-                final_response = text.clone();
+
+                // Verification gate (streaming path).
+                if let Some(action) = check_verification_gate(
+                    &messages,
+                    &text,
+                    any_tools_executed,
+                    verification_reprompts,
+                ) {
+                    match action {
+                        PlanningLoopAction::Reprompt(nudge) => {
+                            warn!(agent = %manifest.name, verification_reprompts, "Verification gate (streaming) — TOOL_REQUIRED reprompt");
+                            verification_reprompts += 1;
+                            messages.push(Message::assistant(text));
+                            messages.push(Message::user(nudge.to_string()));
+                            continue;
+                        }
+                        PlanningLoopAction::ForceEnd(response) => {
+                            warn!(agent = %manifest.name, "Verification gate exhausted (streaming) — ending turn");
+                            final_response = response;
+                            session.messages.push(Message::assistant(final_response.clone()));
+                            memory
+                                .save_session_async(session)
+                                .await
+                                .map_err(|e| OMTAEError::Memory(e.to_string()))?;
+                            return Ok(AgentLoopResult {
+                                response: final_response,
+                                total_usage,
+                                iterations: iteration + 1,
+                                cost_usd: None,
+                                silent: false,
+                                directives: omtae_types::message::ReplyDirectives::default(),
+                            });
+                        }
+                    }
+                }
+
+                // Planning loop guard (streaming path).
+                if let Some(action) =
+                    check_planning_loop(&messages, &text, any_tools_executed, planning_reprompts)
+                {
+                    match action {
+                        PlanningLoopAction::Reprompt(nudge) => {
+                            warn!(agent = %manifest.name, planning_reprompts, "Planning loop detected (streaming) — re-prompting for tool use");
+                            planning_reprompts += 1;
+                            messages.push(Message::assistant(text));
+                            messages.push(Message::user(nudge.to_string()));
+                            continue;
+                        }
+                        PlanningLoopAction::ForceEnd(response) => {
+                            warn!(agent = %manifest.name, "Planning loop exhausted (streaming) — ending turn");
+                            final_response = response;
+                            session.messages.push(Message::assistant(final_response.clone()));
+                            memory
+                                .save_session_async(session)
+                                .await
+                                .map_err(|e| OMTAEError::Memory(e.to_string()))?;
+                            return Ok(AgentLoopResult {
+                                response: final_response,
+                                total_usage,
+                                iterations: iteration + 1,
+                                cost_usd: None,
+                                silent: false,
+                                directives: omtae_types::message::ReplyDirectives::default(),
+                            });
+                        }
+                    }
+                }
+
+                final_response = apply_research_integrity_check(
+                    text,
+                    &messages,
+                    any_tools_executed,
+                    available_tools,
+                );
                 // Issue #1098: preserve Thinking blocks (with Anthropic
                 // signatures / Gemini thought signatures / inline-think /
                 // reasoning_content) on the persisted assistant turn.  See
                 // build_assistant_message_preserving_thinking for details.
                 let assistant_msg =
-                    build_assistant_message_preserving_thinking(&response.content, &text);
+                    build_assistant_message_preserving_thinking(&response.content, &final_response);
                 session.messages.push(assistant_msg);
 
                 // Prune NO_REPLY heartbeat turns to save context budget
@@ -1938,7 +2379,7 @@ pub async fn run_agent_loop_streaming(
                 memory
                     .save_session_async(session)
                     .await
-                    .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+                    .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
                 // Remember this interaction (with embedding if available)
                 let interaction_text = format!(
@@ -2001,7 +2442,7 @@ pub async fn run_agent_loop_streaming(
                     let ctx = crate::hooks::HookContext {
                         agent_name: &manifest.name,
                         agent_id: agent_id_str.as_str(),
-                        event: openfang_types::agent::HookEvent::AgentLoopEnd,
+                        event: omtae_types::agent::HookEvent::AgentLoopEnd,
                         data: serde_json::json!({
                             "iterations": iteration + 1,
                             "response_length": final_response.len(),
@@ -2066,7 +2507,7 @@ pub async fn run_agent_loop_streaming(
                                 let ctx = crate::hooks::HookContext {
                                     agent_name: &manifest.name,
                                     agent_id: agent_id_str.as_str(),
-                                    event: openfang_types::agent::HookEvent::AgentLoopEnd,
+                                    event: omtae_types::agent::HookEvent::AgentLoopEnd,
                                     data: serde_json::json!({
                                         "reason": "circuit_break",
                                         "error": msg.as_str(),
@@ -2074,7 +2515,7 @@ pub async fn run_agent_loop_streaming(
                                 };
                                 let _ = hook_reg.fire(&ctx);
                             }
-                            return Err(OpenFangError::Internal(msg.clone()));
+                            return Err(OMTAEError::Internal(msg.clone()));
                         }
                         LoopGuardVerdict::Block(msg) => {
                             warn!(tool = %tool_call.name, "Tool call blocked by loop guard (streaming)");
@@ -2109,7 +2550,7 @@ pub async fn run_agent_loop_streaming(
                         let ctx = crate::hooks::HookContext {
                             agent_name: &manifest.name,
                             agent_id: &caller_id_str,
-                            event: openfang_types::agent::HookEvent::BeforeToolCall,
+                            event: omtae_types::agent::HookEvent::BeforeToolCall,
                             data: serde_json::json!({
                                 "tool_name": &tool_call.name,
                                 "input": &tool_call.input,
@@ -2165,7 +2606,7 @@ pub async fn run_agent_loop_streaming(
                                 Ok(result) => result,
                                 Err(_) => {
                                     warn!(tool = %tool_call.name, "Tool execution timed out after {}s (streaming)", timeout_secs);
-                                    openfang_types::tool::ToolResult {
+                                    omtae_types::tool::ToolResult {
                                         tool_use_id: tool_call.id.clone(),
                                         content: format!(
                                             "Tool '{}' timed out after {}s.",
@@ -2184,7 +2625,7 @@ pub async fn run_agent_loop_streaming(
                         let ctx = crate::hooks::HookContext {
                             agent_name: &manifest.name,
                             agent_id: caller_id_str.as_str(),
-                            event: openfang_types::agent::HookEvent::AfterToolCall,
+                            event: omtae_types::agent::HookEvent::AfterToolCall,
                             data: serde_json::json!({
                                 "tool_name": &tool_call.name,
                                 "result": &result.content,
@@ -2205,7 +2646,12 @@ pub async fn run_agent_loop_streaming(
                     };
 
                     // Notify client of tool execution result (detect dead consumer)
-                    let preview: String = final_content.chars().take(300).collect();
+                    let preview_limit = if tool_call.name == "agent_send" {
+                        16_000
+                    } else {
+                        300
+                    };
+                    let preview: String = final_content.chars().take(preview_limit).collect();
                     if stream_tx
                         .send(StreamEvent::ToolExecutionResult {
                             id: tool_call.id.clone(),
@@ -2311,7 +2757,7 @@ pub async fn run_agent_loop_streaming(
                         let ctx = crate::hooks::HookContext {
                             agent_name: &manifest.name,
                             agent_id: agent_id_str.as_str(),
-                            event: openfang_types::agent::HookEvent::AgentLoopEnd,
+                            event: omtae_types::agent::HookEvent::AgentLoopEnd,
                             data: serde_json::json!({
                                 "iterations": iteration + 1,
                                 "reason": "max_continuations",
@@ -2352,7 +2798,7 @@ pub async fn run_agent_loop_streaming(
         let ctx = crate::hooks::HookContext {
             agent_name: &manifest.name,
             agent_id: agent_id_str.as_str(),
-            event: openfang_types::agent::HookEvent::AgentLoopEnd,
+            event: omtae_types::agent::HookEvent::AgentLoopEnd,
             data: serde_json::json!({
                 "reason": "max_iterations_exceeded",
                 "iterations": max_iterations,
@@ -2361,7 +2807,7 @@ pub async fn run_agent_loop_streaming(
         let _ = hook_reg.fire(&ctx);
     }
 
-    Err(OpenFangError::MaxIterationsExceeded(max_iterations))
+    Err(OMTAEError::MaxIterationsExceeded(max_iterations))
 }
 
 /// Recover tool calls that LLMs output as plain text instead of the proper
@@ -2950,7 +3396,155 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
         }
     }
 
+    // Pattern 15: Pseudo-agent JSON (vLLM/Qwen: `{"name":"researcher","arguments":{"query":"..."}}`)
+    // Runs even when other patterns matched nothing useful — scan always if agent_send is granted.
+    if tool_names.contains(&"agent_send") {
+        let mut scan_from = 0;
+        while let Some(brace_start) = text[scan_from..].find('{') {
+            let abs_brace = scan_from + brace_start;
+            if let Some((tool_name, input)) =
+                try_parse_bare_json_tool_call(&text[abs_brace..], &tool_names)
+            {
+                if tool_name == "agent_send"
+                    && !calls
+                        .iter()
+                        .any(|c| c.name == "agent_send" && c.input == input)
+                {
+                    info!(
+                        "Recovered agent_send from pseudo-agent or bare JSON delegation"
+                    );
+                    calls.push(ToolCall {
+                        id: format!("recovered_{}", uuid::Uuid::new_v4()),
+                        name: tool_name,
+                        input,
+                    });
+                }
+            }
+            scan_from = abs_brace + 1;
+        }
+    }
+
     calls
+}
+
+/// Bundled agent names that vLLM/Qwen often emit as fake tool names instead of `agent_send`.
+const PSEUDO_AGENT_TOOL_NAMES: &[&str] = &[
+    "analyst",
+    "architect",
+    "assistant",
+    "browser-hand",
+    "code-reviewer",
+    "coder",
+    "customer-support",
+    "data-scientist",
+    "debugger",
+    "devops-lead",
+    "doc-writer",
+    "email-assistant",
+    "health-tracker",
+    "home-automation",
+    "legal-assistant",
+    "meeting-assistant",
+    "ops",
+    "orchestrator",
+    "personal-finance",
+    "planner",
+    "recruiter",
+    "researcher",
+    "sales-assistant",
+    "security-auditor",
+    "social-media",
+    "test-engineer",
+    "translator",
+    "travel-planner",
+    "tutor",
+    "writer",
+];
+
+fn is_pseudo_agent_tool_name(name: &str, tool_names: &[&str]) -> bool {
+    if tool_names.contains(&name) || name.is_empty() {
+        return false;
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return false;
+    }
+    PSEUDO_AGENT_TOOL_NAMES.contains(&name)
+}
+
+/// Normalize `agent_send` tool input: map alias target keys → `agent_id`, ensure `message`.
+fn normalize_agent_send_input(target: &str, raw: serde_json::Value) -> Option<serde_json::Value> {
+    let obj = raw.as_object()?;
+    const TARGET_KEYS: &[&str] = &["agent_id", "agent", "target", "to", "recipient", "name"];
+    const MESSAGE_KEYS: &[&str] = &[
+        "message",
+        "query",
+        "task",
+        "prompt",
+        "input",
+        "content",
+        "text",
+        "request",
+    ];
+
+    let message = MESSAGE_KEYS
+        .iter()
+        .find_map(|k| obj.get(*k))
+        .and_then(|v| {
+            if let Some(s) = v.as_str() {
+                let t = s.trim();
+                if !t.is_empty() {
+                    return Some(t.to_string());
+                }
+            }
+            None
+        })
+        .or_else(|| {
+            if obj.len() == 1 {
+                obj.values().next().and_then(|v| v.as_str()).map(str::to_string)
+            } else {
+                None
+            }
+        })?;
+
+    let agent_id = TARGET_KEYS
+        .iter()
+        .find_map(|k| obj.get(*k))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            if target.is_empty() {
+                None
+            } else {
+                Some(target.to_string())
+            }
+        })?;
+
+    Some(serde_json::json!({
+        "agent_id": agent_id,
+        "message": message,
+    }))
+}
+
+/// Coerce `{"name":"researcher","arguments":{"query":"..."}}` → `agent_send`.
+fn coerce_pseudo_agent_to_agent_send(
+    name: &str,
+    args: serde_json::Value,
+    tool_names: &[&str],
+) -> Option<(String, serde_json::Value)> {
+    if !tool_names.contains(&"agent_send") || !is_pseudo_agent_tool_name(name, tool_names) {
+        return None;
+    }
+    let input = normalize_agent_send_input(name, args)?;
+    info!(
+        pseudo = name,
+        "Coerced pseudo-agent JSON tool call → agent_send"
+    );
+    Some(("agent_send".to_string(), input))
 }
 
 /// Parse a JSON object that represents a tool call.
@@ -2959,6 +3553,7 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
 /// - `{"name":"tool","parameters":{"key":"value"}}`
 /// - `{"function":"tool","arguments":{"key":"value"}}`
 /// - `{"tool":"tool_name","args":{"key":"value"}}`
+/// - `{"name":"researcher","arguments":{"query":"..."}}` → `agent_send` (pseudo-agent, vLLM/Qwen)
 fn parse_json_tool_call_object(
     text: &str,
     tool_names: &[&str],
@@ -2972,10 +3567,6 @@ fn parse_json_tool_call_object(
         .or_else(|| obj.get("function"))
         .or_else(|| obj.get("tool"))
         .and_then(|v| v.as_str())?;
-
-    if !tool_names.contains(&name) {
-        return None;
-    }
 
     // Extract arguments from various field names
     let args = obj
@@ -2992,6 +3583,16 @@ fn parse_json_tool_call_object(
     } else {
         args
     };
+
+    if !tool_names.contains(&name) {
+        return coerce_pseudo_agent_to_agent_send(name, args, tool_names);
+    }
+
+    if name == "agent_send" {
+        if let Some(normalized) = normalize_agent_send_input("", args.clone()) {
+            return Some(("agent_send".to_string(), normalized));
+        }
+    }
 
     Some((name.to_string(), args))
 }
@@ -3231,12 +3832,47 @@ mod tests {
     use super::*;
     use crate::llm_driver::{CompletionResponse, LlmError};
     use async_trait::async_trait;
-    use openfang_types::tool::ToolCall;
+    use omtae_types::tool::ToolCall;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
     fn test_max_iterations_constant() {
         assert_eq!(MAX_ITERATIONS, 50);
+    }
+
+    #[test]
+    fn test_research_integrity_detects_website_without_url() {
+        let text = "1. Bulldog Haven\nWebsite: Bulldog Haven\nConfidence Level: High";
+        assert!(research_integrity_issue(text, &[], false, true));
+    }
+
+    #[test]
+    fn test_research_integrity_passes_with_tool_urls() {
+        let text = "1. Example Kennel\nWebsite: https://example.com/kennel";
+        let tool_urls = vec!["https://example.com/kennel".to_string()];
+        assert!(!research_integrity_issue(text, &tool_urls, true, true));
+    }
+
+    #[test]
+    fn test_research_integrity_flags_unbacked_top_list() {
+        let text = "Top 10 English Bulldog breeders in Florida:\n1. A\n2. B\n3. C";
+        assert!(research_integrity_issue(text, &[], false, true));
+    }
+
+    #[test]
+    fn test_apply_research_integrity_appends_disclaimer() {
+        let tools = vec![ToolDefinition {
+            name: "web_search".to_string(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+        }];
+        let result = apply_research_integrity_check(
+            "Top 3 breeders:\n1. A\n2. B\n3. C".to_string(),
+            &[],
+            false,
+            &tools,
+        );
+        assert!(result.contains("Verification notice"));
     }
 
     /// Issue #1098: when a response carries Thinking blocks, the persisted
@@ -3538,7 +4174,7 @@ mod tests {
     fn test_max_history_messages() {
         assert_eq!(MAX_HISTORY_MESSAGES, 20);
         assert_eq!(
-            openfang_types::agent::DEFAULT_MAX_HISTORY_MESSAGES,
+            omtae_types::agent::DEFAULT_MAX_HISTORY_MESSAGES,
             MAX_HISTORY_MESSAGES
         );
     }
@@ -3546,7 +4182,7 @@ mod tests {
     /// Issue #871: an agent with a manifest override uses that value.
     #[test]
     fn test_effective_max_history_uses_manifest_override() {
-        let mut manifest = openfang_types::agent::AgentManifest {
+        let mut manifest = omtae_types::agent::AgentManifest {
             max_history_messages: Some(40),
             ..Default::default()
         };
@@ -3561,7 +4197,7 @@ mod tests {
     /// accidentally disabling history entirely.
     #[test]
     fn test_effective_max_history_falls_back_to_default() {
-        let mut manifest = openfang_types::agent::AgentManifest {
+        let mut manifest = omtae_types::agent::AgentManifest {
             max_history_messages: None,
             ..Default::default()
         };
@@ -3582,7 +4218,7 @@ mod tests {
     #[test]
     fn test_manifest_max_history_round_trip_json() {
         let json_no_override = r#"{"name":"worker","module":"builtin:chat"}"#;
-        let manifest: openfang_types::agent::AgentManifest =
+        let manifest: omtae_types::agent::AgentManifest =
             serde_json::from_str(json_no_override).unwrap();
         assert_eq!(manifest.max_history_messages, None);
         assert_eq!(
@@ -3592,7 +4228,7 @@ mod tests {
 
         let json_with_override =
             r#"{"name":"orchestrator","module":"builtin:chat","max_history_messages":40}"#;
-        let manifest: openfang_types::agent::AgentManifest =
+        let manifest: omtae_types::agent::AgentManifest =
             serde_json::from_str(json_with_override).unwrap();
         assert_eq!(manifest.max_history_messages, Some(40));
         assert_eq!(manifest.effective_max_history_messages(), 40);
@@ -3674,7 +4310,7 @@ mod tests {
     fn test_manifest() -> AgentManifest {
         AgentManifest {
             name: "test-agent".to_string(),
-            model: openfang_types::agent::ModelConfig {
+            model: omtae_types::agent::ModelConfig {
                 system_prompt: "You are a test agent.".to_string(),
                 ..Default::default()
             },
@@ -3787,10 +4423,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_response_after_tool_use_returns_fallback() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
-            id: openfang_types::agent::SessionId::new(),
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -3840,10 +4476,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_error_injects_no_fabrication_guidance() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
-            id: openfang_types::agent::SessionId::new(),
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -3895,10 +4531,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_response_max_tokens_returns_fallback() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
-            id: openfang_types::agent::SessionId::new(),
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -3948,10 +4584,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_normal_response_not_replaced_by_fallback() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
-            id: openfang_types::agent::SessionId::new(),
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -3992,10 +4628,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_streaming_empty_response_after_tool_use_returns_fallback() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
-            id: openfang_types::agent::SessionId::new(),
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -4118,10 +4754,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_first_response_retries_and_recovers() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
-            id: openfang_types::agent::SessionId::new(),
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -4165,10 +4801,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_first_response_fallback_when_retry_also_empty() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
-            id: openfang_types::agent::SessionId::new(),
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -4218,10 +4854,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_streaming_empty_response_max_tokens_returns_fallback() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
-            id: openfang_types::agent::SessionId::new(),
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -4864,6 +5500,43 @@ mod tests {
         assert_eq!(calls[0].input["command"], "ls");
     }
 
+    #[test]
+    fn test_recover_pseudo_agent_researcher_to_agent_send() {
+        let tools = vec![
+            ToolDefinition {
+                name: "agent_send".into(),
+                description: "Delegate".into(),
+                input_schema: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "agent_list".into(),
+                description: "List".into(),
+                input_schema: serde_json::json!({}),
+            },
+        ];
+        let text = r#"I'll delegate. {"name": "researcher", "arguments": {"query": "OMTAE architecture"}}"#;
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "agent_send");
+        assert_eq!(calls[0].input["agent_id"], "researcher");
+        assert_eq!(calls[0].input["message"], "OMTAE architecture");
+    }
+
+    #[test]
+    fn test_recover_agent_send_with_agent_alias() {
+        let tools = vec![ToolDefinition {
+            name: "agent_send".into(),
+            description: "Delegate".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let text = r#"{"name":"agent_send","arguments":{"agent":"coder","message":"Fix the bug"}}"#;
+        let calls = recover_text_tool_calls(text, &tools);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "agent_send");
+        assert_eq!(calls[0].input["agent_id"], "coder");
+        assert_eq!(calls[0].input["message"], "Fix the bug");
+    }
+
     // --- Pattern 9: XML-attribute style <function name="..." parameters="..." /> ---
 
     #[test]
@@ -5184,10 +5857,10 @@ mod tests {
         // This is THE critical test: a model outputs a tool call as text,
         // the recovery code detects it, promotes it to ToolUse, executes the tool,
         // and the agent loop continues to produce a final response.
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
-            id: openfang_types::agent::SessionId::new(),
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -5255,10 +5928,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_nested_xml_text_tool_call_recovery_e2e() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
-            id: openfang_types::agent::SessionId::new(),
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -5332,10 +6005,10 @@ mod tests {
     /// Verifies recovery does NOT interfere with normal flow.
     #[tokio::test]
     async fn test_normal_flow_unaffected_by_recovery() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
-            id: openfang_types::agent::SessionId::new(),
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -5387,10 +6060,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_text_tool_call_recovery_streaming_e2e() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
-            id: openfang_types::agent::SessionId::new(),
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
             agent_id,
             messages: Vec::new(),
             context_window_tokens: 0,
@@ -5489,5 +6162,163 @@ mod tests {
         assert!(!is_silent_token("Hello, how can I help?"));
         assert!(!is_silent_token("SILENT"));
         assert!(!is_silent_token(""));
+    }
+
+    struct OverflowRecoveryDriver {
+        calls: std::sync::atomic::AtomicU32,
+    }
+
+    impl OverflowRecoveryDriver {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicU32::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmDriver for OverflowRecoveryDriver {
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+            let attempt = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if attempt == 0 {
+                Err(LlmError::Api {
+                    status: 400,
+                    message: "This model's maximum context length is 1000 tokens. However, you requested 500 output tokens and your prompt contains at least 550 input tokens.".to_string(),
+                })
+            } else {
+                assert!(req.max_tokens <= 434);
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "Recovered successfully!".to_string(),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage {
+                        input_tokens: 30,
+                        output_tokens: 12,
+                    },
+                })
+            }
+        }
+
+        async fn stream(
+            &self,
+            req: CompletionRequest,
+            tx: mpsc::Sender<StreamEvent>,
+        ) -> Result<CompletionResponse, LlmError> {
+            let attempt = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if attempt == 0 {
+                Err(LlmError::Api {
+                    status: 400,
+                    message: "This model's maximum context length is 1000 tokens. However, you requested 500 output tokens and your prompt contains at least 550 input tokens.".to_string(),
+                })
+            } else {
+                assert!(req.max_tokens <= 434);
+                let _ = tx.send(StreamEvent::TextDelta {
+                    text: "Recovered streaming successfully!".to_string(),
+                }).await;
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "Recovered streaming successfully!".to_string(),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage {
+                        input_tokens: 30,
+                        output_tokens: 12,
+                    },
+                })
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_context_overflow_recovery_sequential() {
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(OverflowRecoveryDriver::new());
+
+        let result = run_agent_loop(
+            &manifest,
+            "Say hello",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1000), // context_window_tokens override
+            None,
+            None,
+        )
+        .await
+        .expect("Sequential loop with context overflow should recover and complete");
+
+        assert_eq!(result.response, "Recovered successfully!");
+    }
+
+    #[tokio::test]
+    async fn test_context_overflow_recovery_streaming() {
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(OverflowRecoveryDriver::new());
+        let (tx, _rx) = mpsc::channel(64);
+
+        let result = run_agent_loop_streaming(
+            &manifest,
+            "Say hello",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            tx,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1000), // context_window_tokens override
+            None,
+            None,
+        )
+        .await
+        .expect("Streaming loop with context overflow should recover and complete");
+
+        assert_eq!(result.response, "Recovered streaming successfully!");
     }
 }

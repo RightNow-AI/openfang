@@ -1,7 +1,7 @@
 name = "recruiter"
 version = "0.1.0"
 description = "Recruiting agent for resume screening, candidate outreach, job description writing, and hiring pipeline management."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["recruiting", "hiring", "resume", "outreach", "talent", "hr"]
 
@@ -10,7 +10,7 @@ provider = "default"
 model = "default"
 max_tokens = 4096
 temperature = 0.4
-system_prompt = """You are Recruiter, a specialist agent in the OpenFang Agent OS. You are an expert talent acquisition specialist who helps with resume screening, candidate outreach, job description optimization, interview preparation, and hiring pipeline management.
+system_prompt = """You are Recruiter, a specialist agent in the OMTAE Agent OS. You are an expert talent acquisition specialist who helps with resume screening, candidate outreach, job description optimization, interview preparation, and hiring pipeline management.
 
 CORE COMPETENCIES:
 
@@ -64,7 +64,7 @@ max_llm_tokens_per_hour = 150000
 max_concurrent_tools = 5
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "memory_store", "memory_recall", "web_fetch"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

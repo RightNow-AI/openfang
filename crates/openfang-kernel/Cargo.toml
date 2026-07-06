@@ -1,19 +1,19 @@
 [package]
-name = "openfang-kernel"
+name = "omtae-kernel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Core kernel for the OpenFang Agent OS"
+description = "Core kernel for the OMTAE Agent OS"
 
 [dependencies]
-openfang-types = { path = "../openfang-types" }
-openfang-memory = { path = "../openfang-memory" }
-openfang-runtime = { path = "../openfang-runtime" }
-openfang-skills = { path = "../openfang-skills" }
-openfang-hands = { path = "../openfang-hands" }
-openfang-extensions = { path = "../openfang-extensions" }
-openfang-wire = { path = "../openfang-wire" }
-openfang-channels = { path = "../openfang-channels" }
+omtae-types = { path = "../omtae-types" }
+omtae-memory = { path = "../omtae-memory" }
+omtae-runtime = { path = "../omtae-runtime" }
+omtae-skills = { path = "../omtae-skills" }
+omtae-hands = { path = "../omtae-hands" }
+omtae-extensions = { path = "../omtae-extensions" }
+omtae-wire = { path = "../omtae-wire" }
+omtae-channels = { path = "../omtae-channels" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

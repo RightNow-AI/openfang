@@ -221,7 +221,7 @@ pub fn search_integrations(
 /// Generate scaffold files for a new custom integration.
 pub fn scaffold_integration(dir: &std::path::Path) -> ExtensionResult<String> {
     let template = r#"# Custom Integration Template
-# Place this in ~/.openfang/integrations/ or use `openfang add --custom <path>`
+# Place this in ~/.omtae/integrations/ or use `omtae add --custom <path>`
 
 id = "my-integration"
 name = "My Integration"
@@ -248,7 +248,7 @@ unhealthy_threshold = 3
 setup_instructions = """
 1. Install the MCP server: npm install -g my-mcp-server
 2. Get your API key from https://example.com/api-keys
-3. Run: openfang add my-integration --key=<your-key>
+3. Run: omtae add my-integration --key=<your-key>
 """
 "#;
     let path = dir.join("integration.toml");

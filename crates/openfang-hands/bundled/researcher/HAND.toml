@@ -159,7 +159,7 @@ description = "AI deep researcher — conducts exhaustive investigations with cr
 module = "builtin:chat"
 provider = "default"
 model = "default"
-max_tokens = 16384
+max_tokens = 4096
 temperature = 0.3
 max_iterations = 25
 # Researcher makes long LLM calls; 30s (kernel default) causes false-positive

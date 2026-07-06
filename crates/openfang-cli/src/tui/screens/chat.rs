@@ -562,7 +562,7 @@ fn draw_model_picker(f: &mut Frame, area: Rect, state: &ChatState) {
             &entry.display_name
         };
         let name_display = if name.len() > max_name && max_name > 1 {
-            let truncated = openfang_types::truncate_str(name, max_name.saturating_sub(1));
+            let truncated = omtae_types::truncate_str(name, max_name.saturating_sub(1));
             format!("{truncated}\u{2026}")
         } else {
             name.to_string()
@@ -888,7 +888,7 @@ fn truncate_line(s: &str, max_len: usize) -> String {
     } else {
         format!(
             "{}\u{2026}",
-            openfang_types::truncate_str(s, max_len.saturating_sub(1))
+            omtae_types::truncate_str(s, max_len.saturating_sub(1))
         )
     }
 }

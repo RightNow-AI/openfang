@@ -6,13 +6,13 @@
 //! no runtime config, so the synthetic skill fixture is what lets us prove
 //! the wire contract.
 //!
-//! Run: cargo test -p openfang-api --test skill_config_api_test -- --nocapture
+//! Run: cargo test -p omtae-api --test skill_config_api_test -- --nocapture
 
 use axum::Router;
-use openfang_api::middleware;
-use openfang_api::routes::{self, AppState};
-use openfang_kernel::OpenFangKernel;
-use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use omtae_api::middleware;
+use omtae_api::routes::{self, AppState};
+use omtae_kernel::OMTAEKernel;
+use omtae_types::config::{DefaultModelConfig, KernelConfig};
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::cors::CorsLayer;
@@ -84,7 +84,7 @@ async fn start_test_server() -> TestServer {
     // Plant synthetic skill BEFORE booting so the initial skill load picks it up.
     plant_skill_with_config(&home, "test-config-skill");
 
-    let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
@@ -96,7 +96,7 @@ async fn start_test_server() -> TestServer {
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
-        provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        provider_probe_cache: omtae_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(Default::default())),
     });
 

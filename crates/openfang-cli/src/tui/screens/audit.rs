@@ -339,7 +339,7 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         format!(
             "{}\u{2026}",
-            openfang_types::truncate_str(s, max.saturating_sub(1))
+            omtae_types::truncate_str(s, max.saturating_sub(1))
         )
     }
 }

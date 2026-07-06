@@ -19,12 +19,12 @@ use axum::response::IntoResponse;
 use dashmap::DashMap;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
-use openfang_kernel::OpenFangKernel;
-use openfang_runtime::kernel_handle::KernelHandle;
-use openfang_runtime::llm_driver::StreamEvent;
-use openfang_runtime::llm_errors;
-use openfang_types::agent::AgentId;
-use openfang_types::commands::{self, Surfaces};
+use omtae_kernel::OMTAEKernel;
+use omtae_runtime::kernel_handle::KernelHandle;
+use omtae_runtime::llm_driver::StreamEvent;
+use omtae_runtime::llm_errors;
+use omtae_types::agent::AgentId;
+use omtae_types::commands::{self, Surfaces};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, SocketAddr};
@@ -195,10 +195,14 @@ fn try_acquire_ws_slot(ip: IpAddr) -> Option<WsConnectionGuard> {
 pub(crate) struct WsAuthCtx<'a> {
     /// Trimmed API key from kernel config. Empty string means no key configured.
     pub api_key: &'a str,
+    /// Unmodified/raw api key from kernel config (even if PIN auth is active).
+    pub raw_api_key: &'a str,
     /// Whether dashboard session login is enabled in config.
     pub auth_enabled: bool,
     /// Secret used to verify session cookies (api_key when set, else password hash).
     pub session_secret: &'a str,
+    /// Plaintext PIN when `[dashboard]` PIN auth is active.
+    pub dashboard_pin: &'a str,
     /// Whether the request originated from a loopback address.
     pub is_loopback: bool,
     /// True iff `OPENFANG_ALLOW_NO_AUTH=1` is set (loose mode for LAN binds).
@@ -213,7 +217,7 @@ pub(crate) struct WsAuthCtx<'a> {
 /// `Err(StatusCode::UNAUTHORIZED)` otherwise. Accepts:
 ///   1. `Authorization: Bearer <api_key>` header
 ///   2. `?token=<api_key>` query parameter
-///   3. `openfang_session=<token>` cookie when dashboard auth is enabled
+///   3. `omtae_session=<token>` cookie when dashboard auth is enabled
 ///   4. Loopback origin when no api_key is configured
 ///   5. Any origin when `OPENFANG_ALLOW_NO_AUTH=1`
 ///
@@ -222,6 +226,33 @@ pub(crate) struct WsAuthCtx<'a> {
 /// because the WS upgrade rejected them even though HTTP requests succeeded.
 pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::StatusCode> {
     use axum::http::StatusCode;
+
+    // SECURITY: constant-time comparison helper.
+    let ct_eq = |token: &str, key: &str| -> bool {
+        use subtle::ConstantTimeEq;
+        if token.len() != key.len() {
+            return false;
+        }
+        token.as_bytes().ct_eq(key.as_bytes()).into()
+    };
+
+    // Unconditionally allow loopback connections using internal credential
+    if !ctx.raw_api_key.is_empty() {
+        let internal_query_auth = ctx
+            .uri
+            .query()
+            .and_then(|q| {
+                q.split('&').find_map(|pair| {
+                    pair.strip_prefix("internal=")
+                })
+            })
+            .map(crate::percent_decode)
+            .map(|token| ct_eq(&token, ctx.raw_api_key))
+            .unwrap_or(false);
+        if internal_query_auth {
+            return Ok(());
+        }
+    }
 
     // No api_key configured: behavior depends on whether dashboard auth is on.
     //
@@ -235,14 +266,8 @@ pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::Statu
         // When dashboard auth is configured, require a valid session cookie
         // regardless of bind address. Loopback no longer bypasses login.
         if ctx.auth_enabled {
-            if !ctx.session_secret.is_empty() {
-                if let Some(token) = crate::session_auth::extract_session_cookie(ctx.headers) {
-                    if crate::session_auth::verify_session_token(&token, ctx.session_secret)
-                        .is_some()
-                    {
-                        return Ok(());
-                    }
-                }
+            if ws_dashboard_auth_ok(ctx) {
+                return Ok(());
             }
             return Err(StatusCode::UNAUTHORIZED);
         }
@@ -254,14 +279,6 @@ pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::Statu
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // SECURITY: constant-time comparison to prevent timing attacks on API key.
-    let ct_eq = |token: &str, key: &str| -> bool {
-        use subtle::ConstantTimeEq;
-        if token.len() != key.len() {
-            return false;
-        }
-        token.as_bytes().ct_eq(key.as_bytes()).into()
-    };
 
     let header_auth = ctx
         .headers
@@ -277,7 +294,12 @@ pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::Statu
     let query_auth = ctx
         .uri
         .query()
-        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
+        .and_then(|q| {
+            q.split('&').find_map(|pair| {
+                pair.strip_prefix("token=")
+                    .or_else(|| pair.strip_prefix("internal="))
+            })
+        })
         .map(crate::percent_decode)
         .map(|token| ct_eq(&token, ctx.api_key))
         .unwrap_or(false);
@@ -285,25 +307,76 @@ pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::Statu
         return Ok(());
     }
 
-    // Dashboard session cookie (issue #1085). When auth_enabled is on the
-    // session_secret is set by server.rs to either the api_key or the
-    // configured password hash, mirroring the HTTP auth middleware.
-    if ctx.auth_enabled && !ctx.session_secret.is_empty() {
-        if let Some(token) = crate::session_auth::extract_session_cookie(ctx.headers) {
-            if crate::session_auth::verify_session_token(&token, ctx.session_secret).is_some() {
-                return Ok(());
+    if ws_dashboard_auth_ok(ctx) {
+        return Ok(());
+    }
+
+    Err(StatusCode::UNAUTHORIZED)
+}
+
+/// PIN header/cookie/query or session cookie/query for dashboard auth.
+fn ws_dashboard_auth_ok(ctx: &WsAuthCtx<'_>) -> bool {
+    if !ctx.auth_enabled {
+        return false;
+    }
+    if !ctx.dashboard_pin.is_empty() {
+        if let Some(pin) = ctx
+            .headers
+            .get("x-omtae-pin")
+            .and_then(|v| v.to_str().ok())
+        {
+            if crate::session_auth::verify_dashboard_pin(pin, ctx.dashboard_pin) {
+                return true;
+            }
+        }
+        if let Some(pin) = ws_query_param(ctx.uri, "pin") {
+            if crate::session_auth::verify_dashboard_pin(&pin, ctx.dashboard_pin) {
+                return true;
             }
         }
     }
 
-    Err(StatusCode::UNAUTHORIZED)
+    if !ctx.session_secret.is_empty() {
+        if let Some(token) = crate::session_auth::extract_session_cookie(ctx.headers) {
+            if crate::session_auth::verify_session_token(&token, ctx.session_secret).is_some() {
+                return true;
+            }
+        }
+        if let Some(token) = ws_query_param(ctx.uri, "session") {
+            if crate::session_auth::verify_session_token(&token, ctx.session_secret).is_some() {
+                return true;
+            }
+        }
+        if let Some(token) = ctx
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+        {
+            if crate::session_auth::verify_session_token(token, ctx.session_secret).is_some() {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn ws_query_param(uri: &axum::http::Uri, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    uri.query().and_then(|q| {
+        q.split('&').find_map(|pair| {
+            pair.strip_prefix(prefix.as_str())
+                .map(crate::percent_decode)
+        })
+    })
 }
 
 /// GET /api/agents/:id/ws — Upgrade to WebSocket for real-time chat.
 ///
 /// SECURITY: Authenticates via Bearer token in Authorization header,
 /// `?token=` query parameter (for browser WebSocket clients that cannot
-/// set custom headers), or the `openfang_session` cookie set by the
+/// set custom headers), or the `omtae_session` cookie set by the
 /// dashboard's session login flow (issue #1085).
 pub async fn agent_ws(
     ws: WebSocketUpgrade,
@@ -316,8 +389,11 @@ pub async fn agent_ws(
     // SECURITY: Authenticate WebSocket upgrades (bypasses HTTP middleware).
     // Trim whitespace so empty/whitespace-only api_key still triggers the
     // fail-closed path for non-loopback origins (see issue #1034 B2).
-    let api_key_raw = &state.kernel.config.api_key;
-    let api_key = api_key_raw.trim();
+    let cfg = &state.kernel.config;
+    let api_key_owned = cfg.effective_api_key_for_auth();
+    let api_key = api_key_owned.as_str();
+    let raw_api_key_owned = cfg.api_key.trim().to_string();
+    let raw_api_key = raw_api_key_owned.as_str();
     let is_loopback = addr.ip().is_loopback();
     let allow_no_auth = std::env::var("OPENFANG_ALLOW_NO_AUTH")
         .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
@@ -325,19 +401,20 @@ pub async fn agent_ws(
 
     // Mirror the session_secret derivation in server.rs::AuthState so cookies
     // issued by /api/auth/login verify the same way over HTTP and WS.
-    let auth_enabled = state.kernel.config.auth.enabled;
-    let session_secret_owned: String = if !api_key.is_empty() {
-        api_key.to_string()
-    } else if auth_enabled {
-        state.kernel.config.auth.password_hash.clone()
+    let auth_enabled = cfg.dashboard_auth_enabled();
+    let session_secret_owned = cfg.dashboard_session_secret();
+    let dashboard_pin_owned = if cfg.dashboard.pin_auth_active() {
+        cfg.dashboard.pin.trim().to_string()
     } else {
         String::new()
     };
 
     let auth_ctx = WsAuthCtx {
         api_key,
+        raw_api_key,
         auth_enabled,
         session_secret: &session_secret_owned,
+        dashboard_pin: &dashboard_pin_owned,
         is_loopback,
         allow_no_auth,
         headers: &headers,
@@ -347,7 +424,7 @@ pub async fn agent_ws(
     if let Err(status) = check_ws_auth(&auth_ctx) {
         warn!(
             ip = %addr.ip(),
-            "WebSocket upgrade rejected: no valid Bearer token, ?token=, or openfang_session cookie"
+            "WebSocket upgrade rejected: no valid Bearer token, ?token=, or omtae_session cookie"
         );
         return status.into_response();
     }
@@ -637,7 +714,7 @@ async fn handle_text_message(
 
             // Resolve file attachments into image content blocks
             let mut has_images = false;
-            let mut ws_content_blocks: Option<Vec<openfang_types::message::ContentBlock>> = None;
+            let mut ws_content_blocks: Option<Vec<omtae_types::message::ContentBlock>> = None;
             if let Some(attachments) = parsed["attachments"].as_array() {
                 let refs: Vec<crate::types::AttachmentRef> = attachments
                     .iter()
@@ -719,7 +796,7 @@ async fn handle_text_message(
                     let stream_task = tokio::spawn(async move {
                         let mut text_buffer = String::new();
                         let mut accumulated_text = String::new();
-                        let mut stream_usage: Option<openfang_types::message::TokenUsage> = None;
+                        let mut stream_usage: Option<omtae_types::message::TokenUsage> = None;
                         let mut is_silent = false;
                         let far_future = tokio::time::Instant::now() + Duration::from_secs(86400);
                         let mut flush_deadline = far_future;
@@ -1113,7 +1190,7 @@ async fn handle_command(
         },
         "context" => match state.kernel.context_report(agent_id) {
             Ok(report) => {
-                let formatted = openfang_runtime::compactor::format_context_report(&report);
+                let formatted = omtae_runtime::compactor::format_context_report(&report);
                 serde_json::json!({
                     "type": "command_result",
                     "command": cmd,
@@ -1294,31 +1371,50 @@ fn map_stream_event(event: &StreamEvent, verbose: VerboseLevel) -> Option<serde_
             name,
             result_preview,
             is_error,
-        } => match verbose {
-            VerboseLevel::Off => Some(serde_json::json!({
-                "type": "tool_result",
-                "id": id,
-                "tool": name,
-                "is_error": is_error,
-            })),
-            VerboseLevel::On => {
-                let truncated: String = result_preview.chars().take(200).collect();
-                Some(serde_json::json!({
+        } => {
+            // Delegation results must be visible in the dashboard — truncated agent_send
+            // output caused orchestrators to fabricate specialist replies.
+            let delegation = name == "agent_send";
+            match verbose {
+                VerboseLevel::Off if delegation => Some(serde_json::json!({
                     "type": "tool_result",
                     "id": id,
                     "tool": name,
-                    "result": truncated,
+                    "result": result_preview,
                     "is_error": is_error,
-                }))
+                })),
+                VerboseLevel::Off => Some(serde_json::json!({
+                    "type": "tool_result",
+                    "id": id,
+                    "tool": name,
+                    "is_error": is_error,
+                })),
+                VerboseLevel::On if delegation => Some(serde_json::json!({
+                    "type": "tool_result",
+                    "id": id,
+                    "tool": name,
+                    "result": result_preview,
+                    "is_error": is_error,
+                })),
+                VerboseLevel::On => {
+                    let truncated: String = result_preview.chars().take(200).collect();
+                    Some(serde_json::json!({
+                        "type": "tool_result",
+                        "id": id,
+                        "tool": name,
+                        "result": truncated,
+                        "is_error": is_error,
+                    }))
+                }
+                VerboseLevel::Full => Some(serde_json::json!({
+                    "type": "tool_result",
+                    "id": id,
+                    "tool": name,
+                    "result": result_preview,
+                    "is_error": is_error,
+                })),
             }
-            VerboseLevel::Full => Some(serde_json::json!({
-                "type": "tool_result",
-                "id": id,
-                "tool": name,
-                "result": result_preview,
-                "is_error": is_error,
-            })),
-        },
+        }
         StreamEvent::PhaseChange { phase, detail } => Some(serde_json::json!({
             "type": "phase",
             "phase": phase,
@@ -1392,9 +1488,9 @@ fn sanitize_text(s: &str) -> String {
 
 /// Classify a streaming/setup error into a user-friendly message.
 ///
-/// Uses the proper LLM error classifier from `openfang_runtime::llm_errors`
+/// Uses the proper LLM error classifier from `omtae_runtime::llm_errors`
 /// for comprehensive 20-provider coverage with actionable advice.
-fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String {
+fn classify_streaming_error(err: &omtae_kernel::error::KernelError) -> String {
     let inner = format!("{err}");
 
     // Check for agent-specific errors first (not LLM errors)
@@ -1496,12 +1592,13 @@ fn extract_status_code(s: &str) -> Option<u16> {
 /// Some models (MiniMax, DeepSeek, etc.) wrap their reasoning in `<think>` tags.
 /// These are internal chain-of-thought and shouldn't be shown to the user.
 pub fn strip_think_tags(text: &str) -> String {
+    const CLOSE: &str = "</think>";
     let mut result = String::with_capacity(text.len());
     let mut remaining = text;
     while let Some(start) = remaining.find("<think>") {
         result.push_str(&remaining[..start]);
-        if let Some(end) = remaining[start..].find("</think>") {
-            remaining = &remaining[(start + end + 8)..]; // 8 = "</think>".len()
+        if let Some(end) = remaining[start..].find(CLOSE) {
+            remaining = &remaining[(start + end + CLOSE.len())..];
         } else {
             // Unclosed <think> tag — strip to end
             remaining = "";
@@ -1509,7 +1606,12 @@ pub fn strip_think_tags(text: &str) -> String {
         }
     }
     result.push_str(remaining);
-    result
+    // Qwen3.x sometimes emits orphan closing tags with no opener — drop preamble.
+    let trimmed = result.trim();
+    if let Some(idx) = trimmed.find(CLOSE) {
+        return trimmed[(idx + CLOSE.len())..].trim().to_string();
+    }
+    trimmed.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1522,15 +1624,15 @@ pub fn strip_think_tags(text: &str) -> String {
 ///
 /// This runs independently of the channel bridge — it uses the kernel's
 /// event bus to receive `CronJobExecuted` events and pushes them to WS.
-pub fn start_ws_cron_broadcaster(kernel: Arc<OpenFangKernel>) {
+pub fn start_ws_cron_broadcaster(kernel: Arc<OMTAEKernel>) {
     tokio::spawn(async move {
         let mut rx = kernel.event_bus.subscribe_all();
         loop {
             let event = rx.recv().await;
             match event {
                 Ok(event) => {
-                    if let openfang_types::event::EventPayload::System(
-                        openfang_types::event::SystemEvent::CronJobExecuted {
+                    if let omtae_types::event::EventPayload::System(
+                        omtae_types::event::SystemEvent::CronJobExecuted {
                             agent_id,
                             job_id,
                             job_name,
@@ -1714,6 +1816,13 @@ mod tests {
         );
         assert_eq!(strip_think_tags("No thinking here"), "No thinking here");
         assert_eq!(strip_think_tags("<think>all thinking</think>"), "");
+        // Qwen3.x orphan closing tag (no opener)
+        assert_eq!(
+            strip_think_tags(
+                "The user said hello.\n</think>\n\nHey Jay! How can I help?"
+            ),
+            "Hey Jay! How can I help?"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1735,8 +1844,10 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "secret",
+            raw_api_key: "secret",
             auth_enabled: false,
             session_secret: "secret",
+            dashboard_pin: "",
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1751,8 +1862,10 @@ mod tests {
         let uri = uri_with_token("secret");
         let ctx = WsAuthCtx {
             api_key: "secret",
+            raw_api_key: "secret",
             auth_enabled: false,
             session_secret: "secret",
+            dashboard_pin: "",
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1766,14 +1879,16 @@ mod tests {
         // Issue #1085: the dashboard logs in via cookie, so WS must accept it.
         let secret = "shared-secret";
         let token = crate::session_auth::create_session_token("alice", secret, 1);
-        let cookie = format!("foo=bar; openfang_session={token}");
+        let cookie = format!("foo=bar; omtae_session={token}");
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("cookie", cookie.parse().unwrap());
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: secret,
+            raw_api_key: secret,
             auth_enabled: true,
             session_secret: secret,
+            dashboard_pin: "",
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1793,13 +1908,15 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(
             "cookie",
-            format!("openfang_session={token}").parse().unwrap(),
+            format!("omtae_session={token}").parse().unwrap(),
         );
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: secret,
+            raw_api_key: secret,
             auth_enabled: false,
             session_secret: secret,
+            dashboard_pin: "",
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1816,12 +1933,14 @@ mod tests {
         // Cookie signed with the wrong secret must fail.
         let bad = crate::session_auth::create_session_token("alice", "other-secret", 1);
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert("cookie", format!("openfang_session={bad}").parse().unwrap());
+        headers.insert("cookie", format!("omtae_session={bad}").parse().unwrap());
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "secret",
+            raw_api_key: "secret",
             auth_enabled: true,
             session_secret: "secret",
+            dashboard_pin: "",
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1839,8 +1958,10 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "secret",
+            raw_api_key: "secret",
             auth_enabled: true,
             session_secret: "secret",
+            dashboard_pin: "",
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1859,8 +1980,10 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "secret",
+            raw_api_key: "secret",
             auth_enabled: false,
             session_secret: "secret",
+            dashboard_pin: "",
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1878,8 +2001,10 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: false,
             session_secret: "",
+            dashboard_pin: "",
             is_loopback: true,
             allow_no_auth: false,
             headers: &headers,
@@ -1895,8 +2020,10 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: false,
             session_secret: "",
+            dashboard_pin: "",
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1914,8 +2041,10 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: false,
             session_secret: "",
+            dashboard_pin: "",
             is_loopback: false,
             allow_no_auth: true,
             headers: &headers,
@@ -1933,13 +2062,15 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(
             "cookie",
-            format!("openfang_session={token}").parse().unwrap(),
+            format!("omtae_session={token}").parse().unwrap(),
         );
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: true,
             session_secret: secret,
+            dashboard_pin: "",
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1964,8 +2095,10 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: true,
             session_secret: secret,
+            dashboard_pin: "",
             is_loopback: true,
             allow_no_auth: false,
             headers: &headers,
@@ -1987,13 +2120,15 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(
             "cookie",
-            format!("openfang_session={token}").parse().unwrap(),
+            format!("omtae_session={token}").parse().unwrap(),
         );
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: true,
             session_secret: secret,
+            dashboard_pin: "",
             is_loopback: true,
             allow_no_auth: false,
             headers: &headers,
@@ -2013,8 +2148,10 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: false,
             session_secret: "",
+            dashboard_pin: "",
             is_loopback: true,
             allow_no_auth: false,
             headers: &headers,
@@ -2023,6 +2160,27 @@ mod tests {
         assert!(
             check_ws_auth(&ctx).is_ok(),
             "loopback dev path must work when dashboard auth is disabled"
+        );
+    }
+
+    #[test]
+    fn ws_auth_accepts_internal_token_even_with_dashboard_auth() {
+        let headers = axum::http::HeaderMap::new();
+        let uri = "/api/agents/x/ws?internal=my-secret-key".parse().unwrap();
+        let ctx = WsAuthCtx {
+            api_key: "", // empty because dashboard/PIN auth is active
+            raw_api_key: "my-secret-key",
+            auth_enabled: true,
+            session_secret: "some-secret",
+            dashboard_pin: "123456",
+            is_loopback: true,
+            allow_no_auth: false,
+            headers: &headers,
+            uri: &uri,
+        };
+        assert!(
+            check_ws_auth(&ctx).is_ok(),
+            "internal query token must bypass dashboard/PIN auth"
         );
     }
 }

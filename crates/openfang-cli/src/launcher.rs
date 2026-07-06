@@ -1,6 +1,6 @@
 //! Interactive launcher — lightweight Ratatui one-shot menu.
 //!
-//! Shown when `openfang` is run with no subcommand in a TTY.
+//! Shown when `omtae` is run with no subcommand in a TTY.
 //! Full-width left-aligned layout, adapts for first-time vs returning users.
 
 use ratatui::crossterm::event::{self, Event as CtEvent, KeyCode, KeyEventKind};
@@ -43,7 +43,7 @@ fn is_first_run() -> bool {
         std::path::PathBuf::from(h)
     } else {
         match dirs::home_dir() {
-            Some(h) => h.join(".openfang"),
+            Some(h) => h.join(".omtae"),
             None => return true,
         }
     };
@@ -358,7 +358,7 @@ fn draw(frame: &mut ratatui::Frame, state: &mut LauncherState) {
         let header_lines = vec![
             Line::from(vec![
                 Span::styled(
-                    "OpenFang",
+                    "OMTAE",
                     Style::default()
                         .fg(theme::ACCENT)
                         .add_modifier(Modifier::BOLD),
@@ -378,7 +378,7 @@ fn draw(frame: &mut ratatui::Frame, state: &mut LauncherState) {
     } else {
         let header = Line::from(vec![
             Span::styled(
-                "OpenFang",
+                "OMTAE",
                 Style::default()
                     .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
@@ -549,9 +549,9 @@ pub fn launch_desktop_app() {
         let dir = exe.as_ref().and_then(|e| e.parent());
 
         #[cfg(windows)]
-        let name = "openfang-desktop.exe";
+        let name = "omtae-desktop.exe";
         #[cfg(not(windows))]
-        let name = "openfang-desktop";
+        let name = "omtae-desktop";
 
         // Check sibling of current exe first
         let sibling = dir.map(|d| d.join(name));
@@ -576,7 +576,7 @@ pub fn launch_desktop_app() {
                 Err(e) => {
                     ui::error_with_fix(
                         &format!("Failed to launch desktop app: {e}"),
-                        "Build it: cargo build -p openfang-desktop",
+                        "Build it: cargo build -p omtae-desktop",
                     );
                 }
             }
@@ -584,7 +584,7 @@ pub fn launch_desktop_app() {
         _ => {
             ui::error_with_fix(
                 "Desktop app not found",
-                "Build it: cargo build -p openfang-desktop",
+                "Build it: cargo build -p omtae-desktop",
             );
         }
     }

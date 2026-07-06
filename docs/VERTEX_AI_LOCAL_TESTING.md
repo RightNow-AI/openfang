@@ -11,7 +11,7 @@
 ### Option 1: Use the Batch File
 
 ```batch
-# Run this from the openfang directory:
+# Run this from the omtae directory:
 start-vertex.bat
 ```
 
@@ -20,13 +20,13 @@ This automatically:
 - Sets `GOOGLE_APPLICATION_CREDENTIALS`
 - Pre-fetches OAuth token via `gcloud auth print-access-token`
 - Sets `VERTEX_AI_ACCESS_TOKEN` env var
-- Starts OpenFang
+- Starts OMTAE
 
 ### Option 2: Manual PowerShell Setup
 
 ```powershell
 # 1. Kill any existing instances
-taskkill /F /IM openfang.exe 2>$null
+taskkill /F /IM omtae.exe 2>$null
 
 # 2. Set environment variables (CRITICAL: clear proxy!)
 $env:HTTPS_PROXY = ""
@@ -36,9 +36,9 @@ $env:GOOGLE_APPLICATION_CREDENTIALS = "C:\Users\at384\Downloads\osc\dbg-grcit-de
 # 3. Pre-fetch OAuth token (IMPORTANT: avoids subprocess issues on Windows)
 $env:VERTEX_AI_ACCESS_TOKEN = gcloud auth print-access-token
 
-# 4. Start OpenFang
-cd C:\Users\at384\Downloads\osc\dllm\openfang
-.\target\debug\openfang.exe start
+# 4. Start OMTAE
+cd C:\Users\at384\Downloads\osc\dllm\omtae
+.\target\debug\omtae.exe start
 ```
 
 ## Testing the API
@@ -65,7 +65,7 @@ $response = Invoke-RestMethod -Uri "http://127.0.0.1:50051/v1/chat/completions" 
 Write-Host $response.choices[0].message.content
 ```
 
-### Direct Vertex AI Test (Bypass OpenFang)
+### Direct Vertex AI Test (Bypass OMTAE)
 
 ```powershell
 $env:HTTPS_PROXY = ""
@@ -83,7 +83,7 @@ Invoke-RestMethod -Uri $url -Method POST -Headers @{Authorization = "Bearer $tok
 
 ## Configuration
 
-### ~/.openfang/config.toml
+### ~/.omtae/config.toml
 
 ```toml
 [default_model]
@@ -120,7 +120,7 @@ $env:VERTEX_AI_ACCESS_TOKEN = gcloud auth print-access-token
 
 ### "Connection refused"
 
-**Cause:** OpenFang not running or wrong port.
+**Cause:** OMTAE not running or wrong port.
 
 **Solution:** Ensure server is running on port 50051:
 ```powershell
@@ -139,20 +139,20 @@ $env:VERTEX_AI_ACCESS_TOKEN = gcloud auth print-access-token
 ## Build Commands
 
 ```powershell
-cd C:\Users\at384\Downloads\osc\dllm\openfang
+cd C:\Users\at384\Downloads\osc\dllm\omtae
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 
 # Debug build (faster compilation)
-cargo build -p openfang-cli
+cargo build -p omtae-cli
 
 # Run tests
-cargo test -p openfang-runtime --lib vertex
+cargo test -p omtae-runtime --lib vertex
 
 # Check formatting
-cargo fmt --check -p openfang-runtime
+cargo fmt --check -p omtae-runtime
 
 # Run clippy
-cargo clippy -p openfang-runtime --lib -- -W warnings
+cargo clippy -p omtae-runtime --lib -- -W warnings
 ```
 
 ## API Endpoints
@@ -167,5 +167,5 @@ cargo clippy -p openfang-runtime --lib -- -W warnings
 
 ## Files Modified in PR
 
-- `crates/openfang-runtime/src/drivers/vertex.rs` (NEW - ~790 lines)
-- `crates/openfang-runtime/src/drivers/mod.rs` (+62 lines)
+- `crates/omtae-runtime/src/drivers/vertex.rs` (NEW - ~790 lines)
+- `crates/omtae-runtime/src/drivers/mod.rs` (+62 lines)

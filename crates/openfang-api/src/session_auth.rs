@@ -17,7 +17,71 @@ pub fn create_session_token(username: &str, secret: &str, ttl_hours: u64) -> Str
     base64::engine::general_purpose::STANDARD.encode(format!("{payload}:{signature}"))
 }
 
-/// Extract the `openfang_session` cookie value from a `Cookie` header string.
+/// True when the request arrived over HTTPS (direct TLS or proxy headers).
+pub fn request_is_secure(headers: &axum::http::HeaderMap) -> bool {
+    if headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|p| p.eq_ignore_ascii_case("https"))
+    {
+        return true;
+    }
+    if headers
+        .get("x-forwarded-ssl")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("on"))
+    {
+        return true;
+    }
+    if headers
+        .get("cf-visitor")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("\"scheme\":\"https\"") || v.contains("scheme=https"))
+    {
+        return true;
+    }
+    headers
+        .get(axum::http::header::FORWARDED)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|f| f.to_ascii_lowercase().contains("proto=https"))
+}
+
+/// Whether the `Set-Cookie` `Secure` flag should be set for this request.
+///
+/// Uses HTTPS detection plus non-localhost `Host` so Cloudflare tunnel clients
+/// (`desk.omtaeservices.biz`) always get `Secure; SameSite=Lax` cookies.
+pub fn cookie_should_be_secure(headers: &axum::http::HeaderMap) -> bool {
+    if request_is_secure(headers) {
+        return true;
+    }
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .map(|h| h.split(':').next().unwrap_or(h).to_ascii_lowercase());
+    match host.as_deref() {
+        Some("localhost") | Some("127.0.0.1") | Some("[::1]") => false,
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// Build the `Set-Cookie` value for a dashboard session.
+///
+/// Uses `SameSite=Lax` (tunnel-friendly) and `Secure` on HTTPS so mobile
+/// browsers accept the cookie behind Cloudflare.
+pub fn format_session_cookie(token: &str, ttl_secs: u64, secure: bool) -> String {
+    let secure_flag = if secure { "; Secure" } else { "" };
+    format!(
+        "omtae_session={token}; Path=/; HttpOnly; SameSite=Lax{secure_flag}; Max-Age={ttl_secs}"
+    )
+}
+
+/// Clear the session cookie (logout).
+pub fn format_session_cookie_clear(secure: bool) -> String {
+    format_session_cookie("", 0, secure)
+}
+
+/// Extract the `omtae_session` cookie value from a `Cookie` header string.
 ///
 /// Returns `None` if the header is absent or the cookie is not present.
 /// Used by both the HTTP auth middleware and the WebSocket upgrade handler so
@@ -30,7 +94,7 @@ pub fn extract_session_cookie(headers: &axum::http::HeaderMap) -> Option<String>
         .and_then(|cookies| {
             cookies.split(';').find_map(|c| {
                 c.trim()
-                    .strip_prefix("openfang_session=")
+                    .strip_prefix("omtae_session=")
                     .map(|v| v.to_string())
             })
         })
@@ -84,6 +148,17 @@ pub fn hash_password(password: &str) -> String {
         .hash_password(password.as_bytes(), &salt)
         .expect("Argon2 hashing should not fail with valid inputs")
         .to_string()
+}
+
+/// Constant-time compare for `[dashboard].pin`.
+pub fn verify_dashboard_pin(provided: &str, stored: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    let a = provided.trim().as_bytes();
+    let b = stored.trim().as_bytes();
+    if a.is_empty() || b.is_empty() || a.len() != b.len() {
+        return false;
+    }
+    a.ct_eq(b).into()
 }
 
 /// Verify a password against a stored Argon2id hash (PHC string format).
@@ -166,7 +241,7 @@ mod tests {
         let mut h = axum::http::HeaderMap::new();
         h.insert(
             "cookie",
-            "foo=bar; openfang_session=abc.def.ghi; baz=qux"
+            "foo=bar; omtae_session=abc.def.ghi; baz=qux"
                 .parse()
                 .unwrap(),
         );
@@ -187,9 +262,45 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_dashboard_pin() {
+        assert!(verify_dashboard_pin("1234", "1234"));
+        assert!(!verify_dashboard_pin("1235", "1234"));
+        assert!(!verify_dashboard_pin("1234", ""));
+    }
+
+    #[test]
     fn test_extract_session_cookie_only_value() {
         let mut h = axum::http::HeaderMap::new();
-        h.insert("cookie", "openfang_session=lonely".parse().unwrap());
+        h.insert("cookie", "omtae_session=lonely".parse().unwrap());
         assert_eq!(extract_session_cookie(&h).as_deref(), Some("lonely"));
+    }
+
+    #[test]
+    fn test_format_session_cookie_secure() {
+        let c = format_session_cookie("tok", 3600, true);
+        assert!(c.contains("Secure"));
+        assert!(c.contains("SameSite=Lax"));
+        assert!(c.contains("omtae_session=tok"));
+    }
+
+    #[test]
+    fn test_request_is_secure_forwarded_proto() {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("x-forwarded-proto", "https".parse().unwrap());
+        assert!(request_is_secure(&h));
+    }
+
+    #[test]
+    fn test_cookie_should_be_secure_public_host() {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("host", "desk.omtaeservices.biz".parse().unwrap());
+        assert!(cookie_should_be_secure(&h));
+    }
+
+    #[test]
+    fn test_cookie_should_be_secure_localhost() {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("host", "127.0.0.1:4200".parse().unwrap());
+        assert!(!cookie_should_be_secure(&h));
     }
 }

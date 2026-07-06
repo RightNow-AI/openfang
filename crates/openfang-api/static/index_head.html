@@ -1,13 +1,22 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenFang Dashboard</title>
+<title>OMTAE Dashboard</title>
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/png" href="/logo.png">
 <link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#6366f1">
+<meta name="theme-color" content="#171816">
+<script>
+(function () {
+  try {
+    localStorage.setItem('omtae-theme-mode', 'dark');
+  } catch (e) { /* ignore */ }
+  document.documentElement.setAttribute('data-theme', 'dark');
+})();
+</script>
+<style>html,body{background-color:#171816;color:#E2E1D8}</style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">

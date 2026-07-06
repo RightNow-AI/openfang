@@ -1,40 +1,56 @@
 <body x-data="app" :data-theme="theme">
 
 <!-- Auth Prompt (API Key or Username/Password) -->
-<div x-show="$store.app.showAuthPrompt" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px)" x-data="{ apiKeyInput: '', loginUser: '', loginPass: '' }">
-  <div style="background:var(--bg-card,#1e1e2e);border:1px solid var(--border,#333);border-radius:12px;padding:2rem;max-width:400px;width:90%">
+<div class="auth-overlay" x-show="$store.app.showAuthPrompt" x-cloak x-data="{ apiKeyInput: '', loginUser: '', loginPass: '', pinInput: '' }">
+  <div class="auth-card" style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:2rem;max-width:400px;width:90%;color:var(--text)">
+    <img src="/logo.png" alt="OMTAE" class="logo" style="max-width:280px;max-height:64px;width:auto;height:auto;margin:0 auto 1rem;display:block;object-fit:contain;opacity:0.9">
+    <!-- PIN login mode -->
+    <template x-if="$store.app.authMode === 'pin'">
+      <div>
+        <h3 style="margin:0 0 0.5rem;font-size:1.1rem;color:var(--text)">Enter PIN</h3>
+        <p style="color:var(--text-dim);font-size:0.85rem;margin:0 0 1rem">Enter the dashboard PIN from your <code>~/.omtae/config.toml</code> <code>[dashboard]</code> section.</p>
+        <input type="password" class="auth-pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="12" autocomplete="one-time-code" x-model="pinInput" placeholder="Dashboard PIN" @keydown.enter="$store.app.sessionPinLogin(pinInput)" style="width:100%;padding:0.75rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);-webkit-text-fill-color:var(--text);font-size:1.25rem;letter-spacing:0.35em;text-align:center;box-sizing:border-box;margin-bottom:0.75rem">
+        <button @click="$store.app.sessionPinLogin(pinInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent);color:var(--text-on-accent);font-weight:600;cursor:pointer;font-size:0.9rem">Unlock Dashboard</button>
+      </div>
+    </template>
     <!-- Session login mode -->
     <template x-if="$store.app.authMode === 'session'">
       <div>
-        <h3 style="margin:0 0 0.5rem;font-size:1.1rem">Sign In</h3>
-        <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 1rem">Enter your dashboard credentials.</p>
-        <input type="text" x-model="loginUser" placeholder="Username" autocomplete="username" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.5rem">
-        <input type="password" x-model="loginPass" placeholder="Password" autocomplete="current-password" @keydown.enter="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
-        <button @click="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Sign In</button>
+        <h3 style="margin:0 0 0.5rem;font-size:1.1rem;color:var(--text)">Sign In</h3>
+        <p style="color:var(--text-dim);font-size:0.85rem;margin:0 0 1rem">Enter your dashboard credentials.</p>
+        <input type="text" x-model="loginUser" placeholder="Username" autocomplete="username" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.5rem">
+        <input type="password" x-model="loginPass" placeholder="Password" autocomplete="current-password" @keydown.enter="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
+        <button @click="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent);color:var(--text-on-accent);font-weight:600;cursor:pointer;font-size:0.9rem">Sign In</button>
       </div>
     </template>
     <!-- API key mode -->
     <template x-if="$store.app.authMode === 'apikey'">
       <div>
-        <h3 style="margin:0 0 0.5rem;font-size:1.1rem">API Key Required</h3>
-        <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 0.5rem">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
-        <p style="color:var(--text-dim,#666);font-size:0.75rem;margin:0 0 1rem">Add <code style="color:var(--accent-light,#a78bfa);background:var(--bg,#111);padding:1px 4px;border-radius:2px">api_key = "your-key"</code> at the <strong>top</strong> of <code>~/.openfang/config.toml</code> (not under any [section]).</p>
-        <input type="password" x-model="apiKeyInput" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
-        <button @click="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Unlock Dashboard</button>
+        <h3 style="margin:0 0 0.5rem;font-size:1.1rem;color:var(--text)">API Key Required</h3>
+        <p style="color:var(--text-dim);font-size:0.85rem;margin:0 0 0.5rem">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
+        <p style="color:var(--text-muted);font-size:0.75rem;margin:0 0 1rem">Add <code style="color:var(--accent-light);background:var(--bg-inset);padding:1px 4px;border-radius:2px">api_key = "your-key"</code> at the <strong>top</strong> of <code>~/.omtae/config.toml</code> (not under any [section]).</p>
+        <input type="password" x-model="apiKeyInput" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
+        <button @click="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent);color:var(--text-on-accent);font-weight:600;cursor:pointer;font-size:0.9rem">Unlock Dashboard</button>
       </div>
     </template>
   </div>
 </div>
 
-<div class="app-layout" :class="{ 'focus-mode': $store.app.focusMode }">
+<!-- Mobile nav — direct children of body so app-layout overflow cannot block taps -->
+<button type="button" class="mobile-menu-btn btn btn-ghost" @click.stop="toggleMobileMenu()" :aria-expanded="mobileMenuOpen" :aria-label="mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'" aria-controls="sidebar-nav">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+</button>
+<div class="sidebar-overlay" x-show="mobileMenuOpen" x-transition.opacity @click="closeMobileMenu()" :aria-hidden="!mobileMenuOpen"></div>
+
+<div class="app-layout" :class="{ 'focus-mode': $store.app.focusMode, 'mobile-nav-open': mobileMenuOpen }">
   <!-- Sidebar — x-cloak prevents Firefox flash-hidden during Alpine init -->
-  <nav class="sidebar" x-cloak :class="{ collapsed: sidebarCollapsed, 'mobile-open': mobileMenuOpen }">
+  <nav id="sidebar-nav" class="sidebar" x-cloak :class="{ collapsed: sidebarCollapsed && !mobileMenuOpen, 'mobile-open': mobileMenuOpen }">
     <div class="sidebar-header">
       <div class="sidebar-header-text">
         <div class="sidebar-logo">
-          <img src="/logo.png" alt="OpenFang" width="28" height="28">
+          <img src="/logo.png" alt="OMTAE">
           <div>
-            <h1>OPENFANG</h1>
+            <h1>OMTAE</h1>
             <div class="version" x-text="'v' + version"></div>
           </div>
         </div>
@@ -53,6 +69,24 @@
       <span class="sidebar-label" x-show="!connected && !$store.app.booting && $store.app.connectionState === 'reconnecting'" class="conn-reconnecting">Reconnecting...</span>
       <span class="sidebar-label" x-show="!connected && !$store.app.booting && $store.app.connectionState !== 'reconnecting'" x-text="'disconnected' + ($store.app.lastError ? ' — ' + $store.app.lastError : '')">disconnected</span>
       <span class="conn-badge sidebar-label" :class="wsConnected ? 'ws' : 'http'" x-text="wsConnected ? 'WS' : 'HTTP'" x-show="connected"></span>
+    </div>
+
+    <div class="sidebar-gpu" x-show="$store.app.gpuStats.available" x-cloak title="GPU telemetry via nvidia-smi">
+      <div class="gpu-row">
+        <span class="gpu-label">GPU0</span>
+        <span class="gpu-val" x-text="($store.app.gpuStats.gpu0.temp || 0) + '°C'"></span>
+        <span class="gpu-val dim" x-text="($store.app.gpuStats.gpu0.usage || 0) + '%'"></span>
+      </div>
+      <div class="gpu-row">
+        <span class="gpu-label">GPU1</span>
+        <span class="gpu-val accent" x-text="($store.app.gpuStats.gpu1.temp || 0) + '°C'"></span>
+        <span class="gpu-val dim" x-text="($store.app.gpuStats.gpu1.usage || 0) + '%'"></span>
+      </div>
+      <div class="gpu-row vram">
+        <span class="gpu-label">VRAM</span>
+        <span class="gpu-val" x-text="($store.app.gpuStats.usedVram || 0) + '/' + ($store.app.gpuStats.totalVram || 48) + ' GB'"></span>
+      </div>
+      <div class="gpu-model" x-show="$store.app.gpuStats.model" x-text="$store.app.gpuStats.model"></div>
     </div>
 
     <div class="sidebar-nav" role="navigation" aria-label="Main navigation">
@@ -123,6 +157,10 @@
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></svg></span>
               <span class="nav-label">Skills</span>
             </a>
+            <a class="nav-item" :class="{ active: page === 'brain' }" @click="navigate('brain')" :aria-current="page === 'brain' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 0-4 12.7V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.3A7 7 0 0 0 12 2z"/><path d="M9 21h6"/></svg></span>
+              <span class="nav-label">Brain</span>
+            </a>
             <a class="nav-item" :class="{ active: page === 'hands' }" @click="navigate('hands')" :aria-current="page === 'hands' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v6"/><path d="M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-5.7-2.4L3.4 16a2 2 0 0 1 3.2-2.4L8 15"/></svg></span>
               <span class="nav-label">Hands</span>
@@ -168,23 +206,25 @@
     </div>
 
     <div class="sidebar-footer">
-      <div x-show="$store.app.sessionUser" style="padding:4px 16px;display:flex;align-items:center;justify-content:space-between">
-        <span class="text-xs text-dim" x-text="$store.app.sessionUser" style="letter-spacing:0.5px"></span>
-        <button @click="$store.app.sessionLogout()" class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px;opacity:0.7" title="Sign out">Logout</button>
+      <div class="sidebar-footer-session" x-show="$store.app.sessionUser && (!sidebarCollapsed || mobileMenuOpen)">
+        <span class="sidebar-footer-user sidebar-label text-xs text-dim" x-text="$store.app.sessionUser"></span>
+        <button @click="$store.app.sessionLogout()" class="sidebar-logout-btn btn btn-ghost btn-sm" title="Sign out">
+          <span class="sidebar-logout-label">Logout</span>
+          <svg class="sidebar-logout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
       </div>
-      <div class="sidebar-label text-xs text-dim" style="padding:0 16px 4px;letter-spacing:0.5px">Ctrl+K agents | Ctrl+N new</div>
+      <div class="sidebar-footer-hint sidebar-label text-xs text-dim" x-show="!sidebarCollapsed || mobileMenuOpen">Ctrl+K agents | Ctrl+N new</div>
+      <div class="sidebar-footer-collapsed" x-show="sidebarCollapsed && !mobileMenuOpen && $store.app.sessionUser">
+        <button @click="$store.app.sessionLogout()" class="sidebar-logout-btn btn btn-ghost btn-sm" title="Sign out">
+          <svg class="sidebar-logout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+      </div>
     </div>
     <div class="sidebar-toggle" @click="toggleSidebar()" x-text="sidebarCollapsed ? '\u276F' : '\u276E'"></div>
   </nav>
 
-  <div class="sidebar-overlay" x-cloak @click="mobileMenuOpen = false"></div>
-
   <!-- Main Content -->
   <main class="main-content">
-    <!-- Mobile menu button -->
-    <button class="mobile-menu-btn btn btn-ghost" @click="mobileMenuOpen = !mobileMenuOpen">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-    </button>
 
     <!-- Page: Overview -->
     <template x-if="page === 'overview'">
@@ -251,7 +291,7 @@
           </div>
           <!-- Onboarding banner -->
           <div class="onboarding-banner" x-show="!loading && !loadError && $store.app.showOnboarding && checklistDismissed">
-            <h3>Welcome to OpenFang</h3>
+            <h3>Welcome to OMTAE</h3>
             <p style="font-size:12px;color:var(--text-dim)">Get started quickly with the guided Setup Wizard, or configure manually:</p>
             <div class="flex gap-2">
               <button class="btn btn-primary" @click="location.hash='wizard'">Launch Setup Wizard</button>
@@ -260,6 +300,22 @@
             </div>
           </div>
           <div x-show="!loading && !loadError" style="animation:fadeIn 0.3s">
+
+          <!-- Drift watchdog alerts (actionable warn/error only) -->
+          <div class="card" x-show="showDriftCard" style="margin-bottom:16px;border-left:4px solid var(--warning)">
+            <div class="card-header" style="margin:0;display:flex;justify-content:space-between;align-items:center">
+              <span>System Drift</span>
+              <button class="btn btn-ghost btn-sm" @click="dismissDrift()" title="Dismiss until next issue">Dismiss</button>
+            </div>
+            <p class="text-xs text-dim" style="margin:0 0 8px" x-text="drift.ok ? 'No actionable issues' : (driftAlerts.length + ' issue(s) detected')"></p>
+            <template x-for="f in driftAlerts" :key="f.check + f.message">
+              <div class="text-xs" style="padding:4px 0">
+                <span class="badge badge-warn" x-text="f.check"></span>
+                <span x-text="f.message"></span>
+              </div>
+            </template>
+            <button class="btn btn-ghost btn-sm" style="margin-top:8px" @click="remediateDrift()" :disabled="driftRemediating" x-show="driftAlerts.length">Fix safe issues</button>
+          </div>
 
           <!-- Primary stats row with icons + stagger animation -->
           <div class="stats-row stats-row-lg">
@@ -542,13 +598,15 @@
                 </div>
               </div>
               <div class="flex gap-2 items-center">
-                <span class="badge badge-running" x-show="currentAgent && !sending" style="animation:fadeIn 0.2s">
-                  <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--success);margin-right:2px"></span> Ready
+                <span class="badge badge-running" x-show="currentAgent && !showStopButton()" style="animation:fadeIn 0.2s">
+                  <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--success);margin-right:2px"></span>
+                  <span x-text="scheduleBadge() === 'continuous' && !currentAgent.background_paused ? 'Continuous' : 'Ready'"></span>
                 </span>
-                <span class="badge badge-suspended" x-show="sending" style="animation:fadeIn 0.2s">
+                <span class="badge badge-suspended" x-show="showStopButton()" style="animation:fadeIn 0.2s">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" style="animation:spin 1s linear infinite"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
                   Generating...
                 </span>
+                <span class="badge badge-dim" x-show="currentAgent && currentAgent.background_paused" title="Background schedule paused — restart daemon to resume">Paused</span>
                 <span class="queue-badge" x-show="messageQueue.length > 0" x-text="'+' + messageQueue.length + ' queued'"></span>
                 <!-- Session switcher -->
                 <div style="position:relative">
@@ -608,7 +666,7 @@
                   <template x-for="(msg, $index) in filteredMessages" :key="msg.id">
                     <div class="message" :class="msg.role + (msg.thinking ? ' thinking' : '') + (msg.streaming ? ' streaming' : '') + (isGrouped($index) ? ' grouped' : '')">
                       <div class="message-avatar" x-show="msg.role === 'agent'">
-                        <img src="/logo.png" alt="OpenFang">
+                        <img src="/logo.png" alt="OMTAE">
                       </div>
                       <div class="message-body">
                         <!-- Copy button on hover -->
@@ -739,7 +797,7 @@
                   <span class="recording-dot"></span>
                   <span class="text-xs" style="color:var(--danger)" x-text="formatRecordingTime()"></span>
                 </div>
-                <textarea id="msg-input" rows="1" :placeholder="recording ? 'Recording... release to send' : 'Message OpenFang... (/ for commands)'"
+                <textarea id="msg-input" rows="1" :placeholder="recording ? 'Recording... release to send' : 'Message OMTAE... (/ for commands)'"
                           @keydown.enter="if(!$event.isComposing && $event.keyCode !== 229 && !$event.shiftKey){$event.preventDefault();if(showModelPicker && filteredModelPicker.length){pickModel(filteredModelPicker[modelPickerIdx].id)}else if(showSlashMenu && filteredSlashCommands.length){executeSlashCommand(filteredSlashCommands[slashIdx].cmd)}else{sendMessage()}}"
                           @keydown.escape="showSlashMenu = false; showModelPicker = false"
                           @keydown.arrow-up.prevent="if(showModelPicker){modelPickerIdx = Math.max(0, modelPickerIdx - 1)}else if(showSlashMenu){slashIdx = Math.max(0, slashIdx - 1)}"
@@ -747,14 +805,14 @@
                           @input="$el.style.height='auto';$el.style.height=Math.min($el.scrollHeight,150)+'px'"
                           x-model="inputText"
                           :class="{ 'streaming-active': sending }"></textarea>
-                <!-- Send button (normal) or Stop button (during streaming) -->
-                <template x-if="!sending">
+                <!-- Send button (normal) or Stop button (during streaming / background inferencing) -->
+                <template x-if="!showStopButton()">
                   <button class="btn-send" @click="sendMessage()" :disabled="!inputText.trim() && !attachments.length">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                   </button>
                 </template>
-                <template x-if="sending">
-                  <button class="btn-stop" @click="stopAgent()" title="Stop generating">
+                <template x-if="showStopButton()">
+                  <button class="btn-stop" @click="stopAgent()" title="Stop generating (also pauses continuous mode)">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
                   </button>
                 </template>
@@ -1647,7 +1705,7 @@
               <div class="modal" style="max-width:600px">
                 <div class="modal-header"><h3>Generated TOML</h3><button class="modal-close" @click="showTomlPreview = false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
                 <pre class="wf-toml-preview" x-text="tomlOutput"></pre>
-                <button class="btn btn-ghost btn-block mt-2" @click="navigator.clipboard.writeText(tomlOutput); OpenFangToast.success('Copied!')">Copy to Clipboard</button>
+                <button class="btn btn-ghost btn-block mt-2" @click="navigator.clipboard.writeText(tomlOutput); OMTAEToast.success('Copied!')">Copy to Clipboard</button>
               </div>
             </div>
           </template>
@@ -1928,7 +1986,7 @@
                       <div>
                         <div class="form-group">
                           <label>Path</label>
-                          <input class="form-input" x-model="draftTarget.path" placeholder="/var/log/openfang-cron.log">
+                          <input class="form-input" x-model="draftTarget.path" placeholder="/var/log/omtae-cron.log">
                         </div>
                         <div class="form-group">
                           <label class="flex items-center gap-2">
@@ -2036,7 +2094,7 @@
                       <div>
                         <div class="form-group">
                           <label>Path</label>
-                          <input class="form-input" x-model="draftTarget.path" placeholder="/var/log/openfang-cron.log">
+                          <input class="form-input" x-model="draftTarget.path" placeholder="/var/log/omtae-cron.log">
                         </div>
                         <div class="form-group">
                           <label class="flex items-center gap-2">
@@ -2437,7 +2495,7 @@
         <div class="page-body" x-init="loadSkills()">
           <div class="info-card">
             <h4>Skills &amp; Ecosystem</h4>
-            <p>Skills extend your agents with new capabilities. OpenFang supports the <strong>OpenClaw/ClawHub</strong> ecosystem (3,000+ community skills) plus local skills.</p>
+            <p>Skills extend your agents with new capabilities. OMTAE supports the <strong>OpenClaw/ClawHub</strong> ecosystem (3,000+ community skills) plus local skills.</p>
             <ul>
               <li><strong>Prompt-only</strong> &mdash; inject context and instructions into the agent's system prompt (most ClawHub skills)</li>
               <li><strong>Python / Node.js</strong> &mdash; executable tools that agents can call during conversations</li>
@@ -2608,7 +2666,7 @@
           <div x-show="tab === 'mcp'">
             <div class="info-card">
               <h4>MCP Servers (Model Context Protocol)</h4>
-              <p>MCP servers provide external tools to your agents &mdash; GitHub, filesystem, databases, APIs, and more. OpenFang is compatible with all OpenClaw MCP servers.</p>
+              <p>MCP servers provide external tools to your agents &mdash; GitHub, filesystem, databases, APIs, and more. OMTAE is compatible with all OpenClaw MCP servers.</p>
               <p class="mt-2" style="font-size:0.8rem;color:var(--text-dim)">Configure MCP servers in your <code>config.toml</code> under <code>[mcp_servers]</code>.</p>
             </div>
             <div x-show="mcpLoading" class="loading-state"><div class="spinner"></div><span>Loading MCP servers...</span></div>
@@ -2671,7 +2729,7 @@ timeout_secs = 30
 type = "stdio"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
-                <p class="hint mt-2" style="font-size:0.75rem">OpenFang supports all OpenClaw-compatible MCP servers.</p>
+                <p class="hint mt-2" style="font-size:0.75rem">OMTAE supports all OpenClaw-compatible MCP servers.</p>
               </div>
             </div>
           </div>
@@ -2823,7 +2881,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   </template>
 
                   <div class="text-xs text-dim" style="margin-top:12px">
-                    Values are stored in <code>~/.openfang/config.toml</code> under <code>[skills.<span x-text="configSkill.name"></span>]</code>. Secrets are redacted in this view.
+                    Values are stored in <code>~/.omtae/config.toml</code> under <code>[skills.<span x-text="configSkill.name"></span>]</code>. Secrets are redacted in this view.
                   </div>
                   <div class="flex justify-end gap-2" style="margin-top:16px">
                     <button class="btn btn-ghost" @click="closeSkillConfig()" :disabled="configSaving">Cancel</button>
@@ -3573,7 +3631,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <div x-show="tab === 'providers'">
             <div class="info-card">
               <h4>LLM Providers</h4>
-              <p>OpenFang ships with <span x-text="providers.length"></span> built-in providers and you can add unlimited custom ones. <span x-text="configuredProviderCount"></span> currently configured. Filter, search, or jump to a category below &mdash; only providers with a saved key (or that need none) light up models for your agents.</p>
+              <p>OMTAE ships with <span x-text="providers.length"></span> built-in providers and you can add unlimited custom ones. <span x-text="configuredProviderCount"></span> currently configured. Filter, search, or jump to a category below &mdash; only providers with a saved key (or that need none) light up models for your agents.</p>
             </div>
             <!-- Filter toolbar -->
             <div class="flex gap-2 mb-4" style="flex-wrap:wrap;align-items:center">
@@ -3733,7 +3791,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <button class="btn btn-primary btn-sm" @click="showCustomModelForm = !showCustomModelForm" x-text="showCustomModelForm ? 'Cancel' : '+ Custom Model'"></button>
             </div>
             <!-- Custom model form -->
-            <div x-show="showCustomModelForm" class="info-card mb-4" style="border:1px solid var(--accent,#7c3aed)">
+            <div x-show="showCustomModelForm" class="info-card mb-4" style="border:1px solid var(--accent,#00F0FF)">
               <h4 style="margin-top:0">Add Custom Model</h4>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
                 <div>
@@ -3830,7 +3888,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <div x-show="tab === 'config'">
             <div class="info-card">
               <h4>Runtime Configuration</h4>
-              <p>View and edit the active configuration. Changes are applied immediately. For advanced edits, modify <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">config.toml</code> in your OpenFang data directory.</p>
+              <p>View and edit the active configuration. Changes are applied immediately. For advanced edits, modify <code style="color:var(--accent-light);background:var(--bg);padding:1px 4px;border-radius:2px">config.toml</code> in your OMTAE data directory.</p>
             </div>
 
             <!-- Dynamic config form (when schema is available) -->
@@ -3901,7 +3959,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <div class="security-hero-shield"><svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
               <div>
                 <div class="security-hero-title">Defense in Depth</div>
-                <div class="security-hero-desc">OpenFang implements 15 layered security features across the entire stack &mdash; from network ingress to agent sandboxing to cryptographic audit trails. Core protections cannot be disabled.</div>
+                <div class="security-hero-desc">OMTAE implements 15 layered security features across the entire stack &mdash; from network ingress to agent sandboxing to cryptographic audit trails. Core protections cannot be disabled.</div>
               </div>
             </div>
 
@@ -4006,11 +4064,11 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <!-- Network tab -->
           <div x-show="tab === 'network'" x-data="{
             netStatus: null, a2aAgents: [], a2aDiscoverUrl: '', a2aDiscovering: false,
-            async loadNetStatus() { try { this.netStatus = await OpenFangAPI.get('/api/network/status'); } catch(e) {} },
-            async loadA2aAgents() { try { let r = await OpenFangAPI.get('/api/a2a/agents'); this.a2aAgents = r.agents || []; } catch(e) {} },
+            async loadNetStatus() { try { this.netStatus = await OMTAEAPI.get('/api/network/status'); } catch(e) {} },
+            async loadA2aAgents() { try { let r = await OMTAEAPI.get('/api/a2a/agents'); this.a2aAgents = r.agents || []; } catch(e) {} },
             async discoverA2a() {
               if (!this.a2aDiscoverUrl) return; this.a2aDiscovering = true;
-              try { await OpenFangAPI.post('/api/a2a/discover', {url:this.a2aDiscoverUrl}); this.a2aDiscoverUrl=''; await this.loadA2aAgents(); } catch(e) {}
+              try { await OMTAEAPI.post('/api/a2a/discover', {url:this.a2aDiscoverUrl}); this.a2aDiscoverUrl=''; await this.loadA2aAgents(); } catch(e) {}
               this.a2aDiscovering = false;
             }
           }" x-init="loadNetStatus(); loadA2aAgents()">
@@ -4018,7 +4076,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             <div class="info-card" style="display:flex;justify-content:space-between;align-items:center">
               <div>
                 <h4>Peer Networking (OFP)</h4>
-                <p>Link multiple OpenFang instances into a mesh via the OFP wire protocol.</p>
+                <p>Link multiple OMTAE instances into a mesh via the OFP wire protocol.</p>
               </div>
               <span class="badge" :class="netStatus && netStatus.enabled ? 'badge-success' : 'badge-muted'" x-text="netStatus && netStatus.enabled ? 'Enabled' : 'Disabled'" style="font-size:12px;padding:4px 10px"></span>
             </div>
@@ -4062,7 +4120,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             <!-- A2A External Agents -->
             <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
               <h4 style="margin-bottom:8px">A2A External Agents</h4>
-              <p class="text-xs text-dim mb-2">Discovered agents on other OpenFang/A2A-compatible instances that this node can communicate with.</p>
+              <p class="text-xs text-dim mb-2">Discovered agents on other OMTAE/A2A-compatible instances that this node can communicate with.</p>
               <div class="flex gap-2 mb-3">
                 <input class="form-input" style="flex:1" placeholder="https://remote-agent.example.com" x-model="a2aDiscoverUrl">
                 <button class="btn btn-primary btn-sm" @click="discoverA2a()" :disabled="a2aDiscovering">
@@ -4098,8 +4156,8 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               this.budgetLoading = true;
               try {
                 let [b, a] = await Promise.all([
-                  OpenFangAPI.get('/api/budget'),
-                  OpenFangAPI.get('/api/budget/agents')
+                  OMTAEAPI.get('/api/budget'),
+                  OMTAEAPI.get('/api/budget/agents')
                 ]);
                 this.budgetData = b;
                 this.agentRanking = a.agents || [];
@@ -4124,10 +4182,10 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 let alertVal = (+this.editAlert) / 100;
                 if (Math.abs(alertVal - this.budgetData.alert_threshold) > 0.001) body.alert_threshold = alertVal;
                 if (+this.editTokenLimit !== (this.budgetData.default_max_llm_tokens_per_hour || 0)) body.default_max_llm_tokens_per_hour = +this.editTokenLimit;
-                await OpenFangAPI.put('/api/budget', body);
+                await OMTAEAPI.put('/api/budget', body);
                 this.editMode = false;
                 await this.loadBudget();
-              } catch(e) { OpenFangToast.error('Failed to save: ' + (e.message || e)); }
+              } catch(e) { OMTAEToast.error('Failed to save: ' + (e.message || e)); }
               this.saving = false;
             },
             fmtTokens(v) { return v > 0 ? (v >= 1000000 ? (v/1000000).toFixed(1)+'M' : v >= 1000 ? (v/1000).toFixed(0)+'K' : v) : 'per-agent'; },
@@ -4235,7 +4293,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             <div class="card mb-4" style="border-left:3px solid var(--accent)" x-show="migStep === 'intro'">
               <div class="font-bold" style="font-size:14px;margin-bottom:6px">Migrate from OpenClaw</div>
               <div class="text-sm text-dim" style="line-height:1.7">
-                Seamlessly transfer your agents, memory, workspace files, and channel configurations from OpenClaw to OpenFang.
+                Seamlessly transfer your agents, memory, workspace files, and channel configurations from OpenClaw to OMTAE.
               </div>
               <ul class="text-sm text-dim" style="margin:8px 0 0 16px;line-height:1.8">
                 <li>Converts agent.yaml to agent.toml with proper capabilities</li>
@@ -4259,8 +4317,8 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 <input class="form-input" type="text" x-model="sourcePath" placeholder="~/.openclaw" style="font-family:monospace;font-size:12px">
               </div>
               <div class="form-group mt-2">
-                <label>OpenFang Target Directory</label>
-                <input class="form-input" type="text" x-model="targetPath" placeholder="~/.openfang (default)" style="font-family:monospace;font-size:12px">
+                <label>OMTAE Target Directory</label>
+                <input class="form-input" type="text" x-model="targetPath" placeholder="~/.omtae (default)" style="font-family:monospace;font-size:12px">
               </div>
               <div class="flex gap-2 mt-4">
                 <button class="btn btn-primary" @click="scanPath()" :disabled="!sourcePath || scanning">
@@ -4657,6 +4715,76 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
       </div>
     </template>
 
+    <!-- Page: Brain (Obsidian vault) -->
+    <template x-if="page === 'brain'">
+      <div x-data="brainPage">
+        <div class="page-header">
+          <h2>Brain</h2>
+          <div class="flex gap-2 items-center flex-wrap">
+            <span class="text-xs text-dim" x-show="status.vault_path" x-text="status.vault_path"></span>
+            <a class="btn btn-ghost btn-sm" x-show="selectedFile" :href="obsidianLink(selectedFile)" target="_blank" rel="noopener">Open in Obsidian</a>
+          </div>
+        </div>
+        <div class="page-body" x-init="loadBrain()">
+          <div class="info-card" x-show="status.vault_path">
+            <h4>Obsidian Brain Vault</h4>
+            <p>Browse leads, skiptrace reports, and notes synced from your Obsidian vault. Changes on disk appear here automatically.</p>
+            <div class="flex gap-3 flex-wrap text-xs text-dim" x-show="status.counts">
+              <template x-for="(count, name) in status.counts" :key="name">
+                <span><strong x-text="name"></strong>: <span x-text="count"></span></span>
+              </template>
+            </div>
+          </div>
+          <div x-show="loading" class="loading-state"><div class="spinner"></div><span>Loading vault...</span></div>
+          <div x-show="!loading && loadError" class="error-state">
+            <span class="error-icon">!</span>
+            <p x-text="loadError"></p>
+            <button class="btn btn-ghost btn-sm" @click="loadBrain()">Retry</button>
+          </div>
+          <div x-show="!loading && !loadError" class="brain-layout" style="display:grid;grid-template-columns:minmax(240px,320px) 1fr;gap:16px;min-height:480px;">
+            <div class="card" style="overflow:auto;max-height:70vh;">
+              <div class="flex justify-between items-center mb-2">
+                <div class="card-header" style="margin:0">Vault</div>
+                <button class="btn btn-ghost btn-sm" @click="goRoot()" x-show="currentPath">Root</button>
+              </div>
+              <div class="flex gap-1 flex-wrap mb-2 text-xs" x-show="pathStack.length">
+                <button class="btn btn-ghost btn-sm" @click="goUp()">..</button>
+                <template x-for="(part, idx) in pathStack" :key="idx">
+                  <button class="btn btn-ghost btn-sm" @click="goToCrumb(idx)" x-text="part"></button>
+                </template>
+              </div>
+              <div x-show="recentLeads.length && !currentPath" class="mb-3">
+                <div class="text-xs text-dim mb-1">Recent leads</div>
+                <template x-for="lead in recentLeads" :key="lead.path">
+                  <button class="btn btn-ghost btn-sm" style="display:block;width:100%;text-align:left;margin-bottom:2px" @click="openFile(lead.path)">
+                    <span x-text="lead.name"></span>
+                  </button>
+                </template>
+              </div>
+              <template x-for="entry in entries" :key="entry.path">
+                <button class="btn btn-ghost btn-sm" style="display:flex;width:100%;justify-content:space-between;margin-bottom:2px" @click="openEntry(entry)">
+                  <span x-text="(entry.kind === 'dir' ? '📁 ' : '📄 ') + entry.name"></span>
+                  <span class="text-xs text-dim" x-text="formatModified(entry)"></span>
+                </button>
+              </template>
+              <div x-show="!entries.length" class="text-dim text-sm">Empty folder</div>
+            </div>
+            <div class="card" style="overflow:auto;max-height:70vh;">
+              <div x-show="fileLoading" class="loading-state"><div class="spinner"></div><span>Loading file...</span></div>
+              <div x-show="!fileLoading && !selectedFile" class="text-dim text-sm">Select a note to preview markdown.</div>
+              <div x-show="!fileLoading && selectedFile">
+                <div class="flex justify-between items-center mb-2">
+                  <div class="card-header" style="margin:0" x-text="selectedFile"></div>
+                  <a class="btn btn-ghost btn-sm" :href="obsidianLink(selectedFile)" target="_blank" rel="noopener">Obsidian</a>
+                </div>
+                <div class="markdown-body" x-html="renderPreview(fileContent)"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
     <!-- Page: Logs -->
     <template x-if="page === 'logs'">
       <div x-data="logsPage">
@@ -4952,7 +5080,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <h2>Setup Wizard</h2>
           <button class="btn btn-ghost btn-sm" @click="finishAndDismiss()">Skip Setup</button>
         </div>
-        <div class="page-body" x-init="loadData()">
+        <div id="wizard-root" class="page-body" x-init="loadData()">
           <div x-show="loading" class="loading-state"><div class="spinner"></div><span>Loading...</span></div>
           <div x-show="!loading && error" class="error-state">
             <span class="error-icon">!</span>
@@ -4982,33 +5110,33 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <!-- Step 1: Welcome -->
           <div class="wizard-step" x-show="step === 1">
             <div class="wizard-card" style="text-align:center;max-width:600px;margin:0 auto">
-              <img src="/logo.png" alt="OpenFang" style="width:80px;height:80px;margin:0 auto 20px;display:block;opacity:0.85">
-              <h3 style="font-size:22px;font-weight:700;margin-bottom:12px;color:var(--accent)">Welcome to OpenFang</h3>
-              <p style="font-size:13px;color:var(--text-dim);line-height:1.8;max-width:480px;margin:0 auto 24px">
-                OpenFang is an open-source Agent Operating System. It lets you run AI agents that can chat, use tools, access memory, and connect to messaging channels &mdash; all from a single dashboard.
+              <img src="/logo.png" alt="OMTAE" class="logo" style="max-width:280px;max-height:80px;width:auto;height:auto;margin:0 auto 20px;display:block;opacity:0.85;object-fit:contain">
+              <h3 style="font-size:22px;font-weight:700;margin-bottom:12px;color:var(--accent)">Welcome to OMTAE</h3>
+              <p style="font-size:1rem;color:var(--text-dim);line-height:1.8;max-width:480px;margin:0 auto 24px">
+                OMTAE is an open-source Agent Operating System. It lets you run AI agents that can chat, use tools, access memory, and connect to messaging channels &mdash; all from a single dashboard.
               </p>
               <div class="card" style="text-align:left;margin-bottom:20px">
                 <div class="card-header">This wizard will help you:</div>
-                <div style="margin-top:8px">
+                <div class="wizard-welcome-list" style="margin-top:8px">
                   <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
                     <span class="badge badge-info" style="min-width:20px;justify-content:center">1</span>
-                    <span style="font-size:12px">Connect an LLM provider (Anthropic, OpenAI, Gemini, etc.)</span>
+                    <span>Connect an LLM provider (Anthropic, OpenAI, Gemini, etc.)</span>
                   </div>
                   <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
                     <span class="badge badge-info" style="min-width:20px;justify-content:center">2</span>
-                    <span style="font-size:12px">Create your first AI agent from 10 templates</span>
+                    <span>Create your first AI agent from 10 templates</span>
                   </div>
                   <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
                     <span class="badge badge-info" style="min-width:20px;justify-content:center">3</span>
-                    <span style="font-size:12px">Try it out with a quick test message</span>
+                    <span>Try it out with a quick test message</span>
                   </div>
                   <div style="display:flex;align-items:center;gap:10px;padding:8px 0">
                     <span class="badge badge-info" style="min-width:20px;justify-content:center">4</span>
-                    <span style="font-size:12px">Optionally connect a messaging channel (Telegram, Discord, Slack)</span>
+                    <span>Optionally connect a messaging channel (Telegram, Discord, Slack)</span>
                   </div>
                 </div>
               </div>
-              <p style="font-size:11px;color:var(--text-muted)">Takes about 2 minutes. You can skip any step and configure later.</p>
+              <p style="font-size:0.9rem;color:var(--text-muted)">Takes about 2 minutes. You can skip any step and configure later.</p>
             </div>
             <div class="wizard-nav">
               <div></div>
@@ -5021,7 +5149,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             <div class="wizard-card">
               <h3 style="font-size:16px;font-weight:700;margin-bottom:4px">Connect an LLM Provider</h3>
               <p style="font-size:12px;color:var(--text-dim);margin-bottom:16px;line-height:1.6">
-                OpenFang needs at least one LLM provider to power your agents. Select a provider and enter your API key.
+                OMTAE needs at least one LLM provider to power your agents. Select a provider and enter your API key.
               </p>
 
               <div class="info-card" x-show="hasConfiguredProvider" style="border-left-color:var(--success)">
@@ -5081,7 +5209,25 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 </div>
               </template>
 
-              <template x-if="selectedProviderObj && !providerIsConfigured(selectedProviderObj) && selectedProvider !== 'claude-code'">
+              <template x-if="selectedProviderObj && !providerIsConfigured(selectedProviderObj) && selectedProvider !== 'claude-code' && selectedProviderObj.key_required === false">
+                <div class="card" style="border-left:3px solid var(--success);margin-top:16px">
+                  <div class="card-header" x-text="selectedProviderObj.display_name + ' (local)'"></div>
+                  <p class="text-xs text-dim mb-2" style="line-height:1.7">
+                    No API key required. Point OMTAE at your server via <code>[default_model]</code> / <code>[provider_urls]</code>,
+                    or set <code x-text="selectedProviderObj.api_key_env"></code> in the environment (e.g. systemd) if your proxy expects one.
+                  </p>
+                  <button class="btn btn-primary btn-sm" @click="saveKey()" :disabled="testingProvider">
+                    <span x-show="!testingProvider">Test connection</span>
+                    <span x-show="testingProvider" class="spinner" style="width:10px;height:10px;border-width:2px"></span>
+                  </button>
+                  <div x-show="testResult" class="mt-2">
+                    <div x-show="testResult && testResult.status === 'ok'" class="badge badge-success" style="padding:6px 12px">Connected<span x-show="testResult && testResult.latency_ms" x-text="' (' + (testResult ? testResult.latency_ms : '') + 'ms)'"></span></div>
+                    <div x-show="testResult && testResult.status !== 'ok'" class="badge badge-error" style="padding:6px 12px"><span x-text="testResult ? (testResult.error || 'Connection failed') : ''"></span></div>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="selectedProviderObj && !providerIsConfigured(selectedProviderObj) && selectedProvider !== 'claude-code' && selectedProviderObj.key_required !== false">
                 <div class="card" style="border-left:3px solid var(--accent);margin-top:16px">
                   <div class="card-header" x-text="'Configure ' + selectedProviderObj.display_name"></div>
                   <div class="text-xs text-dim mb-2" x-show="selectedProviderObj.api_key_env">
@@ -5285,7 +5431,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
               </div>
               <h3 style="font-size:20px;font-weight:700;margin-bottom:8px;color:var(--accent)">You're All Set!</h3>
-              <p style="font-size:13px;color:var(--text-dim);line-height:1.8;margin-bottom:24px">OpenFang is configured and ready to go. Here is a summary of what was set up:</p>
+              <p style="font-size:13px;color:var(--text-dim);line-height:1.8;margin-bottom:24px">OMTAE is configured and ready to go. Here is a summary of what was set up:</p>
 
               <div class="card" style="text-align:left;margin-bottom:20px">
                 <div class="detail-grid">
@@ -5377,6 +5523,25 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               </table>
             </div>
 
+            <div class="card" style="margin-bottom:16px" x-show="modelProfiles.length">
+              <div class="card-header">Local vLLM profile</div>
+              <p class="text-xs text-dim" style="margin:8px 12px 0">One engine on :8000 — switching restarts vLLM. OMTAE default updates immediately.</p>
+              <div style="padding:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+                <select class="form-input" style="max-width:320px;font-size:12px" x-model="selectedProfileId">
+                  <template x-for="p in modelProfiles" :key="p.id">
+                    <option :value="p.id" x-text="(p.id === activeProfileId ? '● ' : '') + p.display_name + (p.on_disk ? '' : ' (missing)')"></option>
+                  </template>
+                </select>
+                <label class="text-xs text-dim" style="display:flex;align-items:center;gap:4px">
+                  <input type="checkbox" x-model="restartVllmOnApply">
+                  Restart vLLM (needs OMTAE_ALLOW_VLLM_RESTART=1)
+                </label>
+                <button class="btn btn-primary btn-sm" @click="applyModelProfile()" :disabled="modelSwitchBusy || !selectedProfileId">Apply to OMTAE</button>
+              </div>
+              <p class="text-xs text-dim" style="padding:0 12px 12px" x-show="modelSwitchStatus" x-text="modelSwitchStatus"></p>
+              <p class="text-xs text-dim" style="padding:0 12px 12px;font-family:var(--font-mono)">CLI: omtae-model use &lt;profile&gt;</p>
+            </div>
+
             <div class="card" style="margin-bottom:16px">
               <div class="card-header">Providers</div>
               <table class="table" style="margin-top:8px">
@@ -5407,5 +5572,247 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
 
 <!-- Toast notification container -->
 <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+<style>
+  /* Mil-spec contrast enforcement (mobile, chat, wizard, PIN) */
+  :root,
+  [data-theme="dark"] {
+    --link: #E3B341;
+  }
+  html {
+    font-size: 18px !important;
+  }
+  body,
+  .main-content,
+  .page-body,
+  .page-header,
+  main,
+  .card,
+  .modal,
+  .wizard-card,
+  .wizard-step,
+  #wizard-root,
+  .messages,
+  .chat-wrapper,
+  .input-area {
+    color: var(--text-main) !important;
+  }
+  body {
+    background-color: var(--bg) !important;
+    font-size: 1rem !important;
+    line-height: 1.5 !important;
+  }
+  .sidebar, .nav-item, .sidebar-gpu {
+    font-size: 0.95rem !important;
+  }
+  .nav-item { color: var(--text-secondary) !important; }
+  .nav-item.active { color: var(--text-main) !important; }
+  .sidebar-gpu,
+  .sidebar-gpu .gpu-val,
+  .sidebar-gpu .gpu-model {
+    color: var(--text-main) !important;
+  }
+  .sidebar-gpu .gpu-label { color: var(--text-dim) !important; }
+  .wizard-step, .wizard-card, #wizard-root {
+    font-size: 1.05rem !important;
+    color: var(--text-main) !important;
+  }
+  .wizard-card .wizard-welcome-list span,
+  .wizard-card .wizard-welcome-list .badge {
+    font-size: 1rem !important;
+  }
+  .message-content, .chat-message, .prose,
+  .message, .message-body, .message-bubble,
+  [class*="message"] {
+    color: var(--text-main) !important;
+  }
+  .message-content, .chat-message, .prose {
+    font-size: 1.05rem !important;
+    line-height: 1.6 !important;
+  }
+  .message.user .message-bubble {
+    background: var(--user-bg) !important;
+    border-color: #383D36 !important;
+    color: var(--text-main) !important;
+  }
+  .message.agent .message-bubble {
+    background: var(--agent-bg) !important;
+    border-color: #383D36 !important;
+    color: var(--text-main) !important;
+  }
+  .message.system .message-bubble {
+    background: #2A2D28 !important;
+    color: var(--text-secondary) !important;
+  }
+  .tool-card-body,
+  .tool-pre {
+    background: #111210 !important;
+    color: var(--text-main) !important;
+    border-color: var(--border-color) !important;
+  }
+  .tool-pre-error,
+  .tool-card-error {
+    color: #FCA5A5 !important;
+    background: rgba(239, 68, 68, 0.14) !important;
+    border-color: #EF4444 !important;
+  }
+  .text-danger { color: #FCA5A5 !important; }
+  .text-warning, .badge-warn { color: #FCD34D !important; }
+  h1 { font-size: 1.75rem !important; }
+  h2 { font-size: 1.35rem !important; }
+  h3 { font-size: 1.15rem !important; }
+  small, .text-xs {
+    font-size: 0.85rem !important;
+  }
+  h1, h2, h3, .brand-title {
+    color: var(--text-main) !important;
+    font-weight: 800 !important;
+    letter-spacing: 0.1em !important;
+    text-transform: uppercase !important;
+  }
+  /* Links — no browser-default blue on dark bg */
+  a, a:link, a:visited,
+  .main-content a:not(.btn):not(.nav-item),
+  .message-bubble a,
+  .wizard-card a,
+  .card a:not(.btn) {
+    color: var(--link) !important;
+    text-decoration: underline !important;
+    text-underline-offset: 2px;
+  }
+  a:hover, .message-bubble a:hover {
+    color: var(--text-main) !important;
+  }
+  code, .message-bubble.markdown-body code,
+  .message-bubble.markdown-body pre code {
+    color: var(--text-main) !important;
+  }
+  .message-bubble.markdown-body pre {
+    background: #111210 !important;
+    border-color: var(--border-color) !important;
+  }
+  .form-input, .form-select, .form-textarea,
+  .input-area textarea, .chat-search-input {
+    background-color: #111210 !important;
+    border: 1px solid var(--border-color) !important;
+    color: var(--text-main) !important;
+    font-size: 16px !important;
+  }
+  .form-input:focus, .form-select:focus, .form-textarea:focus,
+  .input-area textarea:focus, .chat-search-input:focus {
+    border-color: var(--accent-light) !important;
+    box-shadow: 0 0 5px rgba(226, 225, 216, 0.2) !important;
+  }
+  .sidebar-logo img,
+  .brand-logo img,
+  img.logo {
+    max-height: 48px;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+  }
+  @media (max-width: 768px) {
+    html { font-size: 18px !important; }
+    body {
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .sidebar {
+      transform: translateX(-100%) !important;
+      pointer-events: none !important;
+      visibility: hidden !important;
+    }
+    .sidebar.mobile-open {
+      transform: translateX(0) !important;
+      pointer-events: auto !important;
+      visibility: visible !important;
+    }
+    .mobile-menu-btn {
+      display: flex !important;
+      z-index: 210 !important;
+      pointer-events: auto !important;
+    }
+    .main-content { margin-left: 0 !important; width: 100% !important; }
+    .page-body { padding: 12px !important; }
+    .message-content,
+    .chat-message,
+    .prose,
+    .message-bubble,
+    .messages {
+      font-size: 1rem !important;
+      line-height: 1.65 !important;
+    }
+    .input-area textarea,
+    .chat-search-input,
+    .form-input, .form-select, .form-textarea {
+      font-size: 16px !important;
+    }
+    .sidebar-logo img,
+    .brand-logo img,
+    img.logo {
+      max-height: 40px !important;
+      max-width: 160px !important;
+    }
+    .chat-wrapper { width: 100% !important; }
+    .sidebar-gpu {
+      font-size: 0.9rem !important;
+      line-height: 1.4 !important;
+    }
+    .sidebar-gpu .gpu-model { font-size: 0.85rem !important; }
+    .wizard-card { font-size: 1rem !important; }
+    .table-wrap { font-size: 0.9rem !important; }
+    .text-dim { color: var(--text-dim) !important; }
+    /* omtae-mobile-numeric */
+    .stat-value,
+    .stat-card .stat-value,
+    .stat-card-lg .stat-value,
+    .gpu-val,
+    .sidebar-gpu .gpu-val,
+    .table-wrap td,
+    .approval-timer,
+    .nav-item .badge,
+    .donut-legend-pct,
+    .donut-legend-cost {
+      color: var(--text-main) !important;
+      -webkit-text-fill-color: var(--text-main) !important;
+      opacity: 1 !important;
+      font-variant-numeric: tabular-nums;
+    }
+    .stat-value-accent { color: var(--accent-light) !important; }
+    .auth-pin-input {
+      color: var(--text-main) !important;
+      -webkit-text-fill-color: var(--text-main) !important;
+      background-color: #111210 !important;
+      opacity: 1 !important;
+    }
+    .input-footer,
+    .input-footer .text-xs,
+    .model-switcher-btn,
+    .model-switcher-label,
+    .tip-bar,
+    .tip-bar .text-xs {
+      color: var(--text-main) !important;
+      -webkit-text-fill-color: var(--text-main) !important;
+      opacity: 1 !important;
+    }
+    .model-switcher-btn {
+      border-color: var(--border-color) !important;
+      background: #111210 !important;
+    }
+  }
+  @media (max-width: 480px) {
+    html { font-size: 18px !important; }
+    .sidebar-gpu {
+      padding: 8px 10px !important;
+      font-size: 0.9rem !important;
+    }
+    .sidebar-gpu .gpu-label { font-size: 0.8rem !important; }
+    .sidebar-gpu .gpu-model { font-size: 0.82rem !important; }
+    .wizard-card { padding: 14px !important; font-size: 1rem !important; }
+    .wizard-nav { flex-wrap: wrap; gap: 8px; }
+    .message-bubble { padding: 12px 14px !important; }
+    .messages { padding: 10px !important; }
+  }
+</style>
 
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){});}</script>

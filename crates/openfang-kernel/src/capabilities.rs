@@ -1,8 +1,8 @@
 //! Capability manager — enforces capability-based security.
 
 use dashmap::DashMap;
-use openfang_types::agent::AgentId;
-use openfang_types::capability::{capability_matches, Capability, CapabilityCheck};
+use omtae_types::agent::AgentId;
+use omtae_types::capability::{capability_matches, Capability, CapabilityCheck};
 use tracing::debug;
 
 /// Manages capability grants for all agents.

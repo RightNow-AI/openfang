@@ -285,7 +285,7 @@ fn parse_revolt_message(
         sender: ChannelUser {
             platform_id: channel_id,
             display_name: author.to_string(),
-            openfang_user: None,
+            omtae_user: None,
         },
         content: msg_content,
         target_agent: None,

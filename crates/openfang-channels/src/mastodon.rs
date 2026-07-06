@@ -250,7 +250,7 @@ fn parse_mastodon_notification(
         sender: ChannelUser {
             platform_id: account_id.to_string(),
             display_name,
-            openfang_user: None,
+            omtae_user: None,
         },
         content,
         target_agent: None,

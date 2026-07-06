@@ -14,20 +14,30 @@ document.addEventListener('alpine:init', function() {
       logLevel: '-',
       networkEnabled: false,
       providers: [],
+      modelProfiles: [],
+      activeProfileId: '',
+      selectedProfileId: '',
+      restartVllmOnApply: false,
+      modelSwitchStatus: '',
+      modelSwitchBusy: false,
 
       async loadData() {
         this.loading = true;
         try {
           var results = await Promise.all([
-            OpenFangAPI.get('/api/status'),
-            OpenFangAPI.get('/api/version'),
-            OpenFangAPI.get('/api/providers'),
-            OpenFangAPI.get('/api/agents')
+            OMTAEAPI.get('/api/status'),
+            OMTAEAPI.get('/api/version'),
+            OMTAEAPI.get('/api/providers'),
+            OMTAEAPI.get('/api/agents'),
+            OMTAEAPI.get('/api/models/profiles').catch(function() { return { profiles: [], active_profile: '' }; }),
+            OMTAEAPI.get('/api/models/active').catch(function() { return {}; })
           ]);
           var status = results[0];
           var ver = results[1];
           var prov = results[2];
           var agents = results[3];
+          var prof = results[4] || {};
+          var active = results[5] || {};
 
           this.version = ver.version || '-';
           this.platform = ver.platform || '-';
@@ -49,10 +59,39 @@ document.addEventListener('alpine:init', function() {
           this.providers = (prov.providers || []).filter(function(p) {
             return p.auth_status === 'Configured' || p.reachable || p.is_local;
           });
+
+          this.modelProfiles = prof.profiles || [];
+          this.activeProfileId = prof.active_profile || active.active_profile || '';
+          if (!this.selectedProfileId && this.activeProfileId) {
+            this.selectedProfileId = this.activeProfileId;
+          } else if (!this.selectedProfileId && this.modelProfiles.length) {
+            this.selectedProfileId = this.modelProfiles[0].id;
+          }
         } catch(e) {
           console.error('Runtime load error:', e);
         }
         this.loading = false;
+      },
+
+      async applyModelProfile() {
+        if (!this.selectedProfileId) return;
+        this.modelSwitchBusy = true;
+        this.modelSwitchStatus = '';
+        try {
+          var res = await OMTAEAPI.put('/api/models/active', {
+            profile_id: this.selectedProfileId,
+            restart_vllm: !!this.restartVllmOnApply
+          });
+          this.activeProfileId = this.selectedProfileId;
+          this.defaultModel = res.omtae_model_id || this.defaultModel;
+          this.modelSwitchStatus = res.message || 'Applied.';
+          if (res.message && res.message.indexOf('omtae-model use') >= 0) {
+            this.modelSwitchStatus += ' Full GPU swap: omtae-model use ' + this.selectedProfileId;
+          }
+        } catch (e) {
+          this.modelSwitchStatus = (e && e.message) ? e.message : 'Switch failed';
+        }
+        this.modelSwitchBusy = false;
       }
     };
   });

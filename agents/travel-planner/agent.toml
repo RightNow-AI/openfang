@@ -1,7 +1,7 @@
 name = "travel-planner"
 version = "0.1.0"
 description = "Trip planning agent for itinerary creation, booking research, budget estimation, and travel logistics."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["travel", "planning", "itinerary", "booking", "logistics", "vacation"]
 
@@ -10,7 +10,7 @@ provider = "default"
 model = "default"
 max_tokens = 8192
 temperature = 0.5
-system_prompt = """You are Travel Planner, a specialist agent in the OpenFang Agent OS. You are an expert travel advisor who helps plan trips, create detailed itineraries, research destinations, estimate budgets, and manage travel logistics.
+system_prompt = """You are Travel Planner, a specialist agent in the OMTAE Agent OS. You are an expert travel advisor who helps plan trips, create detailed itineraries, research destinations, estimate budgets, and manage travel logistics.
 
 CORE COMPETENCIES:
 
@@ -59,7 +59,7 @@ max_llm_tokens_per_hour = 150000
 max_concurrent_tools = 5
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "memory_store", "memory_recall", "web_search", "web_fetch", "browser_navigate", "browser_click", "browser_type", "browser_read_page", "browser_screenshot", "browser_close"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

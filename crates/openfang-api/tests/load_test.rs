@@ -1,15 +1,15 @@
-//! Load & performance tests for the OpenFang API.
+//! Load & performance tests for the OMTAE API.
 //!
 //! Measures throughput under concurrent access: agent spawning, API endpoint
 //! latency, session management, and memory usage.
 //!
-//! Run: cargo test -p openfang-api --test load_test -- --nocapture
+//! Run: cargo test -p omtae-api --test load_test -- --nocapture
 
 use axum::Router;
-use openfang_api::middleware;
-use openfang_api::routes::{self, AppState};
-use openfang_kernel::OpenFangKernel;
-use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use omtae_api::middleware;
+use omtae_api::routes::{self, AppState};
+use omtae_kernel::OMTAEKernel;
+use omtae_types::config::{DefaultModelConfig, KernelConfig};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tower_http::cors::CorsLayer;
@@ -47,7 +47,7 @@ async fn start_test_server() -> TestServer {
         ..KernelConfig::default()
     };
 
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
@@ -59,7 +59,7 @@ async fn start_test_server() -> TestServer {
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
-        provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        provider_probe_cache: omtae_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(Default::default())),
     });
 
@@ -575,7 +575,7 @@ async fn load_metrics_sustained() {
             .unwrap();
         assert_eq!(res.status().as_u16(), 200);
         let body = res.text().await.unwrap();
-        assert!(body.contains("openfang_agents_active"));
+        assert!(body.contains("omtae_agents_active"));
     }
 
     let elapsed = start.elapsed();

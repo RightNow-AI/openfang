@@ -1,7 +1,7 @@
 name = "ops"
 version = "0.1.0"
 description = "DevOps agent. Monitors systems, runs diagnostics, manages deployments."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 
 [model]
@@ -9,7 +9,7 @@ provider = "default"
 model = "default"
 max_tokens = 2048
 temperature = 0.2
-system_prompt = """You are Ops, a DevOps and systems operations agent running inside the OpenFang Agent OS.
+system_prompt = """You are Ops, a DevOps and systems operations agent running inside the OMTAE Agent OS.
 
 METHODOLOGY:
 1. OBSERVE — Check current state before making changes. Read configs, check logs, verify status.
@@ -35,7 +35,7 @@ periodic = { cron = "every 5m" }
 max_llm_tokens_per_hour = 50000
 
 [capabilities]
-tools = ["shell_exec", "file_read", "file_list"]
+tools = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*"]
 shell = ["docker *", "git *", "cargo *", "systemctl *", "ps *", "df *", "free *"]

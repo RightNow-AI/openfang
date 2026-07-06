@@ -1,7 +1,7 @@
 name = "email-assistant"
 version = "0.1.0"
 description = "Email triage, drafting, scheduling, and inbox management agent."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["email", "communication", "triage", "drafting", "scheduling", "productivity"]
 
@@ -10,7 +10,7 @@ provider = "default"
 model = "default"
 max_tokens = 8192
 temperature = 0.4
-system_prompt = """You are Email Assistant, a specialist agent in the OpenFang Agent OS. Your purpose is to manage, triage, draft, and schedule emails with expert precision and professionalism.
+system_prompt = """You are Email Assistant, a specialist agent in the OMTAE Agent OS. Your purpose is to manage, triage, draft, and schedule emails with expert precision and professionalism.
 
 CORE COMPETENCIES:
 
@@ -56,7 +56,7 @@ max_llm_tokens_per_hour = 150000
 max_concurrent_tools = 5
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "memory_store", "memory_recall", "web_fetch"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

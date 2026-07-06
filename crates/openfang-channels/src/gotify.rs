@@ -248,7 +248,7 @@ impl ChannelAdapter for GotifyAdapter {
                                                 } else {
                                                     title.clone()
                                                 },
-                                                openfang_user: None,
+                                                omtae_user: None,
                                             },
                                             content,
                                             target_agent: None,
@@ -314,7 +314,7 @@ impl ChannelAdapter for GotifyAdapter {
             ChannelContent::Text(t) => t,
             _ => "(Unsupported content type)".to_string(),
         };
-        self.api_send_message("OpenFang", &text, 5).await
+        self.api_send_message("OMTAE", &text, 5).await
     }
 
     async fn send_typing(&self, _user: &ChannelUser) -> Result<(), Box<dyn std::error::Error>> {

@@ -1,7 +1,7 @@
 name = "tutor"
 version = "0.1.0"
 description = "Teaching and explanation agent for learning, tutoring, and educational content creation."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["education", "teaching", "tutoring", "learning", "explanation", "knowledge"]
 
@@ -10,7 +10,7 @@ provider = "default"
 model = "default"
 max_tokens = 8192
 temperature = 0.5
-system_prompt = """You are Tutor, a specialist agent in the OpenFang Agent OS. You are an expert educator and tutor who explains complex concepts clearly, adapts to different learning styles, and guides students through progressive understanding.
+system_prompt = """You are Tutor, a specialist agent in the OMTAE Agent OS. You are an expert educator and tutor who explains complex concepts clearly, adapts to different learning styles, and guides students through progressive understanding.
 
 CORE COMPETENCIES:
 
@@ -60,7 +60,7 @@ max_llm_tokens_per_hour = 200000
 max_concurrent_tools = 5
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "memory_store", "memory_recall", "shell_exec", "web_fetch"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

@@ -6,12 +6,12 @@
 //! LLM tests require GROQ_API_KEY. Non-LLM tests verify the kernel-level
 //! workflow wiring without making real API calls.
 
-use openfang_kernel::workflow::{
+use omtae_kernel::workflow::{
     ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowStep,
 };
-use openfang_kernel::OpenFangKernel;
-use openfang_types::agent::AgentManifest;
-use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use omtae_kernel::OMTAEKernel;
+use omtae_types::agent::AgentManifest;
+use omtae_types::config::{DefaultModelConfig, KernelConfig};
 use std::sync::Arc;
 
 fn test_config(provider: &str, model: &str, api_key_env: &str) -> KernelConfig {
@@ -31,10 +31,10 @@ fn test_config(provider: &str, model: &str, api_key_env: &str) -> KernelConfig {
 }
 
 fn spawn_test_agent(
-    kernel: &OpenFangKernel,
+    kernel: &OMTAEKernel,
     name: &str,
     system_prompt: &str,
-) -> openfang_types::agent::AgentId {
+) -> omtae_types::agent::AgentId {
     let manifest_str = format!(
         r#"
 name = "{name}"
@@ -65,7 +65,7 @@ memory_write = ["self.*"]
 #[tokio::test]
 async fn test_workflow_register_and_resolve() {
     let config = test_config("ollama", "test-model", "OLLAMA_API_KEY");
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
 
     // Spawn agents
@@ -176,7 +176,7 @@ memory_write = ["self.*"]
 #[tokio::test]
 async fn test_workflow_agent_by_id() {
     let config = test_config("ollama", "test-model", "OLLAMA_API_KEY");
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
 
     let manifest: AgentManifest = toml::from_str(
         r#"
@@ -232,10 +232,10 @@ memory_write = ["self.*"]
 /// Test trigger registration and listing at kernel level.
 #[tokio::test]
 async fn test_trigger_registration_with_kernel() {
-    use openfang_kernel::triggers::TriggerPattern;
+    use omtae_kernel::triggers::TriggerPattern;
 
     let config = test_config("ollama", "test-model", "OLLAMA_API_KEY");
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
 
     let manifest: AgentManifest = toml::from_str(
         r#"
@@ -310,7 +310,7 @@ async fn test_workflow_e2e_with_groq() {
     }
 
     let config = test_config("groq", "llama-3.3-70b-versatile", "GROQ_API_KEY");
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
@@ -385,7 +385,7 @@ async fn test_workflow_e2e_with_groq() {
     let run = kernel.workflows.get_run(run_id).await.unwrap();
     assert!(matches!(
         run.state,
-        openfang_kernel::workflow::WorkflowRunState::Completed
+        omtae_kernel::workflow::WorkflowRunState::Completed
     ));
     assert_eq!(run.step_results.len(), 2);
     assert_eq!(run.step_results[0].step_name, "analyze");

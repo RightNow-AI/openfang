@@ -15,7 +15,7 @@
 //! {"type": "response", "text": "...", "tool_calls": [...]}
 //! ```
 //!
-//! The Python SDK (`openfang_sdk.py`) provides a helper to handle this protocol.
+//! The Python SDK (`omtae_sdk.py`) provides a helper to handle this protocol.
 
 use std::path::Path;
 use std::process::Stdio;

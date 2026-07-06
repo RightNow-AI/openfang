@@ -30,5 +30,5 @@ unhealthy_threshold = 3
 setup_instructions = """
 1. Go to https://github.com/settings/tokens and create a Personal Access Token (classic or fine-grained) with 'repo' and 'read:org' scopes.
 2. Paste the token into the GITHUB_PERSONAL_ACCESS_TOKEN field above.
-3. Alternatively, use the OAuth flow to authorize OpenFang directly with your GitHub account.
+3. Alternatively, use the OAuth flow to authorize OMTAE directly with your GitHub account.
 """

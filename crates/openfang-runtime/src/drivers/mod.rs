@@ -15,7 +15,7 @@ pub mod qwen_code;
 pub mod vertex;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
-use openfang_types::model_catalog::{
+use omtae_types::model_catalog::{
     AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL,
     COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL,
     HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
@@ -39,7 +39,7 @@ struct ProviderDefaults {
 /// well-known environment variables. Returns `None` if no override is set.
 ///
 /// This lets users point Ollama / LM Studio / vLLM / Lemonade at a remote host
-/// (VPS, LXC, another box on the LAN) without editing `~/.openfang/config.toml`.
+/// (VPS, LXC, another box on the LAN) without editing `~/.omtae/config.toml`.
 ///
 /// Recognised variables:
 /// - `ollama`   → `OLLAMA_BASE_URL`, then `OLLAMA_HOST` (Ollama CLI convention)
@@ -423,21 +423,21 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
 
     // GitHub Copilot — OAuth device flow + OpenAI-compatible completions.
     // Authentication is handled automatically via persisted tokens from the device flow.
-    // Run `openfang config set-key github-copilot` to authenticate.
+    // Run `omtae config set-key github-copilot` to authenticate.
     if provider == "github-copilot" || provider == "copilot" {
-        let openfang_dir = std::env::var("HOME")
+        let omtae_dir = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
-            .map(|h| std::path::PathBuf::from(h).join(".openfang"))
-            .unwrap_or_else(|_| std::path::PathBuf::from(".openfang"));
+            .map(|h| std::path::PathBuf::from(h).join(".omtae"))
+            .unwrap_or_else(|_| std::path::PathBuf::from(".omtae"));
 
-        if !copilot::copilot_auth_available(&openfang_dir) {
+        if !copilot::copilot_auth_available(&omtae_dir) {
             return Err(LlmError::MissingApiKey(
-                "Copilot not authenticated. Run `openfang config set-key github-copilot` to sign in."
+                "Copilot not authenticated. Run `omtae config set-key github-copilot` to sign in."
                     .to_string(),
             ));
         }
 
-        return Ok(Arc::new(copilot::CopilotDriver::new(openfang_dir)));
+        return Ok(Arc::new(copilot::CopilotDriver::new(omtae_dir)));
     }
 
     // Azure OpenAI — deployment-based URL with `api-key` header

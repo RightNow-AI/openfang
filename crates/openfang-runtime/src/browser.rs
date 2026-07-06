@@ -13,7 +13,7 @@
 use dashmap::DashMap;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use openfang_types::config::BrowserConfig;
+use omtae_types::config::BrowserConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -978,7 +978,7 @@ pub async fn tool_browser_screenshot(
     let mut image_urls: Vec<String> = Vec::new();
     if !b64.is_empty() {
         use base64::Engine;
-        let upload_dir = std::env::temp_dir().join("openfang_uploads");
+        let upload_dir = std::env::temp_dir().join("omtae_uploads");
         let _ = std::fs::create_dir_all(&upload_dir);
         let file_id = uuid::Uuid::new_v4().to_string();
         if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(b64) {

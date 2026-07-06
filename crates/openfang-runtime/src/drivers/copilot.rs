@@ -51,7 +51,7 @@ const ACCESS_TOKEN_REFRESH_BUFFER_SECS: u64 = 600; // 10 minutes
 /// Scopes requested during device flow.
 const OAUTH_SCOPES: &str = "copilot";
 
-/// File name for persisted OAuth tokens (inside ~/.openfang/).
+/// File name for persisted OAuth tokens (inside ~/.omtae/).
 const TOKEN_FILE_NAME: &str = ".copilot-tokens.json";
 
 /// Device flow polling interval (seconds) — GitHub default is 5.
@@ -83,16 +83,16 @@ impl PersistedTokens {
         self.access_token_expires_at > now + ACCESS_TOKEN_REFRESH_BUFFER_SECS as i64
     }
 
-    /// Load from the OpenFang data directory.
-    pub fn load(openfang_dir: &Path) -> Option<Self> {
-        let path = openfang_dir.join(TOKEN_FILE_NAME);
+    /// Load from the OMTAE data directory.
+    pub fn load(omtae_dir: &Path) -> Option<Self> {
+        let path = omtae_dir.join(TOKEN_FILE_NAME);
         let data = std::fs::read_to_string(&path).ok()?;
         serde_json::from_str(&data).ok()
     }
 
-    /// Persist to the OpenFang data directory with restricted permissions.
-    pub fn save(&self, openfang_dir: &Path) -> Result<(), String> {
-        let path = openfang_dir.join(TOKEN_FILE_NAME);
+    /// Persist to the OMTAE data directory with restricted permissions.
+    pub fn save(&self, omtae_dir: &Path) -> Result<(), String> {
+        let path = omtae_dir.join(TOKEN_FILE_NAME);
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize tokens: {e}"))?;
         std::fs::write(&path, &json)
@@ -336,7 +336,7 @@ pub async fn exchange_copilot_token(
         .get(COPILOT_TOKEN_URL)
         .header("Authorization", format!("token {access_token}"))
         .header("Accept", "application/json")
-        .header("User-Agent", "OpenFang/1.0")
+        .header("User-Agent", "OMTAE/1.0")
         .header("Editor-Version", "vscode/1.96.0")
         .header("Editor-Plugin-Version", "copilot/1.250.0")
         .send()
@@ -420,7 +420,7 @@ pub async fn fetch_models(
     let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {copilot_token}"))
-        .header("User-Agent", "OpenFang/1.0")
+        .header("User-Agent", "OMTAE/1.0")
         .header("Editor-Version", "vscode/1.96.0")
         .send()
         .await
@@ -463,7 +463,7 @@ pub async fn fetch_models(
 /// LLM driver that authenticates via GitHub OAuth device flow and proxies
 /// completions through the Copilot API (OpenAI-compatible).
 pub struct CopilotDriver {
-    openfang_dir: PathBuf,
+    omtae_dir: PathBuf,
     http_client: reqwest::Client,
 
     /// Persisted OAuth tokens (ghu_ + grt_).
@@ -475,20 +475,20 @@ pub struct CopilotDriver {
 }
 
 impl CopilotDriver {
-    pub fn new(openfang_dir: PathBuf) -> Self {
+    pub fn new(omtae_dir: PathBuf) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(TOKEN_EXCHANGE_TIMEOUT)
             .build()
             .expect("Failed to build HTTP client");
 
         // Try to load persisted tokens on construction.
-        let persisted = PersistedTokens::load(&openfang_dir);
+        let persisted = PersistedTokens::load(&omtae_dir);
         if persisted.is_some() {
             debug!("Loaded persisted Copilot OAuth tokens");
         }
 
         Self {
-            openfang_dir,
+            omtae_dir,
             http_client,
             oauth_tokens: Mutex::new(persisted),
             copilot_token: Mutex::new(None),
@@ -520,7 +520,7 @@ impl CopilotDriver {
             match refresh_access_token(&self.http_client, rt).await {
                 Ok(new_tokens) => {
                     info!("Copilot access token refreshed successfully");
-                    if let Err(e) = new_tokens.save(&self.openfang_dir) {
+                    if let Err(e) = new_tokens.save(&self.omtae_dir) {
                         warn!("Failed to persist refreshed tokens: {e}");
                     }
                     let access_token = new_tokens.access_token.clone();
@@ -540,7 +540,7 @@ impl CopilotDriver {
         // No valid tokens and refresh failed — need device flow.
         // In daemon mode, we can't do interactive auth. Return a clear error.
         Err(crate::llm_driver::LlmError::AuthenticationFailed(
-            "Copilot OAuth tokens expired. Run `openfang config set-key github-copilot` to re-authenticate via device flow.".to_string(),
+            "Copilot OAuth tokens expired. Run `omtae config set-key github-copilot` to re-authenticate via device flow.".to_string(),
         ))
     }
 
@@ -732,17 +732,17 @@ impl crate::llm_driver::LlmDriver for CopilotDriver {
 
 /// Run the interactive Copilot setup: execute the device flow.
 ///
-/// Called from `openfang config set-key github-copilot`, `openfang init`,
-/// `openfang onboard`, and `openfang configure`.
-pub async fn run_interactive_setup(openfang_dir: &Path) -> Result<PersistedTokens, String> {
-    run_device_flow(openfang_dir).await
+/// Called from `omtae config set-key github-copilot`, `omtae init`,
+/// `omtae onboard`, and `omtae configure`.
+pub async fn run_interactive_setup(omtae_dir: &Path) -> Result<PersistedTokens, String> {
+    run_device_flow(omtae_dir).await
 }
 
 /// Run the OAuth device flow using the Copilot client ID.
 ///
 /// Prints the user code and verification URL, attempts to open the browser,
 /// then polls until the user authorizes.
-pub async fn run_device_flow(openfang_dir: &Path) -> Result<PersistedTokens, String> {
+pub async fn run_device_flow(omtae_dir: &Path) -> Result<PersistedTokens, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -768,7 +768,7 @@ pub async fn run_device_flow(openfang_dir: &Path) -> Result<PersistedTokens, Str
     let tokens = poll_for_token(&client, &device.device_code, device.interval).await?;
 
     // Step 4: Persist.
-    tokens.save(openfang_dir)?;
+    tokens.save(omtae_dir)?;
     println!("  Copilot authentication successful.");
 
     Ok(tokens)
@@ -819,8 +819,8 @@ pub fn open_verification_url(url: &str) -> bool {
 }
 
 /// Check if Copilot OAuth tokens exist on disk.
-pub fn copilot_auth_available(openfang_dir: &Path) -> bool {
-    openfang_dir.join(TOKEN_FILE_NAME).exists()
+pub fn copilot_auth_available(omtae_dir: &Path) -> bool {
+    omtae_dir.join(TOKEN_FILE_NAME).exists()
 }
 
 // ---------------------------------------------------------------------------

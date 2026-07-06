@@ -1,11 +1,11 @@
 """
-OpenFang Python Client — REST API client for controlling OpenFang remotely.
+OMTAE Python Client — REST API client for controlling OMTAE remotely.
 
 Usage:
 
-    from openfang_client import OpenFang
+    from omtae_client import OMTAE
 
-    client = OpenFang("http://localhost:3000")
+    client = OMTAE("http://localhost:3000")
 
     # Create an agent
     agent = client.agents.create(template="assistant")
@@ -21,7 +21,7 @@ Usage:
             print(event["delta"], end="", flush=True)
 
 Note: This is the REST API *client* library.
-      For writing Python agents that run inside OpenFang, see openfang_sdk.py instead.
+      For writing Python agents that run inside OMTAE, see omtae_sdk.py instead.
 """
 
 import json
@@ -31,7 +31,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode, quote
 
 
-class OpenFangError(Exception):
+class OMTAEError(Exception):
     def __init__(self, message: str, status: int = 0, body: str = ""):
         super().__init__(message)
         self.status = status
@@ -39,12 +39,12 @@ class OpenFangError(Exception):
 
 
 class _Resource:
-    def __init__(self, client: "OpenFang"):
+    def __init__(self, client: "OMTAE"):
         self._c = client
 
 
-class OpenFang:
-    """OpenFang REST API client. Zero dependencies — uses only stdlib urllib."""
+class OMTAE:
+    """OMTAE REST API client. Zero dependencies — uses only stdlib urllib."""
 
     def __init__(self, base_url: str, headers: Optional[Dict[str, str]] = None):
         self.base_url = base_url.rstrip("/")
@@ -77,7 +77,7 @@ class OpenFang:
                 return text
         except HTTPError as e:
             body_text = e.read().decode() if e.fp else ""
-            raise OpenFangError(f"HTTP {e.code}: {body_text}", e.code, body_text) from e
+            raise OMTAEError(f"HTTP {e.code}: {body_text}", e.code, body_text) from e
 
     def _stream(self, method: str, path: str, body: Any = None) -> Generator[Dict, None, None]:
         """SSE streaming. Yields parsed JSON events."""
@@ -90,7 +90,7 @@ class OpenFang:
             resp = urlopen(req)
         except HTTPError as e:
             body_text = e.read().decode() if e.fp else ""
-            raise OpenFangError(f"HTTP {e.code}: {body_text}", e.code, body_text) from e
+            raise OMTAEError(f"HTTP {e.code}: {body_text}", e.code, body_text) from e
 
         buffer = ""
         while True:

@@ -1,16 +1,16 @@
-# NOTE: The GHCR image (ghcr.io/rightnow-ai/openfang) is not yet public.
+# NOTE: The GHCR image (ghcr.io/rightnow-ai/omtae) is not yet public.
 # For now, build from source using `docker compose up --build`.
-# See: https://github.com/RightNow-AI/openfang/issues/12
+# See: https://github.com/RightNow-AI/omtae/issues/12
 
 version: "3.8"
 services:
-  openfang:
+  omtae:
     build: .
-    # image: ghcr.io/rightnow-ai/openfang:latest  # Uncomment when GHCR is public
+    # image: ghcr.io/rightnow-ai/omtae:latest  # Uncomment when GHCR is public
     ports:
       - "4200:4200"
     volumes:
-      - openfang-data:/data
+      - omtae-data:/data
     # Uncomment to reach host services (Ollama, whisper.cpp, local Postgres)
     # from inside the container. Required on Linux and colima. See
     # docs/troubleshooting.md#connecting-to-host-services-from-docker.
@@ -27,4 +27,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  openfang-data:
+  omtae-data:

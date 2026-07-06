@@ -4,7 +4,7 @@
 //! push notifications via ntfy.sh or gotify.
 
 use dashmap::DashMap;
-use openfang_types::config::PairingConfig;
+use omtae_types::config::PairingConfig;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -32,7 +32,7 @@ pub struct PairingRequest {
 }
 
 /// Persistence callback — kernel injects this so PairingManager can save without
-/// taking a direct dependency on openfang-memory.
+/// taking a direct dependency on omtae-memory.
 pub type PersistFn = Box<dyn Fn(&PairedDevice, PersistOp) + Send + Sync>;
 
 /// Persistence operation kind.

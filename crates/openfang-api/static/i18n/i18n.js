@@ -1,7 +1,7 @@
 /**
- * OpenFang i18n (Internationalization) Module
+ * OMTAE i18n (Internationalization) Module
  * 
- * Provides runtime language switching for the OpenFang dashboard UI.
+ * Provides runtime language switching for the OMTAE dashboard UI.
  * Supports English (default) and Russian.
  * 
  * Usage:
@@ -67,7 +67,10 @@
       return key;
     }
 
-    let text = translations[key] || key;
+    let text = translations[key];
+    if (text === undefined || text === null || text === '') {
+      text = key;
+    }
 
     // Handle interpolation (e.g., 'Hello, {{name}}')
     if (params && typeof params === 'object') {
@@ -128,7 +131,7 @@
     // Update meta tags
     const metaDesc = document.querySelector('meta[name="description"]');
     if (metaDesc) {
-      const desc = t('app.description', { name: 'OpenFang' });
+      const desc = t('app.description', { name: 'OMTAE' });
       if (desc !== 'app.description') {
         metaDesc.content = desc;
       }
@@ -154,7 +157,7 @@
 
     // Save preference
     if (persist) {
-      localStorage.setItem('openfang_language', lang);
+      localStorage.setItem('omtae_language', lang);
     }
 
     // Apply to DOM
@@ -184,7 +187,7 @@
     // 2. Browser language
     // 3. Default to English
 
-    let lang = localStorage.getItem('openfang_language');
+    let lang = localStorage.getItem('omtae_language');
     
     if (!lang) {
       // Try to detect browser language
@@ -210,15 +213,23 @@
     ];
   }
 
+  /** Translate with English fallback when the key is missing from the bundle. */
+  function tr(key, fallback) {
+    const value = t(key);
+    return value !== key ? value : (fallback !== undefined ? fallback : key);
+  }
+
   // Expose to global scope
   window.i18n = {
     t,
+    tr,
     setLanguage,
     getLanguage,
     getAvailableLanguages,
     init,
     isInitialized: () => isInitialized
   };
+  window.t = tr;
 
   // Auto-initialize when DOM is ready
   if (document.readyState === 'loading') {

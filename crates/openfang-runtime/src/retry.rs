@@ -2,7 +2,7 @@
 //!
 //! Provides a configurable, async-aware retry utility that can be used for
 //! LLM API calls, network operations, channel message delivery, and any
-//! other fallible async operation across the OpenFang codebase.
+//! other fallible async operation across the OMTAE codebase.
 //!
 //! Jitter uses `std::time::SystemTime` UNIX nanos as a seed to avoid
 //! requiring the `rand` crate as a dependency.

@@ -1,4 +1,4 @@
-//! HTTP/WebSocket API server for the OpenFang Agent OS daemon.
+//! HTTP/WebSocket API server for the OMTAE Agent OS daemon.
 //!
 //! Exposes agent management, status, and chat via JSON REST endpoints.
 //! The kernel runs in-process; the CLI connects over HTTP.
@@ -32,7 +32,10 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+pub mod brain;
 pub mod channel_bridge;
+pub mod gpu;
+pub mod model_profiles;
 pub mod middleware;
 pub mod openai_compat;
 pub mod rate_limiter;

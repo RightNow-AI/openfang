@@ -3,8 +3,8 @@
 //! Stores entities and relations with support for graph pattern queries.
 
 use chrono::Utc;
-use openfang_types::error::{OpenFangError, OpenFangResult};
-use openfang_types::memory::{
+use omtae_types::error::{OMTAEError, OMTAEResult};
+use omtae_types::memory::{
     Entity, EntityType, GraphMatch, GraphPattern, Relation, RelationType,
 };
 use rusqlite::Connection;
@@ -25,20 +25,20 @@ impl KnowledgeStore {
     }
 
     /// Add an entity to the knowledge graph.
-    pub fn add_entity(&self, entity: Entity) -> OpenFangResult<String> {
+    pub fn add_entity(&self, entity: Entity) -> OMTAEResult<String> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let id = if entity.id.is_empty() {
             Uuid::new_v4().to_string()
         } else {
             entity.id.clone()
         };
         let entity_type_str = serde_json::to_string(&entity.entity_type)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+            .map_err(|e| OMTAEError::Serialization(e.to_string()))?;
         let props_str = serde_json::to_string(&entity.properties)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+            .map_err(|e| OMTAEError::Serialization(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO entities (id, entity_type, name, properties, created_at, updated_at)
@@ -46,21 +46,21 @@ impl KnowledgeStore {
              ON CONFLICT(id) DO UPDATE SET name = ?3, properties = ?4, updated_at = ?5",
             rusqlite::params![id, entity_type_str, entity.name, props_str, now],
         )
-        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(id)
     }
 
     /// Add a relation between two entities.
-    pub fn add_relation(&self, relation: Relation) -> OpenFangResult<String> {
+    pub fn add_relation(&self, relation: Relation) -> OMTAEResult<String> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let id = Uuid::new_v4().to_string();
         let rel_type_str = serde_json::to_string(&relation.relation)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+            .map_err(|e| OMTAEError::Serialization(e.to_string()))?;
         let props_str = serde_json::to_string(&relation.properties)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+            .map_err(|e| OMTAEError::Serialization(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO relations (id, source_entity, relation_type, target_entity, properties, confidence, created_at)
@@ -75,16 +75,16 @@ impl KnowledgeStore {
                 now,
             ],
         )
-        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(id)
     }
 
     /// Query the knowledge graph with a pattern.
-    pub fn query_graph(&self, pattern: GraphPattern) -> OpenFangResult<Vec<GraphMatch>> {
+    pub fn query_graph(&self, pattern: GraphPattern) -> OMTAEResult<Vec<GraphMatch>> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
 
         let mut sql = String::from(
             "SELECT
@@ -107,7 +107,7 @@ impl KnowledgeStore {
         }
         if let Some(ref relation) = pattern.relation {
             let rel_str = serde_json::to_string(relation)
-                .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+                .map_err(|e| OMTAEError::Serialization(e.to_string()))?;
             sql.push_str(&format!(" AND r.relation_type = ?{idx}"));
             params.push(Box::new(rel_str));
             idx += 1;
@@ -124,7 +124,7 @@ impl KnowledgeStore {
 
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
 
@@ -152,11 +152,11 @@ impl KnowledgeStore {
                     t_updated: row.get(18)?,
                 })
             })
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
         let mut matches = Vec::new();
         for row_result in rows {
-            let r = row_result.map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            let r = row_result.map_err(|e| OMTAEError::Memory(e.to_string()))?;
             matches.push(GraphMatch {
                 source: parse_entity(
                     &r.s_id,

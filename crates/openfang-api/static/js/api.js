@@ -1,8 +1,8 @@
-// OpenFang API Client — Fetch wrapper, WebSocket manager, auth injection, toast notifications
+// OMTAE API Client — Fetch wrapper, WebSocket manager, auth injection, toast notifications
 'use strict';
 
 // ── Toast Notification System ──
-var OpenFangToast = (function() {
+var OMTAEToast = (function() {
   var _container = null;
   var _toastId = 0;
 
@@ -117,22 +117,30 @@ var OpenFangToast = (function() {
 
 // ── Friendly Error Messages ──
 function friendlyError(status, serverMsg) {
-  if (status === 0 || !status) return 'Cannot reach daemon — is openfang running?';
+  if (status === 0 || !status) return 'Cannot reach daemon — is omtae running?';
   if (status === 401) return 'Not authorized — check your API key';
   if (status === 403) return 'Permission denied';
   if (status === 404) return serverMsg || 'Resource not found';
   if (status === 429) return 'Rate limited — slow down and try again';
   if (status === 413) return 'Request too large';
-  if (status === 500) return 'Server error — check daemon logs';
-  if (status === 502 || status === 503) return 'Daemon unavailable — is it running?';
+  if (status === 500) return serverMsg || 'Server error — check daemon logs';
+  if (status === 400) return serverMsg || 'Bad request';
+  if (status === 502) return serverMsg || 'Upstream LLM error — check provider key and logs';
+  if (status === 503) return 'Daemon unavailable — is it running?';
   return serverMsg || 'Unexpected error (' + status + ')';
 }
 
 // ── API Client ──
-var OpenFangAPI = (function() {
+var OMTAEAPI = (function() {
   var BASE = window.location.origin;
   var WS_BASE = BASE.replace(/^http/, 'ws');
   var _authToken = '';
+  var _sessionToken = (function() {
+    try { return sessionStorage.getItem('omtae-session-token') || ''; } catch(e) { return ''; }
+  })();
+  var _pinHeader = (function() {
+    try { return sessionStorage.getItem('omtae-pin') || ''; } catch(e) { return ''; }
+  })();
 
   // Connection state tracking
   var _connectionState = 'connected';
@@ -141,9 +149,30 @@ var OpenFangAPI = (function() {
 
   function setAuthToken(token) { _authToken = token; }
 
+  function setSessionToken(token) {
+    _sessionToken = token || '';
+    try {
+      if (_sessionToken) sessionStorage.setItem('omtae-session-token', _sessionToken);
+      else sessionStorage.removeItem('omtae-session-token');
+    } catch(e) { /* ignore */ }
+  }
+
+  function setPinHeader(pin) {
+    _pinHeader = pin || '';
+    try {
+      if (_pinHeader) sessionStorage.setItem('omtae-pin', _pinHeader);
+      else sessionStorage.removeItem('omtae-pin');
+    } catch(e) { /* ignore */ }
+  }
+
   function headers() {
     var h = { 'Content-Type': 'application/json' };
-    if (_authToken) h['Authorization'] = 'Bearer ' + _authToken;
+    if (_authToken) {
+      h['Authorization'] = 'Bearer ' + _authToken;
+    } else if (_sessionToken) {
+      h['Authorization'] = 'Bearer ' + _sessionToken;
+    }
+    if (_pinHeader) h['X-OMTAE-Pin'] = _pinHeader;
     return h;
   }
 
@@ -156,18 +185,18 @@ var OpenFangAPI = (function() {
   function onConnectionChange(fn) { _connectionListeners.push(fn); }
 
   function request(method, path, body) {
-    var opts = { method: method, headers: headers() };
+    var opts = { method: method, headers: headers(), credentials: 'include' };
     if (body !== undefined) opts.body = JSON.stringify(body);
     return fetch(BASE + path, opts).then(function(r) {
       if (_connectionState !== 'connected') setConnectionState('connected');
       if (!r.ok) {
         // On 401, auto-show auth prompt so the user can re-enter their key
-        if (r.status === 401 && typeof Alpine !== 'undefined') {
+        if (r.status === 401 && path !== '/api/auth/login' && typeof Alpine !== 'undefined') {
           try {
             var store = Alpine.store('app');
             if (store && !store.showAuthPrompt) {
               _authToken = '';
-              localStorage.removeItem('openfang-api-key');
+              localStorage.removeItem('omtae-api-key');
               store.showAuthPrompt = true;
             }
           } catch(e2) { /* ignore Alpine errors */ }
@@ -191,7 +220,7 @@ var OpenFangAPI = (function() {
     }).catch(function(e) {
       if (e.name === 'TypeError' && e.message.includes('Failed to fetch')) {
         setConnectionState('disconnected');
-        throw new Error('Cannot connect to daemon — is openfang running?');
+        throw new Error('Cannot connect to daemon — is omtae running?');
       }
       throw e;
     });
@@ -223,7 +252,13 @@ var OpenFangAPI = (function() {
   function _doConnect(agentId) {
     try {
       var url = WS_BASE + '/api/agents/' + agentId + '/ws';
-      if (_authToken) url += '?token=' + encodeURIComponent(_authToken);
+      if (_authToken) {
+        url += '?token=' + encodeURIComponent(_authToken);
+      } else if (_sessionToken) {
+        url += '?session=' + encodeURIComponent(_sessionToken);
+      } else if (_pinHeader) {
+        url += '?pin=' + encodeURIComponent(_pinHeader);
+      }
       var socket = new WebSocket(url);
       _ws = socket;
 
@@ -234,7 +269,7 @@ var OpenFangAPI = (function() {
         _reconnectAttempts = 0;
         setConnectionState('connected');
         if (_reconnectAttempt > 0) {
-          OpenFangToast.success('Reconnected');
+          OMTAEToast.success('Reconnected');
           _reconnectAttempt = 0;
         }
         if (_wsCallbacks.onOpen) _wsCallbacks.onOpen();
@@ -261,7 +296,7 @@ var OpenFangAPI = (function() {
           _reconnectAttempt = _reconnectAttempts;
           setConnectionState('reconnecting');
           if (_reconnectAttempts === 1) {
-            OpenFangToast.warn('Connection lost, reconnecting...');
+            OMTAEToast.warn('Connection lost, reconnecting...');
           }
           var delay = Math.min(1000 * Math.pow(2, _reconnectAttempts - 1), 10000);
           _reconnectTimer = setTimeout(function() { _doConnect(_wsAgentId); }, delay);
@@ -269,7 +304,7 @@ var OpenFangAPI = (function() {
         }
         if (_wsAgentId && _reconnectAttempts >= MAX_RECONNECT) {
           setConnectionState('disconnected');
-          OpenFangToast.error('Connection lost — switched to HTTP mode', 0);
+          OMTAEToast.error('Connection lost — switched to HTTP mode', 0);
         }
         if (_wsCallbacks.onClose) _wsCallbacks.onClose();
       };
@@ -310,12 +345,15 @@ var OpenFangAPI = (function() {
   function upload(agentId, file) {
     var hdrs = {};
     if (_authToken) hdrs['Authorization'] = 'Bearer ' + _authToken;
+    else if (_sessionToken) hdrs['Authorization'] = 'Bearer ' + _sessionToken;
+    if (_pinHeader) hdrs['X-OMTAE-Pin'] = _pinHeader;
 	var form = new FormData();
     form.append('file', file);
     form.append('filename', file.name);
     return fetch(BASE + '/api/agents/' + agentId + '/upload', {
       method: 'POST',
       headers: hdrs,
+      credentials: 'include',
       body: form
     }).then(function(r) {
       if (!r.ok) throw new Error('Upload failed');
@@ -325,6 +363,8 @@ var OpenFangAPI = (function() {
 
   return {
     setAuthToken: setAuthToken,
+    setSessionToken: setSessionToken,
+    setPinHeader: setPinHeader,
     getToken: getToken,
     get: get,
     post: post,

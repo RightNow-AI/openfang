@@ -1,12 +1,12 @@
 {
-  "name": "OpenFang Agent OS",
-  "short_name": "OpenFang",
+  "name": "OMTAE Agent OS",
+  "short_name": "OMTAE",
   "description": "Open-source Agent Operating System",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0a0a0f",
-  "theme_color": "#6366f1",
+  "background_color": "#171816",
+  "theme_color": "#5F6556",
   "icons": [
-    {"src": "/logo.png", "sizes": "128x128", "type": "image/png"}
+    {"src": "/logo.png", "sizes": "64x64", "type": "image/png"}
   ]
 }

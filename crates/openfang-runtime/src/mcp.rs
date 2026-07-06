@@ -8,7 +8,7 @@
 //! All MCP tools are namespaced with `mcp_{server}_{tool}` to prevent collisions.
 
 use http::{HeaderName, HeaderValue};
-use openfang_types::tool::ToolDefinition;
+use omtae_types::tool::ToolDefinition;
 use rmcp::model::{CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation};
 use rmcp::service::RunningService;
 use rmcp::{RoleClient, ServiceExt};
@@ -93,7 +93,7 @@ impl McpConnection {
     pub async fn connect(config: McpServerConfig) -> Result<Self, String> {
         let client_info = ClientInfo::new(
             ClientCapabilities::default(),
-            Implementation::new("openfang", env!("CARGO_PKG_VERSION")),
+            Implementation::new("omtae", env!("CARGO_PKG_VERSION")),
         );
 
         let client = match &config.transport {

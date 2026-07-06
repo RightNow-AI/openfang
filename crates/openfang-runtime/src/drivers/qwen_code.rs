@@ -7,7 +7,7 @@
 
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
-use openfang_types::message::{ContentBlock, Role, StopReason, TokenUsage};
+use omtae_types::message::{ContentBlock, Role, StopReason, TokenUsage};
 use serde::Deserialize;
 use tokio::io::AsyncBufReadExt;
 use tracing::{debug, warn};
@@ -59,7 +59,7 @@ impl QwenCodeDriver {
             warn!(
                 "Qwen Code driver: --yolo enabled. \
                  The CLI will not prompt for tool approvals. \
-                 OpenFang's own capability/RBAC system enforces access control."
+                 OMTAE's own capability/RBAC system enforces access control."
             );
         }
 
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn test_build_prompt_simple() {
-        use openfang_types::message::{Message, MessageContent};
+        use omtae_types::message::{Message, MessageContent};
 
         let request = CompletionRequest {
             model: "qwen-code/qwen3-coder".to_string(),

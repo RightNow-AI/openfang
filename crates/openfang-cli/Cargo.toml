@@ -1,21 +1,21 @@
 [package]
-name = "openfang-cli"
+name = "omtae-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "CLI tool for the OpenFang Agent OS"
+description = "CLI tool for the OMTAE Agent OS"
 
 [[bin]]
-name = "openfang"
+name = "omtae"
 path = "src/main.rs"
 
 [dependencies]
-openfang-types = { path = "../openfang-types" }
-openfang-kernel = { path = "../openfang-kernel" }
-openfang-api = { path = "../openfang-api" }
-openfang-migrate = { path = "../openfang-migrate" }
-openfang-skills = { path = "../openfang-skills" }
-openfang-extensions = { path = "../openfang-extensions" }
+omtae-types = { path = "../omtae-types" }
+omtae-kernel = { path = "../omtae-kernel" }
+omtae-api = { path = "../omtae-api" }
+omtae-migrate = { path = "../omtae-migrate" }
+omtae-skills = { path = "../omtae-skills" }
+omtae-extensions = { path = "../omtae-extensions" }
 zeroize = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
@@ -27,7 +27,7 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 dirs = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
-openfang-runtime = { path = "../openfang-runtime" }
+omtae-runtime = { path = "../omtae-runtime" }
 uuid = { workspace = true }
 ratatui = { workspace = true }
 colored = { workspace = true }

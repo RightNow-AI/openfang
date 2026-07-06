@@ -8,7 +8,7 @@
 
 use crate::sandbox::GuestState;
 use crate::web_fetch;
-use openfang_types::capability::{capability_matches, Capability};
+use omtae_types::capability::{capability_matches, Capability};
 use serde_json::json;
 use std::path::{Component, Path};
 use tracing::debug;
@@ -392,7 +392,7 @@ fn host_agent_send(state: &GuestState, params: &serde_json::Value) -> serde_json
     };
     match state
         .tokio_handle
-        .block_on(kernel.send_to_agent(target, message))
+        .block_on(kernel.send_to_agent(target, message, None, None))
     {
         Ok(response) => json!({"ok": response}),
         Err(e) => json!({"error": e}),

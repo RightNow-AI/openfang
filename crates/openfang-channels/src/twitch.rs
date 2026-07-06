@@ -27,7 +27,7 @@ const MAX_MESSAGE_LEN: usize = 500;
 /// Twitch IRC channel adapter.
 ///
 /// Connects to Twitch chat via the IRC protocol and bridges messages to the
-/// OpenFang channel system. Supports multiple channels simultaneously.
+/// OMTAE channel system. Supports multiple channels simultaneously.
 pub struct TwitchAdapter {
     /// SECURITY: OAuth token is zeroized on drop.
     oauth_token: Zeroizing<String>,
@@ -245,7 +245,7 @@ impl ChannelAdapter for TwitchAdapter {
                             sender: ChannelUser {
                                 platform_id: channel.clone(),
                                 display_name: sender_nick,
-                                openfang_user: None,
+                                omtae_user: None,
                             },
                             content: msg_content,
                             target_agent: None,
@@ -325,7 +325,7 @@ mod tests {
         let adapter = TwitchAdapter::new(
             "test-oauth-token".to_string(),
             vec!["testchannel".to_string()],
-            "openfang_bot".to_string(),
+            "omtae_bot".to_string(),
         );
         assert_eq!(adapter.name(), "twitch");
         assert_eq!(

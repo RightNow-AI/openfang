@@ -6,10 +6,10 @@
 //! This module provides:
 //! - `AgentCard` — describes an agent's capabilities to external systems
 //! - `A2aTask` — unit of work exchanged between agents
-//! - `build_agent_card` — expose OpenFang agents via A2A
+//! - `build_agent_card` — expose OMTAE agents via A2A
 //! - `A2aClient` — discover and interact with external A2A agents
 
-use openfang_types::agent::AgentManifest;
+use omtae_types::agent::AgentManifest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -35,7 +35,7 @@ pub struct AgentCard {
     pub version: String,
     /// Agent capabilities.
     pub capabilities: AgentCapabilities,
-    /// Skills this agent can perform (A2A skill descriptors, not OpenFang skills).
+    /// Skills this agent can perform (A2A skill descriptors, not OMTAE skills).
     pub skills: Vec<AgentSkill>,
     /// Supported input content types.
     #[serde(default)]
@@ -57,7 +57,7 @@ pub struct AgentCapabilities {
     pub state_transition_history: bool,
 }
 
-/// A2A skill descriptor (not an OpenFang skill — describes a capability).
+/// A2A skill descriptor (not an OMTAE skill — describes a capability).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSkill {
     /// Unique skill identifier.
@@ -319,7 +319,7 @@ impl Default for A2aTaskStore {
 ///
 /// Called during kernel boot to populate the list of known external agents.
 pub async fn discover_external_agents(
-    agents: &[openfang_types::config::ExternalAgent],
+    agents: &[omtae_types::config::ExternalAgent],
 ) -> Vec<(String, AgentCard)> {
     let client = A2aClient::new();
     let mut discovered = Vec::new();
@@ -354,10 +354,10 @@ pub async fn discover_external_agents(
 }
 
 // ---------------------------------------------------------------------------
-// A2A Server — expose OpenFang agents via A2A
+// A2A Server — expose OMTAE agents via A2A
 // ---------------------------------------------------------------------------
 
-/// Build an A2A Agent Card from an OpenFang agent manifest.
+/// Build an A2A Agent Card from an OMTAE agent manifest.
 pub fn build_agent_card(manifest: &AgentManifest, base_url: &str) -> AgentCard {
     let tools: Vec<String> = manifest.capabilities.tools.clone();
 
@@ -418,7 +418,7 @@ impl A2aClient {
         let response = self
             .client
             .get(&agent_json_url)
-            .header("User-Agent", "OpenFang/0.1 A2A")
+            .header("User-Agent", "OMTAE/0.1 A2A")
             .send()
             .await
             .map_err(|e| format!("A2A discovery failed: {e}"))?;
@@ -733,7 +733,7 @@ mod tests {
 
     #[test]
     fn test_a2a_config_serde() {
-        use openfang_types::config::{A2aConfig, ExternalAgent};
+        use omtae_types::config::{A2aConfig, ExternalAgent};
 
         let config = A2aConfig {
             enabled: true,

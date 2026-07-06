@@ -1,4 +1,4 @@
-// OpenFang Analytics Page — Full usage analytics with per-model and per-agent breakdowns
+// OMTAE Analytics Page — Full usage analytics with per-model and per-agent breakdowns
 // Includes Cost Dashboard with donut chart, bar chart, projections, and provider breakdown.
 'use strict';
 
@@ -18,7 +18,7 @@ function analyticsPage() {
 
     // Chart colors for providers (stable palette)
     _chartColors: [
-      '#FF5C00', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6',
+      '#00F0FF', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6',
       '#EC4899', '#06B6D4', '#EF4444', '#84CC16', '#F97316',
       '#6366F1', '#14B8A6', '#E11D48', '#A855F7', '#22D3EE'
     ],
@@ -43,7 +43,7 @@ function analyticsPage() {
 
     async loadSummary() {
       try {
-        this.summary = await OpenFangAPI.get('/api/usage/summary');
+        this.summary = await OMTAEAPI.get('/api/usage/summary');
       } catch(e) {
         this.summary = { total_input_tokens: 0, total_output_tokens: 0, total_cost_usd: 0, call_count: 0, total_tool_calls: 0 };
         throw e;
@@ -52,21 +52,21 @@ function analyticsPage() {
 
     async loadByModel() {
       try {
-        var data = await OpenFangAPI.get('/api/usage/by-model');
+        var data = await OMTAEAPI.get('/api/usage/by-model');
         this.byModel = data.models || [];
       } catch(e) { this.byModel = []; }
     },
 
     async loadByAgent() {
       try {
-        var data = await OpenFangAPI.get('/api/usage');
+        var data = await OMTAEAPI.get('/api/usage');
         this.byAgent = data.agents || [];
       } catch(e) { this.byAgent = []; }
     },
 
     async loadDailyCosts() {
       try {
-        var data = await OpenFangAPI.get('/api/usage/daily');
+        var data = await OMTAEAPI.get('/api/usage/daily');
         this.dailyCosts = data.days || [];
         this.todayCost = data.today_cost_usd || 0;
         this.firstEventDate = data.first_event_date || null;

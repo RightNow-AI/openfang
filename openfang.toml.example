@@ -1,5 +1,5 @@
-# OpenFang Agent OS — Example Configuration
-# Copy to ~/.openfang/config.toml and customize.
+# OMTAE Agent OS — Example Configuration
+# Copy to ~/.omtae/config.toml and customize.
 
 # API server settings
 # api_key = ""                               # Set to enable Bearer auth (strongly recommended when exposing)
@@ -17,7 +17,7 @@ api_key_env = "ANTHROPIC_API_KEY"         # Environment variable holding API key
 
 [memory]
 decay_rate = 0.05                         # Memory confidence decay rate
-# sqlite_path = "~/.openfang/data/openfang.db"   # Optional: custom DB path
+# sqlite_path = "~/.omtae/data/omtae.db"   # Optional: custom DB path
 
 [network]
 listen_addr = "127.0.0.1:4200"           # OFP listen address
@@ -44,6 +44,18 @@ listen_addr = "127.0.0.1:4200"           # OFP listen address
 # [slack]
 # bot_token_env = "SLACK_BOT_TOKEN"
 # app_token_env = "SLACK_APP_TOKEN"
+
+# Runtime drift watchdog (opt-in; off by default)
+# [watchdog]
+# enabled = false
+# interval_secs = 900
+# stuck_run_secs = 900
+# kill_disallowed = false          # when true, stops agents outside [agents] autospawn
+# manual_allowlist = ["orchestrator", "ops-fixer"]
+# checks = ["autospawn", "allowlist", "stuck_run"]
+
+# [agents]
+# autospawn = ["researcher", "analyst", "coder"]
 
 # MCP server connections
 # [[mcp_servers]]

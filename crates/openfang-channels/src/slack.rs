@@ -1,4 +1,4 @@
-//! Slack Socket Mode adapter for the OpenFang channel bridge.
+//! Slack Socket Mode adapter for the OMTAE channel bridge.
 //!
 //! Uses Slack Socket Mode WebSocket (app token) for receiving events and the
 //! Web API (bot token) for sending responses. No external Slack crate.
@@ -589,7 +589,7 @@ async fn parse_slack_event(
         sender: ChannelUser {
             platform_id: channel.to_string(),
             display_name: user_id.to_string(), // Slack user IDs as display name
-            openfang_user: None,
+            omtae_user: None,
         },
         content,
         target_agent: None,

@@ -1,6 +1,6 @@
-# OpenFang Configuration Reference
+# OMTAE Configuration Reference
 
-Complete reference for `config.toml`, covering every configurable field in the OpenFang Agent OS.
+Complete reference for `config.toml`, covering every configurable field in the OMTAE Agent OS.
 
 ---
 
@@ -29,10 +29,10 @@ Complete reference for `config.toml`, covering every configurable field in the O
 
 ## Overview
 
-OpenFang reads its configuration from a single TOML file:
+OMTAE reads its configuration from a single TOML file:
 
 ```
-~/.openfang/config.toml
+~/.omtae/config.toml
 ```
 
 On Windows, `~` resolves to `C:\Users\<username>`. If the home directory cannot be determined, the system temp directory is used as a fallback.
@@ -40,9 +40,9 @@ On Windows, `~` resolves to `C:\Users\<username>`. If the home directory cannot 
 The home directory is resolved with the following priority:
 
 1. `OPENFANG_HOME` environment variable (e.g. `OPENFANG_HOME=/data` in the official Docker image).
-2. `~/.openfang` (default).
+2. `~/.omtae` (default).
 
-So inside the Docker container the config file must live at `/data/config.toml` (because the image sets `ENV OPENFANG_HOME=/data`). Placing it anywhere else (for example `/opt/openfang/config.toml`) will be silently ignored.
+So inside the Docker container the config file must live at `/data/config.toml` (because the image sets `ENV OPENFANG_HOME=/data`). Placing it anywhere else (for example `/opt/omtae/config.toml`) will be silently ignored.
 
 **Key behaviors:**
 
@@ -55,10 +55,10 @@ So inside the Docker container the config file must live at `/data/config.toml` 
 
 ## Minimal Configuration
 
-The simplest working configuration only needs an LLM provider API key set as an environment variable. With no config file at all, OpenFang boots with Anthropic as the default provider:
+The simplest working configuration only needs an LLM provider API key set as an environment variable. With no config file at all, OMTAE boots with Anthropic as the default provider:
 
 ```toml
-# ~/.openfang/config.toml
+# ~/.omtae/config.toml
 # Minimal: just override the model if you want something other than defaults.
 # Set ANTHROPIC_API_KEY in your environment.
 
@@ -84,12 +84,12 @@ api_key_env = ""
 
 ```toml
 # ============================================================
-# OpenFang Agent OS -- Complete Configuration Reference
+# OMTAE Agent OS -- Complete Configuration Reference
 # ============================================================
 
 # --- Top-level fields ---
-home_dir = "~/.openfang"             # OpenFang home directory
-data_dir = "~/.openfang/data"        # SQLite databases and data files
+home_dir = "~/.omtae"             # OMTAE home directory
+data_dir = "~/.omtae/data"        # SQLite databases and data files
 log_level = "info"                   # trace | debug | info | warn | error
 api_listen = "127.0.0.1:50051"      # HTTP/WS API bind address
 network_enabled = false              # Enable OFP peer-to-peer network
@@ -119,7 +119,7 @@ api_key_env = "GROQ_API_KEY"
 
 # --- Memory ---
 [memory]
-# sqlite_path = "~/.openfang/data/openfang.db"  # Auto-resolved if omitted
+# sqlite_path = "~/.omtae/data/omtae.db"  # Auto-resolved if omitted
 embedding_model = "all-MiniLM-L6-v2"
 consolidation_threshold = 10000
 decay_rate = 0.1
@@ -232,8 +232,8 @@ These fields sit at the root of `config.toml` (not inside any `[section]`).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `home_dir` | path | `~/.openfang` | OpenFang home directory. Stores config, agents, skills. |
-| `data_dir` | path | `~/.openfang/data` | Directory for SQLite databases and persistent data. |
+| `home_dir` | path | `~/.omtae` | OMTAE home directory. Stores config, agents, skills. |
+| `data_dir` | path | `~/.omtae/data` | Directory for SQLite databases and persistent data. |
 | `log_level` | string | `"info"` | Log verbosity. One of: `trace`, `debug`, `info`, `warn`, `error`. |
 | `api_listen` | string | `"127.0.0.1:50051"` | Bind address for the HTTP/WebSocket/SSE API server. Use `0.0.0.0:<port>` to accept connections from outside the host (LAN, Docker, remote clients). See [Exposing the Dashboard](#exposing-the-dashboard) below before doing so. Can be overridden at runtime with the `OPENFANG_LISTEN` environment variable. |
 | `network_enabled` | bool | `false` | Enable the OFP peer-to-peer network layer. |
@@ -263,7 +263,7 @@ These fields sit at the root of `config.toml` (not inside any `[section]`).
 
 ### Exposing the Dashboard
 
-By default OpenFang binds the API and dashboard to `127.0.0.1` (loopback only) so the daemon is unreachable from anywhere except the local machine. To accept connections from your LAN, Docker host, or a remote client you must explicitly opt in to non-loopback binding.
+By default OMTAE binds the API and dashboard to `127.0.0.1` (loopback only) so the daemon is unreachable from anywhere except the local machine. To accept connections from your LAN, Docker host, or a remote client you must explicitly opt in to non-loopback binding.
 
 **Two ways to change the bind address:**
 
@@ -285,23 +285,23 @@ By default OpenFang binds the API and dashboard to `127.0.0.1` (loopback only) s
 
 ```yaml
 services:
-  openfang:
-    image: ghcr.io/rightnow-ai/openfang:latest
+  omtae:
+    image: ghcr.io/rightnow-ai/omtae:latest
     ports:
       - "4200:4200"
     volumes:
-      - openfang-data:/data
+      - omtae-data:/data
     environment:
       - OPENFANG_LISTEN=0.0.0.0:4200          # required: bind to all interfaces inside the container
       - OPENFANG_API_KEY=${OPENFANG_API_KEY}  # strongly recommended when exposing
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 volumes:
-  openfang-data:
+  omtae-data:
 ```
 
-If you prefer mounting `config.toml`, the file must live at `/data/config.toml` inside the container (because of `OPENFANG_HOME=/data`). Placing it at `/opt/openfang/config.toml` or any other path will not be picked up. The port in `api_listen` must also match the port published in `ports:` — the example config in `openfang.toml.example` ships with port `50051` to be safe; change it to `4200` (or whatever port you publish) when running in Docker.
+If you prefer mounting `config.toml`, the file must live at `/data/config.toml` inside the container (because of `OPENFANG_HOME=/data`). Placing it at `/opt/omtae/config.toml` or any other path will not be picked up. The port in `api_listen` must also match the port published in `ports:` — the example config in `omtae.toml.example` ships with port `50051` to be safe; change it to `4200` (or whatever port you publish) when running in Docker.
 
-**Security warning.** Once you bind to a non-loopback address, anyone reachable at that address can talk to the API. OpenFang's middleware enforces a fail-closed default on authenticated routes:
+**Security warning.** Once you bind to a non-loopback address, anyone reachable at that address can talk to the API. OMTAE's middleware enforces a fail-closed default on authenticated routes:
 
 - If `api_key` is empty AND dashboard auth is disabled AND the bind address is not loopback, authenticated routes reject non-loopback requests with `401 Unauthorized`.
 - A small set of public routes (health check, static assets, OAuth callback) remain reachable so the dashboard can render its login page. They do not expose agent data or accept commands.
@@ -342,7 +342,7 @@ Configures the SQLite-backed memory substrate, including vector embeddings and m
 
 ```toml
 [memory]
-# sqlite_path = "/custom/path/openfang.db"
+# sqlite_path = "/custom/path/omtae.db"
 embedding_model = "all-MiniLM-L6-v2"
 consolidation_threshold = 10000
 decay_rate = 0.1
@@ -350,7 +350,7 @@ decay_rate = 0.1
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `sqlite_path` | path or null | `null` | Explicit path to the SQLite database file. When `null`, defaults to `{data_dir}/openfang.db`. |
+| `sqlite_path` | path or null | `null` | Explicit path to the SQLite database file. When `null`, defaults to `{data_dir}/omtae.db`. |
 | `embedding_model` | string | `"all-MiniLM-L6-v2"` | Model name used for generating vector embeddings for semantic memory search. |
 | `consolidation_threshold` | u64 | `10000` | Number of stored memories before automatic consolidation is triggered to merge and prune old entries. |
 | `decay_rate` | f32 | `0.1` | Memory confidence decay rate. `0.0` = no decay (memories never fade), `1.0` = aggressive decay. Values between 0.0 and 1.0. |
@@ -359,7 +359,7 @@ decay_rate = 0.1
 
 ### `[network]`
 
-Configures the OFP (OpenFang Protocol) peer-to-peer networking layer with HMAC-SHA256 mutual authentication.
+Configures the OFP (OMTAE Protocol) peer-to-peer networking layer with HMAC-SHA256 mutual authentication.
 
 ```toml
 [network]
@@ -388,7 +388,7 @@ Configures dashboard login with username/password authentication. Disabled by de
 [auth]
 enabled = true
 username = "admin"
-password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."  # generate with: openfang auth hash-password
+password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."  # generate with: omtae auth hash-password
 session_ttl_hours = 168
 ```
 
@@ -396,18 +396,18 @@ session_ttl_hours = 168
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable username/password authentication for the dashboard. |
 | `username` | string | `"admin"` | Admin username. |
-| `password_hash` | string | `""` (empty) | Argon2id password hash in PHC string format. Generate with `openfang auth hash-password`. |
+| `password_hash` | string | `""` (empty) | Argon2id password hash in PHC string format. Generate with `omtae auth hash-password`. |
 | `session_ttl_hours` | u64 | `168` (7 days) | Session token lifetime in hours. |
 
 **Generating a password hash:**
 
 ```bash
-openfang auth hash-password
+omtae auth hash-password
 ```
 
 This prompts for a password and outputs an Argon2id PHC string to paste into `config.toml`.
 
-> **Breaking change (v0.5.0):** Password hashes must be in Argon2id format. Older SHA256 hex hashes from versions prior to v0.5.0 are no longer accepted. Re-run `openfang auth hash-password` to generate a new hash.
+> **Breaking change (v0.5.0):** Password hashes must be in Argon2id format. Older SHA256 hex hashes from versions prior to v0.5.0 are no longer accepted. Re-run `omtae auth hash-password` to generate a new hash.
 
 ---
 
@@ -615,7 +615,7 @@ allowed_users = []
 ```toml
 [channels.matrix]
 homeserver_url = "https://matrix.org"
-user_id = "@openfang:matrix.org"
+user_id = "@omtae:matrix.org"
 access_token_env = "MATRIX_ACCESS_TOKEN"
 allowed_rooms = []
 ```
@@ -623,7 +623,7 @@ allowed_rooms = []
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `homeserver_url` | string | `"https://matrix.org"` | Matrix homeserver URL. |
-| `user_id` | string | `""` | Bot user ID (e.g., `"@openfang:matrix.org"`). |
+| `user_id` | string | `""` | Bot user ID (e.g., `"@omtae:matrix.org"`). |
 | `access_token_env` | string | `"MATRIX_ACCESS_TOKEN"` | Env var holding the Matrix access token. |
 | `allowed_rooms` | list of strings | `[]` | Room IDs to listen in. Empty = all joined rooms. |
 | `default_agent` | string or null | `null` | Agent name to route messages to. |
@@ -696,9 +696,9 @@ allowed_channels = []
 [channels.irc]
 server = "irc.libera.chat"
 port = 6667
-nick = "openfang"
+nick = "omtae"
 # password_env = "IRC_PASSWORD"
-channels = ["#openfang"]
+channels = ["#omtae"]
 use_tls = false
 ```
 
@@ -706,9 +706,9 @@ use_tls = false
 |-------|------|---------|-------------|
 | `server` | string | `"irc.libera.chat"` | IRC server hostname. |
 | `port` | u16 | `6667` | IRC server port. |
-| `nick` | string | `"openfang"` | Bot nickname. |
+| `nick` | string | `"omtae"` | Bot nickname. |
 | `password_env` | string or null | `null` | Env var holding the server password (optional). |
-| `channels` | list of strings | `[]` | IRC channels to join (e.g., `["#openfang", "#general"]`). |
+| `channels` | list of strings | `[]` | IRC channels to join (e.g., `["#omtae", "#general"]`). |
 | `use_tls` | bool | `false` | Use TLS for the connection. |
 | `default_agent` | string or null | `null` | Agent name to route messages to. |
 
@@ -734,14 +734,14 @@ webhook_port = 8444
 [channels.twitch]
 oauth_token_env = "TWITCH_OAUTH_TOKEN"
 channels = ["mychannel"]
-nick = "openfang"
+nick = "omtae"
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `oauth_token_env` | string | `"TWITCH_OAUTH_TOKEN"` | Env var holding the Twitch OAuth token. |
 | `channels` | list of strings | `[]` | Twitch channels to join (without `#` prefix). |
-| `nick` | string | `"openfang"` | Bot nickname in Twitch chat. |
+| `nick` | string | `"omtae"` | Bot nickname in Twitch chat. |
 | `default_agent` | string or null | `null` | Agent name to route messages to. |
 
 #### `[channels.rocketchat]`
@@ -1068,7 +1068,7 @@ allowed_channels = []
 [channels.mumble]
 host = "mumble.example.com"
 port = 64738
-username = "openfang"
+username = "omtae"
 password_env = "MUMBLE_PASSWORD"
 channel = ""
 ```
@@ -1077,7 +1077,7 @@ channel = ""
 |-------|------|---------|-------------|
 | `host` | string | `""` | Mumble server hostname. |
 | `port` | u16 | `64738` | Mumble server port. |
-| `username` | string | `"openfang"` | Bot username in Mumble. |
+| `username` | string | `"omtae"` | Bot username in Mumble. |
 | `password_env` | string | `"MUMBLE_PASSWORD"` | Env var holding the Mumble server password. |
 | `channel` | string | `""` | Mumble channel to join. |
 | `default_agent` | string or null | `null` | Agent name to route messages to. |
@@ -1238,7 +1238,7 @@ url = "https://mcp.example.com/sse"
 
 ### `[a2a]`
 
-Agent-to-Agent protocol configuration, enabling inter-agent communication across OpenFang instances.
+Agent-to-Agent protocol configuration, enabling inter-agent communication across OMTAE instances.
 
 ```toml
 [a2a]

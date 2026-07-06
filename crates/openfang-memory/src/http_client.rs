@@ -102,7 +102,7 @@ impl MemoryApiClient {
 
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
-            .user_agent("openfang-memory/0.4")
+            .user_agent("omtae-memory/0.4")
             .build()
             .map_err(|e| MemoryApiError::Http(e.to_string()))?;
 

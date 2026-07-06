@@ -12,9 +12,9 @@
 
 use crate::llm_driver::{CompletionRequest, LlmDriver};
 use crate::str_utils::safe_truncate_str;
-use openfang_memory::session::Session;
-use openfang_types::message::{ContentBlock, Message, MessageContent, Role};
-use openfang_types::tool::ToolDefinition;
+use omtae_memory::session::Session;
+use omtae_types::message::{ContentBlock, Message, MessageContent, Role};
+use omtae_types::tool::ToolDefinition;
 use serde::Serialize;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -49,8 +49,8 @@ pub struct CompactionConfig {
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
-            threshold: 30,
-            keep_recent: 10,
+            threshold: 20,
+            keep_recent: 8,
             max_summary_tokens: 1024,
             base_chunk_ratio: 0.4,
             min_chunk_ratio: 0.15,
@@ -58,10 +58,75 @@ impl Default for CompactionConfig {
             summarization_overhead_tokens: 4096,
             max_chunk_chars: 80_000,
             max_retries: 3,
-            token_threshold_ratio: 0.7,
+            token_threshold_ratio: 0.65,
             context_window_tokens: 200_000,
         }
     }
+}
+
+/// User overrides from `~/.omtae/config.toml` `[compaction]`.
+#[derive(Debug, Clone, Default)]
+pub struct CompactionUserSettings {
+    pub threshold: Option<usize>,
+    pub keep_recent: Option<usize>,
+    pub token_threshold_ratio: Option<f64>,
+    pub max_summary_tokens: Option<u32>,
+}
+
+/// Apply optional `[compaction]` overrides from kernel config.
+pub fn apply_user_compaction_settings(config: &mut CompactionConfig, user: &CompactionUserSettings) {
+    if let Some(t) = user.threshold.filter(|&v| v > 0) {
+        config.threshold = t;
+    }
+    if let Some(k) = user.keep_recent.filter(|&v| v > 0) {
+        config.keep_recent = k;
+    }
+    if let Some(r) = user.token_threshold_ratio.filter(|&v| v > 0.0 && v < 1.0) {
+        config.token_threshold_ratio = r;
+    }
+    if let Some(m) = user.max_summary_tokens.filter(|&v| v > 0) {
+        config.max_summary_tokens = m;
+    }
+}
+
+/// Build compaction settings from the model's context window (catalog / custom_models.json).
+pub fn compaction_config_for_context_window(ctx_window: Option<usize>) -> CompactionConfig {
+    let mut config = CompactionConfig::default();
+    let Some(cw) = ctx_window.filter(|&w| w > 0) else {
+        return config;
+    };
+    config.context_window_tokens = cw;
+    if cw <= 16_384 {
+        config.token_threshold_ratio = 0.55;
+        config.threshold = 15;
+        config.keep_recent = 6;
+        config.max_summary_tokens = 512.min(config.max_summary_tokens);
+    } else if cw <= 32_768 {
+        config.token_threshold_ratio = 0.60;
+        config.threshold = 18;
+        config.keep_recent = 7;
+    }
+    config
+}
+
+/// Build compaction config with catalog context window and user overrides.
+pub fn build_compaction_config(
+    ctx_window: Option<usize>,
+    user: &CompactionUserSettings,
+) -> CompactionConfig {
+    let mut config = compaction_config_for_context_window(ctx_window);
+    apply_user_compaction_settings(&mut config, user);
+    config
+}
+
+/// Cap completion tokens so input + output fit within the model context window.
+pub fn cap_max_output_tokens(manifest_max: u32, ctx_window: Option<usize>) -> u32 {
+    let Some(cw) = ctx_window.filter(|&w| w > 0) else {
+        return manifest_max;
+    };
+    // Reserve at least half the window for input, tools, and system prompt.
+    let ceiling = ((cw as u32) / 2).max(256);
+    manifest_max.min(ceiling)
 }
 
 /// Result of a compaction operation.
@@ -81,7 +146,16 @@ pub struct CompactionResult {
 
 /// Check whether a session needs compaction (message-count trigger).
 pub fn needs_compaction(session: &Session, config: &CompactionConfig) -> bool {
-    session.messages.len() > config.threshold
+    session.messages.len() >= config.threshold
+}
+
+/// Message-count or token-count compaction trigger.
+pub fn needs_compaction_any(
+    session: &Session,
+    estimated_tokens: usize,
+    config: &CompactionConfig,
+) -> bool {
+    needs_compaction(session, config) || needs_compaction_by_tokens(estimated_tokens, config)
 }
 
 /// Estimate token count for a set of messages, optional system prompt, and tool definitions.
@@ -90,7 +164,7 @@ pub fn needs_compaction(session: &Session, config: &CompactionConfig) -> bool {
 pub fn estimate_token_count(
     messages: &[Message],
     system_prompt: Option<&str>,
-    tools: Option<&[openfang_types::tool::ToolDefinition]>,
+    tools: Option<&[omtae_types::tool::ToolDefinition]>,
 ) -> usize {
     let mut chars: usize = 0;
 
@@ -615,7 +689,7 @@ async fn summarize_in_chunks(
 /// and the message at `split` is a user message with matching ToolResult blocks,
 /// the split is pulled back by 1 so the pair stays in the "kept" portion.
 fn adjust_split_for_tool_pairs(messages: &[Message], split: usize) -> usize {
-    use openfang_types::message::{ContentBlock, Role};
+    use omtae_types::message::{ContentBlock, Role};
 
     if split == 0 || split >= messages.len() {
         return split;
@@ -770,13 +844,13 @@ pub async fn compact_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openfang_types::message::TokenUsage;
+    use omtae_types::message::TokenUsage;
 
     #[test]
     fn test_needs_compaction_below_threshold() {
         let session = Session {
-            id: openfang_types::agent::SessionId::new(),
-            agent_id: openfang_types::agent::AgentId::new(),
+            id: omtae_types::agent::SessionId::new(),
+            agent_id: omtae_types::agent::AgentId::new(),
             messages: vec![Message::user("hello")],
             context_window_tokens: 0,
             label: None,
@@ -791,8 +865,8 @@ mod tests {
             .map(|i| Message::user(format!("msg {i}")))
             .collect();
         let session = Session {
-            id: openfang_types::agent::SessionId::new(),
-            agent_id: openfang_types::agent::AgentId::new(),
+            id: omtae_types::agent::SessionId::new(),
+            agent_id: omtae_types::agent::AgentId::new(),
             messages,
             context_window_tokens: 0,
             label: None,
@@ -804,11 +878,25 @@ mod tests {
     #[test]
     fn test_compaction_config_defaults() {
         let config = CompactionConfig::default();
-        assert_eq!(config.threshold, 30);
-        assert_eq!(config.keep_recent, 10);
+        assert_eq!(config.threshold, 20);
+        assert_eq!(config.keep_recent, 8);
         assert_eq!(config.max_summary_tokens, 1024);
-        assert!((config.token_threshold_ratio - 0.7).abs() < f64::EPSILON);
+        assert!((config.token_threshold_ratio - 0.65).abs() < f64::EPSILON);
         assert_eq!(config.context_window_tokens, 200_000);
+    }
+
+    #[test]
+    fn test_compaction_config_for_small_context_window() {
+        let config = compaction_config_for_context_window(Some(8192));
+        assert_eq!(config.context_window_tokens, 8192);
+        assert!(config.token_threshold_ratio < 0.7);
+    }
+
+    #[test]
+    fn test_cap_max_output_tokens() {
+        assert_eq!(cap_max_output_tokens(8192, Some(8192)), 4096);
+        assert_eq!(cap_max_output_tokens(2048, Some(8192)), 2048);
+        assert_eq!(cap_max_output_tokens(8192, None), 8192);
     }
 
     #[tokio::test]
@@ -829,7 +917,7 @@ mod tests {
                         text: "Summary of conversation".to_string(),
                         provider_metadata: None,
                     }],
-                    stop_reason: openfang_types::message::StopReason::EndTurn,
+                    stop_reason: omtae_types::message::StopReason::EndTurn,
                     tool_calls: vec![],
                     usage: TokenUsage {
                         input_tokens: 100,
@@ -840,8 +928,8 @@ mod tests {
         }
 
         let session = Session {
-            id: openfang_types::agent::SessionId::new(),
-            agent_id: openfang_types::agent::AgentId::new(),
+            id: omtae_types::agent::SessionId::new(),
+            agent_id: omtae_types::agent::AgentId::new(),
             messages: vec![Message::user("hello"), Message::assistant("hi")],
             context_window_tokens: 0,
             label: None,
@@ -891,7 +979,7 @@ mod tests {
                         text: "Summary with tools".to_string(),
                         provider_metadata: None,
                     }],
-                    stop_reason: openfang_types::message::StopReason::EndTurn,
+                    stop_reason: omtae_types::message::StopReason::EndTurn,
                     tool_calls: vec![],
                     usage: TokenUsage {
                         input_tokens: 100,
@@ -929,8 +1017,8 @@ mod tests {
         };
 
         let session = Session {
-            id: openfang_types::agent::SessionId::new(),
-            agent_id: openfang_types::agent::AgentId::new(),
+            id: omtae_types::agent::SessionId::new(),
+            agent_id: omtae_types::agent::AgentId::new(),
             messages,
             context_window_tokens: 0,
             label: None,
@@ -986,7 +1074,7 @@ mod tests {
                         text: "Summary: discussed topics 0 through 79".to_string(),
                         provider_metadata: None,
                     }],
-                    stop_reason: openfang_types::message::StopReason::EndTurn,
+                    stop_reason: omtae_types::message::StopReason::EndTurn,
                     tool_calls: vec![],
                     usage: TokenUsage {
                         input_tokens: 500,
@@ -1000,8 +1088,8 @@ mod tests {
             .map(|i| Message::user(format!("Message about topic {i}")))
             .collect();
         let session = Session {
-            id: openfang_types::agent::SessionId::new(),
-            agent_id: openfang_types::agent::AgentId::new(),
+            id: omtae_types::agent::SessionId::new(),
+            agent_id: omtae_types::agent::AgentId::new(),
             messages,
             context_window_tokens: 0,
             label: None,
@@ -1093,8 +1181,8 @@ mod tests {
     #[test]
     fn test_compaction_config_new_defaults() {
         let config = CompactionConfig::default();
-        assert_eq!(config.threshold, 30);
-        assert_eq!(config.keep_recent, 10);
+        assert_eq!(config.threshold, 20);
+        assert_eq!(config.keep_recent, 8);
         assert_eq!(config.max_summary_tokens, 1024);
         assert!((config.base_chunk_ratio - 0.4).abs() < f64::EPSILON);
         assert!((config.min_chunk_ratio - 0.15).abs() < f64::EPSILON);
@@ -1102,7 +1190,7 @@ mod tests {
         assert_eq!(config.summarization_overhead_tokens, 4096);
         assert_eq!(config.max_chunk_chars, 80_000);
         assert_eq!(config.max_retries, 3);
-        assert!((config.token_threshold_ratio - 0.7).abs() < f64::EPSILON);
+        assert!((config.token_threshold_ratio - 0.65).abs() < f64::EPSILON);
         assert_eq!(config.context_window_tokens, 200_000);
     }
 
@@ -1127,8 +1215,8 @@ mod tests {
             .map(|i| Message::user(format!("Message {i}")))
             .collect();
         let session = Session {
-            id: openfang_types::agent::SessionId::new(),
-            agent_id: openfang_types::agent::AgentId::new(),
+            id: omtae_types::agent::SessionId::new(),
+            agent_id: omtae_types::agent::AgentId::new(),
             messages,
             context_window_tokens: 0,
             label: None,
@@ -1182,7 +1270,7 @@ mod tests {
                         text: format!("Chunk summary {n}"),
                         provider_metadata: None,
                     }],
-                    stop_reason: openfang_types::message::StopReason::EndTurn,
+                    stop_reason: omtae_types::message::StopReason::EndTurn,
                     tool_calls: vec![],
                     usage: TokenUsage {
                         input_tokens: 50,
@@ -1327,7 +1415,7 @@ mod tests {
 
     #[test]
     fn test_estimate_token_count_with_tools() {
-        use openfang_types::tool::ToolDefinition;
+        use omtae_types::tool::ToolDefinition;
         let messages = vec![Message::user("hi")];
         let tools = vec![ToolDefinition {
             name: "web_search".into(),

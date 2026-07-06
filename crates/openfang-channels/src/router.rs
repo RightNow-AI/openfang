@@ -2,8 +2,8 @@
 
 use crate::types::ChannelType;
 use dashmap::DashMap;
-use openfang_types::agent::AgentId;
-use openfang_types::config::{AgentBinding, BroadcastConfig, BroadcastStrategy};
+use omtae_types::agent::AgentId;
+use omtae_types::config::{AgentBinding, BroadcastConfig, BroadcastStrategy};
 use std::sync::Mutex;
 use tracing::warn;
 
@@ -30,7 +30,7 @@ pub struct BindingContext {
 ///
 /// Routing priority: bindings (most specific first) > direct routes > user defaults > system default.
 pub struct AgentRouter {
-    /// Default agent per user (keyed by openfang_user or platform_id).
+    /// Default agent per user (keyed by omtae_user or platform_id).
     user_defaults: DashMap<String, AgentId>,
     /// Direct routes: (channel_type_key, platform_user_id) -> AgentId.
     direct_routes: DashMap<(String, String), AgentId>,
@@ -430,7 +430,7 @@ mod tests {
         router.register_agent("coder".to_string(), agent_id);
         router.load_bindings(&[AgentBinding {
             agent: "coder".to_string(),
-            match_rule: openfang_types::config::BindingMatchRule {
+            match_rule: omtae_types::config::BindingMatchRule {
                 channel: Some("telegram".to_string()),
                 ..Default::default()
             },
@@ -452,7 +452,7 @@ mod tests {
         router.register_agent("support".to_string(), agent_id);
         router.load_bindings(&[AgentBinding {
             agent: "support".to_string(),
-            match_rule: openfang_types::config::BindingMatchRule {
+            match_rule: omtae_types::config::BindingMatchRule {
                 peer_id: Some("vip_user".to_string()),
                 ..Default::default()
             },
@@ -472,7 +472,7 @@ mod tests {
         router.register_agent("admin-bot".to_string(), agent_id);
         router.load_bindings(&[AgentBinding {
             agent: "admin-bot".to_string(),
-            match_rule: openfang_types::config::BindingMatchRule {
+            match_rule: omtae_types::config::BindingMatchRule {
                 guild_id: Some("guild_123".to_string()),
                 roles: vec!["admin".to_string()],
                 ..Default::default()
@@ -513,14 +513,14 @@ mod tests {
         router.load_bindings(&[
             AgentBinding {
                 agent: "general".to_string(),
-                match_rule: openfang_types::config::BindingMatchRule {
+                match_rule: omtae_types::config::BindingMatchRule {
                     channel: Some("discord".to_string()),
                     ..Default::default()
                 },
             },
             AgentBinding {
                 agent: "specific".to_string(),
-                match_rule: openfang_types::config::BindingMatchRule {
+                match_rule: omtae_types::config::BindingMatchRule {
                     channel: Some("discord".to_string()),
                     peer_id: Some("user1".to_string()),
                     guild_id: Some("guild_1".to_string()),
@@ -611,7 +611,7 @@ mod tests {
         // Don't register the agent — binding should match but resolve_binding returns None
         router.load_bindings(&[AgentBinding {
             agent: "ghost-agent".to_string(),
-            match_rule: openfang_types::config::BindingMatchRule {
+            match_rule: omtae_types::config::BindingMatchRule {
                 channel: Some("telegram".to_string()),
                 ..Default::default()
             },
@@ -631,7 +631,7 @@ mod tests {
 
         router.add_binding(AgentBinding {
             agent: "test".to_string(),
-            match_rule: openfang_types::config::BindingMatchRule {
+            match_rule: omtae_types::config::BindingMatchRule {
                 channel: Some("slack".to_string()),
                 ..Default::default()
             },
@@ -645,7 +645,7 @@ mod tests {
 
     #[test]
     fn test_binding_specificity_scores() {
-        use openfang_types::config::BindingMatchRule;
+        use omtae_types::config::BindingMatchRule;
 
         let empty = BindingMatchRule::default();
         assert_eq!(empty.specificity(), 0);
@@ -696,7 +696,7 @@ mod tests {
         router.register_agent("ops-bot".to_string(), agent_id);
         router.load_bindings(&[AgentBinding {
             agent: "ops-bot".to_string(),
-            match_rule: openfang_types::config::BindingMatchRule {
+            match_rule: omtae_types::config::BindingMatchRule {
                 channel: Some("discord".to_string()),
                 channel_id: Some("1477803840265781391".to_string()),
                 ..Default::default()
@@ -738,14 +738,14 @@ mod tests {
         router.load_bindings(&[
             AgentBinding {
                 agent: "general".to_string(),
-                match_rule: openfang_types::config::BindingMatchRule {
+                match_rule: omtae_types::config::BindingMatchRule {
                     channel_id: Some("ch-medical".to_string()),
                     ..Default::default()
                 },
             },
             AgentBinding {
                 agent: "researcher".to_string(),
-                match_rule: openfang_types::config::BindingMatchRule {
+                match_rule: omtae_types::config::BindingMatchRule {
                     channel_id: Some("ch-medical".to_string()),
                     peer_id: Some("user-a".to_string()),
                     ..Default::default()
@@ -778,12 +778,12 @@ mod tests {
         // than silently producing a wide-open binding. This is the highest-
         // leverage line in the patch from issue #1127.
         let bad = r#"{ "channnel_id": "ch-1" }"#;
-        let r: Result<openfang_types::config::BindingMatchRule, _> = serde_json::from_str(bad);
+        let r: Result<omtae_types::config::BindingMatchRule, _> = serde_json::from_str(bad);
         assert!(r.is_err(), "unknown field must be rejected by serde");
 
         // Sanity: known fields still parse.
         let good = r#"{ "channel_id": "ch-1", "channel": "discord" }"#;
-        let r: openfang_types::config::BindingMatchRule = serde_json::from_str(good).unwrap();
+        let r: omtae_types::config::BindingMatchRule = serde_json::from_str(good).unwrap();
         assert_eq!(r.channel_id.as_deref(), Some("ch-1"));
         assert_eq!(r.channel.as_deref(), Some("discord"));
     }

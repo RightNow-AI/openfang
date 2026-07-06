@@ -1,4 +1,4 @@
-// OpenFang Comms Page — Agent topology & inter-agent communication feed
+// OMTAE Comms Page — Agent topology & inter-agent communication feed
 'use strict';
 
 function commsPage() {
@@ -24,8 +24,8 @@ function commsPage() {
       this.loadError = '';
       try {
         var results = await Promise.all([
-          OpenFangAPI.get('/api/comms/topology'),
-          OpenFangAPI.get('/api/comms/events?limit=200')
+          OMTAEAPI.get('/api/comms/topology'),
+          OMTAEAPI.get('/api/comms/events?limit=200')
         ]);
         this.topology = results[0] || { nodes: [], edges: [] };
         this.events = results[1] || [];
@@ -40,7 +40,7 @@ function commsPage() {
       if (this.sseSource) this.sseSource.close();
       var self = this;
       var url = '/api/comms/events/stream';
-      if (OpenFangAPI.apiKey) url += '?token=' + encodeURIComponent(OpenFangAPI.apiKey);
+      if (OMTAEAPI.apiKey) url += '?token=' + encodeURIComponent(OMTAEAPI.apiKey);
       this.sseSource = new EventSource(url);
       this.sseSource.onmessage = function(ev) {
         if (ev.data === 'ping') return;
@@ -65,7 +65,7 @@ function commsPage() {
 
     async refreshTopology() {
       try {
-        this.topology = await OpenFangAPI.get('/api/comms/topology');
+        this.topology = await OMTAEAPI.get('/api/comms/topology');
       } catch(e) { /* silent */ }
     },
 
@@ -163,15 +163,15 @@ function commsPage() {
       if (!this.sendFrom || !this.sendTo || !this.sendMsg.trim()) return;
       this.sendLoading = true;
       try {
-        await OpenFangAPI.post('/api/comms/send', {
+        await OMTAEAPI.post('/api/comms/send', {
           from_agent_id: this.sendFrom,
           to_agent_id: this.sendTo,
           message: this.sendMsg
         });
-        OpenFangToast.success('Message sent');
+        OMTAEToast.success('Message sent');
         this.showSendModal = false;
       } catch(e) {
-        OpenFangToast.error(e.message || 'Send failed');
+        OMTAEToast.error(e.message || 'Send failed');
       }
       this.sendLoading = false;
     },
@@ -189,11 +189,11 @@ function commsPage() {
       try {
         var body = { title: this.taskTitle, description: this.taskDesc };
         if (this.taskAssign) body.assigned_to = this.taskAssign;
-        await OpenFangAPI.post('/api/comms/task', body);
-        OpenFangToast.success('Task posted');
+        await OMTAEAPI.post('/api/comms/task', body);
+        OMTAEToast.success('Task posted');
         this.showTaskModal = false;
       } catch(e) {
-        OpenFangToast.error(e.message || 'Task failed');
+        OMTAEToast.error(e.message || 'Task failed');
       }
       this.taskLoading = false;
     }

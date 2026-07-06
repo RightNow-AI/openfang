@@ -5,7 +5,7 @@
 //! Groq, Together, Fireworks, Ollama, etc.).
 
 use async_trait::async_trait;
-use openfang_types::model_catalog::{
+use omtae_types::model_catalog::{
     FIREWORKS_BASE_URL, GROQ_BASE_URL, LMSTUDIO_BASE_URL, MISTRAL_BASE_URL, OLLAMA_BASE_URL,
     OPENAI_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL,
 };
@@ -92,11 +92,16 @@ impl OpenAIEmbeddingDriver {
         // Infer dimensions from model name (common models)
         let dims = infer_dimensions(&config.model);
 
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
         Ok(Self {
             api_key: Zeroizing::new(config.api_key),
             base_url: config.base_url,
             model: config.model,
-            client: reqwest::Client::new(),
+            client,
             dims,
         })
     }

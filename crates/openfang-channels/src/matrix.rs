@@ -26,7 +26,7 @@ type TokenPair = Arc<RwLock<(Zeroizing<String>, Option<Zeroizing<String>>)>>;
 pub struct MatrixAdapter {
     /// Matrix homeserver URL (e.g., `"https://matrix.org"`).
     homeserver_url: String,
-    /// Bot's user ID (e.g., "@openfang:matrix.org").
+    /// Bot's user ID (e.g., "@omtae:matrix.org").
     user_id: String,
     /// SECURITY: Access + refresh tokens are zeroized on drop. Stored behind
     /// an RwLock so the sync loop and send paths see rotated tokens after a
@@ -628,7 +628,7 @@ impl ChannelAdapter for MatrixAdapter {
                                     sender: ChannelUser {
                                         platform_id: room_id.clone(),
                                         display_name: sender.to_string(),
-                                        openfang_user: None,
+                                        omtae_user: None,
                                     },
                                     content: msg_content,
                                     target_agent: None,

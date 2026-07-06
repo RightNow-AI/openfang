@@ -1,4 +1,4 @@
-//! Production middleware for the OpenFang API server.
+//! Production middleware for the OMTAE API server.
 //!
 //! Provides:
 //! - Request ID generation and propagation
@@ -47,8 +47,11 @@ pub async fn request_logging(request: Request<Body>, next: Next) -> Response<Bod
 #[derive(Clone)]
 pub struct AuthState {
     pub api_key: String,
+    pub raw_api_key: String,
     pub auth_enabled: bool,
     pub session_secret: String,
+    /// Plaintext PIN from `[dashboard].pin` when PIN auth is active (for header check).
+    pub dashboard_pin: String,
     /// Set from `OPENFANG_ALLOW_NO_AUTH=1` to permit running without an api_key
     /// on a non-loopback bind. Off by default so empty keys fail closed.
     pub allow_no_auth: bool,
@@ -85,6 +88,28 @@ pub async fn auth(
     // Shutdown is loopback-only (CLI on same machine). Skip token auth only
     // when the request is from loopback.
     let path = request.uri().path();
+
+    // Check internal query parameter first, matching against raw_api_key.
+    // This allows loopback/adopted gateway shells to bypass PIN auth.
+    if !auth_state.raw_api_key.is_empty() {
+        let internal_token_decoded = request
+            .uri()
+            .query()
+            .and_then(|q| {
+                q.split('&').find_map(|pair| {
+                    pair.strip_prefix("internal=")
+                })
+            })
+            .map(crate::percent_decode);
+
+        if let Some(token) = internal_token_decoded {
+            use subtle::ConstantTimeEq;
+            let raw_key = auth_state.raw_api_key.trim();
+            if token.len() == raw_key.len() && token.as_bytes().ct_eq(raw_key.as_bytes()).into() {
+                return next.run(request).await;
+            }
+        }
+    }
     if path == "/api/shutdown" && is_loopback {
         return next.run(request).await;
     }
@@ -98,6 +123,10 @@ pub async fn auth(
     let is_public = path == "/"
         || path == "/logo.png"
         || path == "/favicon.ico"
+        || path == "/i18n/en.json"
+        || path == "/i18n/ru.json"
+        || path == "/manifest.json"
+        || path == "/sw.js"
         || (path == "/.well-known/agent.json" && is_get)
         || (path.starts_with("/a2a/") && is_get)
         || path == "/api/health"
@@ -113,10 +142,13 @@ pub async fn auth(
         // render before the user enters their API key.
         || (path == "/api/models" && is_get)
         || (path == "/api/models/aliases" && is_get)
+        || (path == "/api/models/profiles" && is_get)
+        || (path == "/api/models/active" && is_get)
         || (path == "/api/providers" && is_get)
         || (path == "/api/budget" && is_get)
         || (path == "/api/budget/agents" && is_get)
         || (path.starts_with("/api/budget/agents/") && is_get)
+        || (path == "/api/system/drift" && is_get)
         || (path == "/api/network/status" && is_get)
         || (path == "/api/a2a/agents" && is_get)
         || (path == "/api/approvals" && is_get)
@@ -197,7 +229,12 @@ pub async fn auth(
     let query_token_decoded = request
         .uri()
         .query()
-        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
+        .and_then(|q| {
+            q.split('&').find_map(|pair| {
+                pair.strip_prefix("token=")
+                    .or_else(|| pair.strip_prefix("internal="))
+            })
+        })
         .map(crate::percent_decode);
 
     // SECURITY: Use constant-time comparison to prevent timing attacks.
@@ -214,6 +251,30 @@ pub async fn auth(
         return next.run(request).await;
     }
 
+    // Dashboard PIN header (mobile / tunnel clients)
+    if !auth_state.dashboard_pin.is_empty() {
+        if let Some(pin) = request
+            .headers()
+            .get("x-omtae-pin")
+            .and_then(|v| v.to_str().ok())
+        {
+            if crate::session_auth::verify_dashboard_pin(pin, &auth_state.dashboard_pin) {
+                return next.run(request).await;
+            }
+        }
+    }
+
+    // Bearer session token from login JSON (fallback when cookies are blocked).
+    if auth_state.auth_enabled && !auth_state.session_secret.is_empty() {
+        if let Some(token) = api_token {
+            if crate::session_auth::verify_session_token(token, &auth_state.session_secret)
+                .is_some()
+            {
+                return next.run(request).await;
+            }
+        }
+    }
+
     // Check session cookie (dashboard login sessions)
     if auth_state.auth_enabled {
         if let Some(token) = crate::session_auth::extract_session_cookie(request.headers()) {
@@ -226,8 +287,16 @@ pub async fn auth(
     }
 
     // Determine error message: was a credential provided but wrong, or missing entirely?
-    let credential_provided = header_auth.is_some() || query_auth.is_some();
-    let error_msg = if credential_provided {
+    let credential_provided = header_auth.is_some()
+        || query_auth.is_some()
+        || request.headers().get("x-omtae-pin").is_some();
+    let error_msg = if !auth_state.dashboard_pin.is_empty() {
+        if credential_provided {
+            "Invalid PIN or credentials"
+        } else {
+            "Missing dashboard PIN (X-OMTAE-Pin header or sign in)"
+        }
+    } else if credential_provided {
         "Invalid API key"
     } else {
         "Missing Authorization: Bearer <api_key> header"
@@ -293,8 +362,10 @@ mod tests {
     fn auth_state_empty() -> AuthState {
         AuthState {
             api_key: String::new(),
+            raw_api_key: String::new(),
             auth_enabled: false,
             session_secret: String::new(),
+            dashboard_pin: String::new(),
             allow_no_auth: false,
         }
     }
@@ -302,8 +373,10 @@ mod tests {
     fn auth_state_with_key(key: &str) -> AuthState {
         AuthState {
             api_key: key.to_string(),
+            raw_api_key: key.to_string(),
             auth_enabled: false,
             session_secret: key.to_string(),
+            dashboard_pin: String::new(),
             allow_no_auth: false,
         }
     }
@@ -390,6 +463,29 @@ mod tests {
             .method(Method::GET)
             .uri("/api/agents/1")
             .header("authorization", "Bearer secret")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_internal_token_bypasses_pin_auth() {
+        // Simulates active PIN auth: api_key is empty, but raw_api_key is set.
+        let state = AuthState {
+            api_key: String::new(),
+            raw_api_key: "secret".to_string(),
+            auth_enabled: true,
+            session_secret: "hash".to_string(),
+            dashboard_pin: "123456".to_string(),
+            allow_no_auth: false,
+        };
+        let app = router(state);
+        let addr: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let mut req = Request::builder()
+            .method(Method::GET)
+            .uri("/api/agents/1?internal=secret")
             .body(Body::empty())
             .unwrap();
         req.extensions_mut().insert(ConnectInfo(addr));

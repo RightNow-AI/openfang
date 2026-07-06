@@ -1,17 +1,17 @@
 [package]
-name = "openfang-desktop"
+name = "omtae-desktop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Native desktop application for the OpenFang Agent OS (Tauri 2.0)"
+description = "Native desktop application for the OMTAE Agent OS (Tauri 2.0)"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-openfang-kernel = { path = "../openfang-kernel" }
-openfang-api = { path = "../openfang-api" }
-openfang-types = { path = "../openfang-types" }
+omtae-kernel = { path = "../omtae-kernel" }
+omtae-api = { path = "../omtae-api" }
+omtae-types = { path = "../omtae-types" }
 tokio = { workspace = true }
 axum = { workspace = true }
 serde_json = { workspace = true }
@@ -34,5 +34,5 @@ open = "5"
 custom-protocol = ["tauri/custom-protocol"]
 
 [[bin]]
-name = "openfang-desktop"
+name = "omtae-desktop"
 path = "src/main.rs"

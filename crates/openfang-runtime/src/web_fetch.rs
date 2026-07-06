@@ -7,7 +7,7 @@
 use crate::str_utils::safe_truncate_str;
 use crate::web_cache::WebCache;
 use crate::web_content::{html_to_markdown, wrap_external_content};
-use openfang_types::config::WebFetchConfig;
+use omtae_types::config::WebFetchConfig;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tracing::debug;

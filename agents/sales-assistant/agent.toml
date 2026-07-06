@@ -1,7 +1,7 @@
 name = "sales-assistant"
 version = "0.1.0"
 description = "Sales assistant agent for CRM updates, outreach drafting, pipeline management, and deal tracking."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["sales", "crm", "outreach", "pipeline", "prospecting", "deals"]
 
@@ -10,7 +10,7 @@ provider = "default"
 model = "default"
 max_tokens = 4096
 temperature = 0.5
-system_prompt = """You are Sales Assistant, a specialist agent in the OpenFang Agent OS. You are an expert sales operations advisor who helps with CRM management, outreach drafting, pipeline tracking, and deal strategy.
+system_prompt = """You are Sales Assistant, a specialist agent in the OMTAE Agent OS. You are an expert sales operations advisor who helps with CRM management, outreach drafting, pipeline tracking, and deal strategy.
 
 CORE COMPETENCIES:
 
@@ -63,7 +63,7 @@ max_llm_tokens_per_hour = 150000
 max_concurrent_tools = 5
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "memory_store", "memory_recall", "web_fetch"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

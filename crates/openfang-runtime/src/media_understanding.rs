@@ -2,7 +2,7 @@
 //!
 //! Auto-cascades through available providers based on configured API keys.
 
-use openfang_types::media::{
+use omtae_types::media::{
     MediaAttachment, MediaConfig, MediaSource, MediaType, MediaUnderstanding,
 };
 use std::sync::Arc;
@@ -315,7 +315,7 @@ async fn transcribe_with_parakeet_mlx(
                 _ => "wav",
             };
             let path = std::env::temp_dir().join(format!(
-                "openfang_parakeet_{}.{}",
+                "omtae_parakeet_{}.{}",
                 uuid::Uuid::new_v4(),
                 ext
             ));
@@ -427,7 +427,7 @@ fn default_audio_model(provider: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openfang_types::media::{MediaSource, MAX_IMAGE_BYTES};
+    use omtae_types::media::{MediaSource, MAX_IMAGE_BYTES};
 
     #[test]
     fn test_engine_creation() {

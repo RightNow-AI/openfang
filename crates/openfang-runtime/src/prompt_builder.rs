@@ -87,6 +87,12 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
     // Section 2 — Tool Call Behavior (skip for subagents)
     if !ctx.is_subagent {
         sections.push(TOOL_CALL_BEHAVIOR.to_string());
+        if !ctx.granted_tools.is_empty() {
+            sections.push(TOOL_FIRST_RULE.to_string());
+        }
+        if ctx.granted_tools.iter().any(|t| t == "agent_send") {
+            sections.push(AGENT_DELEGATION_BEHAVIOR.to_string());
+        }
     }
 
     // Section 2.5 — Agent Behavioral Guidelines (skip for subagents)
@@ -102,6 +108,16 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
     let tools_section = build_tools_section(&ctx.granted_tools);
     if !tools_section.is_empty() {
         sections.push(tools_section);
+    }
+
+    // Section 3.5 — Research integrity (agents with web tools)
+    if !ctx.is_subagent
+        && ctx
+            .granted_tools
+            .iter()
+            .any(|t| t == "web_search" || t == "web_fetch")
+    {
+        sections.push(RESEARCH_INTEGRITY.to_string());
     }
 
     // Section 4 — Memory Protocol (always present)
@@ -232,13 +248,21 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
 fn build_identity_section(ctx: &PromptContext) -> String {
     if ctx.base_system_prompt.is_empty() {
         format!(
-            "You are {}, an AI agent running inside the OpenFang Agent OS.\n{}",
+            "You are {}, an AI agent running inside the OMTAE Agent OS.\n{}",
             ctx.agent_name, ctx.agent_description
         )
     } else {
         ctx.base_system_prompt.clone()
     }
 }
+
+/// Tool-first discipline (ECC-inspired): verify before claiming facts.
+const TOOL_FIRST_RULE: &str = "\
+## Tool-First Rule (mandatory)
+- NEVER state file paths, URLs, service status, peer-agent lists, vault contents, or counts without tool output in this conversation.
+- On status/brain/vault/workspace questions: FIRST action is a tool call (shell_exec, file_list, web_search, memory_recall, or curl /api/brain/*).
+- Max ONE short planning line per turn, then IMMEDIATE tool call. Forbidden: \"The user is asking about…\" meta-narration loops.
+- If you lack tool evidence, say \"I need to check\" and call a tool — do not guess or narrate peer agents.";
 
 /// Static tool-call behavior directives.
 const TOOL_CALL_BEHAVIOR: &str = "\
@@ -255,6 +279,26 @@ without sharing what you found.
 - IMPORTANT: If your instructions or persona mention a shell command, script path, or code snippet, \
 execute it via the appropriate tool call (shell_exec, file_write, etc.). Never output commands as \
 code blocks — always call the tool instead.";
+
+/// Anti-hallucination rules for agents with web_search / web_fetch.
+const RESEARCH_INTEGRITY: &str = "\
+## Research Integrity (mandatory when using web tools)
+- Before listing businesses, people, products, or ranked recommendations, call web_search and/or web_fetch first.
+- NEVER invent business names, addresses, phone numbers, or websites. Every named entity must come from tool output.
+- Each list item MUST include a real https:// URL from web_search or web_fetch results — not a placeholder like \"Website: Business Name\".
+- Do not repeat the same entity twice. Deduplicate by name and URL before responding.
+- Do NOT claim \"Google Search Results\" or cite search engines unless web_search returned those results in this conversation.
+- Do NOT write \"Confidence Level: High\" unless every listed fact has a cited https:// URL from tool output.
+- If tools fail or return no results, say \"could not verify\" — never fabricate top-N lists to fill the gap.";
+
+/// Delegation rules for agents with `agent_send` (vLLM/Qwen often emit fake JSON tools).
+const AGENT_DELEGATION_BEHAVIOR: &str = "\
+## Agent Delegation (mandatory when using agent_send)
+- NEVER write JSON in plain text such as `{\"name\":\"researcher\",...}` or `{\"name\":\"coder\",...}` — those are not tools.
+- ALWAYS use the built-in `agent_send` function with parameters `agent_id` and `message`.
+- Workflow: call `agent_list` once → copy the target's `id` (UUID) from the list → `agent_send(agent_id=\"<uuid>\", message=\"...\")`.
+- Specialist names (researcher, coder, analyst) are agents, not tool names. Delegate only via `agent_send`.
+- Do not claim a specialist replied unless the tool result starts with `agent_send OK`.";
 
 /// Build the grouped tools section (Section 3).
 pub fn build_tools_section(granted_tools: &[String]) -> String {
@@ -473,7 +517,7 @@ fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)]
         out.push_str(&format!("- **{}** ({}) — model: {}\n", name, state, model));
     }
     out.push_str(
-        "\nYou can communicate with them using `agent_send` (by name) and see all agents with `agent_list`. \
+        "\nYou can communicate with them using `agent_send` (use agent_id UUID from `agent_list`) and see all agents with `agent_list`. \
          Delegate tasks to specialized agents when appropriate.",
     );
     out
@@ -577,7 +621,7 @@ pub fn tool_hint(name: &str) -> &'static str {
         "memory_list" => "list stored memory keys",
 
         // Agents
-        "agent_send" => "send a message to another agent",
+        "agent_send" => "send a message to another agent (agent_id UUID from agent_list + message)",
         "agent_spawn" => "create a new agent",
         "agent_list" => "list running agents",
         "agent_kill" => "terminate an agent",
@@ -1005,6 +1049,34 @@ mod tests {
         let emoji = "👋🌍🚀✨💯";
         let result = cap_str(emoji, 3);
         assert_eq!(result, "👋🌍🚀...");
+    }
+
+    #[test]
+    fn test_research_integrity_section_for_web_tools() {
+        let prompt = build_system_prompt(&basic_ctx());
+        assert!(prompt.contains("## Research Integrity"));
+        assert!(prompt.contains("could not verify"));
+    }
+
+    #[test]
+    fn test_research_integrity_omitted_without_web_tools() {
+        let ctx = PromptContext {
+            agent_name: "coder".to_string(),
+            agent_description: "Coder".to_string(),
+            base_system_prompt: "You are Coder.".to_string(),
+            granted_tools: vec!["file_read".to_string(), "shell_exec".to_string()],
+            ..Default::default()
+        };
+        let prompt = build_system_prompt(&ctx);
+        assert!(!prompt.contains("## Research Integrity"));
+    }
+
+    #[test]
+    fn test_research_integrity_omitted_for_subagent() {
+        let mut ctx = basic_ctx();
+        ctx.is_subagent = true;
+        let prompt = build_system_prompt(&ctx);
+        assert!(!prompt.contains("## Research Integrity"));
     }
 
     #[test]

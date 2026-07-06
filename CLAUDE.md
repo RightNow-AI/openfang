@@ -1,10 +1,10 @@
-# OpenFang — Agent Instructions
+# OMTAE — Agent Instructions
 
 ## Project Overview
-OpenFang is an open-source Agent Operating System written in Rust (14 crates).
-- Config: `~/.openfang/config.toml`
+OMTAE is an open-source Agent Operating System written in Rust (14 crates).
+- Config: `~/.omtae/config.toml`
 - Default API: `http://127.0.0.1:4200`
-- CLI binary: `target/release/openfang.exe` (or `target/debug/openfang.exe`)
+- CLI binary: `target/release/omtae.exe` (or `target/debug/omtae.exe`)
 
 ## Build & Verify Workflow
 After every feature implementation, run ALL THREE checks:
@@ -25,7 +25,7 @@ cargo clippy --workspace --all-targets -- -D warnings  # Zero warnings
 
 #### Step 1: Stop any running daemon
 ```bash
-tasklist | grep -i openfang
+tasklist | grep -i omtae
 taskkill //PID <pid> //F
 # Wait 2-3 seconds for port to release
 sleep 3
@@ -33,12 +33,12 @@ sleep 3
 
 #### Step 2: Build fresh release binary
 ```bash
-cargo build --release -p openfang-cli
+cargo build --release -p omtae-cli
 ```
 
 #### Step 3: Start daemon with required API keys
 ```bash
-GROQ_API_KEY=<key> target/release/openfang.exe start &
+GROQ_API_KEY=<key> target/release/omtae.exe start &
 sleep 6  # Wait for full boot
 curl -s http://127.0.0.1:4200/api/health  # Verify it's up
 ```
@@ -86,7 +86,7 @@ curl -s http://127.0.0.1:4200/ | grep -c "newComponentName"
 
 #### Step 8: Cleanup
 ```bash
-tasklist | grep -i openfang
+tasklist | grep -i omtae
 taskkill //PID <pid> //F
 ```
 
@@ -107,7 +107,7 @@ taskkill //PID <pid> //F
 | `/api/a2a/tasks/{id}/status` | GET | Check external A2A task status |
 
 ## Architecture Notes
-- **Don't touch `openfang-cli`** — user is actively building the interactive CLI
+- **Don't touch `omtae-cli`** — user is actively building the interactive CLI
 - `KernelHandle` trait avoids circular deps between runtime and kernel
 - `AppState` in `server.rs` bridges kernel to API routes
 - New routes must be registered in `server.rs` router AND implemented in `routes.rs`
@@ -115,7 +115,7 @@ taskkill //PID <pid> //F
 - Config fields need: struct field + `#[serde(default)]` + Default impl entry + Serialize/Deserialize derives
 
 ## Common Gotchas
-- `openfang.exe` may be locked if daemon is running — use `--lib` flag or kill daemon first
+- `omtae.exe` may be locked if daemon is running — use `--lib` flag or kill daemon first
 - `PeerRegistry` is `Option<PeerRegistry>` on kernel but `Option<Arc<PeerRegistry>>` on `AppState` — wrap with `.as_ref().map(|r| Arc::new(r.clone()))`
 - Config fields added to `KernelConfig` struct MUST also be added to the `Default` impl or build fails
 - `AgentLoopResult` field is `.response` not `.response_text`

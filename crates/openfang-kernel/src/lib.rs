@@ -1,4 +1,4 @@
-//! Core kernel for the OpenFang Agent Operating System.
+//! Core kernel for the OMTAE Agent Operating System.
 //!
 //! The kernel manages agent lifecycles, memory, permissions, scheduling,
 //! and inter-agent communication.
@@ -12,6 +12,7 @@ pub mod config;
 pub mod config_reload;
 pub mod cron;
 pub mod cron_delivery;
+pub mod drift_guard;
 pub mod error;
 pub mod event_bus;
 pub mod heartbeat;
@@ -27,4 +28,4 @@ pub mod wizard;
 pub mod workflow;
 
 pub use kernel::DeliveryTracker;
-pub use kernel::OpenFangKernel;
+pub use kernel::OMTAEKernel;

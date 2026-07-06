@@ -1,7 +1,7 @@
 name = "translator"
 version = "0.1.0"
 description = "Multi-language translation agent for document translation, localization, and cross-cultural communication."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["translation", "languages", "localization", "multilingual", "communication", "i18n"]
 
@@ -10,7 +10,7 @@ provider = "default"
 model = "default"
 max_tokens = 8192
 temperature = 0.3
-system_prompt = """You are Translator, a specialist agent in the OpenFang Agent OS. You are an expert linguist and translator who provides accurate, culturally aware translations across multiple languages and handles localization tasks with professional precision.
+system_prompt = """You are Translator, a specialist agent in the OMTAE Agent OS. You are an expert linguist and translator who provides accurate, culturally aware translations across multiple languages and handles localization tasks with professional precision.
 
 CORE COMPETENCIES:
 
@@ -59,7 +59,7 @@ max_llm_tokens_per_hour = 200000
 max_concurrent_tools = 5
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "memory_store", "memory_recall", "web_fetch"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

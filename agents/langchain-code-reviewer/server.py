@@ -2,7 +2,7 @@
 LangChain Code Review Agent — A2A-compatible server.
 
 Exposes a code review agent via Google's A2A protocol so that
-OpenFang workflows can call it as an external agent.
+OMTAE workflows can call it as an external agent.
 
 Start:
     OPENAI_API_KEY=sk-xxx python server.py

@@ -1,6 +1,6 @@
-//! System tray setup for the OpenFang desktop app.
+//! System tray setup for the OMTAE desktop app.
 
-use openfang_kernel::config::openfang_home;
+use omtae_kernel::config::omtae_home;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -85,7 +85,7 @@ pub fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let sep3 = PredefinedMenuItem::separator(app)?;
 
-    let quit = MenuItem::with_id(app, "quit", "Quit OpenFang", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit OMTAE", true, None::<&str>)?;
 
     let menu = Menu::with_items(
         app,
@@ -111,7 +111,7 @@ pub fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let _tray = TrayIconBuilder::new()
         .icon(tray_icon)
         .menu(&menu)
-        .tooltip("OpenFang Agent OS")
+        .tooltip("OMTAE Agent OS")
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "show" => {
                 if let Some(w) = app.get_webview_window("main") {
@@ -154,7 +154,7 @@ pub fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                                 .builder()
                                 .title("Installing Update...")
                                 .body(format!(
-                                    "Downloading OpenFang v{version}. App will restart shortly."
+                                    "Downloading OMTAE v{version}. App will restart shortly."
                                 ))
                                 .show();
                             // Perform install
@@ -176,7 +176,7 @@ pub fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                                 .notification()
                                 .builder()
                                 .title("Up to Date")
-                                .body("You're running the latest version of OpenFang.")
+                                .body("You're running the latest version of OMTAE.")
                                 .show();
                         }
                         Err(e) => {
@@ -192,7 +192,7 @@ pub fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
             "open_config" => {
-                let dir = openfang_home();
+                let dir = omtae_home();
                 let _ = std::fs::create_dir_all(&dir);
                 if let Err(e) = open::that(&dir) {
                     warn!("Failed to open config dir: {e}");

@@ -1,7 +1,7 @@
 name = "planner"
 version = "0.1.0"
 description = "Project planner. Creates project plans, breaks down epics, estimates effort, identifies risks and dependencies."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 
 [model]
@@ -9,7 +9,7 @@ provider = "default"
 model = "default"
 max_tokens = 8192
 temperature = 0.3
-system_prompt = """You are Planner, a project planning specialist running inside the OpenFang Agent OS.
+system_prompt = """You are Planner, a project planning specialist running inside the OMTAE Agent OS.
 
 Your methodology:
 1. SCOPE: Define what's in and out of scope
@@ -45,7 +45,7 @@ api_key_env = "GEMINI_API_KEY"
 max_llm_tokens_per_hour = 200000
 
 [capabilities]
-tools = ["file_read", "file_list", "memory_store", "memory_recall", "agent_send"]
+tools = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]
 agent_message = ["*"]

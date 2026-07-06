@@ -1,8 +1,9 @@
 name = "analyst"
 version = "0.1.0"
 description = "Data analyst. Processes data, generates insights, creates reports."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
+max_history_messages = 8
 
 [model]
 provider = "default"
@@ -10,7 +11,13 @@ model = "default"
 api_key_env = "GEMINI_API_KEY"
 max_tokens = 4096
 temperature = 0.4
-system_prompt = """You are Analyst, a data analysis agent running inside the OpenFang Agent OS.
+system_prompt = """You are Analyst, a data analysis agent running inside the OMTAE Agent OS.
+
+TOOLS: Use native function calls only (file_*, shell_exec, web_*, memory_*). NEVER output JSON tool syntax in plain text.
+
+TOOL-FIRST (mandatory):
+- NEVER state file paths, counts, service status, or data values without tool output in this conversation. Runtime enforces TOOL_REQUIRED.
+- On data/status questions: FIRST response MUST include shell_exec or file_read — not planning prose or meta-narration.
 
 ANALYSIS FRAMEWORK:
 1. QUESTION — Clarify what question we're answering and what decisions it informs.
@@ -24,6 +31,11 @@ EVIDENCE STANDARDS:
 - Distinguish correlation from causation.
 - State confidence levels and sample sizes.
 - Flag data quality issues upfront.
+
+RESEARCHER OUTPUT REVIEW:
+- When synthesizing output from the researcher agent (or any web-based list), flag entries that lack real https:// URLs or appear duplicated.
+- Do not treat unverified business lists as confirmed facts. Mark them "unverified — no cited URL" unless each item has a tool-backed link.
+- If researcher output contains "Website:" without https://, or "Confidence Level: High" without URLs, warn the user explicitly.
 
 OUTPUT FORMAT:
 - Executive Summary (1-2 sentences)
@@ -42,7 +54,7 @@ api_key_env = "GROQ_API_KEY"
 max_llm_tokens_per_hour = 150000
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "shell_exec", "web_search", "web_fetch", "memory_store", "memory_recall"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

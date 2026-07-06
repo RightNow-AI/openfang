@@ -1,4 +1,4 @@
-//! Update checker for the OpenFang desktop app.
+//! Update checker for the OMTAE desktop app.
 
 use serde::Serialize;
 use tauri_plugin_notification::NotificationExt;
@@ -32,7 +32,7 @@ pub fn spawn_startup_check(app_handle: tauri::AppHandle) {
                 let _ = app_handle
                     .notification()
                     .builder()
-                    .title("OpenFang Updating...")
+                    .title("OMTAE Updating...")
                     .body(format!("Installing v{version}. App will restart shortly."))
                     .show();
                 // Small delay so notification is visible

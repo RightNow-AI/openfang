@@ -1,4 +1,4 @@
-//! Route handlers for the OpenFang API.
+//! Route handlers for the OMTAE API.
 
 use crate::types::*;
 use axum::extract::{Multipart, Path, Query, State};
@@ -6,14 +6,14 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use dashmap::DashMap;
-use openfang_kernel::triggers::{TriggerId, TriggerPattern};
-use openfang_kernel::workflow::{
+use omtae_kernel::triggers::{TriggerId, TriggerPattern};
+use omtae_kernel::workflow::{
     ErrorMode, StepAgent, StepMode, Workflow, WorkflowId, WorkflowStep,
 };
-use openfang_kernel::OpenFangKernel;
-use openfang_runtime::kernel_handle::KernelHandle;
-use openfang_runtime::tool_runner::builtin_tool_definitions;
-use openfang_types::agent::{AgentId, AgentIdentity, AgentManifest};
+use omtae_kernel::OMTAEKernel;
+use omtae_runtime::kernel_handle::KernelHandle;
+use omtae_runtime::tool_runner::builtin_tool_definitions;
+use omtae_types::agent::{AgentId, AgentIdentity, AgentManifest};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
@@ -23,14 +23,14 @@ use std::time::Instant;
 /// The kernel is wrapped in Arc so it can serve as both the main kernel
 /// and the KernelHandle for inter-agent tool access.
 pub struct AppState {
-    pub kernel: Arc<OpenFangKernel>,
+    pub kernel: Arc<OMTAEKernel>,
     pub started_at: Instant,
     /// Optional peer registry for OFP mesh networking status.
-    pub peer_registry: Option<Arc<openfang_wire::registry::PeerRegistry>>,
+    pub peer_registry: Option<Arc<omtae_wire::registry::PeerRegistry>>,
     /// Channel bridge manager — held behind a Mutex so it can be swapped on hot-reload.
-    pub bridge_manager: tokio::sync::Mutex<Option<openfang_channels::bridge::BridgeManager>>,
+    pub bridge_manager: tokio::sync::Mutex<Option<omtae_channels::bridge::BridgeManager>>,
     /// Live channel config — updated on every hot-reload so list_channels() reflects reality.
-    pub channels_config: tokio::sync::RwLock<openfang_types::config::ChannelsConfig>,
+    pub channels_config: tokio::sync::RwLock<omtae_types::config::ChannelsConfig>,
     /// Notify handle to trigger graceful HTTP server shutdown from the API.
     pub shutdown_notify: Arc<tokio::sync::Notify>,
     /// ClawHub response cache — prevents 429 rate limiting on rapid dashboard refreshes.
@@ -39,10 +39,48 @@ pub struct AppState {
     /// Probe cache for local provider health checks (ollama/vllm/lmstudio).
     /// Avoids blocking the `/api/providers` endpoint on TCP timeouts to
     /// unreachable local services. 60-second TTL.
-    pub provider_probe_cache: openfang_runtime::provider_health::ProbeCache,
+    pub provider_probe_cache: omtae_runtime::provider_health::ProbeCache,
     /// Thread-safe mutable budget config. Updated via PUT /api/budget.
     /// Initialized from `kernel.config.budget` at startup.
-    pub budget_config: Arc<tokio::sync::RwLock<openfang_types::config::BudgetConfig>>,
+    pub budget_config: Arc<tokio::sync::RwLock<omtae_types::config::BudgetConfig>>,
+}
+
+/// Effective kernel `[default_model]` (honours hot-reload override).
+fn effective_default_model(kernel: &OMTAEKernel) -> omtae_types::config::DefaultModelConfig {
+    kernel
+        .default_model_override
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_else(|| kernel.config.default_model.clone())
+}
+
+/// Model ID to use when probing or testing a provider (wizard Save & Test).
+fn model_for_provider_test(
+    kernel: &OMTAEKernel,
+    catalog: &omtae_runtime::model_catalog::ModelCatalog,
+    provider: &str,
+) -> String {
+    let dm = effective_default_model(kernel);
+    if dm.provider == provider && !dm.model.is_empty() {
+        return dm.model;
+    }
+    catalog
+        .default_model_for_provider(provider)
+        .unwrap_or_default()
+}
+
+/// Optional API key from the provider's configured env var (e.g. `VLLM_API_KEY`).
+fn provider_api_key_from_env(catalog: &omtae_runtime::model_catalog::ModelCatalog, provider: &str) -> Option<String> {
+    catalog
+        .get_provider(provider)
+        .and_then(|p| {
+            if p.api_key_env.is_empty() {
+                None
+            } else {
+                std::env::var(&p.api_key_env).ok().filter(|k| !k.is_empty())
+            }
+        })
 }
 
 /// POST /api/agents — Spawn a new agent.
@@ -122,7 +160,7 @@ pub async fn spawn_agent(
                 tracing::warn!("Manifest signature verification failed: {e}");
                 state.kernel.audit_log.record(
                     "system",
-                    openfang_runtime::audit::AuditAction::AuthAttempt,
+                    omtae_runtime::audit::AuditAction::AuthAttempt,
                     "manifest signature verification failed",
                     format!("error: {e}"),
                 );
@@ -170,6 +208,17 @@ pub async fn spawn_agent(
     }
 }
 
+/// Human-readable schedule label for dashboard agent cards.
+fn schedule_mode_label(schedule: &omtae_types::agent::ScheduleMode) -> &'static str {
+    use omtae_types::agent::ScheduleMode;
+    match schedule {
+        ScheduleMode::Reactive => "reactive",
+        ScheduleMode::Continuous { .. } => "continuous",
+        ScheduleMode::Periodic { .. } => "periodic",
+        ScheduleMode::Proactive { .. } => "proactive",
+    }
+}
+
 /// GET /api/agents — List all agents.
 pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Snapshot catalog once for enrichment
@@ -212,7 +261,7 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
                 })
                 .unwrap_or(("unknown".to_string(), "unknown".to_string()));
 
-            let ready = matches!(e.state, openfang_types::agent::AgentState::Running)
+            let ready = matches!(e.state, omtae_types::agent::AgentState::Running)
                 && auth_status != "missing";
 
             // Issue #1026: surface which agents are currently calling the LLM
@@ -220,6 +269,9 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
             // A running task in the kernel's `running_tasks` map means the
             // agent loop is in flight (LLM call + tool dispatch).
             let is_inferencing = state.kernel.running_tasks.contains_key(&e.id);
+
+            let schedule = schedule_mode_label(&e.manifest.schedule);
+            let background_paused = state.kernel.background.is_paused(e.id);
 
             serde_json::json!({
                 "id": e.id.to_string(),
@@ -234,6 +286,9 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
                 "auth_status": auth_status,
                 "ready": ready,
                 "is_inferencing": is_inferencing,
+                "schedule": schedule,
+                "background_paused": background_paused,
+                "is_autonomous": e.manifest.autonomous.is_some(),
                 "profile": e.manifest.profile,
                 "identity": {
                     "emoji": e.identity.emoji,
@@ -253,10 +308,10 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
 /// returns image content blocks ready to insert into a session message.
 pub fn resolve_attachments(
     attachments: &[AttachmentRef],
-) -> Vec<openfang_types::message::ContentBlock> {
+) -> Vec<omtae_types::message::ContentBlock> {
     use base64::Engine;
 
-    let upload_dir = std::env::temp_dir().join("openfang_uploads");
+    let upload_dir = std::env::temp_dir().join("omtae_uploads");
     let mut blocks = Vec::new();
 
     for att in attachments {
@@ -284,7 +339,7 @@ pub fn resolve_attachments(
         match std::fs::read(&file_path) {
             Ok(data) => {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                blocks.push(openfang_types::message::ContentBlock::Image {
+                blocks.push(omtae_types::message::ContentBlock::Image {
                     media_type: content_type,
                     data: b64,
                 });
@@ -303,11 +358,11 @@ pub fn resolve_attachments(
 /// This injects image content blocks into the session BEFORE the kernel
 /// adds the text user message, so the LLM receives: [..., User(images), User(text)].
 pub fn inject_attachments_into_session(
-    kernel: &OpenFangKernel,
+    kernel: &OMTAEKernel,
     agent_id: AgentId,
-    image_blocks: Vec<openfang_types::message::ContentBlock>,
+    image_blocks: Vec<omtae_types::message::ContentBlock>,
 ) {
-    use openfang_types::message::{Message, MessageContent, Role};
+    use omtae_types::message::{Message, MessageContent, Role};
 
     let entry = match kernel.registry.get(agent_id) {
         Some(e) => e,
@@ -316,7 +371,7 @@ pub fn inject_attachments_into_session(
 
     let mut session = match kernel.memory.get_session(entry.session_id) {
         Ok(Some(s)) => s,
-        _ => openfang_memory::session::Session {
+        _ => omtae_memory::session::Session {
             id: entry.session_id,
             agent_id,
             messages: Vec::new(),
@@ -427,17 +482,34 @@ pub async fn send_message(
         }
         Err(e) => {
             tracing::warn!("send_message failed for agent {id}: {e}");
-            let status = if format!("{e}").contains("Agent not found") {
+            let err_str = format!("{e}");
+            let status = if err_str.contains("Agent not found") {
                 StatusCode::NOT_FOUND
-            } else if format!("{e}").contains("quota") || format!("{e}").contains("Quota") {
+            } else if err_str.contains("quota") || err_str.contains("Quota") {
                 StatusCode::TOO_MANY_REQUESTS
+            } else if err_str.contains("Context too long")
+                || err_str.contains("context length")
+                || err_str.contains("ContextOverflow")
+            {
+                StatusCode::BAD_REQUEST
+            } else if err_str.contains("401") || err_str.contains("Unauthorized") {
+                StatusCode::BAD_GATEWAY
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
-            (
-                status,
-                Json(serde_json::json!({"error": format!("Message delivery failed: {e}")})),
-            )
+            let user_msg: String = if err_str.contains("Context too long")
+                || err_str.contains("context length")
+                || err_str.contains("ContextOverflow")
+            {
+                "Prompt too long for this model — try a shorter message or reduce max_tokens on the agent."
+                    .to_string()
+            } else if err_str.contains("401") || err_str.contains("Unauthorized") {
+                "LLM provider rejected the API key — check VLLM_API_KEY (or your provider key) in Settings."
+                    .to_string()
+            } else {
+                format!("Message delivery failed: {e}")
+            };
+            (status, Json(serde_json::json!({"error": user_msg})))
         }
     }
 }
@@ -488,10 +560,10 @@ pub async fn get_agent_session(
             // logic so the system prompt cannot leak into the response. The
             // raw message count is preserved separately for the API consumer.
             let raw_message_count = session.messages.len();
-            let filtered_messages: Vec<&openfang_types::message::Message> = session
+            let filtered_messages: Vec<&omtae_types::message::Message> = session
                 .messages
                 .iter()
-                .filter(|m| include_system || m.role != openfang_types::message::Role::System)
+                .filter(|m| include_system || m.role != omtae_types::message::Role::System)
                 .collect();
 
             // Two-pass approach: ToolUse blocks live in Assistant messages while
@@ -509,15 +581,15 @@ pub async fn get_agent_session(
                 let mut tools: Vec<serde_json::Value> = Vec::new();
                 let mut msg_images: Vec<serde_json::Value> = Vec::new();
                 let content = match &m.content {
-                    openfang_types::message::MessageContent::Text(t) => t.clone(),
-                    openfang_types::message::MessageContent::Blocks(blocks) => {
+                    omtae_types::message::MessageContent::Text(t) => t.clone(),
+                    omtae_types::message::MessageContent::Blocks(blocks) => {
                         let mut texts = Vec::new();
                         for b in blocks {
                             match b {
-                                openfang_types::message::ContentBlock::Text { text, .. } => {
+                                omtae_types::message::ContentBlock::Text { text, .. } => {
                                     texts.push(text.clone());
                                 }
-                                openfang_types::message::ContentBlock::Image {
+                                omtae_types::message::ContentBlock::Image {
                                     media_type,
                                     data,
                                 } => {
@@ -525,7 +597,7 @@ pub async fn get_agent_session(
                                     // Persist image to upload dir so it can be
                                     // served back when loading session history.
                                     let file_id = uuid::Uuid::new_v4().to_string();
-                                    let upload_dir = std::env::temp_dir().join("openfang_uploads");
+                                    let upload_dir = std::env::temp_dir().join("omtae_uploads");
                                     let _ = std::fs::create_dir_all(&upload_dir);
                                     if let Ok(bytes) =
                                         base64::engine::general_purpose::STANDARD.decode(data)
@@ -547,7 +619,7 @@ pub async fn get_agent_session(
                                         }));
                                     }
                                 }
-                                openfang_types::message::ContentBlock::ToolUse {
+                                omtae_types::message::ContentBlock::ToolUse {
                                     id,
                                     name,
                                     input,
@@ -564,7 +636,7 @@ pub async fn get_agent_session(
                                     tool_use_index.insert(id.clone(), (usize::MAX, tool_idx));
                                 }
                                 // ToolResult blocks are handled in pass 2
-                                openfang_types::message::ContentBlock::ToolResult { .. } => {}
+                                omtae_types::message::ContentBlock::ToolResult { .. } => {}
                                 _ => {}
                             }
                         }
@@ -597,9 +669,9 @@ pub async fn get_agent_session(
 
             // Pass 2: walk filtered messages again and attach ToolResult to the correct tool
             for m in &filtered_messages {
-                if let openfang_types::message::MessageContent::Blocks(blocks) = &m.content {
+                if let omtae_types::message::MessageContent::Blocks(blocks) = &m.content {
                     for b in blocks {
-                        if let openfang_types::message::ContentBlock::ToolResult {
+                        if let omtae_types::message::ContentBlock::ToolResult {
                             tool_use_id,
                             content: result,
                             is_error,
@@ -695,7 +767,7 @@ pub async fn kill_agent(
 /// DELETE /api/agents/{id}/uninstall — Permanently uninstall an agent.
 ///
 /// Issue #1163: in addition to killing the agent (registry + memory + cron),
-/// this also removes the on-disk `~/.openfang/agents/<name>/` directory so
+/// this also removes the on-disk `~/.omtae/agents/<name>/` directory so
 /// the agent does not auto-respawn on the next daemon start.
 pub async fn uninstall_agent(
     State(state): State<Arc<AppState>>,
@@ -731,7 +803,7 @@ pub async fn uninstall_agent(
         );
     }
 
-    // Step 2: remove ~/.openfang/agents/<name>/ so the agent does NOT
+    // Step 2: remove ~/.omtae/agents/<name>/ so the agent does NOT
     // auto-respawn from disk on the next daemon start.
     let agents_dir = state.kernel.config.home_dir.join("agents");
     let agent_dir = agents_dir.join(&agent_name);
@@ -824,12 +896,22 @@ pub async fn restart_agent(
     let _ = state
         .kernel
         .registry
-        .set_state(agent_id, openfang_types::agent::AgentState::Running);
+        .set_state(agent_id, omtae_types::agent::AgentState::Running);
+
+    // Hot-reload manifest from disk (prompt, tools, exec_policy, etc.)
+    let manifest_reloaded = match state.kernel.reload_agent_manifest_from_disk(agent_id) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(agent = %agent_name, error = %e, "Agent restart: manifest disk reload failed");
+            false
+        }
+    };
 
     tracing::info!(
         agent = %agent_name,
         previous_state = %previous_state,
         task_cancelled = was_running,
+        manifest_reloaded,
         "Agent restarted via API"
     );
 
@@ -841,6 +923,7 @@ pub async fn restart_agent(
             "agent_id": id,
             "previous_state": previous_state,
             "task_cancelled": was_running,
+            "manifest_reloaded": manifest_reloaded,
         })),
     )
 }
@@ -890,7 +973,7 @@ pub async fn shutdown(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // SECURITY: Record shutdown in audit trail
     state.kernel.audit_log.record(
         "system",
-        openfang_runtime::audit::AuditAction::ConfigChange,
+        omtae_runtime::audit::AuditAction::ConfigChange,
         "shutdown requested via API",
         "ok",
     );
@@ -1388,7 +1471,7 @@ pub async fn delete_trigger(
 
 /// GET /api/profiles — List all tool profiles and their tool lists.
 pub async fn list_profiles() -> impl IntoResponse {
-    use openfang_types::agent::ToolProfile;
+    use omtae_types::agent::ToolProfile;
 
     let profiles = [
         ("minimal", ToolProfile::Minimal),
@@ -1451,7 +1534,7 @@ pub async fn set_agent_mode(
 /// GET /api/version — Build & version info.
 pub async fn version() -> impl IntoResponse {
     Json(serde_json::json!({
-        "name": "openfang",
+        "name": "omtae",
         "version": env!("CARGO_PKG_VERSION"),
         "build_date": option_env!("BUILD_DATE").unwrap_or("dev"),
         "git_sha": option_env!("GIT_SHA").unwrap_or("unknown"),
@@ -1536,7 +1619,7 @@ pub async fn send_message_stream(
 ) -> axum::response::Response {
     use axum::response::sse::{Event, Sse};
     use futures::stream;
-    use openfang_runtime::llm_driver::StreamEvent;
+    use omtae_runtime::llm_driver::StreamEvent;
 
     // SECURITY: Reject oversized messages to prevent OOM / LLM token abuse.
     const MAX_MESSAGE_SIZE: usize = 64 * 1024; // 64KB
@@ -1776,7 +1859,7 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         fields: &[
             ChannelField { key: "access_token_env", label: "Access Token", field_type: FieldType::Secret, env_var: Some("MATRIX_ACCESS_TOKEN"), required: true, placeholder: "syt_...", advanced: false },
             ChannelField { key: "homeserver_url", label: "Homeserver URL", field_type: FieldType::Text, env_var: None, required: true, placeholder: "https://matrix.org", advanced: false },
-            ChannelField { key: "user_id", label: "Bot User ID", field_type: FieldType::Text, env_var: None, required: false, placeholder: "@openfang:matrix.org", advanced: true },
+            ChannelField { key: "user_id", label: "Bot User ID", field_type: FieldType::Text, env_var: None, required: false, placeholder: "@omtae:matrix.org", advanced: true },
             ChannelField { key: "allowed_rooms", label: "Allowed Room IDs", field_type: FieldType::List, env_var: None, required: false, placeholder: "!abc:matrix.org", advanced: true },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
         ],
@@ -1868,7 +1951,7 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         quick_setup: "Enter your username and paper key",
         setup_type: "form",
         fields: &[
-            ChannelField { key: "username", label: "Username", field_type: FieldType::Text, env_var: None, required: true, placeholder: "openfang_bot", advanced: false },
+            ChannelField { key: "username", label: "Username", field_type: FieldType::Text, env_var: None, required: true, placeholder: "omtae_bot", advanced: false },
             ChannelField { key: "paperkey_env", label: "Paper Key", field_type: FieldType::Secret, env_var: Some("KEYBASE_PAPERKEY"), required: true, placeholder: "word1 word2 word3...", advanced: false },
             ChannelField { key: "allowed_teams", label: "Allowed Teams", field_type: FieldType::List, env_var: None, required: false, placeholder: "team1, team2", advanced: true },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
@@ -1886,9 +1969,9 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         fields: &[
             ChannelField { key: "client_id", label: "Client ID", field_type: FieldType::Text, env_var: None, required: true, placeholder: "abc123def", advanced: false },
             ChannelField { key: "client_secret_env", label: "Client Secret", field_type: FieldType::Secret, env_var: Some("REDDIT_CLIENT_SECRET"), required: true, placeholder: "abc123...", advanced: false },
-            ChannelField { key: "username", label: "Bot Username", field_type: FieldType::Text, env_var: None, required: true, placeholder: "openfang_bot", advanced: false },
+            ChannelField { key: "username", label: "Bot Username", field_type: FieldType::Text, env_var: None, required: true, placeholder: "omtae_bot", advanced: false },
             ChannelField { key: "password_env", label: "Bot Password", field_type: FieldType::Secret, env_var: Some("REDDIT_PASSWORD"), required: true, placeholder: "password", advanced: false },
-            ChannelField { key: "subreddits", label: "Subreddits", field_type: FieldType::List, env_var: None, required: false, placeholder: "openfang, rust", advanced: true },
+            ChannelField { key: "subreddits", label: "Subreddits", field_type: FieldType::List, env_var: None, required: false, placeholder: "omtae, rust", advanced: true },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
         ],
         setup_steps: &["Create a Reddit app at reddit.com/prefs/apps (script type)", "Copy Client ID and Secret", "Enter bot credentials below"],
@@ -2130,14 +2213,14 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         setup_type: "form",
         fields: &[
             ChannelField { key: "server", label: "Server", field_type: FieldType::Text, env_var: None, required: true, placeholder: "irc.libera.chat", advanced: false },
-            ChannelField { key: "nick", label: "Nickname", field_type: FieldType::Text, env_var: None, required: true, placeholder: "openfang", advanced: false },
-            ChannelField { key: "channels", label: "Channels", field_type: FieldType::List, env_var: None, required: false, placeholder: "#openfang, #general", advanced: false },
+            ChannelField { key: "nick", label: "Nickname", field_type: FieldType::Text, env_var: None, required: true, placeholder: "omtae", advanced: false },
+            ChannelField { key: "channels", label: "Channels", field_type: FieldType::List, env_var: None, required: false, placeholder: "#omtae, #general", advanced: false },
             ChannelField { key: "port", label: "Port", field_type: FieldType::Number, env_var: None, required: false, placeholder: "6667", advanced: true },
             ChannelField { key: "use_tls", label: "Use TLS", field_type: FieldType::Text, env_var: None, required: false, placeholder: "false", advanced: true },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
         ],
         setup_steps: &["Choose an IRC server", "Enter server, nick, and channels below"],
-        config_template: "[channels.irc]\nserver = \"irc.libera.chat\"\nnick = \"openfang\"",
+        config_template: "[channels.irc]\nserver = \"irc.libera.chat\"\nnick = \"omtae\"",
     },
     ChannelMeta {
         name: "xmpp", display_name: "XMPP/Jabber", icon: "XM",
@@ -2253,12 +2336,12 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         setup_type: "form",
         fields: &[
             ChannelField { key: "oauth_token_env", label: "OAuth Token", field_type: FieldType::Secret, env_var: Some("TWITCH_OAUTH_TOKEN"), required: true, placeholder: "oauth:abc123...", advanced: false },
-            ChannelField { key: "nick", label: "Bot Nickname", field_type: FieldType::Text, env_var: None, required: true, placeholder: "openfang", advanced: false },
+            ChannelField { key: "nick", label: "Bot Nickname", field_type: FieldType::Text, env_var: None, required: true, placeholder: "omtae", advanced: false },
             ChannelField { key: "channels", label: "Channels (no #)", field_type: FieldType::List, env_var: None, required: true, placeholder: "mychannel", advanced: false },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
         ],
         setup_steps: &["Generate an OAuth token at twitchapps.com/tmi", "Enter token, nick, and channel below"],
-        config_template: "[channels.twitch]\noauth_token_env = \"TWITCH_OAUTH_TOKEN\"\nnick = \"openfang\"",
+        config_template: "[channels.twitch]\noauth_token_env = \"TWITCH_OAUTH_TOKEN\"\nnick = \"omtae\"",
     },
     // ── Notifications (4) ───────────────────────────────────────────
     ChannelMeta {
@@ -2268,7 +2351,7 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         quick_setup: "Just enter a topic name",
         setup_type: "form",
         fields: &[
-            ChannelField { key: "topic", label: "Topic", field_type: FieldType::Text, env_var: None, required: true, placeholder: "openfang-alerts", advanced: false },
+            ChannelField { key: "topic", label: "Topic", field_type: FieldType::Text, env_var: None, required: true, placeholder: "omtae-alerts", advanced: false },
             ChannelField { key: "server_url", label: "Server URL", field_type: FieldType::Text, env_var: None, required: false, placeholder: "https://ntfy.sh", advanced: true },
             ChannelField { key: "token_env", label: "Auth Token", field_type: FieldType::Secret, env_var: Some("NTFY_TOKEN"), required: false, placeholder: "tk_abc123...", advanced: true },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
@@ -2314,14 +2397,14 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
         setup_type: "form",
         fields: &[
             ChannelField { key: "host", label: "Host", field_type: FieldType::Text, env_var: None, required: true, placeholder: "mumble.example.com", advanced: false },
-            ChannelField { key: "username", label: "Username", field_type: FieldType::Text, env_var: None, required: true, placeholder: "openfang", advanced: false },
+            ChannelField { key: "username", label: "Username", field_type: FieldType::Text, env_var: None, required: true, placeholder: "omtae", advanced: false },
             ChannelField { key: "password_env", label: "Server Password", field_type: FieldType::Secret, env_var: Some("MUMBLE_PASSWORD"), required: false, placeholder: "password", advanced: true },
             ChannelField { key: "port", label: "Port", field_type: FieldType::Number, env_var: None, required: false, placeholder: "64738", advanced: true },
             ChannelField { key: "channel", label: "Channel", field_type: FieldType::Text, env_var: None, required: false, placeholder: "Root", advanced: true },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
         ],
         setup_steps: &["Enter host and username below", "Optionally add a password"],
-        config_template: "[channels.mumble]\nhost = \"\"\nusername = \"openfang\"",
+        config_template: "[channels.mumble]\nhost = \"\"\nusername = \"omtae\"",
     },
     ChannelMeta {
         name: "wecom", display_name: "WeCom", icon: "WC",
@@ -2344,7 +2427,7 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
 ];
 
 /// Check if a channel is configured (has a `[channels.xxx]` section in config).
-fn is_channel_configured(config: &openfang_types::config::ChannelsConfig, name: &str) -> bool {
+fn is_channel_configured(config: &omtae_types::config::ChannelsConfig, name: &str) -> bool {
     match name {
         "telegram" => config.telegram.is_some(),
         "discord" => config.discord.is_some(),
@@ -2470,7 +2553,7 @@ mod channel_meta_tests {
 
 /// Serialize a channel's config to a JSON Value for pre-populating dashboard forms.
 fn channel_config_values(
-    config: &openfang_types::config::ChannelsConfig,
+    config: &omtae_types::config::ChannelsConfig,
     name: &str,
 ) -> Option<serde_json::Value> {
     match name {
@@ -2729,7 +2812,7 @@ pub async fn configure_channel(
         }
     };
 
-    let home = openfang_kernel::config::openfang_home();
+    let home = omtae_kernel::config::omtae_home();
     let secrets_path = home.join("secrets.env");
     let config_path = home.join("config.toml");
     let mut config_fields: HashMap<String, (String, FieldType)> = HashMap::new();
@@ -2827,7 +2910,7 @@ pub async fn remove_channel(
         }
     };
 
-    let home = openfang_kernel::config::openfang_home();
+    let home = omtae_kernel::config::omtae_home();
     let secrets_path = home.join("secrets.env");
     let config_path = home.join("config.toml");
 
@@ -2963,7 +3046,7 @@ pub async fn test_channel(
 /// Send a real test message to a specific channel/chat on the given platform.
 async fn send_channel_test_message(channel_name: &str, target_id: &str) -> Result<(), String> {
     let client = reqwest::Client::new();
-    let test_msg = "OpenFang test message — your channel is connected!";
+    let test_msg = "OMTAE test message — your channel is connected!";
 
     match channel_name {
         "discord" => {
@@ -3247,7 +3330,7 @@ async fn gateway_http_get(url_with_path: &str) -> Result<serde_json::Value, Stri
 
 /// GET /api/templates — List available agent templates.
 pub async fn list_templates() -> impl IntoResponse {
-    let agents_dir = openfang_kernel::config::openfang_home().join("agents");
+    let agents_dir = omtae_kernel::config::omtae_home().join("agents");
     let mut templates = Vec::new();
 
     if let Ok(entries) = std::fs::read_dir(&agents_dir) {
@@ -3309,7 +3392,7 @@ fn get_template_category(name: &str) -> &str {
 
 /// GET /api/templates/:name — Get template details.
 pub async fn get_template(Path(name): Path<String>) -> impl IntoResponse {
-    let agents_dir = openfang_kernel::config::openfang_home().join("agents");
+    let agents_dir = omtae_kernel::config::omtae_home().join("agents");
     let manifest_path = agents_dir.join(&name).join("agent.toml");
 
     if !manifest_path.exists() {
@@ -3372,7 +3455,7 @@ pub async fn get_agent_kv(
     State(state): State<Arc<AppState>>,
     Path(_id): Path<String>,
 ) -> impl IntoResponse {
-    let agent_id = openfang_kernel::kernel::shared_memory_agent_id();
+    let agent_id = omtae_kernel::kernel::shared_memory_agent_id();
 
     match state.kernel.memory.list_kv(agent_id) {
         Ok(pairs) => {
@@ -3397,7 +3480,7 @@ pub async fn get_agent_kv_key(
     State(state): State<Arc<AppState>>,
     Path((_id, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let agent_id = openfang_kernel::kernel::shared_memory_agent_id();
+    let agent_id = omtae_kernel::kernel::shared_memory_agent_id();
 
     match state.kernel.memory.structured_get(agent_id, &key) {
         Ok(Some(val)) => (
@@ -3424,7 +3507,7 @@ pub async fn set_agent_kv_key(
     Path((_id, key)): Path<(String, String)>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let agent_id = openfang_kernel::kernel::shared_memory_agent_id();
+    let agent_id = omtae_kernel::kernel::shared_memory_agent_id();
 
     let value = body.get("value").cloned().unwrap_or(body);
 
@@ -3448,7 +3531,7 @@ pub async fn delete_agent_kv_key(
     State(state): State<Arc<AppState>>,
     Path((_id, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let agent_id = openfang_kernel::kernel::shared_memory_agent_id();
+    let agent_id = omtae_kernel::kernel::shared_memory_agent_id();
 
     match state.kernel.memory.structured_delete(agent_id, &key) {
         Ok(()) => (
@@ -3468,6 +3551,24 @@ pub async fn delete_agent_kv_key(
 /// GET /api/health — Minimal liveness probe (public, no auth required).
 /// Returns only status and version to prevent information leakage.
 /// Use GET /api/health/detail for full diagnostics (requires auth).
+/// GET /api/system/gpu — NVIDIA GPU telemetry (nvidia-smi).
+pub async fn system_gpu() -> impl IntoResponse {
+    let stats = crate::gpu::collect_gpu_stats().await;
+    Json(stats)
+}
+
+/// GET /api/system/drift — Report runtime/config drift (no auto-fix).
+pub async fn system_drift(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let report = state.kernel.run_drift_check(false);
+    Json(report)
+}
+
+/// POST /api/system/drift — Run drift scan and apply safe auto-remediation.
+pub async fn system_drift_remediate(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let report = state.kernel.run_drift_check(true);
+    Json(report)
+}
+
 pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Run the database check on a blocking thread so we never hold the
     // std::sync::Mutex<Connection> on a tokio worker thread.  This prevents
@@ -3475,7 +3576,7 @@ pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // is holding the database lock for session saves.
     let memory = state.kernel.memory.clone();
     let db_ok = tokio::task::spawn_blocking(move || {
-        let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
+        let shared_id = omtae_types::agent::AgentId(uuid::Uuid::from_bytes([
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
         ]));
         memory.structured_get(shared_id, "__health_check__").is_ok()
@@ -3497,7 +3598,7 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
 
     let memory = state.kernel.memory.clone();
     let db_ok = tokio::task::spawn_blocking(move || {
-        let shared_id = openfang_types::agent::AgentId(uuid::Uuid::from_bytes([
+        let shared_id = omtae_types::agent::AgentId(uuid::Uuid::from_bytes([
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
         ]));
         memory.structured_get(shared_id, "__health_check__").is_ok()
@@ -3526,50 +3627,50 @@ pub async fn health_detail(State(state): State<Arc<AppState>>) -> impl IntoRespo
 
 /// GET /api/metrics — Prometheus text-format metrics.
 ///
-/// Returns counters and gauges for monitoring OpenFang in production:
-/// - `openfang_agents_active` — number of active agents
-/// - `openfang_uptime_seconds` — seconds since daemon started
-/// - `openfang_tokens_total` — total tokens consumed (per agent)
-/// - `openfang_tool_calls_total` — total tool calls (per agent)
-/// - `openfang_panics_total` — supervisor panic count
-/// - `openfang_restarts_total` — supervisor restart count
+/// Returns counters and gauges for monitoring OMTAE in production:
+/// - `omtae_agents_active` — number of active agents
+/// - `omtae_uptime_seconds` — seconds since daemon started
+/// - `omtae_tokens_total` — total tokens consumed (per agent)
+/// - `omtae_tool_calls_total` — total tool calls (per agent)
+/// - `omtae_panics_total` — supervisor panic count
+/// - `omtae_restarts_total` — supervisor restart count
 pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut out = String::with_capacity(2048);
 
     // Uptime
     let uptime = state.started_at.elapsed().as_secs();
-    out.push_str("# HELP openfang_uptime_seconds Time since daemon started.\n");
-    out.push_str("# TYPE openfang_uptime_seconds gauge\n");
-    out.push_str(&format!("openfang_uptime_seconds {uptime}\n\n"));
+    out.push_str("# HELP omtae_uptime_seconds Time since daemon started.\n");
+    out.push_str("# TYPE omtae_uptime_seconds gauge\n");
+    out.push_str(&format!("omtae_uptime_seconds {uptime}\n\n"));
 
     // Active agents
     let agents = state.kernel.registry.list();
     let active = agents
         .iter()
-        .filter(|a| matches!(a.state, openfang_types::agent::AgentState::Running))
+        .filter(|a| matches!(a.state, omtae_types::agent::AgentState::Running))
         .count();
-    out.push_str("# HELP openfang_agents_active Number of active agents.\n");
-    out.push_str("# TYPE openfang_agents_active gauge\n");
-    out.push_str(&format!("openfang_agents_active {active}\n"));
-    out.push_str("# HELP openfang_agents_total Total number of registered agents.\n");
-    out.push_str("# TYPE openfang_agents_total gauge\n");
-    out.push_str(&format!("openfang_agents_total {}\n\n", agents.len()));
+    out.push_str("# HELP omtae_agents_active Number of active agents.\n");
+    out.push_str("# TYPE omtae_agents_active gauge\n");
+    out.push_str(&format!("omtae_agents_active {active}\n"));
+    out.push_str("# HELP omtae_agents_total Total number of registered agents.\n");
+    out.push_str("# TYPE omtae_agents_total gauge\n");
+    out.push_str(&format!("omtae_agents_total {}\n\n", agents.len()));
 
     // Per-agent token and tool usage
-    out.push_str("# HELP openfang_tokens_total Total tokens consumed (rolling hourly window).\n");
-    out.push_str("# TYPE openfang_tokens_total gauge\n");
-    out.push_str("# HELP openfang_tool_calls_total Total tool calls (rolling hourly window).\n");
-    out.push_str("# TYPE openfang_tool_calls_total gauge\n");
+    out.push_str("# HELP omtae_tokens_total Total tokens consumed (rolling hourly window).\n");
+    out.push_str("# TYPE omtae_tokens_total gauge\n");
+    out.push_str("# HELP omtae_tool_calls_total Total tool calls (rolling hourly window).\n");
+    out.push_str("# TYPE omtae_tool_calls_total gauge\n");
     for agent in &agents {
         let name = &agent.name;
         let provider = &agent.manifest.model.provider;
         let model = &agent.manifest.model.model;
         if let Some((tokens, tools)) = state.kernel.scheduler.get_usage(agent.id) {
             out.push_str(&format!(
-                "openfang_tokens_total{{agent=\"{name}\",provider=\"{provider}\",model=\"{model}\"}} {tokens}\n"
+                "omtae_tokens_total{{agent=\"{name}\",provider=\"{provider}\",model=\"{model}\"}} {tokens}\n"
             ));
             out.push_str(&format!(
-                "openfang_tool_calls_total{{agent=\"{name}\"}} {tools}\n"
+                "omtae_tool_calls_total{{agent=\"{name}\"}} {tools}\n"
             ));
         }
     }
@@ -3577,21 +3678,21 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
 
     // Supervisor health
     let health = state.kernel.supervisor.health();
-    out.push_str("# HELP openfang_panics_total Total supervisor panics since start.\n");
-    out.push_str("# TYPE openfang_panics_total counter\n");
-    out.push_str(&format!("openfang_panics_total {}\n", health.panic_count));
-    out.push_str("# HELP openfang_restarts_total Total supervisor restarts since start.\n");
-    out.push_str("# TYPE openfang_restarts_total counter\n");
+    out.push_str("# HELP omtae_panics_total Total supervisor panics since start.\n");
+    out.push_str("# TYPE omtae_panics_total counter\n");
+    out.push_str(&format!("omtae_panics_total {}\n", health.panic_count));
+    out.push_str("# HELP omtae_restarts_total Total supervisor restarts since start.\n");
+    out.push_str("# TYPE omtae_restarts_total counter\n");
     out.push_str(&format!(
-        "openfang_restarts_total {}\n\n",
+        "omtae_restarts_total {}\n\n",
         health.restart_count
     ));
 
     // Version info
-    out.push_str("# HELP openfang_info OpenFang version and build info.\n");
-    out.push_str("# TYPE openfang_info gauge\n");
+    out.push_str("# HELP omtae_info OMTAE version and build info.\n");
+    out.push_str("# TYPE omtae_info gauge\n");
     out.push_str(&format!(
-        "openfang_info{{version=\"{}\"}} 1\n",
+        "omtae_info{{version=\"{}\"}} 1\n",
         env!("CARGO_PKG_VERSION")
     ));
 
@@ -3612,7 +3713,7 @@ pub async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl Into
 /// GET /api/skills — List installed skills.
 pub async fn list_skills(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let skills_dir = state.kernel.config.home_dir.join("skills");
-    let mut registry = openfang_skills::registry::SkillRegistry::new(skills_dir);
+    let mut registry = omtae_skills::registry::SkillRegistry::new(skills_dir);
     let _ = registry.load_all();
 
     // Snapshot of user-provided overrides for the `config_resolved_count`.
@@ -3635,16 +3736,16 @@ pub async fn list_skills(State(state): State<Arc<AppState>>) -> impl IntoRespons
         .iter()
         .map(|s| {
             let source = match &s.manifest.source {
-                Some(openfang_skills::SkillSource::ClawHub { slug, version }) => {
+                Some(omtae_skills::SkillSource::ClawHub { slug, version }) => {
                     serde_json::json!({"type": "clawhub", "slug": slug, "version": version})
                 }
-                Some(openfang_skills::SkillSource::OpenClaw) => {
+                Some(omtae_skills::SkillSource::OpenClaw) => {
                     serde_json::json!({"type": "openclaw"})
                 }
-                Some(openfang_skills::SkillSource::Bundled) => {
+                Some(omtae_skills::SkillSource::Bundled) => {
                     serde_json::json!({"type": "bundled"})
                 }
-                Some(openfang_skills::SkillSource::Native) | None => {
+                Some(omtae_skills::SkillSource::Native) | None => {
                     serde_json::json!({"type": "local"})
                 }
             };
@@ -3700,10 +3801,10 @@ pub async fn install_skill(
     Json(req): Json<SkillInstallRequest>,
 ) -> impl IntoResponse {
     let skills_dir = state.kernel.config.home_dir.join("skills");
-    let config = openfang_skills::marketplace::MarketplaceConfig::default();
-    let client = openfang_skills::marketplace::MarketplaceClient::new(config);
+    let config = omtae_skills::marketplace::MarketplaceConfig::default();
+    let client = omtae_skills::marketplace::MarketplaceClient::new(config);
 
-    let opts = openfang_skills::installer::InstallOptions {
+    let opts = omtae_skills::installer::InstallOptions {
         require_signed: req.require_signed,
         allowed_signer_keys: req.allowed_signer_keys.clone(),
     };
@@ -3739,7 +3840,7 @@ pub async fn uninstall_skill(
     Json(req): Json<SkillUninstallRequest>,
 ) -> impl IntoResponse {
     let skills_dir = state.kernel.config.home_dir.join("skills");
-    let mut registry = openfang_skills::registry::SkillRegistry::new(skills_dir);
+    let mut registry = omtae_skills::registry::SkillRegistry::new(skills_dir);
     let _ = registry.load_all();
 
     match registry.remove(&req.name) {
@@ -3760,7 +3861,7 @@ pub async fn uninstall_skill(
 
 /// POST /api/skills/reload — Hot-reload the skill registry from disk.
 ///
-/// Called by the CLI after `openfang skill install` to notify the running
+/// Called by the CLI after `omtae skill install` to notify the running
 /// daemon that new skill files were added to the skills directory (#752).
 pub async fn reload_skills(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     state.kernel.reload_skills();
@@ -3778,7 +3879,7 @@ pub async fn audit_append(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AuditAppendRequest>,
 ) -> impl IntoResponse {
-    use openfang_runtime::audit::AuditAction;
+    use omtae_runtime::audit::AuditAction;
 
     // SECURITY: bound input sizes so a wrapper cannot wedge the chain with
     // unbounded strings. The audit table stores TEXT columns and the chain
@@ -3882,8 +3983,8 @@ pub async fn marketplace_search(
         return Json(serde_json::json!({"results": [], "total": 0}));
     }
 
-    let config = openfang_skills::marketplace::MarketplaceConfig::default();
-    let client = openfang_skills::marketplace::MarketplaceClient::new(config);
+    let config = omtae_skills::marketplace::MarketplaceConfig::default();
+    let client = omtae_skills::marketplace::MarketplaceClient::new(config);
 
     match client.search(&query).await {
         Ok(results) => {
@@ -3942,7 +4043,7 @@ pub async fn clawhub_search(
     }
 
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = omtae_skills::clawhub::ClawHubClient::new(cache_dir);
 
     let skills_dir = state.kernel.config.home_dir.join("skills");
     match client.search(&query, limit).await {
@@ -3999,11 +4100,11 @@ pub async fn clawhub_browse(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let sort = match params.get("sort").map(|s| s.as_str()) {
-        Some("downloads") => openfang_skills::clawhub::ClawHubSort::Downloads,
-        Some("stars") => openfang_skills::clawhub::ClawHubSort::Stars,
-        Some("updated") => openfang_skills::clawhub::ClawHubSort::Updated,
-        Some("rating") => openfang_skills::clawhub::ClawHubSort::Rating,
-        _ => openfang_skills::clawhub::ClawHubSort::Trending,
+        Some("downloads") => omtae_skills::clawhub::ClawHubSort::Downloads,
+        Some("stars") => omtae_skills::clawhub::ClawHubSort::Stars,
+        Some("updated") => omtae_skills::clawhub::ClawHubSort::Updated,
+        Some("rating") => omtae_skills::clawhub::ClawHubSort::Rating,
+        _ => omtae_skills::clawhub::ClawHubSort::Trending,
     };
 
     let limit: u32 = params
@@ -4022,7 +4123,7 @@ pub async fn clawhub_browse(
     }
 
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = omtae_skills::clawhub::ClawHubClient::new(cache_dir);
 
     let skills_dir = state.kernel.config.home_dir.join("skills");
     match client.browse(sort, limit, cursor).await {
@@ -4068,7 +4169,7 @@ pub async fn clawhub_skill_detail(
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = omtae_skills::clawhub::ClawHubClient::new(cache_dir);
 
     let skills_dir = state.kernel.config.home_dir.join("skills");
     let is_installed = client.is_installed(&slug, &skills_dir);
@@ -4132,7 +4233,7 @@ pub async fn clawhub_skill_code(
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = omtae_skills::clawhub::ClawHubClient::new(cache_dir);
 
     // Try to fetch SKILL.md first, then fallback to package.json
     let mut code = String::new();
@@ -4176,7 +4277,7 @@ pub async fn clawhub_install(
 ) -> impl IntoResponse {
     let skills_dir = state.kernel.config.home_dir.join("skills");
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
-    let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
+    let client = omtae_skills::clawhub::ClawHubClient::new(cache_dir);
 
     // Check if already installed
     if client.is_installed(&req.slug, &skills_dir) {
@@ -4226,11 +4327,11 @@ pub async fn clawhub_install(
         }
         Err(e) => {
             let msg = format!("{e}");
-            let status = if matches!(e, openfang_skills::SkillError::SecurityBlocked(_)) {
+            let status = if matches!(e, omtae_skills::SkillError::SecurityBlocked(_)) {
                 StatusCode::FORBIDDEN
             } else if is_clawhub_rate_limit(&e) {
                 StatusCode::TOO_MANY_REQUESTS
-            } else if matches!(e, openfang_skills::SkillError::Network(_)) {
+            } else if matches!(e, omtae_skills::SkillError::Network(_)) {
                 StatusCode::BAD_GATEWAY
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -4242,15 +4343,15 @@ pub async fn clawhub_install(
 }
 
 /// Check whether a SkillError represents a ClawHub rate-limit (429).
-fn is_clawhub_rate_limit(err: &openfang_skills::SkillError) -> bool {
-    matches!(err, openfang_skills::SkillError::RateLimited(_))
+fn is_clawhub_rate_limit(err: &omtae_skills::SkillError) -> bool {
+    matches!(err, omtae_skills::SkillError::RateLimited(_))
 }
 
 /// Convert a browse entry (nested stats/tags) to a flat JSON object for the frontend.
 fn clawhub_browse_entry_to_json(
-    entry: &openfang_skills::clawhub::ClawHubBrowseEntry,
+    entry: &omtae_skills::clawhub::ClawHubBrowseEntry,
 ) -> serde_json::Value {
-    let version = openfang_skills::clawhub::ClawHubClient::entry_version(entry);
+    let version = omtae_skills::clawhub::ClawHubClient::entry_version(entry);
     serde_json::json!({
         "slug": entry.slug,
         "name": entry.display_name,
@@ -4800,7 +4901,7 @@ pub async fn upsert_hand(
 pub async fn activate_hand(
     State(state): State<Arc<AppState>>,
     Path(hand_id): Path<String>,
-    body: Option<Json<openfang_hands::ActivateHandRequest>>,
+    body: Option<Json<omtae_hands::ActivateHandRequest>>,
 ) -> impl IntoResponse {
     let (config, instance_name) = match body.map(|b| b.0) {
         Some(r) => (r.config, r.instance_name),
@@ -4821,7 +4922,7 @@ pub async fn activate_hand(
                 if let Some(entry) = entry {
                     if !matches!(
                         entry.manifest.schedule,
-                        openfang_types::agent::ScheduleMode::Reactive
+                        omtae_types::agent::ScheduleMode::Reactive
                     ) {
                         state.kernel.start_background_for_agent(
                             agent_id,
@@ -5025,7 +5126,7 @@ pub async fn hand_stats(
     };
 
     // Read dashboard metrics from shared structured memory (memory_store uses shared namespace)
-    let shared_id = openfang_kernel::kernel::shared_memory_agent_id();
+    let shared_id = omtae_kernel::kernel::shared_memory_agent_id();
     let mut metrics = serde_json::Map::new();
     for metric in &def.dashboard.metrics {
         // Try shared memory first (where memory_store tool writes), fall back to agent-specific
@@ -5106,7 +5207,7 @@ pub async fn hand_instance_browser(
         .browser_ctx
         .send_command(
             &agent_id_str,
-            openfang_runtime::browser::BrowserCommand::ReadPage,
+            omtae_runtime::browser::BrowserCommand::ReadPage,
         )
         .await
     {
@@ -5119,7 +5220,7 @@ pub async fn hand_instance_browser(
                 if content.len() > 2000 {
                     content = format!(
                         "{}... (truncated)",
-                        openfang_types::truncate_str(&content, 2000)
+                        omtae_types::truncate_str(&content, 2000)
                     );
                 }
             }
@@ -5136,7 +5237,7 @@ pub async fn hand_instance_browser(
         .browser_ctx
         .send_command(
             &agent_id_str,
-            openfang_runtime::browser::BrowserCommand::Screenshot,
+            omtae_runtime::browser::BrowserCommand::Screenshot,
         )
         .await
     {
@@ -5176,20 +5277,20 @@ pub async fn list_mcp_servers(State(state): State<Arc<AppState>>) -> impl IntoRe
         .iter()
         .map(|s| {
             let transport = match &s.transport {
-                openfang_types::config::McpTransportEntry::Stdio { command, args } => {
+                omtae_types::config::McpTransportEntry::Stdio { command, args } => {
                     serde_json::json!({
                         "type": "stdio",
                         "command": command,
                         "args": args,
                     })
                 }
-                openfang_types::config::McpTransportEntry::Sse { url } => {
+                omtae_types::config::McpTransportEntry::Sse { url } => {
                     serde_json::json!({
                         "type": "sse",
                         "url": url,
                     })
                 }
-                openfang_types::config::McpTransportEntry::Http { url } => {
+                omtae_types::config::McpTransportEntry::Http { url } => {
                     serde_json::json!({
                         "type": "http",
                         "url": url,
@@ -5695,7 +5796,7 @@ pub async fn agent_budget_status(
     };
 
     let quota = &entry.manifest.resources;
-    let usage_store = openfang_memory::usage::UsageStore::new(state.kernel.memory.usage_conn());
+    let usage_store = omtae_memory::usage::UsageStore::new(state.kernel.memory.usage_conn());
     let hourly = usage_store.query_hourly(agent_id).unwrap_or(0.0);
     let daily = usage_store.query_daily(agent_id).unwrap_or(0.0);
     let monthly = usage_store.query_monthly(agent_id).unwrap_or(0.0);
@@ -5735,7 +5836,7 @@ pub async fn agent_budget_status(
 
 /// GET /api/budget/agents — Per-agent cost ranking (top spenders).
 pub async fn agent_budget_ranking(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let usage_store = openfang_memory::usage::UsageStore::new(state.kernel.memory.usage_conn());
+    let usage_store = omtae_memory::usage::UsageStore::new(state.kernel.memory.usage_conn());
     let agents: Vec<serde_json::Value> = state
         .kernel
         .registry
@@ -5832,7 +5933,7 @@ pub async fn delete_session(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let session_id = match id.parse::<uuid::Uuid>() {
-        Ok(u) => openfang_types::agent::SessionId(u),
+        Ok(u) => omtae_types::agent::SessionId(u),
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -5860,7 +5961,7 @@ pub async fn set_session_label(
     Json(req): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let session_id = match id.parse::<uuid::Uuid>() {
-        Ok(u) => openfang_types::agent::SessionId(u),
+        Ok(u) => omtae_types::agent::SessionId(u),
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -5873,7 +5974,7 @@ pub async fn set_session_label(
 
     // Validate label if present
     if let Some(lbl) = label {
-        if let Err(e) = openfang_types::agent::SessionLabel::new(lbl) {
+        if let Err(e) = omtae_types::agent::SessionLabel::new(lbl) {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": e.to_string()})),
@@ -5903,7 +6004,7 @@ pub async fn find_session_by_label(
     Path((agent_id_str, label)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let agent_id = match agent_id_str.parse::<uuid::Uuid>() {
-        Ok(u) => openfang_types::agent::AgentId(u),
+        Ok(u) => omtae_types::agent::AgentId(u),
         Err(_) => {
             // Try name lookup
             match state.kernel.registry.find_by_name(&agent_id_str) {
@@ -6205,9 +6306,9 @@ pub async fn security_status(State(state): State<Arc<AppState>>) -> impl IntoRes
 
 /// GET /api/migrate/detect — Auto-detect OpenClaw installation.
 pub async fn migrate_detect() -> impl IntoResponse {
-    match openfang_migrate::openclaw::detect_openclaw_home() {
+    match omtae_migrate::openclaw::detect_openclaw_home() {
         Some(path) => {
-            let scan = openfang_migrate::openclaw::scan_openclaw_workspace(&path);
+            let scan = omtae_migrate::openclaw::scan_openclaw_workspace(&path);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -6237,16 +6338,16 @@ pub async fn migrate_scan(Json(req): Json<MigrateScanRequest>) -> impl IntoRespo
             Json(serde_json::json!({"error": "Directory not found"})),
         );
     }
-    let scan = openfang_migrate::openclaw::scan_openclaw_workspace(&path);
+    let scan = omtae_migrate::openclaw::scan_openclaw_workspace(&path);
     (StatusCode::OK, Json(serde_json::json!(scan)))
 }
 
 /// POST /api/migrate — Run migration from another agent framework.
 pub async fn run_migrate(Json(req): Json<MigrateRequest>) -> impl IntoResponse {
     let source = match req.source.as_str() {
-        "openclaw" => openfang_migrate::MigrateSource::OpenClaw,
-        "langchain" => openfang_migrate::MigrateSource::LangChain,
-        "autogpt" => openfang_migrate::MigrateSource::AutoGpt,
+        "openclaw" => omtae_migrate::MigrateSource::OpenClaw,
+        "langchain" => omtae_migrate::MigrateSource::LangChain,
+        "autogpt" => omtae_migrate::MigrateSource::AutoGpt,
         other => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -6257,14 +6358,14 @@ pub async fn run_migrate(Json(req): Json<MigrateRequest>) -> impl IntoResponse {
         }
     };
 
-    let options = openfang_migrate::MigrateOptions {
+    let options = omtae_migrate::MigrateOptions {
         source,
         source_dir: std::path::PathBuf::from(&req.source_dir),
         target_dir: std::path::PathBuf::from(&req.target_dir),
         dry_run: req.dry_run,
     };
 
-    match openfang_migrate::run_migration(&options) {
+    match omtae_migrate::run_migration(&options) {
         Ok(report) => {
             let imported: Vec<serde_json::Value> = report
                 .imported
@@ -6313,6 +6414,200 @@ pub async fn run_migrate(Json(req): Json<MigrateRequest>) -> impl IntoResponse {
 
 // ── Model Catalog Endpoints ─────────────────────────────────────────
 
+/// GET /api/models/profiles — vLLM swap profiles from `~/.omtae/models.toml`.
+pub async fn list_model_profiles(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let home = &state.kernel.config.home_dir;
+    let profiles = match crate::model_profiles::load_profiles(home) {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e})),
+            );
+        }
+    };
+    let active = crate::model_profiles::read_active_profile_id(home)
+        .or_else(|| {
+            profiles
+                .iter()
+                .find(|p| p.omtae_model_id == state.kernel.config.default_model.model)
+                .map(|p| p.id.clone())
+        });
+    let list: Vec<serde_json::Value> = profiles
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "id": p.id,
+                "display_name": p.display_name,
+                "vllm_path": p.vllm_path,
+                "tensor_parallel": p.tensor_parallel,
+                "max_model_len": p.max_model_len,
+                "gpu_mem_util": p.gpu_mem_util,
+                "vllm_served_name": p.vllm_served_name,
+                "omtae_model_id": p.omtae_model_id,
+                "start_script": p.start_script,
+                "quantization": p.quantization,
+                "on_disk": crate::model_profiles::profile_available_on_disk(p),
+            })
+        })
+        .collect();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "profiles": list,
+            "active_profile": active,
+            "models_toml": crate::model_profiles::models_toml_path(home).display().to_string(),
+        })),
+    )
+}
+
+/// GET /api/models/active — Active vLLM profile + OMTAE default model.
+pub async fn get_active_model_profile(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let home = &state.kernel.config.home_dir;
+    let profiles = crate::model_profiles::load_profiles(home).unwrap_or_default();
+    let active_id = crate::model_profiles::read_active_profile_id(home);
+    let active_profile = active_id
+        .as_ref()
+        .and_then(|id| crate::model_profiles::find_profile(&profiles, id));
+    let dm = effective_default_model(&state.kernel);
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "active_profile": active_id,
+            "active_profile_display": active_profile.map(|p| &p.display_name),
+            "omtae_model_id": dm.model,
+            "default_provider": dm.provider,
+            "vllm_restart_command": "omtae-model use <profile>",
+            "cli_status_command": "omtae-model status",
+        })),
+    )
+}
+
+/// PUT /api/models/active — Set OMTAE default model from a profile (vLLM restart via CLI).
+pub async fn set_active_model_profile(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let profile_id = match body.get("profile_id").and_then(|v| v.as_str()) {
+        Some(id) => id.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"status": "error", "error": "missing profile_id"})),
+            );
+        }
+    };
+    let restart_vllm = body
+        .get("restart_vllm")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let home = &state.kernel.config.home_dir;
+    let profiles = match crate::model_profiles::load_profiles(home) {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"status": "error", "error": e})),
+            );
+        }
+    };
+    let Some(profile) = crate::model_profiles::find_profile(&profiles, &profile_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "status": "error",
+                "error": format!("unknown profile: {profile_id}"),
+                "hint": "omtae-model list"
+            })),
+        );
+    };
+    if !crate::model_profiles::profile_available_on_disk(profile) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "status": "error",
+                "error": format!("weights not found at {}", profile.vllm_path),
+                "profile_id": profile_id,
+            })),
+        );
+    }
+
+    if let Err(e) = crate::model_profiles::write_active_profile_id(home, &profile_id) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"status": "error", "error": e})),
+        );
+    }
+    if let Err(e) = crate::model_profiles::persist_default_model_id(home, &profile.omtae_model_id) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"status": "error", "error": e})),
+        );
+    }
+
+    let reload_status = match state.kernel.reload_config() {
+        Ok(plan) if plan.restart_required => "applied_partial",
+        Ok(_) => "applied",
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"status": "error", "error": format!("reload failed: {e}")})),
+            );
+        }
+    };
+
+    state.kernel.audit_log.record(
+        "system",
+        omtae_runtime::audit::AuditAction::ConfigChange,
+        format!("active model profile: {profile_id} -> {}", profile.omtae_model_id),
+        "completed",
+    );
+
+    let mut vllm_note = format!(
+        "OMTAE default set to {}. Restart vLLM: omtae-model use {}",
+        profile.omtae_model_id, profile_id
+    );
+    let mut vllm_restarted = false;
+
+    if restart_vllm {
+        let allowed = std::env::var("OMTAE_ALLOW_VLLM_RESTART")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if allowed {
+            let script = profile.start_script.clone();
+            match tokio::process::Command::new("/usr/bin/bash")
+                .arg(&script)
+                .spawn()
+            {
+                Ok(_) => {
+                    vllm_restarted = true;
+                    vllm_note = format!("vLLM start script launched: {script}");
+                }
+                Err(e) => {
+                    vllm_note = format!("vLLM restart failed to spawn: {e}. Run: omtae-model use {profile_id}");
+                }
+            }
+        } else {
+            vllm_note = format!(
+                "Set OMTAE_ALLOW_VLLM_RESTART=1 on daemon to restart from API, or run: omtae-model use {profile_id}"
+            );
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": reload_status,
+            "profile_id": profile_id,
+            "omtae_model_id": profile.omtae_model_id,
+            "vllm_served_name": profile.vllm_served_name,
+            "vllm_restarted": vllm_restarted,
+            "message": vllm_note,
+        })),
+    )
+}
+
 /// GET /api/models — List all models in the catalog.
 ///
 /// Query parameters:
@@ -6352,7 +6647,7 @@ pub async fn list_models(
             if available_only {
                 let provider = catalog.get_provider(&m.provider);
                 if let Some(p) = provider {
-                    if p.auth_status == openfang_types::model_catalog::AuthStatus::Missing {
+                    if p.auth_status == omtae_types::model_catalog::AuthStatus::Missing {
                         return false;
                     }
                 }
@@ -6363,8 +6658,8 @@ pub async fn list_models(
             // Custom models from unknown providers are assumed available
             let available = catalog
                 .get_provider(&m.provider)
-                .map(|p| p.auth_status != openfang_types::model_catalog::AuthStatus::Missing)
-                .unwrap_or(m.tier == openfang_types::model_catalog::ModelTier::Custom);
+                .map(|p| p.auth_status != omtae_types::model_catalog::AuthStatus::Missing)
+                .unwrap_or(m.tier == omtae_types::model_catalog::ModelTier::Custom);
             serde_json::json!({
                 "id": m.id,
                 "display_name": m.display_name,
@@ -6437,8 +6732,8 @@ pub async fn get_model(
         Some(m) => {
             let available = catalog
                 .get_provider(&m.provider)
-                .map(|p| p.auth_status != openfang_types::model_catalog::AuthStatus::Missing)
-                .unwrap_or(m.tier == openfang_types::model_catalog::ModelTier::Custom);
+                .map(|p| p.auth_status != omtae_types::model_catalog::AuthStatus::Missing)
+                .unwrap_or(m.tier == omtae_types::model_catalog::ModelTier::Custom);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -6474,7 +6769,7 @@ pub async fn get_model(
 /// endpoint responds instantly on repeated dashboard loads even when local
 /// providers are unreachable (fixes #474).
 pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let provider_list: Vec<openfang_types::model_catalog::ProviderInfo> = {
+    let provider_list: Vec<omtae_types::model_catalog::ProviderInfo> = {
         let catalog = state
             .kernel
             .model_catalog
@@ -6496,13 +6791,18 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
     let probe_futures: Vec<_> = local_providers
         .iter()
         .map(|(_, id, url)| {
-            openfang_runtime::provider_health::probe_provider_cached(id, url, cache)
+            omtae_runtime::provider_health::probe_provider_cached(
+                id,
+                url,
+                None,
+                cache,
+            )
         })
         .collect();
     let probe_results = futures::future::join_all(probe_futures).await;
 
     // Index probe results by provider list position for O(1) lookup
-    let mut probe_map: HashMap<usize, openfang_runtime::provider_health::ProbeResult> =
+    let mut probe_map: HashMap<usize, omtae_runtime::provider_health::ProbeResult> =
         HashMap::with_capacity(local_providers.len());
     for ((idx, _, _), result) in local_providers.iter().zip(probe_results) {
         probe_map.insert(*idx, result);
@@ -6556,7 +6856,7 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
 
 /// POST /api/models/custom — Add a custom model to the catalog.
 ///
-/// Persists to `~/.openfang/custom_models.json` and makes the model immediately
+/// Persists to `~/.omtae/custom_models.json` and makes the model immediately
 /// available for agent assignment.
 pub async fn add_custom_model(
     State(state): State<Arc<AppState>>,
@@ -6594,11 +6894,11 @@ pub async fn add_custom_model(
         .unwrap_or(&id)
         .to_string();
 
-    let entry = openfang_types::model_catalog::ModelCatalogEntry {
+    let entry = omtae_types::model_catalog::ModelCatalogEntry {
         id: id.clone(),
         display_name: display,
         provider: provider.clone(),
-        tier: openfang_types::model_catalog::ModelTier::Custom,
+        tier: omtae_types::model_catalog::ModelTier::Custom,
         context_window,
         max_output_tokens: max_output,
         input_cost_per_m: body
@@ -6692,15 +6992,15 @@ pub async fn a2a_agent_card(State(state): State<Arc<AppState>>) -> impl IntoResp
     let base_url = format!("http://{}", state.kernel.config.api_listen);
 
     if let Some(first) = agents.first() {
-        let card = openfang_runtime::a2a::build_agent_card(&first.manifest, &base_url);
+        let card = omtae_runtime::a2a::build_agent_card(&first.manifest, &base_url);
         (
             StatusCode::OK,
             Json(serde_json::to_value(&card).unwrap_or_default()),
         )
     } else {
         let card = serde_json::json!({
-            "name": "openfang",
-            "description": "OpenFang Agent OS — no agents spawned yet",
+            "name": "omtae",
+            "description": "OMTAE Agent OS — no agents spawned yet",
             "url": format!("{base_url}/a2a"),
             "version": "0.1.0",
             "capabilities": { "streaming": true },
@@ -6720,7 +7020,7 @@ pub async fn a2a_list_agents(State(state): State<Arc<AppState>>) -> impl IntoRes
     let cards: Vec<serde_json::Value> = agents
         .iter()
         .map(|entry| {
-            let card = openfang_runtime::a2a::build_agent_card(&entry.manifest, &base_url);
+            let card = omtae_runtime::a2a::build_agent_card(&entry.manifest, &base_url);
             serde_json::to_value(&card).unwrap_or_default()
         })
         .collect();
@@ -6768,13 +7068,13 @@ pub async fn a2a_send_task(
     let session_id = request["params"]["sessionId"].as_str().map(String::from);
 
     // Create the task in the store as Working
-    let task = openfang_runtime::a2a::A2aTask {
+    let task = omtae_runtime::a2a::A2aTask {
         id: task_id.clone(),
         session_id: session_id.clone(),
-        status: openfang_runtime::a2a::A2aTaskStatus::Working.into(),
-        messages: vec![openfang_runtime::a2a::A2aMessage {
+        status: omtae_runtime::a2a::A2aTaskStatus::Working.into(),
+        messages: vec![omtae_runtime::a2a::A2aMessage {
             role: "user".to_string(),
-            parts: vec![openfang_runtime::a2a::A2aPart::Text {
+            parts: vec![omtae_runtime::a2a::A2aPart::Text {
                 text: message_text.clone(),
             }],
         }],
@@ -6785,9 +7085,9 @@ pub async fn a2a_send_task(
     // Send message to agent
     match state.kernel.send_message(agent.id, &message_text).await {
         Ok(result) => {
-            let response_msg = openfang_runtime::a2a::A2aMessage {
+            let response_msg = omtae_runtime::a2a::A2aMessage {
                 role: "agent".to_string(),
-                parts: vec![openfang_runtime::a2a::A2aPart::Text {
+                parts: vec![omtae_runtime::a2a::A2aPart::Text {
                     text: result.response,
                 }],
             };
@@ -6807,9 +7107,9 @@ pub async fn a2a_send_task(
             }
         }
         Err(e) => {
-            let error_msg = openfang_runtime::a2a::A2aMessage {
+            let error_msg = omtae_runtime::a2a::A2aMessage {
                 role: "agent".to_string(),
-                parts: vec![openfang_runtime::a2a::A2aPart::Text {
+                parts: vec![omtae_runtime::a2a::A2aPart::Text {
                     text: format!("Error: {e}"),
                 }],
             };
@@ -6908,7 +7208,7 @@ pub async fn a2a_discover_external(
         }
     };
 
-    let client = openfang_runtime::a2a::A2aClient::new();
+    let client = omtae_runtime::a2a::A2aClient::new();
     match client.discover(&url).await {
         Ok(card) => {
             let card_json = serde_json::to_value(&card).unwrap_or_default();
@@ -6966,7 +7266,7 @@ pub async fn a2a_send_external(
     };
     let session_id = body["session_id"].as_str();
 
-    let client = openfang_runtime::a2a::A2aClient::new();
+    let client = omtae_runtime::a2a::A2aClient::new();
     match client.send_task(&url, &message, session_id).await {
         Ok(task) => (
             StatusCode::OK,
@@ -6995,7 +7295,7 @@ pub async fn a2a_external_task_status(
         }
     };
 
-    let client = openfang_runtime::a2a::A2aClient::new();
+    let client = omtae_runtime::a2a::A2aClient::new();
     match client.get_task(&url, &task_id).await {
         Ok(task) => (
             StatusCode::OK,
@@ -7027,7 +7327,7 @@ pub async fn mcp_http(
             .read()
             .unwrap_or_else(|e| e.into_inner());
         for skill_tool in registry.all_tool_definitions() {
-            tools.push(openfang_types::tool::ToolDefinition {
+            tools.push(omtae_types::tool::ToolDefinition {
                 name: skill_tool.name.clone(),
                 description: skill_tool.description.clone(),
                 input_schema: skill_tool.input_schema.clone(),
@@ -7065,9 +7365,9 @@ pub async fn mcp_http(
             .snapshot();
 
         // Execute the tool via the kernel's tool runner
-        let kernel_handle: Arc<dyn openfang_runtime::kernel_handle::KernelHandle> =
-            state.kernel.clone() as Arc<dyn openfang_runtime::kernel_handle::KernelHandle>;
-        let result = openfang_runtime::tool_runner::execute_tool(
+        let kernel_handle: Arc<dyn omtae_runtime::kernel_handle::KernelHandle> =
+            state.kernel.clone() as Arc<dyn omtae_runtime::kernel_handle::KernelHandle>;
+        let result = omtae_runtime::tool_runner::execute_tool(
             "mcp-http",
             tool_name,
             &arguments,
@@ -7107,7 +7407,7 @@ pub async fn mcp_http(
     }
 
     // For non-tools/call methods (initialize, tools/list, etc.), delegate to the handler
-    let response = openfang_runtime::mcp_server::handle_mcp_request(&request, &tools).await;
+    let response = omtae_runtime::mcp_server::handle_mcp_request(&request, &tools).await;
     Json(response)
 }
 
@@ -7179,7 +7479,7 @@ pub async fn switch_agent_session(
         }
     };
     let session_id = match session_id_str.parse::<uuid::Uuid>() {
-        Ok(uuid) => openfang_types::agent::SessionId(uuid),
+        Ok(uuid) => omtae_types::agent::SessionId(uuid),
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -7333,11 +7633,19 @@ pub async fn stop_agent(
     match state.kernel.stop_agent_run(agent_id) {
         Ok(true) => (
             StatusCode::OK,
-            Json(serde_json::json!({"status": "ok", "message": "Run cancelled"})),
+            Json(serde_json::json!({
+                "status": "ok",
+                "message": "Run cancelled",
+                "background_paused": state.kernel.background.is_paused(agent_id),
+            })),
         ),
         Ok(false) => (
             StatusCode::OK,
-            Json(serde_json::json!({"status": "ok", "message": "No active run"})),
+            Json(serde_json::json!({
+                "status": "ok",
+                "message": "No active run",
+                "background_paused": state.kernel.background.is_paused(agent_id),
+            })),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -7596,7 +7904,7 @@ pub async fn get_agent_mcp_servers(
     if let Ok(mcp_tools) = state.kernel.mcp_tools.lock() {
         let mut seen = std::collections::HashSet::new();
         for tool in mcp_tools.iter() {
-            if let Some(server) = openfang_runtime::mcp::extract_mcp_server(&tool.name) {
+            if let Some(server) = omtae_runtime::mcp::extract_mcp_server(&tool.name) {
                 if seen.insert(server.to_string()) {
                     available.push(server.to_string());
                 }
@@ -7660,7 +7968,7 @@ pub async fn set_agent_mcp_servers(
 
 /// POST /api/providers/{name}/key — Save an API key for a provider.
 ///
-/// SECURITY: Writes to `~/.openfang/secrets.env`, sets env var in process,
+/// SECURITY: Writes to `~/.omtae/secrets.env`, sets env var in process,
 /// and refreshes auth detection. Key is zeroized after use.
 pub async fn set_provider_key(
     State(state): State<Arc<AppState>>,
@@ -7774,7 +8082,7 @@ pub async fn set_provider_key(
             // Hot-update the in-memory default model override so resolve_driver()
             // immediately creates drivers for the new provider — no restart needed.
             {
-                let new_dm = openfang_types::config::DefaultModelConfig {
+                let new_dm = omtae_types::config::DefaultModelConfig {
                     provider: name.clone(),
                     model: model_id,
                     api_key_env: env_var.clone(),
@@ -7816,7 +8124,7 @@ pub async fn set_provider_key(
             let base = guard
                 .clone()
                 .unwrap_or_else(|| state.kernel.config.default_model.clone());
-            *guard = Some(openfang_types::config::DefaultModelConfig {
+            *guard = Some(omtae_types::config::DefaultModelConfig {
                 api_key_env: env_var.clone(),
                 ..base
             });
@@ -7907,10 +8215,8 @@ pub async fn test_provider(
             .unwrap_or_else(|e| e.into_inner());
         match catalog.get_provider(&name) {
             Some(p) => {
-                // Find a default model for this provider to use in the test request
-                let model_id = catalog
-                    .default_model_for_provider(&name)
-                    .unwrap_or_default();
+                let model_id =
+                    model_for_provider_test(&state.kernel, &catalog, &name);
                 (
                     p.api_key_env.clone(),
                     p.base_url.clone(),
@@ -7938,7 +8244,7 @@ pub async fn test_provider(
 
     // Attempt a lightweight connectivity test
     let start = std::time::Instant::now();
-    let driver_config = openfang_runtime::llm_driver::DriverConfig {
+    let driver_config = omtae_runtime::llm_driver::DriverConfig {
         provider: name.clone(),
         api_key,
         base_url: if base_url.is_empty() {
@@ -7950,12 +8256,12 @@ pub async fn test_provider(
         subprocess_timeout_secs: None,
     };
 
-    match openfang_runtime::drivers::create_driver(&driver_config) {
+    match omtae_runtime::drivers::create_driver(&driver_config) {
         Ok(driver) => {
             // Send a minimal completion request to test connectivity
-            let test_req = openfang_runtime::llm_driver::CompletionRequest {
+            let test_req = omtae_runtime::llm_driver::CompletionRequest {
                 model: default_model.clone(),
-                messages: vec![openfang_types::message::Message::user("Hi")],
+                messages: vec![omtae_types::message::Message::user("Hi")],
                 tools: vec![],
                 max_tokens: 1,
                 temperature: 0.0,
@@ -8040,7 +8346,20 @@ pub async fn set_provider_url(
     }
 
     // Probe reachability at the new URL
-    let probe = openfang_runtime::provider_health::probe_provider(&name, &base_url).await;
+    let api_key = {
+        let catalog = state
+            .kernel
+            .model_catalog
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        provider_api_key_from_env(&catalog, &name)
+    };
+    let probe = omtae_runtime::provider_health::probe_provider(
+        &name,
+        &base_url,
+        api_key.as_deref(),
+    )
+    .await;
 
     // Merge discovered models into catalog
     if !probe.discovered_models.is_empty() {
@@ -8146,7 +8465,7 @@ pub async fn create_skill(
         );
     }
 
-    // Write skill.toml to ~/.openfang/skills/{name}/
+    // Write skill.toml to ~/.omtae/skills/{name}/
     let skill_dir = state.kernel.config.home_dir.join("skills").join(&name);
     if skill_dir.exists() {
         return (
@@ -8215,7 +8534,7 @@ pub async fn create_skill(
 fn load_skill_declared_config(
     skills_dir: &std::path::Path,
     skill_name: &str,
-) -> Option<std::collections::HashMap<String, openfang_skills::config_injection::SkillConfigVar>> {
+) -> Option<std::collections::HashMap<String, omtae_skills::config_injection::SkillConfigVar>> {
     // 1. User-installed skill: skills_dir/<name>/skill.toml, falling back to
     //    SKILL.md frontmatter if no TOML has been generated yet.
     let skill_dir = skills_dir.join(skill_name);
@@ -8223,7 +8542,7 @@ fn load_skill_declared_config(
         let toml_path = skill_dir.join("skill.toml");
         if toml_path.exists() {
             if let Ok(text) = std::fs::read_to_string(&toml_path) {
-                if let Ok(manifest) = toml::from_str::<openfang_skills::SkillManifest>(&text) {
+                if let Ok(manifest) = toml::from_str::<omtae_skills::SkillManifest>(&text) {
                     if manifest.skill.name == skill_name {
                         return Some(manifest.config);
                     }
@@ -8234,7 +8553,7 @@ fn load_skill_declared_config(
         if skillmd_path.exists() {
             if let Ok(text) = std::fs::read_to_string(&skillmd_path) {
                 if let Ok(converted) =
-                    openfang_skills::openclaw_compat::convert_skillmd_str(skill_name, &text)
+                    omtae_skills::openclaw_compat::convert_skillmd_str(skill_name, &text)
                 {
                     return Some(converted.config_vars);
                 }
@@ -8243,10 +8562,10 @@ fn load_skill_declared_config(
     }
 
     // 2. Bundled skill: look up by name in the compile-time catalog.
-    for (bundled_name, content) in openfang_skills::bundled::bundled_skills() {
+    for (bundled_name, content) in omtae_skills::bundled::bundled_skills() {
         if bundled_name == skill_name {
             if let Ok(converted) =
-                openfang_skills::openclaw_compat::convert_skillmd_str(bundled_name, content)
+                omtae_skills::openclaw_compat::convert_skillmd_str(bundled_name, content)
             {
                 return Some(converted.config_vars);
             }
@@ -8260,12 +8579,12 @@ fn load_skill_declared_config(
 ///
 /// Returns `None` if the skill is not installed. Resolved values are
 /// redacted when the variable name looks secret (see
-/// [`openfang_skills::config_injection::is_secret_name`]).
+/// [`omtae_skills::config_injection::is_secret_name`]).
 fn build_skill_config_snapshot(
     state: &Arc<AppState>,
     skill_name: &str,
 ) -> Option<serde_json::Value> {
-    use openfang_skills::config_injection::is_secret_name;
+    use omtae_skills::config_injection::is_secret_name;
 
     let skills_dir = state.kernel.config.home_dir.join("skills");
     let declared = load_skill_declared_config(&skills_dir, skill_name)?;
@@ -8870,8 +9189,8 @@ pub async fn list_integrations(State(state): State<Arc<AppState>>) -> impl IntoR
         let status = match &info.installed {
             Some(inst) if !inst.enabled => "disabled",
             Some(_) => match h.as_ref().map(|h| &h.status) {
-                Some(openfang_extensions::IntegrationStatus::Ready) => "ready",
-                Some(openfang_extensions::IntegrationStatus::Error(_)) => "error",
+                Some(omtae_extensions::IntegrationStatus::Ready) => "ready",
+                Some(omtae_extensions::IntegrationStatus::Error(_)) => "error",
                 _ => "installed",
             },
             None => continue, // Only show installed
@@ -8966,7 +9285,7 @@ pub async fn add_integration(
                 format!("Unknown integration: '{}'", id),
             ))
         } else {
-            let entry = openfang_extensions::InstalledIntegration {
+            let entry = omtae_extensions::InstalledIntegration {
                 id: id.clone(),
                 installed_at: chrono::Utc::now(),
                 enabled: true,
@@ -9125,7 +9444,7 @@ pub async fn reload_integrations(State(state): State<Arc<AppState>>) -> impl Int
 // ---------------------------------------------------------------------------
 //
 // Historical note: an earlier implementation of `/api/schedules*` wrote to a
-// shared-memory key (`__openfang_schedules`) that no executor ever read — so
+// shared-memory key (`__omtae_schedules`) that no executor ever read — so
 // scheduled jobs registered via this API never actually fired (#1069). These
 // routes now delegate to the kernel's real cron scheduler, which already
 // backs `/api/cron/jobs*`. The request/response shape has been preserved as
@@ -9134,10 +9453,10 @@ pub async fn reload_integrations(State(state): State<Arc<AppState>>) -> impl Int
 /// Convert an internal `CronJob` into the legacy `/api/schedules` response
 /// shape so existing dashboard code keeps working.
 fn cron_job_to_schedule_view(
-    kernel: &OpenFangKernel,
-    job: &openfang_types::scheduler::CronJob,
+    kernel: &OMTAEKernel,
+    job: &omtae_types::scheduler::CronJob,
 ) -> serde_json::Value {
-    use openfang_types::scheduler::{CronAction, CronSchedule};
+    use omtae_types::scheduler::{CronAction, CronSchedule};
 
     let cron = match &job.schedule {
         CronSchedule::Cron { expr, .. } => expr.clone(),
@@ -9274,7 +9593,7 @@ pub async fn create_schedule(
     if let Some(arr) = delivery_targets_raw.as_array() {
         for (idx, t) in arr.iter().enumerate() {
             if let Err(e) =
-                serde_json::from_value::<openfang_types::scheduler::CronDeliveryTarget>(t.clone())
+                serde_json::from_value::<omtae_types::scheduler::CronDeliveryTarget>(t.clone())
             {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -9314,14 +9633,14 @@ pub async fn create_schedule(
                 .unwrap_or_default();
             if !enabled {
                 if let Ok(uuid) = uuid::Uuid::parse_str(&job_id) {
-                    let cj_id = openfang_types::scheduler::CronJobId(uuid);
+                    let cj_id = omtae_types::scheduler::CronJobId(uuid);
                     let _ = state.kernel.cron_scheduler.set_enabled(cj_id, false);
                     let _ = state.kernel.cron_scheduler.persist();
                 }
             }
             // Build response in the legacy shape.
             let body = if let Ok(uuid) = uuid::Uuid::parse_str(&job_id) {
-                let cj_id = openfang_types::scheduler::CronJobId(uuid);
+                let cj_id = omtae_types::scheduler::CronJobId(uuid);
                 match state.kernel.cron_scheduler.get_job(cj_id) {
                     Some(job) => cron_job_to_schedule_view(&state.kernel, &job),
                     None => serde_json::json!({
@@ -9371,7 +9690,7 @@ pub async fn update_schedule(
             );
         }
     };
-    let cj_id = openfang_types::scheduler::CronJobId(uuid);
+    let cj_id = omtae_types::scheduler::CronJobId(uuid);
 
     if state.kernel.cron_scheduler.get_job(cj_id).is_none() {
         return (
@@ -9402,10 +9721,10 @@ pub async fn update_schedule(
             );
         }
         let arr = raw_targets.as_array().unwrap();
-        let mut parsed: Vec<openfang_types::scheduler::CronDeliveryTarget> =
+        let mut parsed: Vec<omtae_types::scheduler::CronDeliveryTarget> =
             Vec::with_capacity(arr.len());
         for (idx, t) in arr.iter().enumerate() {
-            match serde_json::from_value::<openfang_types::scheduler::CronDeliveryTarget>(t.clone())
+            match serde_json::from_value::<omtae_types::scheduler::CronDeliveryTarget>(t.clone())
             {
                 Ok(dt) => parsed.push(dt),
                 Err(e) => {
@@ -9464,7 +9783,7 @@ pub async fn delete_schedule(
             );
         }
     };
-    let cj_id = openfang_types::scheduler::CronJobId(uuid);
+    let cj_id = omtae_types::scheduler::CronJobId(uuid);
     match state.kernel.cron_scheduler.remove_job(cj_id) {
         Ok(_) => {
             let _ = state.kernel.cron_scheduler.persist();
@@ -9494,16 +9813,16 @@ pub async fn run_schedule(
             );
         }
     };
-    let cj_id = openfang_types::scheduler::CronJobId(uuid);
+    let cj_id = omtae_types::scheduler::CronJobId(uuid);
     let job = match state.kernel.cron_scheduler.try_claim_for_run(cj_id) {
         Ok(j) => j,
-        Err(openfang_kernel::cron::ClaimError::NotFound) => {
+        Err(omtae_kernel::cron::ClaimError::NotFound) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Schedule not found"})),
             );
         }
-        Err(openfang_kernel::cron::ClaimError::Disabled) => {
+        Err(omtae_kernel::cron::ClaimError::Disabled) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "Schedule is disabled"})),
@@ -9553,7 +9872,7 @@ pub async fn schedule_delivery_log(
             );
         }
     };
-    let cj_id = openfang_types::scheduler::CronJobId(uuid);
+    let cj_id = omtae_types::scheduler::CronJobId(uuid);
     let job = match state.kernel.cron_scheduler.get_job(cj_id) {
         Some(j) => j,
         None => {
@@ -9705,7 +10024,7 @@ pub struct PatchAgentConfigRequest {
     pub provider: Option<String>,
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
-    pub fallback_models: Option<Vec<openfang_types::agent::FallbackModel>>,
+    pub fallback_models: Option<Vec<omtae_types::agent::FallbackModel>>,
 }
 
 /// PATCH /api/agents/{id}/config — Hot-update agent name, description, system prompt, and identity.
@@ -10645,7 +10964,7 @@ pub async fn upload_file(
 
     // Generate file ID and save
     let file_id = uuid::Uuid::new_v4().to_string();
-    let upload_dir = std::env::temp_dir().join("openfang_uploads");
+    let upload_dir = std::env::temp_dir().join("omtae_uploads");
     if let Err(e) = std::fs::create_dir_all(&upload_dir) {
         tracing::warn!("Failed to create upload dir: {e}");
         return (
@@ -10674,10 +10993,10 @@ pub async fn upload_file(
 
     // Auto-transcribe audio uploads using the media engine
     let transcription = if content_type.starts_with("audio/") {
-        let attachment = openfang_types::media::MediaAttachment {
-            media_type: openfang_types::media::MediaType::Audio,
+        let attachment = omtae_types::media::MediaAttachment {
+            media_type: omtae_types::media::MediaType::Audio,
             mime_type: content_type.clone(),
-            source: openfang_types::media::MediaSource::FilePath {
+            source: omtae_types::media::MediaSource::FilePath {
                 path: file_path.to_string_lossy().to_string(),
             },
             size_bytes: size as u64,
@@ -10727,7 +11046,7 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
         );
     }
 
-    let file_path = std::env::temp_dir().join("openfang_uploads").join(&file_id);
+    let file_path = std::env::temp_dir().join("omtae_uploads").join(&file_id);
 
     // Look up metadata from registry; fall back to disk probe for generated images
     // (image_generate saves files without registering in UPLOAD_REGISTRY).
@@ -10813,9 +11132,9 @@ pub async fn list_approvals(State(state): State<Arc<AppState>>) -> impl IntoResp
         let request = record.request;
         let agent_name = agent_name_for(&request.agent_id);
         let status = match record.decision {
-            openfang_types::approval::ApprovalDecision::Approved => "approved",
-            openfang_types::approval::ApprovalDecision::Denied => "rejected",
-            openfang_types::approval::ApprovalDecision::TimedOut => "expired",
+            omtae_types::approval::ApprovalDecision::Approved => "approved",
+            omtae_types::approval::ApprovalDecision::Denied => "rejected",
+            omtae_types::approval::ApprovalDecision::TimedOut => "expired",
         };
         serde_json::json!({
             "id": request.id,
@@ -10867,7 +11186,7 @@ pub async fn create_approval(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateApprovalRequest>,
 ) -> impl IntoResponse {
-    use openfang_types::approval::{ApprovalRequest, RiskLevel};
+    use omtae_types::approval::{ApprovalRequest, RiskLevel};
 
     let policy = state.kernel.approval_manager.policy();
     let id = uuid::Uuid::new_v4();
@@ -10919,7 +11238,7 @@ pub async fn approve_request(
 
     match state.kernel.approval_manager.resolve(
         uuid,
-        openfang_types::approval::ApprovalDecision::Approved,
+        omtae_types::approval::ApprovalDecision::Approved,
         Some("api".to_string()),
     ) {
         Ok(resp) => (
@@ -10949,7 +11268,7 @@ pub async fn reject_request(
 
     match state.kernel.approval_manager.resolve(
         uuid,
-        openfang_types::approval::ApprovalDecision::Denied,
+        omtae_types::approval::ApprovalDecision::Denied,
         Some("api".to_string()),
     ) {
         Ok(resp) => (
@@ -10975,7 +11294,7 @@ pub async fn config_reload(State(state): State<Arc<AppState>>) -> impl IntoRespo
     // SECURITY: Record config reload in audit trail
     state.kernel.audit_log.record(
         "system",
-        openfang_runtime::audit::AuditAction::ConfigChange,
+        omtae_runtime::audit::AuditAction::ConfigChange,
         "config reload requested via API",
         "pending",
     );
@@ -11230,7 +11549,7 @@ pub async fn config_set(
 
     state.kernel.audit_log.record(
         "system",
-        openfang_runtime::audit::AuditAction::ConfigChange,
+        omtae_runtime::audit::AuditAction::ConfigChange,
         format!("config set: {path}"),
         "completed",
     );
@@ -11365,7 +11684,7 @@ pub async fn delete_cron_job(
 ) -> impl IntoResponse {
     match uuid::Uuid::parse_str(&id) {
         Ok(uuid) => {
-            let job_id = openfang_types::scheduler::CronJobId(uuid);
+            let job_id = omtae_types::scheduler::CronJobId(uuid);
             match state.kernel.cron_scheduler.remove_job(job_id) {
                 Ok(_) => {
                     let _ = state.kernel.cron_scheduler.persist();
@@ -11396,7 +11715,7 @@ pub async fn toggle_cron_job(
     let enabled = body["enabled"].as_bool().unwrap_or(true);
     match uuid::Uuid::parse_str(&id) {
         Ok(uuid) => {
-            let job_id = openfang_types::scheduler::CronJobId(uuid);
+            let job_id = omtae_types::scheduler::CronJobId(uuid);
             match state.kernel.cron_scheduler.set_enabled(job_id, enabled) {
                 Ok(()) => {
                     let _ = state.kernel.cron_scheduler.persist();
@@ -11425,7 +11744,7 @@ pub async fn cron_job_status(
 ) -> impl IntoResponse {
     match uuid::Uuid::parse_str(&id) {
         Ok(uuid) => {
-            let job_id = openfang_types::scheduler::CronJobId(uuid);
+            let job_id = omtae_types::scheduler::CronJobId(uuid);
             match state.kernel.cron_scheduler.get_meta(job_id) {
                 Some(meta) => (
                     StatusCode::OK,
@@ -11466,18 +11785,18 @@ pub async fn run_cron_job(
             );
         }
     };
-    let job_id = openfang_types::scheduler::CronJobId(uuid);
+    let job_id = omtae_types::scheduler::CronJobId(uuid);
 
     // Atomically check existence + enabled + reserve next_run in one lock hold.
     let job = match state.kernel.cron_scheduler.try_claim_for_run(job_id) {
         Ok(j) => j,
-        Err(openfang_kernel::cron::ClaimError::NotFound) => {
+        Err(omtae_kernel::cron::ClaimError::NotFound) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"status": "error", "error": "Job not found"})),
             );
         }
-        Err(openfang_kernel::cron::ClaimError::Disabled) => {
+        Err(omtae_kernel::cron::ClaimError::Disabled) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"status": "error", "error": "Job is disabled"})),
@@ -11515,7 +11834,7 @@ pub async fn run_cron_job(
 pub async fn webhook_wake(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
-    Json(body): Json<openfang_types::webhook::WakePayload>,
+    Json(body): Json<omtae_types::webhook::WakePayload>,
 ) -> impl IntoResponse {
     // Check if webhook triggers are enabled
     let wh_config = match &state.kernel.config.webhook_triggers {
@@ -11574,7 +11893,7 @@ pub async fn webhook_wake(
 pub async fn webhook_agent(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
-    Json(body): Json<openfang_types::webhook::AgentHookPayload>,
+    Json(body): Json<omtae_types::webhook::AgentHookPayload>,
 ) -> impl IntoResponse {
     // Check if webhook triggers are enabled
     let wh_config = match &state.kernel.config.webhook_triggers {
@@ -11671,7 +11990,7 @@ pub async fn list_bindings(State(state): State<Arc<AppState>>) -> impl IntoRespo
 /// POST /api/bindings — Add a new agent binding.
 pub async fn add_binding(
     State(state): State<Arc<AppState>>,
-    Json(binding): Json<openfang_types::config::AgentBinding>,
+    Json(binding): Json<omtae_types::config::AgentBinding>,
 ) -> impl IntoResponse {
     // Validate agent exists
     let agents = state.kernel.registry.list();
@@ -11718,7 +12037,7 @@ pub async fn pairing_request(State(state): State<Arc<AppState>>) -> impl IntoRes
     }
     match state.kernel.pairing.create_pairing_request() {
         Ok(req) => {
-            let qr_uri = format!("openfang://pair?token={}", req.token);
+            let qr_uri = format!("omtae://pair?token={}", req.token);
             Json(serde_json::json!({
                 "token": req.token,
                 "qr_uri": qr_uri,
@@ -11759,7 +12078,7 @@ pub async fn pairing_complete(
         .get("push_token")
         .and_then(|v| v.as_str())
         .map(String::from);
-    let device_info = openfang_kernel::pairing::PairedDevice {
+    let device_info = omtae_kernel::pairing::PairedDevice {
         device_id: uuid::Uuid::new_v4().to_string(),
         display_name: display_name.to_string(),
         platform: platform.to_string(),
@@ -11843,7 +12162,7 @@ pub async fn pairing_notify(
     let title = body
         .get("title")
         .and_then(|v| v.as_str())
-        .unwrap_or("OpenFang");
+        .unwrap_or("OMTAE");
     let message = body.get("message").and_then(|v| v.as_str()).unwrap_or("");
     if message.is_empty() {
         return (
@@ -11882,7 +12201,7 @@ pub async fn pairing_notify(
 ///
 /// Unknown surface values return 400.
 pub async fn list_commands(Query(params): Query<CommandsQuery>) -> impl IntoResponse {
-    use openfang_types::commands::{self, CommandCategory, Surfaces};
+    use omtae_types::commands::{self, CommandCategory, Surfaces};
 
     let surface_raw = params.surface.as_deref().unwrap_or("web");
     let surface = match surface_raw.to_ascii_lowercase().as_str() {
@@ -11979,7 +12298,7 @@ pub async fn copilot_oauth_start() -> impl IntoResponse {
     // Clean up expired flows first
     COPILOT_FLOWS.retain(|_, state| state.expires_at > Instant::now());
 
-    match openfang_runtime::copilot_oauth::start_device_flow().await {
+    match omtae_runtime::copilot_oauth::start_device_flow().await {
         Ok(resp) => {
             let poll_id = uuid::Uuid::new_v4().to_string();
 
@@ -12041,12 +12360,12 @@ pub async fn copilot_oauth_poll(
     let device_code = flow.device_code.clone();
     drop(flow);
 
-    match openfang_runtime::copilot_oauth::poll_device_flow(&device_code).await {
-        openfang_runtime::copilot_oauth::DeviceFlowStatus::Pending => (
+    match omtae_runtime::copilot_oauth::poll_device_flow(&device_code).await {
+        omtae_runtime::copilot_oauth::DeviceFlowStatus::Pending => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "pending"})),
         ),
-        openfang_runtime::copilot_oauth::DeviceFlowStatus::Complete { access_token } => {
+        omtae_runtime::copilot_oauth::DeviceFlowStatus::Complete { access_token } => {
             // Store in vault (best-effort)
             state.kernel.store_credential("GITHUB_TOKEN", &access_token);
 
@@ -12080,7 +12399,7 @@ pub async fn copilot_oauth_poll(
                 Json(serde_json::json!({"status": "complete"})),
             )
         }
-        openfang_runtime::copilot_oauth::DeviceFlowStatus::SlowDown { new_interval } => {
+        omtae_runtime::copilot_oauth::DeviceFlowStatus::SlowDown { new_interval } => {
             // Update interval
             if let Some(mut f) = COPILOT_FLOWS.get_mut(&poll_id) {
                 f.interval = new_interval;
@@ -12090,21 +12409,21 @@ pub async fn copilot_oauth_poll(
                 Json(serde_json::json!({"status": "pending", "interval": new_interval})),
             )
         }
-        openfang_runtime::copilot_oauth::DeviceFlowStatus::Expired => {
+        omtae_runtime::copilot_oauth::DeviceFlowStatus::Expired => {
             COPILOT_FLOWS.remove(&poll_id);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({"status": "expired"})),
             )
         }
-        openfang_runtime::copilot_oauth::DeviceFlowStatus::AccessDenied => {
+        omtae_runtime::copilot_oauth::DeviceFlowStatus::AccessDenied => {
             COPILOT_FLOWS.remove(&poll_id);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({"status": "denied"})),
             )
         }
-        openfang_runtime::copilot_oauth::DeviceFlowStatus::Error(e) => (
+        omtae_runtime::copilot_oauth::DeviceFlowStatus::Error(e) => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "error", "error": e})),
         ),
@@ -12117,7 +12436,7 @@ pub async fn copilot_oauth_poll(
 
 /// GET /api/comms/topology — Build agent topology graph from registry.
 pub async fn comms_topology(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    use openfang_types::comms::{EdgeKind, TopoEdge, TopoNode, Topology};
+    use omtae_types::comms::{EdgeKind, TopoEdge, TopoNode, Topology};
 
     let agents = state.kernel.registry.list();
 
@@ -12148,8 +12467,8 @@ pub async fn comms_topology(State(state): State<Arc<AppState>>) -> impl IntoResp
     let events = state.kernel.event_bus.history(500).await;
     let mut peer_pairs = std::collections::HashSet::new();
     for event in &events {
-        if let openfang_types::event::EventPayload::Message(_) = &event.payload {
-            if let openfang_types::event::EventTarget::Agent(target_id) = &event.target {
+        if let omtae_types::event::EventPayload::Message(_) = &event.payload {
+            if let omtae_types::event::EventTarget::Agent(target_id) = &event.target {
                 let from = event.source.to_string();
                 let to = target_id.to_string();
                 // Deduplicate: only one edge per pair, skip self-loops
@@ -12176,11 +12495,11 @@ pub async fn comms_topology(State(state): State<Arc<AppState>>) -> impl IntoResp
 
 /// Filter a kernel event into a CommsEvent, if it represents inter-agent communication.
 fn filter_to_comms_event(
-    event: &openfang_types::event::Event,
-    agents: &[openfang_types::agent::AgentEntry],
-) -> Option<openfang_types::comms::CommsEvent> {
-    use openfang_types::comms::{CommsEvent, CommsEventKind};
-    use openfang_types::event::{EventPayload, EventTarget, LifecycleEvent};
+    event: &omtae_types::event::Event,
+    agents: &[omtae_types::agent::AgentEntry],
+) -> Option<omtae_types::comms::CommsEvent> {
+    use omtae_types::comms::{CommsEvent, CommsEventKind};
+    use omtae_types::event::{EventPayload, EventTarget, LifecycleEvent};
 
     let resolve_name = |id: &str| -> String {
         agents
@@ -12204,7 +12523,7 @@ fn filter_to_comms_event(
                 source_name: resolve_name(&event.source.to_string()),
                 target_id: target_id.clone(),
                 target_name: resolve_name(&target_id),
-                detail: openfang_types::truncate_str(&msg.content, 200).to_string(),
+                detail: omtae_types::truncate_str(&msg.content, 200).to_string(),
             })
         }
         EventPayload::Lifecycle(lifecycle) => match lifecycle {
@@ -12236,10 +12555,10 @@ fn filter_to_comms_event(
 
 /// Convert an audit entry into a CommsEvent if it represents inter-agent activity.
 fn audit_to_comms_event(
-    entry: &openfang_runtime::audit::AuditEntry,
-    agents: &[openfang_types::agent::AgentEntry],
-) -> Option<openfang_types::comms::CommsEvent> {
-    use openfang_types::comms::{CommsEvent, CommsEventKind};
+    entry: &omtae_runtime::audit::AuditEntry,
+    agents: &[omtae_types::agent::AgentEntry],
+) -> Option<omtae_types::comms::CommsEvent> {
+    use omtae_types::comms::{CommsEvent, CommsEventKind};
 
     let resolve_name = |id: &str| -> String {
         agents
@@ -12250,7 +12569,7 @@ fn audit_to_comms_event(
                 if id.is_empty() || id == "system" {
                     "system".to_string()
                 } else {
-                    openfang_types::truncate_str(id, 12).to_string()
+                    omtae_types::truncate_str(id, 12).to_string()
                 }
             })
     };
@@ -12276,17 +12595,17 @@ fn audit_to_comms_event(
                         "{} in / {} out — {}",
                         in_tok,
                         out_tok,
-                        openfang_types::truncate_str(&entry.outcome, 80)
+                        omtae_types::truncate_str(&entry.outcome, 80)
                     )
                 }
             } else if entry.outcome != "ok" {
                 format!(
                     "{} — {}",
-                    openfang_types::truncate_str(&entry.detail, 80),
-                    openfang_types::truncate_str(&entry.outcome, 80)
+                    omtae_types::truncate_str(&entry.detail, 80),
+                    omtae_types::truncate_str(&entry.outcome, 80)
                 )
             } else {
-                openfang_types::truncate_str(&entry.detail, 200).to_string()
+                omtae_types::truncate_str(&entry.detail, 200).to_string()
             };
             (CommsEventKind::AgentMessage, detail, "user")
         }
@@ -12294,7 +12613,7 @@ fn audit_to_comms_event(
             CommsEventKind::AgentSpawned,
             format!(
                 "Agent spawned: {}",
-                openfang_types::truncate_str(&entry.detail, 100)
+                omtae_types::truncate_str(&entry.detail, 100)
             ),
             "",
         ),
@@ -12302,7 +12621,7 @@ fn audit_to_comms_event(
             CommsEventKind::AgentTerminated,
             format!(
                 "Agent killed: {}",
-                openfang_types::truncate_str(&entry.detail, 100)
+                omtae_types::truncate_str(&entry.detail, 100)
             ),
             "",
         ),
@@ -12347,7 +12666,7 @@ pub async fn comms_events(
 
     // Primary source: event bus (has full source/target context)
     let bus_events = state.kernel.event_bus.history(500).await;
-    let mut comms_events: Vec<openfang_types::comms::CommsEvent> = bus_events
+    let mut comms_events: Vec<omtae_types::comms::CommsEvent> = bus_events
         .iter()
         .filter_map(|e| filter_to_comms_event(e, &agents))
         .collect();
@@ -12425,10 +12744,10 @@ pub async fn comms_events_stream(State(state): State<Arc<AppState>>) -> axum::re
 /// POST /api/comms/send — Send a message from one agent to another.
 pub async fn comms_send(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<openfang_types::comms::CommsSendRequest>,
+    Json(req): Json<omtae_types::comms::CommsSendRequest>,
 ) -> impl IntoResponse {
     // Validate from agent exists
-    let from_id: openfang_types::agent::AgentId = match req.from_agent_id.parse() {
+    let from_id: omtae_types::agent::AgentId = match req.from_agent_id.parse() {
         Ok(id) => id,
         Err(_) => {
             return (
@@ -12445,7 +12764,7 @@ pub async fn comms_send(
     }
 
     // Validate to agent exists
-    let to_id: openfang_types::agent::AgentId = match req.to_agent_id.parse() {
+    let to_id: omtae_types::agent::AgentId = match req.to_agent_id.parse() {
         Ok(id) => id,
         Err(_) => {
             return (
@@ -12489,7 +12808,7 @@ pub async fn comms_send(
 /// POST /api/comms/task — Post a task to the agent task queue.
 pub async fn comms_task(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<openfang_types::comms::CommsTaskRequest>,
+    Json(req): Json<omtae_types::comms::CommsTaskRequest>,
 ) -> impl IntoResponse {
     if req.title.is_empty() {
         return (
@@ -12528,12 +12847,68 @@ pub async fn comms_task(
 /// POST /api/auth/login — Authenticate with username/password, returns session token.
 pub async fn auth_login(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<serde_json::Value>,
 ) -> axum::response::Response {
     use axum::body::Body;
     use axum::response::Response;
 
-    let auth_cfg = &state.kernel.config.auth;
+    let cfg = &state.kernel.config;
+
+    // PIN login (`[dashboard]` in config.toml)
+    if cfg.dashboard.pin_auth_active() {
+        let pin = req.get("pin").and_then(|v| v.as_str()).unwrap_or("");
+        if !cfg.verify_dashboard_pin(pin) {
+            state.kernel.audit_log.record(
+                "system",
+                omtae_runtime::audit::AuditAction::AuthAttempt,
+                "dashboard PIN login failed",
+                "invalid PIN".to_string(),
+            );
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"error": "Invalid PIN"}).to_string(),
+                ))
+                .unwrap();
+        }
+
+        let secret = omtae_types::config::KernelConfig::pin_session_secret(&cfg.dashboard.pin);
+        let ttl_hours = if cfg.auth.session_ttl_hours > 0 {
+            cfg.auth.session_ttl_hours
+        } else {
+            168
+        };
+        let token = crate::session_auth::create_session_token("dashboard", &secret, ttl_hours);
+        let ttl_secs = ttl_hours * 3600;
+        let secure = crate::session_auth::cookie_should_be_secure(&headers);
+        let cookie = crate::session_auth::format_session_cookie(&token, ttl_secs, secure);
+
+        state.kernel.audit_log.record(
+            "system",
+            omtae_runtime::audit::AuditAction::AuthAttempt,
+            "dashboard PIN login success",
+            String::new(),
+        );
+
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .header("set-cookie", &cookie)
+            .body(Body::from(
+                serde_json::json!({
+                    "status": "ok",
+                    "token": token,
+                    "username": "dashboard",
+                    "mode": "pin",
+                })
+                .to_string(),
+            ))
+            .unwrap();
+    }
+
+    let auth_cfg = &cfg.auth;
     if !auth_cfg.enabled {
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
@@ -12563,7 +12938,7 @@ pub async fn auth_login(
         // Audit log the failed attempt
         state.kernel.audit_log.record(
             "system",
-            openfang_runtime::audit::AuditAction::AuthAttempt,
+            omtae_runtime::audit::AuditAction::AuthAttempt,
             "dashboard login failed",
             format!("username: {username}"),
         );
@@ -12576,23 +12951,17 @@ pub async fn auth_login(
             .unwrap();
     }
 
-    // Derive the session secret the same way as server.rs
-    let api_key = state.kernel.config.api_key.trim().to_string();
-    let secret = if !api_key.is_empty() {
-        api_key
-    } else {
-        auth_cfg.password_hash.clone()
-    };
+    let secret = state.kernel.config.dashboard_session_secret();
 
     let token =
         crate::session_auth::create_session_token(username, &secret, auth_cfg.session_ttl_hours);
     let ttl_secs = auth_cfg.session_ttl_hours * 3600;
-    let cookie =
-        format!("openfang_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}");
+    let secure = crate::session_auth::cookie_should_be_secure(&headers);
+    let cookie = crate::session_auth::format_session_cookie(&token, ttl_secs, secure);
 
     state.kernel.audit_log.record(
         "system",
-        openfang_runtime::audit::AuditAction::AuthAttempt,
+        omtae_runtime::audit::AuditAction::AuthAttempt,
         "dashboard login success",
         format!("username: {username}"),
     );
@@ -12613,13 +12982,17 @@ pub async fn auth_login(
 }
 
 /// POST /api/auth/logout — Clear the session cookie.
-pub async fn auth_logout() -> impl IntoResponse {
-    let cookie = "openfang_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0";
-    (
-        StatusCode::OK,
-        [("content-type", "application/json"), ("set-cookie", cookie)],
-        serde_json::json!({"status": "ok"}).to_string(),
-    )
+pub async fn auth_logout(headers: axum::http::HeaderMap) -> impl IntoResponse {
+    let secure = crate::session_auth::cookie_should_be_secure(&headers);
+    let cookie = crate::session_auth::format_session_cookie_clear(secure);
+    axum::http::Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .header("set-cookie", &cookie)
+        .body(axum::body::Body::from(
+            serde_json::json!({"status": "ok"}).to_string(),
+        ))
+        .unwrap()
 }
 
 /// GET /api/auth/check — Check current authentication state.
@@ -12627,36 +13000,54 @@ pub async fn auth_check(
     State(state): State<Arc<AppState>>,
     request: axum::http::Request<axum::body::Body>,
 ) -> impl IntoResponse {
-    let auth_cfg = &state.kernel.config.auth;
-    if !auth_cfg.enabled {
+    let cfg = &state.kernel.config;
+    if !cfg.dashboard_auth_enabled() {
         return Json(serde_json::json!({
             "authenticated": true,
             "mode": "none",
         }));
     }
 
-    // Derive the session secret the same way as server.rs
-    let api_key = state.kernel.config.api_key.trim().to_string();
-    let secret = if !api_key.is_empty() {
-        api_key
+    let secret = cfg.dashboard_session_secret();
+    let mode = if cfg.dashboard.pin_auth_active() {
+        "pin"
     } else {
-        auth_cfg.password_hash.clone()
+        "session"
     };
 
-    // Check session cookie
+    // Check session cookie, PIN header, or Bearer session token (mobile fallbacks).
     let session_user = crate::session_auth::extract_session_cookie(request.headers())
-        .and_then(|token| crate::session_auth::verify_session_token(&token, &secret));
+        .and_then(|token| crate::session_auth::verify_session_token(&token, &secret))
+        .or_else(|| {
+            request
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .and_then(|token| crate::session_auth::verify_session_token(token, &secret))
+        });
 
-    if let Some(username) = session_user {
+    let pin_user = if session_user.is_none() && cfg.dashboard.pin_auth_active() {
+        request
+            .headers()
+            .get("x-omtae-pin")
+            .and_then(|v| v.to_str().ok())
+            .filter(|pin| cfg.verify_dashboard_pin(pin))
+            .map(|_| "dashboard".to_string())
+    } else {
+        None
+    };
+
+    if let Some(username) = session_user.or(pin_user) {
         Json(serde_json::json!({
             "authenticated": true,
-            "mode": "session",
+            "mode": mode,
             "username": username,
         }))
     } else {
         Json(serde_json::json!({
             "authenticated": false,
-            "mode": "session",
+            "mode": mode,
         }))
     }
 }
@@ -12695,14 +13086,14 @@ mod channel_config_tests {
 
     #[test]
     fn test_is_channel_configured_wecom_none() {
-        let config = openfang_types::config::ChannelsConfig::default();
+        let config = omtae_types::config::ChannelsConfig::default();
         assert!(!is_channel_configured(&config, "wecom"));
     }
 
     #[test]
     fn test_is_channel_configured_wecom_some() {
-        let mut config = openfang_types::config::ChannelsConfig::default();
-        config.wecom = Some(openfang_types::config::WeComConfig {
+        let mut config = omtae_types::config::ChannelsConfig::default();
+        config.wecom = Some(omtae_types::config::WeComConfig {
             corp_id: "test_corp".to_string(),
             agent_id: "test_agent".to_string(),
             secret_env: "WECOM_SECRET".to_string(),
@@ -12710,7 +13101,7 @@ mod channel_config_tests {
             token: Some("token".to_string()),
             encoding_aes_key: Some("aes_key".to_string()),
             default_agent: Some("assistant".to_string()),
-            overrides: openfang_types::config::ChannelOverrides::default(),
+            overrides: omtae_types::config::ChannelOverrides::default(),
         });
         assert!(is_channel_configured(&config, "wecom"));
     }

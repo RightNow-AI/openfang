@@ -1,4 +1,4 @@
-//! OpenFang daemon server — boots the kernel and serves the HTTP API.
+//! OMTAE daemon server — boots the kernel and serves the HTTP API.
 
 use crate::channel_bridge;
 use crate::middleware;
@@ -7,7 +7,7 @@ use crate::routes::{self, AppState};
 use crate::webchat;
 use crate::ws;
 use axum::Router;
-use openfang_kernel::OpenFangKernel;
+use omtae_kernel::OMTAEKernel;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-/// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
+/// Daemon info written to `~/.omtae/daemon.json` so the CLI can find us.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct DaemonInfo {
     pub pid: u32,
@@ -29,13 +29,13 @@ pub struct DaemonInfo {
 
 /// Build the full API router with all routes, middleware, and state.
 ///
-/// This is extracted from `run_daemon()` so that embedders (e.g. openfang-desktop)
+/// This is extracted from `run_daemon()` so that embedders (e.g. omtae-desktop)
 /// can create the router without starting the full daemon lifecycle.
 ///
 /// Returns `(router, shared_state)`. The caller can use `state.bridge_manager`
 /// to shut down the bridge on exit.
 pub async fn build_router(
-    kernel: Arc<OpenFangKernel>,
+    kernel: Arc<OMTAEKernel>,
     listen_addr: SocketAddr,
 ) -> (Router<()>, Arc<AppState>) {
     // Start channel bridges (Telegram, etc.)
@@ -50,7 +50,7 @@ pub async fn build_router(
         channels_config: tokio::sync::RwLock::new(channels_config),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
-        provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        provider_probe_cache: omtae_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(kernel.config.budget.clone())),
     });
 
@@ -113,21 +113,36 @@ pub async fn build_router(
     if state.kernel.config.auth.enabled && !ph.is_empty() && !ph.starts_with("$argon2") {
         tracing::warn!(
             "Dashboard auth password_hash is not in Argon2id format. \
-             Login will fail. Regenerate with: openfang auth hash-password"
+             Login will fail. Regenerate with: omtae auth hash-password"
         );
     }
 
     // Trim whitespace so `api_key = ""` or `api_key = "  "` both disable auth.
-    let api_key = state.kernel.config.api_key.trim().to_string();
+    let pin_active = state.kernel.config.dashboard.pin_auth_active();
+    let api_key = state.kernel.config.effective_api_key_for_auth();
+    let auth_enabled = state.kernel.config.dashboard_auth_enabled();
+    let session_secret = state.kernel.config.dashboard_session_secret();
     let allow_no_auth = std::env::var("OPENFANG_ALLOW_NO_AUTH")
         .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
         .unwrap_or(false);
+
+    if pin_active {
+        tracing::info!(
+            "Dashboard PIN auth enabled — Bearer api_key disabled for HTTP/WS. \
+             Personal tunnel use only; see OMTAE-TUNNEL.md."
+        );
+        if state.kernel.config.dashboard.pin.trim() == "123456" {
+            tracing::warn!(
+                "Dashboard PIN is still the default (123456). Change [dashboard].pin in config.toml."
+            );
+        }
+    }
 
     // Fail-closed warning: if no api_key and no dashboard auth, and the
     // server is bound to a non-loopback address without an explicit opt-in,
     // shout about it. The middleware will reject non-loopback traffic.
     let bind_is_loopback = listen_addr.ip().is_loopback();
-    if api_key.is_empty() && !state.kernel.config.auth.enabled && !bind_is_loopback {
+    if api_key.is_empty() && !auth_enabled && !bind_is_loopback {
         if allow_no_auth {
             tracing::warn!(
                 "OPENFANG_ALLOW_NO_AUTH=1 is set. Running WITHOUT authentication on {}. \
@@ -147,11 +162,11 @@ pub async fn build_router(
 
     let auth_state = crate::middleware::AuthState {
         api_key: api_key.clone(),
-        auth_enabled: state.kernel.config.auth.enabled,
-        session_secret: if !api_key.is_empty() {
-            api_key.clone()
-        } else if state.kernel.config.auth.enabled {
-            state.kernel.config.auth.password_hash.clone()
+        raw_api_key: state.kernel.config.api_key.trim().to_string(),
+        auth_enabled,
+        session_secret: session_secret.clone(),
+        dashboard_pin: if pin_active {
+            state.kernel.config.dashboard.pin.trim().to_string()
         } else {
             String::new()
         },
@@ -165,6 +180,8 @@ pub async fn build_router(
         .route("/favicon.ico", axum::routing::get(webchat::favicon_ico))
         .route("/manifest.json", axum::routing::get(webchat::manifest_json))
         .route("/sw.js", axum::routing::get(webchat::sw_js))
+        .route("/i18n/en.json", axum::routing::get(webchat::i18n_en_json))
+        .route("/i18n/ru.json", axum::routing::get(webchat::i18n_ru_json))
         .route(
             "/api/metrics",
             axum::routing::get(routes::prometheus_metrics),
@@ -175,6 +192,23 @@ pub async fn build_router(
             axum::routing::get(routes::health_detail),
         )
         .route("/api/status", axum::routing::get(routes::status))
+        .route("/api/system/gpu", axum::routing::get(routes::system_gpu))
+        .route(
+            "/api/brain/status",
+            axum::routing::get(crate::brain::brain_status),
+        )
+        .route(
+            "/api/brain/list",
+            axum::routing::get(crate::brain::brain_list),
+        )
+        .route(
+            "/api/brain/file",
+            axum::routing::get(crate::brain::brain_file).post(crate::brain::brain_write),
+        )
+        .route(
+            "/api/system/drift",
+            axum::routing::get(routes::system_drift).post(routes::system_drift_remediate),
+        )
         .route("/api/version", axum::routing::get(routes::version))
         .route(
             "/api/agents",
@@ -604,6 +638,14 @@ pub async fn build_router(
             "/api/models/custom/{*id}",
             axum::routing::delete(routes::remove_custom_model),
         )
+        .route(
+            "/api/models/profiles",
+            axum::routing::get(routes::list_model_profiles),
+        )
+        .route(
+            "/api/models/active",
+            axum::routing::get(routes::get_active_model_profile).put(routes::set_active_model_profile),
+        )
         .route("/api/models/{*id}", axum::routing::get(routes::get_model))
         .route("/api/providers", axum::routing::get(routes::list_providers))
         // Copilot OAuth (must be before parametric {name} routes)
@@ -797,11 +839,11 @@ pub async fn build_router(
     (app, state)
 }
 
-/// Start the OpenFang daemon: boot kernel + HTTP API server.
+/// Start the OMTAE daemon: boot kernel + HTTP API server.
 ///
 /// This function blocks until Ctrl+C or a shutdown request.
 pub async fn run_daemon(
-    kernel: OpenFangKernel,
+    kernel: OMTAEKernel,
     listen_addr: &str,
     daemon_info_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -810,6 +852,7 @@ pub async fn run_daemon(
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
     kernel.start_background_agents();
+    omtae_kernel::drift_guard::spawn_drift_watchdog(kernel.clone());
 
     // Config file hot-reload watcher (polls every 30 seconds)
     {
@@ -879,7 +922,7 @@ pub async fn run_daemon(
         }
     }
 
-    info!("OpenFang API server listening on http://{addr}");
+    info!("OMTAE API server listening on http://{addr}");
     info!("WebChat UI available at http://{addr}/",);
     info!("WebSocket endpoint: ws://{addr}/api/agents/{{id}}/ws",);
 
@@ -923,7 +966,7 @@ pub async fn run_daemon(
     // Shutdown kernel
     kernel.shutdown();
 
-    info!("OpenFang daemon stopped");
+    info!("OMTAE daemon stopped");
     Ok(())
 }
 
@@ -1018,7 +1061,7 @@ fn is_process_alive(pid: u32) -> bool {
     }
 }
 
-/// Check if an OpenFang daemon is actually responding at the given address.
+/// Check if an OMTAE daemon is actually responding at the given address.
 /// This avoids false positives where a different process reused the same PID
 /// after a system reboot.
 fn is_daemon_responding(addr: &str) -> bool {

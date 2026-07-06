@@ -1,7 +1,7 @@
 //! Auto-reply background engine — trigger-driven background replies with concurrency control.
 
-use openfang_types::agent::AgentId;
-use openfang_types::config::AutoReplyConfig;
+use omtae_types::agent::AgentId;
+use omtae_types::config::AutoReplyConfig;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
@@ -63,7 +63,7 @@ impl AutoReplyEngine {
     /// The `send_fn` is called with the agent response to deliver it back to the channel.
     pub async fn execute_reply<F>(
         &self,
-        kernel_handle: Arc<dyn openfang_runtime::kernel_handle::KernelHandle>,
+        kernel_handle: Arc<dyn omtae_runtime::kernel_handle::KernelHandle>,
         agent_id: AgentId,
         message: String,
         reply_channel: AutoReplyChannel,
@@ -100,7 +100,7 @@ impl AutoReplyEngine {
 
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(timeout_secs),
-                kernel_handle.send_to_agent(&agent_id.to_string(), &message),
+                kernel_handle.send_to_agent(&agent_id.to_string(), &message, None, None),
             )
             .await;
 

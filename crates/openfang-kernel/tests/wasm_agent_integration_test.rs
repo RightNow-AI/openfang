@@ -5,9 +5,9 @@
 //!
 //! These tests use real WASM execution — no mocks.
 
-use openfang_kernel::OpenFangKernel;
-use openfang_types::agent::AgentManifest;
-use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use omtae_kernel::OMTAEKernel;
+use omtae_types::agent::AgentManifest;
+use omtae_types::config::{DefaultModelConfig, KernelConfig};
 use std::sync::Arc;
 
 /// Minimal echo module: returns input JSON wrapped as `{"response": "..."}`.
@@ -89,7 +89,7 @@ const INFINITE_LOOP_WAT: &str = r#"
 /// Host-call proxy: forwards input to host_call and returns the response.
 const HOST_CALL_PROXY_WAT: &str = r#"
     (module
-        (import "openfang" "host_call" (func $host_call (param i32 i32) (result i64)))
+        (import "omtae" "host_call" (func $host_call (param i32 i32) (result i64)))
         (memory (export "memory") 2)
         (global $bump (mut i32) (i32.const 1024))
 
@@ -154,7 +154,7 @@ async fn test_wasm_agent_hello_response() {
     std::fs::write(tmp.path().join("hello.wat"), HELLO_WAT).unwrap();
 
     let config = test_config(&tmp);
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
 
     let manifest = wasm_manifest("wasm-hello", "hello.wat");
     let agent_id = kernel.spawn_agent(manifest).unwrap();
@@ -177,7 +177,7 @@ async fn test_wasm_agent_echo() {
     std::fs::write(tmp.path().join("echo.wat"), ECHO_WAT).unwrap();
 
     let config = test_config(&tmp);
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
 
     let manifest = wasm_manifest("wasm-echo", "echo.wat");
     let agent_id = kernel.spawn_agent(manifest).unwrap();
@@ -204,7 +204,7 @@ async fn test_wasm_agent_fuel_exhaustion() {
     std::fs::write(tmp.path().join("loop.wat"), INFINITE_LOOP_WAT).unwrap();
 
     let config = test_config(&tmp);
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
 
     let manifest = wasm_manifest("wasm-loop", "loop.wat");
     let agent_id = kernel.spawn_agent(manifest).unwrap();
@@ -230,7 +230,7 @@ async fn test_wasm_agent_missing_module() {
     // Don't write any .wat file
 
     let config = test_config(&tmp);
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
 
     let manifest = wasm_manifest("wasm-missing", "nonexistent.wasm");
     let agent_id = kernel.spawn_agent(manifest).unwrap();
@@ -253,7 +253,7 @@ async fn test_wasm_agent_host_call_time() {
     std::fs::write(tmp.path().join("proxy.wat"), HOST_CALL_PROXY_WAT).unwrap();
 
     let config = test_config(&tmp);
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
 
     // Proxy module forwards input to host_call — send a time_now request
     let toml_str = r#"
@@ -297,7 +297,7 @@ async fn test_wasm_agent_streaming_fallback() {
     std::fs::write(tmp.path().join("hello.wat"), HELLO_WAT).unwrap();
 
     let config = test_config(&tmp);
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
 
     let manifest = wasm_manifest("wasm-stream", "hello.wat");
@@ -334,7 +334,7 @@ async fn test_multiple_wasm_agents() {
     std::fs::write(tmp.path().join("echo.wat"), ECHO_WAT).unwrap();
 
     let config = test_config(&tmp);
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
 
     let hello_id = kernel
         .spawn_agent(wasm_manifest("hello-agent", "hello.wat"))
@@ -364,7 +364,7 @@ async fn test_mixed_wasm_and_llm_agents() {
     std::fs::write(tmp.path().join("hello.wat"), HELLO_WAT).unwrap();
 
     let config = test_config(&tmp);
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
 
     // Spawn a WASM agent
     let wasm_id = kernel

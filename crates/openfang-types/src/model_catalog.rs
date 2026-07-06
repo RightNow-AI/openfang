@@ -5,7 +5,7 @@ use std::fmt;
 
 // ---------------------------------------------------------------------------
 // Canonical provider base URLs — single source of truth.
-// Referenced by openfang-runtime drivers, model catalog, and embedding modules.
+// Referenced by omtae-runtime drivers, model catalog, and embedding modules.
 // ---------------------------------------------------------------------------
 
 pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";

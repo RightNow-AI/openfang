@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "omtae-b2b": {
+      "command": "/home/jay/projects/openfang-core/mcp/omtae-b2b/.venv/bin/python",
+      "args": ["/home/jay/projects/openfang-core/mcp/omtae-b2b/omtae_mcp.py"]
+    }
+  }
+}

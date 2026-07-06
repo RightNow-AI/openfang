@@ -6,9 +6,9 @@ use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmErr
 use crate::think_filter::{FilterAction, StreamingThinkFilter};
 use async_trait::async_trait;
 use futures::StreamExt;
-use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
-use openfang_types::model_catalog::MOONSHOT_KIMI_BASE_URL;
-use openfang_types::tool::ToolCall;
+use omtae_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
+use omtae_types::model_catalog::MOONSHOT_KIMI_BASE_URL;
+use omtae_types::tool::ToolCall;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
@@ -179,6 +179,31 @@ fn rejects_temperature(model: &str) -> bool {
 fn temperature_must_be_one(model: &str) -> bool {
     let m = model.to_lowercase();
     m.starts_with("kimi-k2") || m == "kimi-k2.5" || m == "kimi-k2.5-0711"
+}
+
+/// True for self-hosted OpenAI-compatible endpoints (vLLM, Ollama, LM Studio, Lemonade).
+fn is_local_openai_compatible(base_url: &str) -> bool {
+    let url = base_url.to_lowercase();
+    url.contains("localhost")
+        || url.contains("127.0.0.1")
+        || url.contains(":8000")
+        || url.contains(":11434")
+        || url.contains(":1234")
+        || url.contains("vllm")
+        || url.contains("ollama")
+        || url.contains("lmstudio")
+        || url.contains("lemonade")
+}
+
+/// Explicit tool_choice when tools are present. Local/vLLM servers often ignore the
+/// tools array unless tool_choice is set (otherwise models emit fake JSON in text).
+/// Use the string `"auto"` — vLLM rejects `{"type":"auto"}` (validation: function None).
+fn tool_choice_for_tools(has_tools: bool, _base_url: &str) -> Option<serde_json::Value> {
+    if has_tools {
+        Some(serde_json::json!("auto"))
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -565,7 +590,7 @@ impl LlmDriver for OpenAIDriver {
                 function: OaiToolDef {
                     name: t.name.clone(),
                     description: t.description.clone(),
-                    parameters: openfang_types::tool::normalize_schema_for_provider(
+                    parameters: omtae_types::tool::normalize_schema_for_provider(
                         &t.input_schema,
                         "openai",
                     ),
@@ -573,11 +598,7 @@ impl LlmDriver for OpenAIDriver {
             })
             .collect();
 
-        let tool_choice = if oai_tools.is_empty() {
-            None
-        } else {
-            Some(serde_json::json!("auto"))
-        };
+        let tool_choice = tool_choice_for_tools(!oai_tools.is_empty(), &self.base_url);
 
         let (mt, mct) = if uses_completion_tokens(&request.model) {
             (None, Some(request.max_tokens))
@@ -627,10 +648,18 @@ impl LlmDriver for OpenAIDriver {
                 req_builder = req_builder.header(k, v);
             }
 
-            let resp = req_builder
-                .send()
-                .await
-                .map_err(|e| LlmError::Http(e.to_string()))?;
+            let resp = match req_builder.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    if attempt < max_retries {
+                        let retry_ms = (attempt + 1) as u64 * 1000;
+                        warn!(error = %e, attempt, retry_ms, "HTTP request send failed, retrying");
+                        tokio::time::sleep(std::time::Duration::from_millis(retry_ms)).await;
+                        continue;
+                    }
+                    return Err(LlmError::Http(e.to_string()));
+                }
+            };
 
             let status = resp.status().as_u16();
             if status == 429 {
@@ -692,7 +721,7 @@ impl LlmDriver for OpenAIDriver {
                 }
 
                 // Auto-cap max_tokens when model rejects our value (e.g. Groq Maverick limit 8192)
-                if status == 400 && body.contains("max_tokens") && attempt < max_retries {
+                if status == 400 && (body.contains("max_tokens") || body.contains("context length") || body.contains("context_length") || body.contains("maximum context") || body.contains("too long") || body.contains("output tokens") || body.contains("max_completion_tokens")) && attempt < max_retries {
                     let current = oai_request
                         .max_tokens
                         .or(oai_request.max_completion_tokens)
@@ -992,7 +1021,7 @@ impl LlmDriver for OpenAIDriver {
                 function: OaiToolDef {
                     name: t.name.clone(),
                     description: t.description.clone(),
-                    parameters: openfang_types::tool::normalize_schema_for_provider(
+                    parameters: omtae_types::tool::normalize_schema_for_provider(
                         &t.input_schema,
                         "openai",
                     ),
@@ -1000,11 +1029,7 @@ impl LlmDriver for OpenAIDriver {
             })
             .collect();
 
-        let tool_choice = if oai_tools.is_empty() {
-            None
-        } else {
-            Some(serde_json::json!("auto"))
-        };
+        let tool_choice = tool_choice_for_tools(!oai_tools.is_empty(), &self.base_url);
 
         let (mt, mct) = if uses_completion_tokens(&request.model) {
             (None, Some(request.max_tokens))
@@ -1053,10 +1078,18 @@ impl LlmDriver for OpenAIDriver {
                 req_builder = req_builder.header(k, v);
             }
 
-            let resp = req_builder
-                .send()
-                .await
-                .map_err(|e| LlmError::Http(e.to_string()))?;
+            let resp = match req_builder.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    if attempt < max_retries {
+                        let retry_ms = (attempt + 1) as u64 * 1000;
+                        warn!(error = %e, attempt, retry_ms, "HTTP request send failed (stream), retrying");
+                        tokio::time::sleep(std::time::Duration::from_millis(retry_ms)).await;
+                        continue;
+                    }
+                    return Err(LlmError::Http(e.to_string()));
+                }
+            };
 
             let status = resp.status().as_u16();
             if status == 429 {
@@ -1119,7 +1152,7 @@ impl LlmDriver for OpenAIDriver {
                 }
 
                 // Auto-cap max_tokens when model rejects our value
-                if status == 400 && body.contains("max_tokens") && attempt < max_retries {
+                if status == 400 && (body.contains("max_tokens") || body.contains("context length") || body.contains("context_length") || body.contains("maximum context") || body.contains("too long") || body.contains("output tokens") || body.contains("max_completion_tokens")) && attempt < max_retries {
                     let current = oai_request
                         .max_tokens
                         .or(oai_request.max_completion_tokens)
@@ -1601,7 +1634,28 @@ fn extract_thinking_summary(thinking: &str) -> String {
 /// Parse Groq's `tool_use_failed` error and extract the tool call from `failed_generation`.
 /// Extract the max_tokens limit from an API error message.
 /// Looks for patterns like: `must be less than or equal to \`8192\``
-fn extract_max_tokens_limit(body: &str) -> Option<u32> {
+pub(crate) fn extract_max_tokens_limit(body: &str) -> Option<u32> {
+    // Handle vLLM context length message:
+    // "This model's maximum context length is <MAX> tokens. However, you requested <REQ> output tokens and your prompt contains at least <INP> input tokens."
+    if let Some(idx) = body.find("maximum context length is ") {
+        let after_max = &body[idx + "maximum context length is ".len()..];
+        if let Some(end_max) = after_max.find(' ') {
+            if let Ok(max_ctx) = after_max[..end_max].parse::<u32>() {
+                if let Some(idx_prompt) = body.find("prompt contains at least ") {
+                    let after_prompt = &body[idx_prompt + "prompt contains at least ".len()..];
+                    if let Some(end_prompt) = after_prompt.find(' ') {
+                        if let Ok(prompt_tokens) = after_prompt[..end_prompt].parse::<u32>() {
+                            if max_ctx > prompt_tokens {
+                                // Return the remaining tokens minus a small safety buffer (e.g. 16)
+                                return Some(max_ctx.saturating_sub(prompt_tokens).saturating_sub(16));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Pattern: "must be <= `N`" or "must be less than or equal to `N`"
     let patterns = [
         "less than or equal to `",
@@ -1817,6 +1871,9 @@ mod tests {
     fn test_extract_max_tokens_limit() {
         let body = r#"max_tokens must be less than or equal to `8192`"#;
         assert_eq!(extract_max_tokens_limit(body), Some(8192));
+
+        let vllm_err = "This model's maximum context length is 32768 tokens. However, you requested 16384 output tokens and your prompt contains at least 16385 input tokens.";
+        assert_eq!(extract_max_tokens_limit(vllm_err), Some(32768 - 16385 - 16));
     }
 
     #[test]

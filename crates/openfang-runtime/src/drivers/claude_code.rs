@@ -11,7 +11,7 @@
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
+use omtae_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
@@ -74,7 +74,7 @@ impl ClaudeCodeDriver {
             warn!(
                 "Claude Code driver: --dangerously-skip-permissions enabled. \
                  The CLI will not prompt for tool approvals. \
-                 OpenFang's own capability/RBAC system enforces access control."
+                 OMTAE's own capability/RBAC system enforces access control."
             );
         }
 
@@ -329,7 +329,7 @@ impl LlmDriver for ClaudeCodeDriver {
         Self::apply_env_filter(&mut cmd);
 
         // Inject HOME so the CLI can find its credentials (~/.claude/) when
-        // OpenFang runs as a service without a login shell.
+        // OMTAE runs as a service without a login shell.
         if let Some(home) = home_dir() {
             cmd.env("HOME", &home);
         }
@@ -750,7 +750,7 @@ mod tests {
 
     #[test]
     fn test_build_prompt_simple() {
-        use openfang_types::message::{Message, MessageContent};
+        use omtae_types::message::{Message, MessageContent};
 
         let request = CompletionRequest {
             model: "claude-code/sonnet".to_string(),
@@ -775,7 +775,7 @@ mod tests {
 
     #[test]
     fn test_build_prompt_renders_image_attachment_marker() {
-        use openfang_types::message::{ContentBlock, Message, MessageContent};
+        use omtae_types::message::{ContentBlock, Message, MessageContent};
 
         // ~12 KB of base64 — decoded ~9 KB.
         let fake_b64 = "A".repeat(12 * 1024);
@@ -816,7 +816,7 @@ mod tests {
 
     #[test]
     fn test_build_prompt_image_only_still_emits_marker() {
-        use openfang_types::message::{ContentBlock, Message, MessageContent};
+        use omtae_types::message::{ContentBlock, Message, MessageContent};
 
         let request = CompletionRequest {
             model: "claude-code/sonnet".to_string(),

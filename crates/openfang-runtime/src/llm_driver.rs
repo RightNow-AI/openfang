@@ -3,8 +3,8 @@
 //! Abstracts over multiple LLM providers (Anthropic, OpenAI, Ollama, etc.).
 
 use async_trait::async_trait;
-use openfang_types::message::{ContentBlock, Message, StopReason, TokenUsage};
-use openfang_types::tool::{ToolCall, ToolDefinition};
+use omtae_types::message::{ContentBlock, Message, StopReason, TokenUsage};
+use omtae_types::tool::{ToolCall, ToolDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -64,7 +64,7 @@ pub struct CompletionRequest {
     /// System prompt (extracted from messages for APIs that need it separately).
     pub system: Option<String>,
     /// Extended thinking configuration (if supported by the model).
-    pub thinking: Option<openfang_types::config::ThinkingConfig>,
+    pub thinking: Option<omtae_types::config::ThinkingConfig>,
 }
 
 /// A response from an LLM completion.
@@ -183,9 +183,9 @@ pub struct DriverConfig {
     /// Skip interactive permission prompts (Claude Code provider only).
     ///
     /// When `true`, adds `--dangerously-skip-permissions` to the spawned
-    /// `claude` CLI.  Defaults to `true` because OpenFang runs as a daemon
+    /// `claude` CLI.  Defaults to `true` because OMTAE runs as a daemon
     /// with no interactive terminal, so permission prompts would block
-    /// indefinitely.  OpenFang's own capability / RBAC layer already
+    /// indefinitely.  OMTAE's own capability / RBAC layer already
     /// restricts what agents can do, making this safe.
     #[serde(default = "default_skip_permissions")]
     pub skip_permissions: bool,

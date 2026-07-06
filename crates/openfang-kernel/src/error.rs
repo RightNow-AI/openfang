@@ -1,14 +1,14 @@
 //! Kernel-specific error types.
 
-use openfang_types::error::OpenFangError;
+use omtae_types::error::OMTAEError;
 use thiserror::Error;
 
-/// Kernel error type wrapping OpenFangError with kernel-specific context.
+/// Kernel error type wrapping OMTAEError with kernel-specific context.
 #[derive(Error, Debug)]
 pub enum KernelError {
-    /// A wrapped OpenFangError.
+    /// A wrapped OMTAEError.
     #[error(transparent)]
-    OpenFang(#[from] OpenFangError),
+    OMTAE(#[from] OMTAEError),
 
     /// The kernel failed to boot.
     #[error("Boot failed: {0}")]

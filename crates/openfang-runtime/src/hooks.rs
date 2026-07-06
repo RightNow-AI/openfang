@@ -8,7 +8,7 @@
 //! - `AgentLoopEnd`: Fires after the agent loop completes. Observe-only.
 
 use dashmap::DashMap;
-use openfang_types::agent::HookEvent;
+use omtae_types::agent::HookEvent;
 use std::sync::Arc;
 
 /// Context passed to hook handlers.

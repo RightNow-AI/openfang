@@ -1,4 +1,4 @@
-/* OpenFang Layout — Grid + Sidebar + Responsive */
+/* OMTAE Layout — Grid + Sidebar + Responsive */
 
 /* Firefox compat: hide x-cloak elements until Alpine.js initializes.
    Without this, the sidebar flashes hidden in Firefox while Alpine
@@ -21,6 +21,9 @@
   flex-shrink: 0;
   transition: width var(--transition-normal);
   z-index: 100;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
 }
 
 .sidebar.collapsed {
@@ -30,6 +33,11 @@
 .sidebar.collapsed .sidebar-label,
 .sidebar.collapsed .sidebar-header-text,
 .sidebar.collapsed .nav-label { display: none; }
+
+.sidebar.collapsed .sidebar-footer-session,
+.sidebar.collapsed .sidebar-footer-hint { display: none; }
+
+.sidebar.collapsed .theme-switcher { display: none; }
 
 .sidebar.collapsed .nav-item { justify-content: center; padding: 12px 0; }
 
@@ -49,8 +57,10 @@
 }
 
 .sidebar-logo img {
-  width: 28px;
-  height: 28px;
+  max-height: 28px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
   opacity: 0.8;
   transition: opacity 0.2s, transform 0.2s;
 }
@@ -81,7 +91,7 @@
 }
 
 .sidebar-status {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--success);
   display: flex;
   align-items: center;
@@ -91,6 +101,54 @@
 }
 
 .sidebar-status.offline { color: var(--error); }
+
+.sidebar-gpu {
+  padding: 8px 12px 10px;
+  margin: 0 8px 8px;
+  border-radius: var(--radius-md);
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent-glow);
+  font-size: 0.875rem;
+  line-height: 1.35;
+}
+
+.sidebar.collapsed .sidebar-gpu { display: none; }
+
+.gpu-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.gpu-row.vram { margin-top: 4px; }
+
+.gpu-label {
+  color: var(--text-muted);
+  min-width: 36px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.gpu-val {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.gpu-val.accent { color: var(--text-numeric, var(--text)); font-weight: 600; }
+
+.gpu-val.dim { color: var(--text-secondary); margin-left: auto; }
+
+.gpu-model {
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .status-dot {
   width: 6px; height: 6px;
@@ -161,7 +219,7 @@
   background: var(--accent);
   color: var(--text-on-accent);
   font-weight: 600;
-  box-shadow: var(--shadow-sm), 0 2px 8px rgba(255, 92, 0, 0.2);
+  box-shadow: var(--shadow-sm), var(--shadow-accent);
 }
 
 .nav-icon {
@@ -239,21 +297,56 @@
   padding: 24px;
 }
 
+/* Dashboard PIN / API key gate — flex only when Alpine x-show is active */
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(4px);
+  touch-action: manipulation;
+}
+.auth-overlay[x-cloak],
+.auth-overlay[style*="display: none"],
+.auth-overlay[style*="display:none"] {
+  display: none !important;
+  pointer-events: none !important;
+}
+
 /* Mobile overlay */
 .sidebar-overlay {
-  display: none;
   position: fixed;
   inset: 0;
   background: rgba(0,0,0,0.6);
-  z-index: 99;
+  z-index: 209;
+  touch-action: none;
+  pointer-events: auto;
+}
+.sidebar-overlay[style*="display: none"],
+.sidebar-overlay[style*="display:none"] {
+  pointer-events: none !important;
 }
 
 .mobile-menu-btn {
-  position: fixed !important;
-  top: 12px;
-  left: 16px;
-  z-index: 98;
-  padding: 6px 10px !important;
+  display: none;
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top, 0px));
+  left: max(16px, env(safe-area-inset-left, 0px));
+  z-index: 210;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 10px !important;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  pointer-events: auto;
+}
+
+body.mobile-nav-open,
+.app-layout.mobile-nav-open {
+  overflow: hidden;
 }
 
 /* Wide desktop — larger card grids */
@@ -270,31 +363,73 @@
   .page-body { padding: 16px; }
 }
 
-/* Responsive — mobile breakpoint */
-@media (max-width: 768px) {
+/* Responsive — mobile breakpoint (also coarse-pointer tablets in landscape) */
+@media (max-width: 768px), ((max-width: 1024px) and (hover: none) and (pointer: coarse)) {
+  html { font-size: 18px; }
+  body {
+    color: var(--text);
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .main-content,
+  .page-body,
+  .page-header {
+    color: var(--text);
+  }
   .sidebar {
     position: fixed;
-    left: -300px;
+    left: 0;
     top: 0;
     bottom: 0;
-    transition: left var(--transition-normal);
+    width: min(var(--sidebar-width), 85vw);
+    max-width: 85vw;
+    z-index: 211;
+    transform: translateX(-100%);
+    transition: transform var(--transition-normal);
+    pointer-events: none;
+    visibility: hidden;
+    will-change: transform;
   }
   .sidebar.mobile-open {
-    left: 0;
+    transform: translateX(0) !important;
+    pointer-events: auto !important;
+    visibility: visible !important;
   }
-  .sidebar.mobile-open + .sidebar-overlay {
-    display: block;
+  .mobile-menu-btn {
+    pointer-events: auto !important;
   }
   .sidebar.collapsed {
-    width: var(--sidebar-width);
-    left: -300px;
+    width: min(var(--sidebar-width), 85vw);
+  }
+  .sidebar.collapsed .sidebar-gpu { display: block; }
+  /* Always show labels when the mobile drawer is open */
+  .sidebar.mobile-open .sidebar-label,
+  .sidebar.mobile-open .sidebar-header-text,
+  .sidebar.mobile-open .nav-label,
+  .sidebar.mobile-open .nav-section-title {
+    display: revert;
+  }
+  .sidebar.mobile-open .nav-item {
+    justify-content: flex-start;
+    padding: 9px 12px;
+  }
+  .sidebar-logo img {
+    max-height: 40px;
+    max-width: 160px;
+    object-fit: contain;
+  }
+  .main-content {
+    margin-left: 0;
+    width: 100%;
+    min-width: 0;
   }
   .mobile-menu-btn { display: flex !important; }
   /* Offset header content so it does not overlap the fixed mobile menu button. */
   .page-header > :first-child { margin-left: 52px; }
+  .sidebar-toggle { display: none; }
 }
 
-@media (min-width: 769px) {
+@media (min-width: 769px) and (hover: hover), (min-width: 1025px) {
   .mobile-menu-btn { display: none !important; }
 }
 
@@ -317,8 +452,23 @@
   .overview-grid { grid-template-columns: 1fr; }
   .input-area { padding: 8px 12px; }
   .main-content { padding: 0; }
-  .table-wrap { font-size: 10px; }
+  .table-wrap { font-size: 13px; }
   .modal { margin: 8px; max-height: calc(100vh - 16px); }
+  .sidebar-gpu {
+    padding: 8px 10px;
+    margin: 0 4px 6px;
+    font-size: 0.9rem;
+    line-height: 1.4;
+  }
+  .sidebar-gpu .gpu-label { min-width: 28px; font-size: 0.8rem; color: var(--text-dim); }
+  .sidebar-gpu .gpu-val,
+  .sidebar-gpu .gpu-val.accent,
+  .sidebar-gpu .gpu-val.dim { color: var(--text-numeric, var(--text)); }
+  .sidebar-gpu .gpu-model { font-size: 0.82rem; color: var(--text-secondary); }
+  .stat-card .stat-value,
+  .stat-card-lg .stat-value { color: var(--text-numeric, var(--text)); }
+  .sidebar-header { min-height: 48px; padding: 10px 12px; }
+  .sidebar-nav { padding-bottom: env(safe-area-inset-bottom, 0); }
 }
 
 /* Touch-friendly tap targets */

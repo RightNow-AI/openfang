@@ -8,8 +8,8 @@
 //! ```toml
 //! [channels.mqtt]
 //! broker_url = "tcp://broker.hivemq.com:1883"
-//! subscribe_topic = "openfang/inbox"
-//! publish_topic = "openfang/outbox"
+//! subscribe_topic = "omtae/inbox"
+//! publish_topic = "omtae/outbox"
 //! username_env = "MQTT_USERNAME"
 //! password_env = "MQTT_PASSWORD"
 //! use_tls = false
@@ -170,7 +170,7 @@ impl MqttAdapter {
     fn build_mqtt_options(&self) -> Result<MqttOptions, Box<dyn std::error::Error>> {
         let (host, port) = self.parse_broker_url()?;
         let client_id = if self.client_id.is_empty() {
-            format!("openfang-{}", uuid::Uuid::new_v4())
+            format!("omtae-{}", uuid::Uuid::new_v4())
         } else {
             self.client_id.clone()
         };
@@ -336,7 +336,7 @@ impl ChannelAdapter for MqttAdapter {
                                         sender: ChannelUser {
                                             platform_id: "mqtt-user".to_string(),
                                             display_name: "MQTT User".to_string(),
-                                            openfang_user: None,
+                                            omtae_user: None,
                                         },
                                         content,
                                         target_agent: None,

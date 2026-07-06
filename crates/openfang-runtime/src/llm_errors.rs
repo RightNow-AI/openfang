@@ -2,7 +2,7 @@
 //!
 //! Classifies raw LLM API errors into 8 categories using pattern matching
 //! against error messages and HTTP status codes. Handles error formats from
-//! all 19+ providers OpenFang supports: Anthropic, OpenAI, Gemini, Groq,
+//! all 19+ providers OMTAE supports: Anthropic, OpenAI, Gemini, Groq,
 //! DeepSeek, Mistral, Together, Fireworks, Ollama, vLLM, LM Studio,
 //! Perplexity, Cohere, AI21, Cerebras, SambaNova, HuggingFace, XAI, Replicate.
 //!

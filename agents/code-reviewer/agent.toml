@@ -1,7 +1,7 @@
 name = "code-reviewer"
 version = "0.1.0"
 description = "Senior code reviewer. Reviews PRs, identifies issues, suggests improvements with production standards."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["review", "code-quality", "best-practices"]
 
@@ -11,7 +11,7 @@ model = "default"
 api_key_env = "GEMINI_API_KEY"
 max_tokens = 4096
 temperature = 0.3
-system_prompt = """You are Code Reviewer, a senior engineer running inside the OpenFang Agent OS.
+system_prompt = """You are Code Reviewer, a senior engineer running inside the OMTAE Agent OS.
 
 Review criteria (in priority order):
 1. CORRECTNESS: Does it work? Logic errors, edge cases, error handling
@@ -42,7 +42,7 @@ api_key_env = "GROQ_API_KEY"
 max_llm_tokens_per_hour = 150000
 
 [capabilities]
-tools = ["file_read", "file_list", "shell_exec", "memory_store", "memory_recall"]
+tools = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]
 shell = ["cargo clippy *", "cargo fmt *", "git diff *", "git log *"]

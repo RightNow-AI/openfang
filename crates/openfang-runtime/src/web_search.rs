@@ -9,7 +9,7 @@
 
 use crate::web_cache::WebCache;
 use crate::web_content::wrap_external_content;
-use openfang_types::config::{SearchProvider, WebConfig};
+use omtae_types::config::{SearchProvider, WebConfig};
 use std::sync::Arc;
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
@@ -294,7 +294,7 @@ impl WebSearchEngine {
             .client
             .get("https://html.duckduckgo.com/html/")
             .query(&[("q", query)])
-            .header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)")
+            .header("User-Agent", "Mozilla/5.0 (compatible; OMTAEAgent/0.1)")
             .send()
             .await
             .map_err(|e| format!("DuckDuckGo request failed: {e}"))?;
@@ -368,7 +368,7 @@ impl WebSearchEngine {
                 ("categories", category),
                 ("page", &page.to_string()),
             ])
-            .header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)")
+            .header("User-Agent", "Mozilla/5.0 (compatible; OMTAEAgent/0.1)")
             .send()
             .await
             .map_err(|e| format!("SearXNG request failed: {e}"))?;
@@ -458,7 +458,7 @@ impl WebSearchEngine {
                 "{}/config",
                 self.config.searxng.url.trim_end_matches('/')
             ))
-            .header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)")
+            .header("User-Agent", "Mozilla/5.0 (compatible; OMTAEAgent/0.1)")
             .send()
             .await
             .map_err(|e| format!("SearXNG config request failed: {e}"))?;
@@ -492,31 +492,27 @@ impl WebSearchEngine {
 // ---------------------------------------------------------------------------
 
 /// Parse DuckDuckGo HTML search results into (title, url, snippet) tuples.
+///
+/// Only parses anchors with `class="result__a"`. The HTML before the first such
+/// anchor contains `<link rel="search" href="...opensearch...">` and other
+/// boilerplate; treating that preamble as a result produced junk URLs.
 pub fn parse_ddg_results(html: &str, max: usize) -> Vec<(String, String, String)> {
     let mut results = Vec::new();
 
-    for chunk in html.split("class=\"result__a\"") {
+    for (i, chunk) in html.split("class=\"result__a\"").enumerate() {
+        if i == 0 {
+            continue;
+        }
         if results.len() >= max {
             break;
         }
-        if !chunk.contains("href=") {
-            continue;
-        }
 
-        let url = extract_between(chunk, "href=\"", "\"")
-            .unwrap_or_default()
-            .to_string();
-
-        let actual_url = if url.contains("uddg=") {
-            url.split("uddg=")
-                .nth(1)
-                .and_then(|u| u.split('&').next())
-                .map(urldecode)
-                .unwrap_or(url)
-        } else {
-            url
+        let url = match extract_between(chunk, "href=\"", "\"") {
+            Some(u) => u,
+            None => continue,
         };
 
+        let actual_url = resolve_ddg_result_url(url);
         let title = extract_between(chunk, ">", "</a>")
             .map(strip_html_tags)
             .unwrap_or_default();
@@ -531,12 +527,59 @@ pub fn parse_ddg_results(html: &str, max: usize) -> Vec<(String, String, String)
             String::new()
         };
 
-        if !title.is_empty() && !actual_url.is_empty() {
+        if is_valid_ddg_result(&title, &actual_url) {
             results.push((title, actual_url, snippet));
         }
     }
 
     results
+}
+
+/// Decode DDG redirect links (`/l/?uddg=...`) and normalize protocol-relative URLs.
+fn resolve_ddg_result_url(url: &str) -> String {
+    let decoded = if url.contains("uddg=") {
+        url.split("uddg=")
+            .nth(1)
+            .and_then(|u| u.split('&').next())
+            .map(urldecode)
+            .unwrap_or_else(|| url.to_string())
+    } else {
+        url.to_string()
+    };
+    if decoded.starts_with("//") {
+        format!("https:{decoded}")
+    } else {
+        decoded
+    }
+}
+
+/// Reject opensearch boilerplate, DDG assets, and non-absolute external URLs.
+fn is_valid_ddg_result(title: &str, url: &str) -> bool {
+    if title.trim().is_empty() {
+        return false;
+    }
+    let lower = url.to_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return false;
+    }
+    if lower.contains("opensearch") {
+        return false;
+    }
+    if lower.contains("duckduckgo.com") {
+        let path = lower
+            .split("duckduckgo.com")
+            .nth(1)
+            .unwrap_or("");
+        if path.starts_with("/l/?")
+            || path.starts_with("/html")
+            || path.contains("/assets/")
+            || path.contains("/dist/")
+            || path.ends_with("favicon.ico")
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// Extract text between two delimiters.
@@ -635,5 +678,54 @@ mod tests {
         let results = parse_ddg_results(html, 5);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].1, "https://example.com");
+    }
+
+    #[test]
+    fn test_ddg_parser_skips_opensearch_in_head() {
+        let html = r#"<head>
+  <link rel="search" href="//duckduckgo.com/opensearch_html_v2.xml" />
+  <link href="//duckduckgo.com/favicon.ico" rel="shortcut icon" />
+</head>
+<body>
+  <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.example.com%2Fsolar&amp;rut=abc">Top Solar Installers</a>
+  <a class="result__snippet">Real snippet text</a>
+</body>"#;
+        let results = parse_ddg_results(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "Top Solar Installers");
+        assert_eq!(results[0].1, "https://www.example.com/solar");
+        assert!(!results[0].1.contains("opensearch"));
+    }
+
+    #[test]
+    fn test_ddg_parser_rejects_internal_ddg_links() {
+        let html = r#"x class="result__a" href="//duckduckgo.com/html/">DuckDuckGo</a> class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org">Example</a>"#;
+        let results = parse_ddg_results(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, "https://example.org");
+    }
+
+    /// Live DDG HTML smoke test (network). Run: `cargo test -p omtae-runtime live_ddg -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "network"]
+    async fn test_live_ddg_top_solar_installers() {
+        let resp = reqwest::Client::new()
+            .get("https://html.duckduckgo.com/html/")
+            .query(&[("q", "top solar installers in the US")])
+            .header("User-Agent", "Mozilla/5.0 (compatible; OMTAEAgent/0.1)")
+            .send()
+            .await
+            .expect("DDG request");
+        let body = resp.text().await.expect("DDG body");
+        let results = parse_ddg_results(&body, 3);
+        assert!(!results.is_empty(), "expected organic results");
+        assert!(
+            !results[0].1.contains("opensearch"),
+            "first result must not be opensearch junk: {}",
+            results[0].1
+        );
+        for (title, url, snippet) in &results {
+            eprintln!("{title}\n  {url}\n  {snippet}\n");
+        }
     }
 }

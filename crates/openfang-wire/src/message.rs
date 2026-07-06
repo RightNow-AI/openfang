@@ -1,6 +1,6 @@
 //! Wire protocol message types.
 //!
-//! All communication between OpenFang peers uses JSON-framed messages
+//! All communication between OMTAE peers uses JSON-framed messages
 //! over TCP. Each message is prefixed with a 4-byte big-endian length header.
 
 use serde::{Deserialize, Serialize};

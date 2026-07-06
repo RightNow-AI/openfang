@@ -1,4 +1,4 @@
-//! Ratatui TUI for OpenFang interactive mode.
+//! Ratatui TUI for OMTAE interactive mode.
 //!
 //! Two-level navigation: Phase::Boot (Welcome/Wizard) → Phase::Main with 16 tabs.
 
@@ -8,10 +8,10 @@ pub mod screens;
 pub mod theme;
 
 use event::{AppEvent, BackendRef};
-use openfang_kernel::OpenFangKernel;
-use openfang_runtime::llm_driver::StreamEvent;
-use openfang_types::agent::AgentId;
-use openfang_types::commands::{self, Surfaces};
+use omtae_kernel::OMTAEKernel;
+use omtae_runtime::llm_driver::StreamEvent;
+use omtae_types::agent::AgentId;
+use omtae_types::commands::{self, Surfaces};
 use screens::{
     agents, audit, channels, chat, comms, dashboard, extensions, hands, logs, memory, peers,
     security, sessions, settings, skills, templates, triggers, usage, welcome, wizard, workflows,
@@ -116,7 +116,7 @@ impl Tab {
 
 enum Backend {
     Daemon { base_url: String },
-    InProcess { kernel: Arc<OpenFangKernel> },
+    InProcess { kernel: Arc<OMTAEKernel> },
     None,
 }
 
@@ -1197,7 +1197,7 @@ impl App {
 
     fn handle_stream_done(
         &mut self,
-        result: Result<openfang_runtime::agent_loop::AgentLoopResult, String>,
+        result: Result<omtae_runtime::agent_loop::AgentLoopResult, String>,
     ) {
         self.chat.finalize_stream();
         match result {
@@ -1225,7 +1225,7 @@ impl App {
 
     // ─── Kernel lifecycle ────────────────────────────────────────────────────
 
-    fn handle_kernel_ready(&mut self, kernel: Arc<OpenFangKernel>) {
+    fn handle_kernel_ready(&mut self, kernel: Arc<OMTAEKernel>) {
         self.kernel_booting = false;
         self.backend = Backend::InProcess { kernel };
         self.agents.reset();
@@ -1840,7 +1840,7 @@ impl App {
                 event::spawn_daemon_agent(base_url.clone(), toml_content, self.event_tx.clone());
             }
             Backend::InProcess { kernel } => {
-                let manifest: openfang_types::agent::AgentManifest =
+                let manifest: omtae_types::agent::AgentManifest =
                     match toml::from_str(&toml_content) {
                         Ok(m) => m,
                         Err(e) => {

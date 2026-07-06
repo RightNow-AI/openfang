@@ -1,4 +1,4 @@
-// OpenFang Logs Page — Real-time log viewer (SSE streaming + polling fallback) + Audit Trail tab
+// OMTAE Logs Page — Real-time log viewer (SSE streaming + polling fallback) + Audit Trail tab
 'use strict';
 
 function logsPage() {
@@ -33,7 +33,7 @@ function logsPage() {
 
       var url = '/api/logs/stream';
       var sep = '?';
-      var token = OpenFangAPI.getToken();
+      var token = OMTAEAPI.getToken();
       if (token) { url += sep + 'token=' + encodeURIComponent(token); sep = '&'; }
 
       try {
@@ -105,7 +105,7 @@ function logsPage() {
     async fetchLogs() {
       if (this.loading) this.loadError = '';
       try {
-        var data = await OpenFangAPI.get('/api/audit/recent?n=200');
+        var data = await OMTAEAPI.get('/api/audit/recent?n=200');
         this.entries = data.entries || [];
         if (this.autoRefresh && !this.hovering) {
           this.$nextTick(function() {
@@ -187,7 +187,7 @@ function logsPage() {
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a');
       a.href = url;
-      a.download = 'openfang-logs-' + new Date().toISOString().slice(0, 10) + '.txt';
+      a.download = 'omtae-logs-' + new Date().toISOString().slice(0, 10) + '.txt';
       a.click();
       URL.revokeObjectURL(url);
     },
@@ -203,7 +203,7 @@ function logsPage() {
       this.auditLoading = true;
       this.auditLoadError = '';
       try {
-        var data = await OpenFangAPI.get('/api/audit/recent?n=200');
+        var data = await OMTAEAPI.get('/api/audit/recent?n=200');
         this.auditEntries = data.entries || [];
         this.tipHash = data.tip_hash || '';
       } catch(e) {
@@ -234,16 +234,16 @@ function logsPage() {
 
     async verifyChain() {
       try {
-        var data = await OpenFangAPI.get('/api/audit/verify');
+        var data = await OMTAEAPI.get('/api/audit/verify');
         this.chainValid = data.valid === true;
         if (this.chainValid) {
-          OpenFangToast.success('Audit chain verified — ' + (data.entries || 0) + ' entries valid');
+          OMTAEToast.success('Audit chain verified — ' + (data.entries || 0) + ' entries valid');
         } else {
-          OpenFangToast.error('Audit chain broken!');
+          OMTAEToast.error('Audit chain broken!');
         }
       } catch(e) {
         this.chainValid = false;
-        OpenFangToast.error('Chain verification failed: ' + e.message);
+        OMTAEToast.error('Chain verification failed: ' + e.message);
       }
     },
 

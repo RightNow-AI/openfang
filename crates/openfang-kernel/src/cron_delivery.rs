@@ -6,12 +6,12 @@
 //! concurrently. Failures in one target do not abort delivery to the
 //! others — every target's outcome is returned in a [`DeliveryResult`].
 //!
-//! This is the OpenFang port of the Hermes Agent multi-destination cron
+//! This is the OMTAE port of the Hermes Agent multi-destination cron
 //! pattern: one job → N destinations (channels / webhooks / files / email).
 
 use futures::future::join_all;
-use openfang_channels::bridge::ChannelBridgeHandle;
-use openfang_types::scheduler::CronDeliveryTarget;
+use omtae_channels::bridge::ChannelBridgeHandle;
+use omtae_types::scheduler::CronDeliveryTarget;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
@@ -276,8 +276,8 @@ async fn deliver_local_file(path: &Path, append: bool, output: &str) -> Result<(
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use openfang_channels::bridge::ChannelBridgeHandle;
-    use openfang_types::agent::AgentId;
+    use omtae_channels::bridge::ChannelBridgeHandle;
+    use omtae_types::agent::AgentId;
     use std::sync::Mutex;
 
     /// Mock bridge that records every channel send. Optionally fails for

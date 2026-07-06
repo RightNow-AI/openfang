@@ -1,10 +1,10 @@
 //! Kernel lifecycle management for the desktop app.
 //!
-//! Boots the OpenFang kernel, binds to a random localhost port, and runs the
+//! Boots the OMTAE kernel, binds to a random localhost port, and runs the
 //! API server on a background thread with its own tokio runtime.
 
-use openfang_api::server::build_router;
-use openfang_kernel::OpenFangKernel;
+use omtae_api::server::build_router;
+use omtae_kernel::OMTAEKernel;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -16,7 +16,7 @@ pub struct ServerHandle {
     /// The port the server is listening on.
     pub port: u16,
     /// The kernel instance (shared with the server).
-    pub kernel: Arc<OpenFangKernel>,
+    pub kernel: Arc<OMTAEKernel>,
     /// Send `true` to trigger graceful shutdown.
     shutdown_tx: watch::Sender<bool>,
     /// Join handle for the background server thread.
@@ -39,7 +39,7 @@ impl ServerHandle {
                 let _ = handle.join();
             }
             self.kernel.shutdown();
-            info!("OpenFang embedded server stopped");
+            info!("OMTAE embedded server stopped");
         }
     }
 }
@@ -65,12 +65,12 @@ impl Drop for ServerHandle {
 /// thread with its own tokio runtime.
 pub fn start_server() -> Result<ServerHandle, Box<dyn std::error::Error>> {
     // Load .env and secrets.env into process environment (same as CLI).
-    // Without this, API keys stored in ~/.openfang/.env are invisible to
+    // Without this, API keys stored in ~/.omtae/.env are invisible to
     // the kernel's provider detection and credential resolver.
     load_dotenv_files();
 
     // Boot kernel (sync — no tokio needed)
-    let kernel = OpenFangKernel::boot(None)?;
+    let kernel = OMTAEKernel::boot(None)?;
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
@@ -79,14 +79,14 @@ pub fn start_server() -> Result<ServerHandle, Box<dyn std::error::Error>> {
     let port = std_listener.local_addr()?.port();
     let listen_addr: SocketAddr = std_listener.local_addr()?;
 
-    info!("OpenFang embedded server bound to http://127.0.0.1:{port}");
+    info!("OMTAE embedded server bound to http://127.0.0.1:{port}");
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let kernel_clone = kernel.clone();
     let shutdown_initiated = Arc::new(AtomicBool::new(false));
 
     let server_thread = std::thread::Builder::new()
-        .name("openfang-server".into())
+        .name("omtae-server".into())
         .spawn(move || {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -113,7 +113,7 @@ pub fn start_server() -> Result<ServerHandle, Box<dyn std::error::Error>> {
 /// Run the axum server inside a tokio runtime, shut down when the watch
 /// channel fires.
 async fn run_embedded_server(
-    kernel: Arc<OpenFangKernel>,
+    kernel: Arc<OMTAEKernel>,
     std_listener: TcpListener,
     listen_addr: SocketAddr,
     mut shutdown_rx: watch::Receiver<bool>,
@@ -127,7 +127,7 @@ async fn run_embedded_server(
     let listener = tokio::net::TcpListener::from_std(std_listener)
         .expect("Failed to convert std TcpListener to tokio");
 
-    info!("OpenFang embedded server listening on http://{listen_addr}");
+    info!("OMTAE embedded server listening on http://{listen_addr}");
 
     let server = axum::serve(
         listener,
@@ -151,7 +151,7 @@ async fn run_embedded_server(
     }
 }
 
-/// Load ~/.openfang/.env and ~/.openfang/secrets.env into the process environment.
+/// Load ~/.omtae/.env and ~/.omtae/secrets.env into the process environment.
 /// System env vars take priority — existing vars are NOT overridden.
 fn load_dotenv_files() {
     let home = if let Ok(h) = std::env::var("OPENFANG_HOME") {
@@ -163,7 +163,7 @@ fn load_dotenv_files() {
         if user_home.is_empty() {
             return;
         }
-        std::path::PathBuf::from(user_home).join(".openfang")
+        std::path::PathBuf::from(user_home).join(".omtae")
     };
 
     for filename in &[".env", "secrets.env"] {

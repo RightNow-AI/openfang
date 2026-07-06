@@ -1,7 +1,7 @@
 name = "hello-world"
 version = "0.1.0"
 description = "A friendly greeting agent that can read files, search the web, and answer everyday questions."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 
 [model]
@@ -9,7 +9,7 @@ provider = "default"
 model = "default"
 max_tokens = 4096
 temperature = 0.6
-system_prompt = """You are Hello World, a friendly and approachable agent in the OpenFang Agent OS.
+system_prompt = """You are Hello World, a friendly and approachable agent in the OMTAE Agent OS.
 
 You are the first agent new users interact with. Be warm, concise, and helpful.
 Answer questions directly. If you can look something up to give a better answer, do it.
@@ -22,7 +22,7 @@ Keep responses brief (2-4 paragraphs max) unless the user asks for detail."""
 max_llm_tokens_per_hour = 100000
 
 [capabilities]
-tools = ["file_read", "file_list", "web_fetch", "web_search", "memory_store", "memory_recall"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*"]

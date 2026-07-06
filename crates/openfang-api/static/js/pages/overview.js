@@ -1,4 +1,4 @@
-// OpenFang Overview Dashboard — Landing page with system stats + provider status
+// OMTAE Overview Dashboard — Landing page with system stats + provider status
 'use strict';
 
 function overviewPage() {
@@ -11,6 +11,35 @@ function overviewPage() {
     providers: [],
     mcpServers: [],
     skillCount: 0,
+    drift: { ok: true, findings: [], fixes_applied: [] },
+    driftRemediating: false,
+    driftDismissedAt: (function() {
+      try {
+        var v = sessionStorage.getItem('omtae-drift-dismissed');
+        return v ? Number(v) : null;
+      } catch(e) { return null; }
+    })(),
+
+    get driftAlerts() {
+      var findings = (this.drift && this.drift.findings) || [];
+      var manual = (this.drift && this.drift.manual_allowlist) || [];
+      var manualSet = {};
+      manual.forEach(function(n) {
+        if (n) manualSet[String(n).trim().toLowerCase()] = true;
+      });
+      return findings.filter(function(f) {
+        if (f.remediated || f.severity === 'info' || f.severity === 'debug') return false;
+        if (f.check === 'allowlist' && manualSet) {
+          var m = (f.message || '').match(/Agent '([^']+)'/);
+          if (m && manualSet[m[1].trim().toLowerCase()]) return false;
+        }
+        return true;
+      });
+    },
+
+    get showDriftCard() {
+      return this.driftAlerts.length > 0 && !this.driftDismissedAt;
+    },
     loading: true,
     loadError: '',
     refreshTimer: null,
@@ -28,7 +57,8 @@ function overviewPage() {
           this.loadChannels(),
           this.loadProviders(),
           this.loadMcpServers(),
-          this.loadSkills()
+          this.loadSkills(),
+          this.loadDrift()
         ]);
         this.lastRefresh = Date.now();
       } catch(e) {
@@ -50,7 +80,8 @@ function overviewPage() {
           this.loadChannels(),
           this.loadProviders(),
           this.loadMcpServers(),
-          this.loadSkills()
+          this.loadSkills(),
+          this.loadDrift()
         ]);
         this.lastRefresh = Date.now();
       } catch(e) { /* silent */ }
@@ -70,19 +101,53 @@ function overviewPage() {
 
     async loadHealth() {
       try {
-        this.health = await OpenFangAPI.get('/api/health');
+        this.health = await OMTAEAPI.get('/api/health');
       } catch(e) { this.health = { status: 'unreachable' }; }
+    },
+
+    async loadDrift() {
+      try {
+        var report = await OMTAEAPI.get('/api/system/drift');
+        this.drift = report || { ok: true, findings: [], fixes_applied: [] };
+        if (this.driftAlerts.length === 0) {
+          this.driftDismissedAt = null;
+          try { sessionStorage.removeItem('omtae-drift-dismissed'); } catch(e) { /* ignore */ }
+        }
+      } catch(e) {
+        this.drift = { ok: true, findings: [], fixes_applied: [] };
+      }
+    },
+
+    dismissDrift() {
+      this.driftDismissedAt = Date.now();
+      try { sessionStorage.setItem('omtae-drift-dismissed', String(this.driftDismissedAt)); } catch(e) { /* ignore */ }
+    },
+
+    async remediateDrift() {
+      this.driftRemediating = true;
+      try {
+        var report = await OMTAEAPI.post('/api/system/drift', {});
+        this.drift = report || { ok: true, findings: [], fixes_applied: [] };
+        if (this.drift.fixes_applied && this.drift.fixes_applied.length) {
+          OMTAEToast.success('Applied ' + this.drift.fixes_applied.length + ' fix(es)');
+          Alpine.store('app').refreshAgents();
+        }
+        await Promise.all([this.loadDrift(), this.loadStatus()]);
+      } catch(e) {
+        OMTAEToast.error(e.message || 'Drift remediation failed');
+      }
+      this.driftRemediating = false;
     },
 
     async loadStatus() {
       try {
-        this.status = await OpenFangAPI.get('/api/status');
+        this.status = await OMTAEAPI.get('/api/status');
       } catch(e) { this.status = {}; throw e; }
     },
 
     async loadUsage() {
       try {
-        var data = await OpenFangAPI.get('/api/usage');
+        var data = await OMTAEAPI.get('/api/usage');
         var agents = data.agents || [];
         var totalTokens = 0;
         var totalTools = 0;
@@ -105,35 +170,35 @@ function overviewPage() {
 
     async loadAudit() {
       try {
-        var data = await OpenFangAPI.get('/api/audit/recent?n=8');
+        var data = await OMTAEAPI.get('/api/audit/recent?n=8');
         this.recentAudit = data.entries || [];
       } catch(e) { this.recentAudit = []; }
     },
 
     async loadChannels() {
       try {
-        var data = await OpenFangAPI.get('/api/channels');
+        var data = await OMTAEAPI.get('/api/channels');
         this.channels = (data.channels || []).filter(function(ch) { return ch.has_token; });
       } catch(e) { this.channels = []; }
     },
 
     async loadProviders() {
       try {
-        var data = await OpenFangAPI.get('/api/providers');
+        var data = await OMTAEAPI.get('/api/providers');
         this.providers = data.providers || [];
       } catch(e) { this.providers = []; }
     },
 
     async loadMcpServers() {
       try {
-        var data = await OpenFangAPI.get('/api/mcp/servers');
+        var data = await OMTAEAPI.get('/api/mcp/servers');
         this.mcpServers = data.servers || [];
       } catch(e) { this.mcpServers = []; }
     },
 
     async loadSkills() {
       try {
-        var data = await OpenFangAPI.get('/api/skills');
+        var data = await OMTAEAPI.get('/api/skills');
         this.skillCount = (data.skills || []).length;
       } catch(e) { this.skillCount = 0; }
     },

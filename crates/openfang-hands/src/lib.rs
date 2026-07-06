@@ -1,4 +1,4 @@
-//! OpenFang Hands — curated autonomous capability packages.
+//! OMTAE Hands — curated autonomous capability packages.
 //!
 //! A Hand is a pre-built, domain-complete agent configuration that users activate
 //! from a marketplace. Unlike regular agents (you chat with them), Hands work for
@@ -8,7 +8,7 @@ pub mod bundled;
 pub mod registry;
 
 use chrono::{DateTime, Utc};
-use openfang_types::agent::AgentId;
+use omtae_types::agent::AgentId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -333,7 +333,7 @@ pub fn parse_hand_toml(content: &str) -> Result<HandDefinition, toml::de::Error>
 /// Recursively copy a directory and all its contents.
 ///
 /// Used by `HandRegistry::install_from_path` to persist a custom hand's
-/// source directory into `~/.openfang/hands/<hand_id>/` so installed hands
+/// source directory into `~/.omtae/hands/<hand_id>/` so installed hands
 /// survive daemon restarts (issue #984).
 pub(crate) fn copy_dir_all(
     src: impl AsRef<std::path::Path>,

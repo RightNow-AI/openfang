@@ -1,4 +1,4 @@
-//! OpenFangKernel — assembles all subsystems and provides the main API.
+//! OMTAEKernel — assembles all subsystems and provides the main API.
 
 use crate::auth::AuthManager;
 use crate::background::{self, BackgroundExecutor};
@@ -13,34 +13,34 @@ use crate::supervisor::Supervisor;
 use crate::triggers::{TriggerEngine, TriggerId, TriggerPattern};
 use crate::workflow::{StepAgent, Workflow, WorkflowEngine, WorkflowId, WorkflowRunId};
 
-use openfang_memory::MemorySubstrate;
-use openfang_runtime::agent_loop::{
+use omtae_memory::MemorySubstrate;
+use omtae_runtime::agent_loop::{
     run_agent_loop, run_agent_loop_streaming, strip_provider_prefix, AgentLoopResult,
 };
-use openfang_runtime::audit::AuditLog;
-use openfang_runtime::drivers;
-use openfang_runtime::kernel_handle::{self, KernelHandle};
-use openfang_runtime::llm_driver::{
+use omtae_runtime::audit::AuditLog;
+use omtae_runtime::drivers;
+use omtae_runtime::kernel_handle::{self, KernelHandle};
+use omtae_runtime::llm_driver::{
     CompletionRequest, CompletionResponse, DriverConfig, LlmDriver, LlmError, StreamEvent,
 };
-use openfang_runtime::python_runtime::{self, PythonConfig};
-use openfang_runtime::routing::ModelRouter;
-use openfang_runtime::sandbox::{SandboxConfig, WasmSandbox};
-use openfang_runtime::tool_runner::builtin_tool_definitions;
-use openfang_types::agent::*;
-use openfang_types::capability::Capability;
-use openfang_types::config::{KernelConfig, OutputFormat};
-use openfang_types::error::OpenFangError;
-use openfang_types::event::*;
-use openfang_types::memory::Memory;
-use openfang_types::tool::ToolDefinition;
+use omtae_runtime::python_runtime::{self, PythonConfig};
+use omtae_runtime::routing::ModelRouter;
+use omtae_runtime::sandbox::{SandboxConfig, WasmSandbox};
+use omtae_runtime::tool_runner::builtin_tool_definitions;
+use omtae_types::agent::*;
+use omtae_types::capability::Capability;
+use omtae_types::config::{KernelConfig, OutputFormat};
+use omtae_types::error::OMTAEError;
+use omtae_types::event::*;
+use omtae_types::memory::Memory;
+use omtae_types::tool::ToolDefinition;
 
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
 use tracing::{debug, info, warn};
 
-/// The main OpenFang kernel — coordinates all subsystems.
+/// The main OMTAE kernel — coordinates all subsystems.
 /// Stub LLM driver used when no providers are configured.
 /// Returns a helpful error so the dashboard still boots and users can configure providers.
 struct StubDriver;
@@ -57,7 +57,7 @@ impl LlmDriver for StubDriver {
     }
 }
 
-pub struct OpenFangKernel {
+pub struct OMTAEKernel {
     /// Kernel configuration.
     pub config: KernelConfig,
     /// Agent registry.
@@ -89,9 +89,9 @@ pub struct OpenFangKernel {
     /// RBAC authentication manager.
     pub auth: AuthManager,
     /// Model catalog registry (RwLock for auth status refresh from API).
-    pub model_catalog: std::sync::RwLock<openfang_runtime::model_catalog::ModelCatalog>,
+    pub model_catalog: std::sync::RwLock<omtae_runtime::model_catalog::ModelCatalog>,
     /// Skill registry for plugin skills (RwLock for hot-reload on install/uninstall).
-    pub skill_registry: std::sync::RwLock<openfang_skills::registry::SkillRegistry>,
+    pub skill_registry: std::sync::RwLock<omtae_skills::registry::SkillRegistry>,
     /// Per-skill config overrides applied on top of `self.config.skills`.
     ///
     /// Written by the API (`PUT /api/skills/{id}/config`) so the user's edits
@@ -103,37 +103,39 @@ pub struct OpenFangKernel {
     >,
     /// Tracks running agent tasks for cancellation support.
     pub running_tasks: dashmap::DashMap<AgentId, tokio::task::AbortHandle>,
+    /// Unix epoch seconds when each agent's current LLM task started.
+    pub running_task_started: dashmap::DashMap<AgentId, u64>,
     /// MCP server connections (lazily initialized at start_background_agents).
-    pub mcp_connections: tokio::sync::Mutex<Vec<openfang_runtime::mcp::McpConnection>>,
+    pub mcp_connections: tokio::sync::Mutex<Vec<omtae_runtime::mcp::McpConnection>>,
     /// MCP tool definitions cache (populated after connections are established).
     pub mcp_tools: std::sync::Mutex<Vec<ToolDefinition>>,
     /// A2A task store for tracking task lifecycle.
-    pub a2a_task_store: openfang_runtime::a2a::A2aTaskStore,
+    pub a2a_task_store: omtae_runtime::a2a::A2aTaskStore,
     /// Discovered external A2A agent cards.
-    pub a2a_external_agents: std::sync::Mutex<Vec<(String, openfang_runtime::a2a::AgentCard)>>,
+    pub a2a_external_agents: std::sync::Mutex<Vec<(String, omtae_runtime::a2a::AgentCard)>>,
     /// Web tools context (multi-provider search + SSRF-protected fetch + caching).
-    pub web_ctx: openfang_runtime::web_search::WebToolsContext,
+    pub web_ctx: omtae_runtime::web_search::WebToolsContext,
     /// Browser automation manager (Playwright bridge sessions).
-    pub browser_ctx: openfang_runtime::browser::BrowserManager,
+    pub browser_ctx: omtae_runtime::browser::BrowserManager,
     /// Media understanding engine (image description, audio transcription).
-    pub media_engine: openfang_runtime::media_understanding::MediaEngine,
+    pub media_engine: omtae_runtime::media_understanding::MediaEngine,
     /// Text-to-speech engine.
-    pub tts_engine: openfang_runtime::tts::TtsEngine,
+    pub tts_engine: omtae_runtime::tts::TtsEngine,
     /// Device pairing manager.
     pub pairing: crate::pairing::PairingManager,
     /// Embedding driver for vector similarity search (None = text fallback).
     pub embedding_driver:
-        Option<Arc<dyn openfang_runtime::embedding::EmbeddingDriver + Send + Sync>>,
+        Option<Arc<dyn omtae_runtime::embedding::EmbeddingDriver + Send + Sync>>,
     /// Hand registry — curated autonomous capability packages.
-    pub hand_registry: openfang_hands::registry::HandRegistry,
+    pub hand_registry: omtae_hands::registry::HandRegistry,
     /// Credential resolver — vault → dotenv → env var priority chain.
-    pub credential_resolver: std::sync::Mutex<openfang_extensions::credentials::CredentialResolver>,
+    pub credential_resolver: std::sync::Mutex<omtae_extensions::credentials::CredentialResolver>,
     /// Extension/integration registry (bundled MCP templates + install state).
-    pub extension_registry: std::sync::RwLock<openfang_extensions::registry::IntegrationRegistry>,
+    pub extension_registry: std::sync::RwLock<omtae_extensions::registry::IntegrationRegistry>,
     /// Integration health monitor.
-    pub extension_health: openfang_extensions::health::HealthMonitor,
+    pub extension_health: omtae_extensions::health::HealthMonitor,
     /// Effective MCP server list (manual config + extension-installed, merged at boot).
-    pub effective_mcp_servers: std::sync::RwLock<Vec<openfang_types::config::McpServerConfigEntry>>,
+    pub effective_mcp_servers: std::sync::RwLock<Vec<omtae_types::config::McpServerConfigEntry>>,
     /// Delivery receipt tracker (bounded LRU, max 10K entries).
     pub delivery_tracker: DeliveryTracker,
     /// Cron job scheduler.
@@ -141,29 +143,29 @@ pub struct OpenFangKernel {
     /// Execution approval manager.
     pub approval_manager: crate::approval::ApprovalManager,
     /// Agent bindings for multi-account routing (Mutex for runtime add/remove).
-    pub bindings: std::sync::Mutex<Vec<openfang_types::config::AgentBinding>>,
+    pub bindings: std::sync::Mutex<Vec<omtae_types::config::AgentBinding>>,
     /// Broadcast configuration.
-    pub broadcast: openfang_types::config::BroadcastConfig,
+    pub broadcast: omtae_types::config::BroadcastConfig,
     /// Auto-reply engine.
     pub auto_reply_engine: crate::auto_reply::AutoReplyEngine,
     /// Plugin lifecycle hook registry.
-    pub hooks: openfang_runtime::hooks::HookRegistry,
+    pub hooks: omtae_runtime::hooks::HookRegistry,
     /// Persistent process manager for interactive sessions (REPLs, servers).
-    pub process_manager: Arc<openfang_runtime::process_manager::ProcessManager>,
+    pub process_manager: Arc<omtae_runtime::process_manager::ProcessManager>,
     /// OFP peer registry — tracks connected peers (OnceLock for safe init after Arc creation).
-    pub peer_registry: OnceLock<openfang_wire::PeerRegistry>,
+    pub peer_registry: OnceLock<omtae_wire::PeerRegistry>,
     /// OFP peer node — the local networking node (OnceLock for safe init after Arc creation).
-    pub peer_node: OnceLock<Arc<openfang_wire::PeerNode>>,
+    pub peer_node: OnceLock<Arc<omtae_wire::PeerNode>>,
     /// Boot timestamp for uptime calculation.
     pub booted_at: std::time::Instant,
     /// WhatsApp Web gateway child process PID (for shutdown cleanup).
     pub whatsapp_gateway_pid: Arc<std::sync::Mutex<Option<u32>>>,
     /// Channel adapters registered at bridge startup (for proactive `channel_send` tool).
     pub channel_adapters:
-        dashmap::DashMap<String, Arc<dyn openfang_channels::types::ChannelAdapter>>,
+        dashmap::DashMap<String, Arc<dyn omtae_channels::types::ChannelAdapter>>,
     /// Hot-reloadable default model override (set via config hot-reload, read at agent spawn).
     pub default_model_override:
-        std::sync::RwLock<Option<openfang_types::config::DefaultModelConfig>>,
+        std::sync::RwLock<Option<omtae_types::config::DefaultModelConfig>>,
     /// Hot-reloadable fallback provider chain override.
     ///
     /// Set by `apply_hot_actions(ReloadFallbackProviders)` when
@@ -173,19 +175,19 @@ pub struct OpenFangKernel {
     /// driver build without a daemon bounce. `None` means "fall back to the
     /// boot-time `self.config.fallback_providers`". (#1129)
     pub fallback_providers_override:
-        std::sync::RwLock<Option<Vec<openfang_types::config::FallbackProviderConfig>>>,
+        std::sync::RwLock<Option<Vec<omtae_types::config::FallbackProviderConfig>>>,
     /// Per-agent message locks — serializes LLM calls for the same agent to prevent
     /// session corruption when multiple messages arrive concurrently (e.g. rapid voice
     /// messages via Telegram). Different agents can still run in parallel.
     agent_msg_locks: dashmap::DashMap<AgentId, Arc<tokio::sync::Mutex<()>>>,
     /// Weak self-reference for trigger dispatch (set after Arc wrapping).
-    self_handle: OnceLock<Weak<OpenFangKernel>>,
+    self_handle: OnceLock<Weak<OMTAEKernel>>,
 }
 
 /// Bounded in-memory delivery receipt tracker.
 /// Stores up to `MAX_RECEIPTS` most recent delivery receipts per agent.
 pub struct DeliveryTracker {
-    receipts: dashmap::DashMap<AgentId, Vec<openfang_channels::types::DeliveryReceipt>>,
+    receipts: dashmap::DashMap<AgentId, Vec<omtae_channels::types::DeliveryReceipt>>,
 }
 
 impl Default for DeliveryTracker {
@@ -206,7 +208,7 @@ impl DeliveryTracker {
     }
 
     /// Record a delivery receipt for an agent.
-    pub fn record(&self, agent_id: AgentId, receipt: openfang_channels::types::DeliveryReceipt) {
+    pub fn record(&self, agent_id: AgentId, receipt: omtae_channels::types::DeliveryReceipt) {
         let mut entry = self.receipts.entry(agent_id).or_default();
         entry.push(receipt);
         // Per-agent cap
@@ -232,7 +234,7 @@ impl DeliveryTracker {
         &self,
         agent_id: AgentId,
         limit: usize,
-    ) -> Vec<openfang_channels::types::DeliveryReceipt> {
+    ) -> Vec<omtae_channels::types::DeliveryReceipt> {
         self.receipts
             .get(&agent_id)
             .map(|entries| entries.iter().rev().take(limit).cloned().collect())
@@ -243,12 +245,12 @@ impl DeliveryTracker {
     pub fn sent_receipt(
         channel: &str,
         recipient: &str,
-    ) -> openfang_channels::types::DeliveryReceipt {
-        openfang_channels::types::DeliveryReceipt {
+    ) -> omtae_channels::types::DeliveryReceipt {
+        omtae_channels::types::DeliveryReceipt {
             message_id: uuid::Uuid::new_v4().to_string(),
             channel: channel.to_string(),
             recipient: Self::sanitize_recipient(recipient),
-            status: openfang_channels::types::DeliveryStatus::Sent,
+            status: omtae_channels::types::DeliveryStatus::Sent,
             timestamp: chrono::Utc::now(),
             error: None,
         }
@@ -259,12 +261,12 @@ impl DeliveryTracker {
         channel: &str,
         recipient: &str,
         error: &str,
-    ) -> openfang_channels::types::DeliveryReceipt {
-        openfang_channels::types::DeliveryReceipt {
+    ) -> omtae_channels::types::DeliveryReceipt {
+        omtae_channels::types::DeliveryReceipt {
             message_id: uuid::Uuid::new_v4().to_string(),
             channel: channel.to_string(),
             recipient: Self::sanitize_recipient(recipient),
-            status: openfang_channels::types::DeliveryStatus::Failed,
+            status: omtae_channels::types::DeliveryStatus::Failed,
             timestamp: chrono::Utc::now(),
             // Sanitize error: no credentials, max 256 chars
             error: Some(
@@ -290,12 +292,12 @@ impl DeliveryTracker {
 
 /// Create the agent's private state directory layout. Holds identity files,
 /// AGENT.json, sessions/, memory/, and logs/. Lives under
-/// `~/.openfang/workspaces/{name}/` regardless of where the user pointed the
+/// `~/.omtae/workspaces/{name}/` regardless of where the user pointed the
 /// user-facing workspace. See issue #1097.
 fn ensure_state_dir(state_dir: &Path, workspace: &Path) -> KernelResult<()> {
     for subdir in &["sessions", "logs", "memory"] {
         std::fs::create_dir_all(state_dir.join(subdir)).map_err(|e| {
-            KernelError::OpenFang(OpenFangError::Internal(format!(
+            KernelError::OMTAE(OMTAEError::Internal(format!(
                 "Failed to create state dir {}/{subdir}: {e}",
                 state_dir.display()
             )))
@@ -321,7 +323,7 @@ fn ensure_state_dir(state_dir: &Path, workspace: &Path) -> KernelResult<()> {
 fn ensure_workspace(workspace: &Path) -> KernelResult<()> {
     for subdir in &["data", "output", "skills"] {
         std::fs::create_dir_all(workspace.join(subdir)).map_err(|e| {
-            KernelError::OpenFang(OpenFangError::Internal(format!(
+            KernelError::OMTAE(OMTAEError::Internal(format!(
                 "Failed to create workspace dir {}/{subdir}: {e}",
                 workspace.display()
             )))
@@ -486,7 +488,7 @@ fn append_daily_memory_log(state_dir: &Path, response: &str) {
         }
     }
     // Truncate long responses for the log (UTF-8 safe)
-    let summary = openfang_types::truncate_str(trimmed, 500);
+    let summary = omtae_types::truncate_str(trimmed, 500);
     let timestamp = chrono::Utc::now().format("%H:%M:%S").to_string();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -520,7 +522,7 @@ fn read_identity_file(state_dir: &Path, filename: &str) -> Option<String> {
         return None;
     }
     if content.len() > MAX_IDENTITY_FILE_BYTES {
-        Some(openfang_types::truncate_str(&content, MAX_IDENTITY_FILE_BYTES).to_string())
+        Some(omtae_types::truncate_str(&content, MAX_IDENTITY_FILE_BYTES).to_string())
     } else {
         Some(content)
     }
@@ -546,7 +548,7 @@ fn gethostname() -> Option<String> {
     }
 }
 
-impl OpenFangKernel {
+impl OMTAEKernel {
     /// Boot the kernel with configuration from the given path.
     pub fn boot(config_path: Option<&Path>) -> KernelResult<Self> {
         let config = load_config(config_path);
@@ -555,10 +557,10 @@ impl OpenFangKernel {
 
     /// Fetch live Copilot models by exchanging the persisted token and querying the API.
     /// Works both inside and outside a tokio runtime.
-    fn fetch_copilot_models(openfang_dir: &Path) -> Result<Vec<String>, String> {
-        use openfang_runtime::drivers::copilot;
+    fn fetch_copilot_models(omtae_dir: &Path) -> Result<Vec<String>, String> {
+        use omtae_runtime::drivers::copilot;
 
-        let tokens = copilot::PersistedTokens::load(openfang_dir)
+        let tokens = copilot::PersistedTokens::load(omtae_dir)
             .ok_or("No persisted Copilot tokens found")?;
 
         let fetch = async {
@@ -595,7 +597,7 @@ impl OpenFangKernel {
             debug!("rustls crypto provider already installed, skipping");
         }
 
-        use openfang_types::config::KernelMode;
+        use omtae_types::config::KernelMode;
 
         // Env var overrides — useful for Docker where config.toml is baked in.
         if let Ok(listen) = std::env::var("OPENFANG_LISTEN") {
@@ -619,13 +621,13 @@ impl OpenFangKernel {
 
         match config.mode {
             KernelMode::Stable => {
-                info!("Booting OpenFang kernel in STABLE mode — conservative defaults enforced");
+                info!("Booting OMTAE kernel in STABLE mode — conservative defaults enforced");
             }
             KernelMode::Dev => {
-                warn!("Booting OpenFang kernel in DEV mode — experimental features enabled");
+                warn!("Booting OMTAE kernel in DEV mode — experimental features enabled");
             }
             KernelMode::Default => {
-                info!("Booting OpenFang kernel...");
+                info!("Booting OMTAE kernel...");
             }
         }
 
@@ -644,7 +646,7 @@ impl OpenFangKernel {
             .memory
             .sqlite_path
             .clone()
-            .unwrap_or_else(|| config.data_dir.join("openfang.db"));
+            .unwrap_or_else(|| config.data_dir.join("omtae.db"));
         let memory = Arc::new(
             MemorySubstrate::open(&db_path, config.memory.decay_rate, &config.memory)
                 .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
@@ -654,7 +656,7 @@ impl OpenFangKernel {
         let credential_resolver = {
             let vault_path = config.home_dir.join("vault.enc");
             let vault = if vault_path.exists() {
-                let mut v = openfang_extensions::vault::CredentialVault::new(vault_path);
+                let mut v = omtae_extensions::vault::CredentialVault::new(vault_path);
                 match v.unlock() {
                     Ok(()) => {
                         info!("Credential vault unlocked ({} entries)", v.len());
@@ -669,7 +671,7 @@ impl OpenFangKernel {
                 None
             };
             let dotenv_path = config.home_dir.join(".env");
-            openfang_extensions::credentials::CredentialResolver::new(vault, Some(&dotenv_path))
+            omtae_extensions::credentials::CredentialResolver::new(vault, Some(&dotenv_path))
         };
 
         // Create LLM driver.
@@ -794,7 +796,7 @@ impl OpenFangKernel {
 
         // Use the chain, or create a stub driver if everything failed
         let driver: Arc<dyn LlmDriver> = if driver_chain.len() > 1 {
-            Arc::new(openfang_runtime::drivers::fallback::FallbackDriver::with_models(model_chain))
+            Arc::new(omtae_runtime::drivers::fallback::FallbackDriver::with_models(model_chain))
         } else if let Some(single) = driver_chain.into_iter().next() {
             single
         } else {
@@ -806,7 +808,7 @@ impl OpenFangKernel {
 
         // Initialize metering engine (shares the same SQLite connection as the memory substrate)
         let metering = Arc::new(MeteringEngine::new(Arc::new(
-            openfang_memory::usage::UsageStore::new(memory.usage_conn()),
+            omtae_memory::usage::UsageStore::new(memory.usage_conn()),
         )));
 
         let supervisor = Supervisor::new();
@@ -823,7 +825,7 @@ impl OpenFangKernel {
         }
 
         // Initialize model catalog, detect provider auth, and apply URL overrides
-        let mut model_catalog = openfang_runtime::model_catalog::ModelCatalog::new();
+        let mut model_catalog = omtae_runtime::model_catalog::ModelCatalog::new();
         model_catalog.detect_auth();
         // Env-var overrides for local providers (OLLAMA_HOST, LMSTUDIO_BASE_URL, etc.).
         // Applied before `provider_urls` so explicit config.toml entries win. See #1154.
@@ -835,12 +837,12 @@ impl OpenFangKernel {
                 config.provider_urls.len()
             );
         }
-        // Load user's custom models from ~/.openfang/custom_models.json
+        // Load user's custom models from ~/.omtae/custom_models.json
         let custom_models_path = config.home_dir.join("custom_models.json");
         model_catalog.load_custom_models(&custom_models_path);
 
         // Fetch live Copilot models if authenticated
-        if openfang_runtime::drivers::copilot::copilot_auth_available(&config.home_dir) {
+        if omtae_runtime::drivers::copilot::copilot_auth_available(&config.home_dir) {
             let copilot_dir = config.home_dir.clone();
             match Self::fetch_copilot_models(&copilot_dir) {
                 Ok(models) => {
@@ -866,7 +868,7 @@ impl OpenFangKernel {
 
         // Initialize skill registry
         let skills_dir = config.home_dir.join("skills");
-        let mut skill_registry = openfang_skills::registry::SkillRegistry::new(skills_dir);
+        let mut skill_registry = omtae_skills::registry::SkillRegistry::new(skills_dir);
         // Install user-supplied per-skill config from `[skills.<name>]` sections
         // before loading so the loader can resolve declared config frontmatter.
         skill_registry.set_skill_configs(config.skills.clone());
@@ -893,15 +895,21 @@ impl OpenFangKernel {
             skill_registry.freeze();
         }
 
+        if config.ecc.enabled {
+            info!(
+                "ECC integration enabled — runtime TOOL_REQUIRED gates active; install skills via scripts/install-ecc-skills.sh"
+            );
+        }
+
         // Initialize hand registry (curated autonomous packages)
-        let hand_registry = openfang_hands::registry::HandRegistry::new();
+        let hand_registry = omtae_hands::registry::HandRegistry::new();
         let hand_count = hand_registry.load_bundled();
         if hand_count > 0 {
             info!("Loaded {hand_count} bundled hand(s)");
         }
 
         // Load custom hands from the user's workspace (issue #984).
-        // Hands installed via `openfang hand install <path>` are persisted to
+        // Hands installed via `omtae hand install <path>` are persisted to
         // `<home>/hands/<hand_id>/` so they survive daemon restarts.
         let workspace_hands_dir = config.home_dir.join("hands");
         match hand_registry.load_workspace_hands(&workspace_hands_dir) {
@@ -919,7 +927,7 @@ impl OpenFangKernel {
 
         // Initialize extension/integration registry
         let mut extension_registry =
-            openfang_extensions::registry::IntegrationRegistry::new(&config.home_dir);
+            omtae_extensions::registry::IntegrationRegistry::new(&config.home_dir);
         let ext_bundled = extension_registry.load_bundled();
         match extension_registry.load_installed() {
             Ok(count) => {
@@ -947,13 +955,13 @@ impl OpenFangKernel {
         }
 
         // Initialize integration health monitor
-        let health_config = openfang_extensions::health::HealthMonitorConfig {
+        let health_config = omtae_extensions::health::HealthMonitorConfig {
             auto_reconnect: config.extensions.auto_reconnect,
             max_reconnect_attempts: config.extensions.reconnect_max_attempts,
             max_backoff_secs: config.extensions.reconnect_max_backoff_secs,
             check_interval_secs: config.extensions.health_check_interval_secs,
         };
-        let extension_health = openfang_extensions::health::HealthMonitor::new(health_config);
+        let extension_health = omtae_extensions::health::HealthMonitor::new(health_config);
         // Register all installed integrations for health monitoring
         for inst in extension_registry.to_mcp_configs() {
             extension_health.register(&inst.name);
@@ -961,13 +969,13 @@ impl OpenFangKernel {
 
         // Initialize web tools (multi-provider search + SSRF-protected fetch + caching)
         let cache_ttl = std::time::Duration::from_secs(config.web.cache_ttl_minutes * 60);
-        let web_cache = Arc::new(openfang_runtime::web_cache::WebCache::new(cache_ttl));
-        let web_ctx = openfang_runtime::web_search::WebToolsContext {
-            search: openfang_runtime::web_search::WebSearchEngine::new(
+        let web_cache = Arc::new(omtae_runtime::web_cache::WebCache::new(cache_ttl));
+        let web_ctx = omtae_runtime::web_search::WebToolsContext {
+            search: omtae_runtime::web_search::WebSearchEngine::new(
                 config.web.clone(),
                 web_cache.clone(),
             ),
-            fetch: openfang_runtime::web_fetch::WebFetchEngine::new(
+            fetch: omtae_runtime::web_fetch::WebFetchEngine::new(
                 config.web.fetch.clone(),
                 web_cache,
             ),
@@ -975,9 +983,9 @@ impl OpenFangKernel {
 
         // Auto-detect embedding driver for vector similarity search
         let embedding_driver: Option<
-            Arc<dyn openfang_runtime::embedding::EmbeddingDriver + Send + Sync>,
+            Arc<dyn omtae_runtime::embedding::EmbeddingDriver + Send + Sync>,
         > = {
-            use openfang_runtime::embedding::create_embedding_driver;
+            use omtae_runtime::embedding::create_embedding_driver;
             let configured_model = &config.memory.embedding_model;
             if let Some(ref provider) = config.memory.embedding_provider {
                 // Explicit config takes priority — use the configured embedding model.
@@ -1079,14 +1087,14 @@ impl OpenFangKernel {
             }
         };
 
-        let browser_ctx = openfang_runtime::browser::BrowserManager::new(config.browser.clone());
+        let browser_ctx = omtae_runtime::browser::BrowserManager::new(config.browser.clone());
 
         // Initialize media understanding engine
         let media_engine =
-            openfang_runtime::media_understanding::MediaEngine::new(config.media.clone());
+            omtae_runtime::media_understanding::MediaEngine::new(config.media.clone());
         // Closes #1051: thread MediaConfig URL overrides into the TTS engine
         // so local OpenAI/ElevenLabs-compatible services can be targeted.
-        let tts_engine = openfang_runtime::tts::TtsEngine::new(config.tts.clone()).with_base_urls(
+        let tts_engine = omtae_runtime::tts::TtsEngine::new(config.tts.clone()).with_base_urls(
             config.media.tts_openai_base_url.clone(),
             config.media.tts_elevenlabs_base_url.clone(),
         );
@@ -1188,9 +1196,10 @@ impl OpenFangKernel {
             skill_registry: std::sync::RwLock::new(skill_registry),
             skill_config_overrides: std::sync::RwLock::new(None),
             running_tasks: dashmap::DashMap::new(),
+            running_task_started: dashmap::DashMap::new(),
             mcp_connections: tokio::sync::Mutex::new(Vec::new()),
             mcp_tools: std::sync::Mutex::new(Vec::new()),
-            a2a_task_store: openfang_runtime::a2a::A2aTaskStore::default(),
+            a2a_task_store: omtae_runtime::a2a::A2aTaskStore::default(),
             a2a_external_agents: std::sync::Mutex::new(Vec::new()),
             web_ctx,
             browser_ctx,
@@ -1209,8 +1218,8 @@ impl OpenFangKernel {
             bindings: std::sync::Mutex::new(initial_bindings),
             broadcast: initial_broadcast,
             auto_reply_engine,
-            hooks: openfang_runtime::hooks::HookRegistry::new(),
-            process_manager: Arc::new(openfang_runtime::process_manager::ProcessManager::new(5)),
+            hooks: omtae_runtime::hooks::HookRegistry::new(),
+            process_manager: Arc::new(omtae_runtime::process_manager::ProcessManager::new(5)),
             peer_registry: OnceLock::new(),
             peer_node: OnceLock::new(),
             booted_at: std::time::Instant::now(),
@@ -1231,14 +1240,14 @@ impl OpenFangKernel {
         // for every subsequent install/upsert/reload.
         {
             let audit_log_initial = Arc::clone(&kernel.audit_log);
-            for (hand_id, toml_content, _skill) in openfang_hands::bundled::bundled_hands() {
+            for (hand_id, toml_content, _skill) in omtae_hands::bundled::bundled_hands() {
                 use sha2::{Digest, Sha256};
                 let mut hasher = Sha256::new();
                 hasher.update(toml_content.as_bytes());
                 let hash = hex::encode(hasher.finalize());
                 audit_log_initial.record(
                     "kernel",
-                    openfang_runtime::audit::AuditAction::ConfigChange,
+                    omtae_runtime::audit::AuditAction::ConfigChange,
                     format!("HAND.toml load hand={hand_id} sha256={hash}"),
                     "ok",
                 );
@@ -1250,7 +1259,7 @@ impl OpenFangKernel {
                 .set_audit_callback(Arc::new(move |hand_id: &str, hash: &str| {
                     audit_log_for_cb.record(
                         "kernel",
-                        openfang_runtime::audit::AuditAction::ConfigChange,
+                        omtae_runtime::audit::AuditAction::ConfigChange,
                         format!("HAND.toml reload hand={hand_id} sha256={hash}"),
                         "ok",
                     );
@@ -1285,7 +1294,7 @@ impl OpenFangKernel {
                     if toml_path.exists() {
                         match std::fs::read_to_string(&toml_path) {
                             Ok(toml_str) => {
-                                match toml::from_str::<openfang_types::agent::AgentManifest>(
+                                match toml::from_str::<omtae_types::agent::AgentManifest>(
                                     &toml_str,
                                 ) {
                                     Ok(disk_manifest) => {
@@ -1340,6 +1349,9 @@ impl OpenFangKernel {
                                                     disk_manifest,
                                                     &entry.manifest,
                                                 );
+                                            normalize_request_driven_agent_schedule(
+                                                &mut entry.manifest,
+                                            );
                                             // Persist the update back to DB
                                             if let Err(e) = kernel.memory.save_agent(&entry) {
                                                 warn!(
@@ -1462,7 +1474,7 @@ impl OpenFangKernel {
             }
         }
 
-        // Issue #1140: auto-spawn agents from `~/.openfang/agents/<name>/agent.toml`
+        // Issue #1140: auto-spawn agents from `~/.omtae/agents/<name>/agent.toml`
         // that are present on disk but not yet in the registry. Without this,
         // user-placed agent dirs never appear in `GET /api/agents` (and thus
         // the chat tab's dropdown) until they are explicitly spawned via API
@@ -1486,6 +1498,11 @@ impl OpenFangKernel {
                             Some(n) => n.to_string_lossy().to_string(),
                             None => continue,
                         };
+                        if !kernel.config.agents.autospawn.is_empty()
+                            && !kernel.config.agents.autospawn.iter().any(|a| a == &dir_name)
+                        {
+                            continue;
+                        }
                         // Skip if an agent with this name already exists in the
                         // registry (was restored from DB or already spawned).
                         if kernel.registry.find_by_name(&dir_name).is_some() {
@@ -1502,7 +1519,7 @@ impl OpenFangKernel {
                                 continue;
                             }
                         };
-                        let mut manifest: openfang_types::agent::AgentManifest =
+                        let mut manifest: omtae_types::agent::AgentManifest =
                             match toml::from_str(&toml_str) {
                                 Ok(m) => m,
                                 Err(e) => {
@@ -1527,7 +1544,7 @@ impl OpenFangKernel {
                                 info!(
                                     agent = %dir_name,
                                     id = %id,
-                                    "Auto-spawned agent from ~/.openfang/agents"
+                                    "Auto-spawned agent from ~/.omtae/agents"
                                 );
                             }
                             Err(e) => {
@@ -1540,19 +1557,48 @@ impl OpenFangKernel {
                     }
                 }
                 if auto_spawned > 0 {
-                    info!("Auto-spawned {auto_spawned} agent(s) from ~/.openfang/agents");
+                    info!("Auto-spawned {auto_spawned} agent(s) from ~/.omtae/agents");
+                }
+            }
+        }
+
+        // Enforce `[agents] autospawn` allowlist — stop agents restored from DB that are not listed.
+        if kernel.config.watchdog.kill_disallowed && !kernel.config.agents.autospawn.is_empty() {
+            let allow: std::collections::HashSet<&str> = kernel
+                .config
+                .agents
+                .autospawn
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            let manual: std::collections::HashSet<String> = kernel
+                .config
+                .watchdog
+                .manual_allowlist
+                .iter()
+                .map(|s| s.trim().to_lowercase())
+                .collect();
+            for entry in kernel.registry.list() {
+                if manual.contains(&entry.name.trim().to_lowercase()) {
+                    continue;
+                }
+                if !allow.contains(entry.name.as_str()) {
+                    info!(agent = %entry.name, "Stopping agent not in autospawn allowlist");
+                    let _ = kernel.kill_agent(entry.id);
                 }
             }
         }
 
         // If no agents exist (fresh install), spawn a default assistant
-        if kernel.registry.list().is_empty() {
+        let spawn_default_assistant = kernel.config.agents.autospawn.is_empty()
+            || kernel.config.agents.autospawn.iter().any(|a| a == "assistant");
+        if kernel.registry.list().is_empty() && spawn_default_assistant {
             info!("No agents found — spawning default assistant");
             let dm = &kernel.config.default_model;
             let manifest = AgentManifest {
                 name: "assistant".to_string(),
                 description: "General-purpose assistant".to_string(),
-                model: openfang_types::agent::ModelConfig {
+                model: omtae_types::agent::ModelConfig {
                     provider: dm.provider.clone(),
                     model: dm.model.clone(),
                     system_prompt: "You are a helpful AI assistant.".to_string(),
@@ -1587,7 +1633,7 @@ impl OpenFangKernel {
             }
         }
 
-        info!("OpenFang kernel booted successfully");
+        info!("OMTAE kernel booted successfully");
         Ok(kernel)
     }
 
@@ -1614,7 +1660,7 @@ impl OpenFangKernel {
         let session = self
             .memory
             .create_session(agent_id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
         let session_id = session.id;
 
         // Inherit kernel exec_policy as fallback if agent manifest doesn't have one
@@ -1682,6 +1728,8 @@ impl OpenFangKernel {
                 Some(self.config.resolve_api_key_env(&manifest.model.provider));
         }
 
+        normalize_request_driven_agent_schedule(&mut manifest);
+
         // Normalize: strip provider prefix from model name if present
         let normalized = strip_provider_prefix(&manifest.model.model, &manifest.model.provider);
         if normalized != manifest.model.model {
@@ -1691,7 +1739,7 @@ impl OpenFangKernel {
         // Apply global budget defaults to agent resource quotas
         apply_budget_defaults(&self.config.budget, &mut manifest.resources);
 
-        // Agent private state always lives under ~/.openfang/workspaces/{name}/.
+        // Agent private state always lives under ~/.omtae/workspaces/{name}/.
         // This is name-based so SOUL.md and per-agent memory survive recreation
         // and never get dumped into a user-supplied workspace path. See #1097.
         let state_dir = manifest
@@ -1742,7 +1790,7 @@ impl OpenFangKernel {
         };
         self.registry
             .register(entry.clone())
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         // Update parent's children list
         if let Some(parent_id) = parent {
@@ -1752,14 +1800,14 @@ impl OpenFangKernel {
         // Persist agent to SQLite so it survives restarts
         self.memory
             .save_agent(&entry)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         info!(agent = %name, id = %agent_id, "Agent spawned");
 
         // SECURITY: Record agent spawn in audit trail
         self.audit_log.record(
             agent_id.to_string(),
-            openfang_runtime::audit::AuditAction::AgentSpawn,
+            omtae_runtime::audit::AuditAction::AgentSpawn,
             format!("name={name}, parent={parent:?}"),
             "ok",
         );
@@ -1797,14 +1845,14 @@ impl OpenFangKernel {
     /// Call this before `spawn_agent` when a `SignedManifest` JSON is provided
     /// alongside the TOML. Returns the verified manifest TOML string on success.
     pub fn verify_signed_manifest(&self, signed_json: &str) -> KernelResult<String> {
-        let signed: openfang_types::manifest_signing::SignedManifest =
+        let signed: omtae_types::manifest_signing::SignedManifest =
             serde_json::from_str(signed_json).map_err(|e| {
-                KernelError::OpenFang(openfang_types::error::OpenFangError::Config(format!(
+                KernelError::OMTAE(omtae_types::error::OMTAEError::Config(format!(
                     "Invalid signed manifest JSON: {e}"
                 )))
             })?;
         signed.verify().map_err(|e| {
-            KernelError::OpenFang(openfang_types::error::OpenFangError::Config(format!(
+            KernelError::OMTAE(omtae_types::error::OMTAEError::Config(format!(
                 "Manifest signature verification failed: {e}"
             )))
         })?;
@@ -1839,7 +1887,7 @@ impl OpenFangKernel {
         &self,
         agent_id: AgentId,
         message: &str,
-        blocks: Vec<openfang_types::message::ContentBlock>,
+        blocks: Vec<omtae_types::message::ContentBlock>,
     ) -> KernelResult<AgentLoopResult> {
         let handle: Option<Arc<dyn KernelHandle>> = self
             .self_handle
@@ -1891,7 +1939,7 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
-        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        content_blocks: Option<Vec<omtae_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
@@ -1909,10 +1957,10 @@ impl OpenFangKernel {
         // Enforce quota before running the agent loop
         self.scheduler
             .check_quota(agent_id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         let entry = self.registry.get(agent_id).ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+            KernelError::OMTAE(OMTAEError::AgentNotFound(agent_id.to_string()))
         })?;
 
         // Dispatch based on module type
@@ -1946,7 +1994,7 @@ impl OpenFangKernel {
                 // SECURITY: Record successful message in audit trail
                 self.audit_log.record(
                     agent_id.to_string(),
-                    openfang_runtime::audit::AuditAction::AgentMessage,
+                    omtae_runtime::audit::AuditAction::AgentMessage,
                     format!(
                         "tokens_in={}, tokens_out={}",
                         result.total_usage.input_tokens, result.total_usage.output_tokens
@@ -1960,7 +2008,7 @@ impl OpenFangKernel {
                 // SECURITY: Record failed message in audit trail
                 self.audit_log.record(
                     agent_id.to_string(),
-                    openfang_runtime::audit::AuditAction::AgentMessage,
+                    omtae_runtime::audit::AuditAction::AgentMessage,
                     "agent loop failed",
                     format!("error: {e}"),
                 );
@@ -1988,7 +2036,7 @@ impl OpenFangKernel {
         kernel_handle: Option<Arc<dyn KernelHandle>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
-        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        content_blocks: Option<Vec<omtae_types::message::ContentBlock>>,
     ) -> KernelResult<(
         tokio::sync::mpsc::Receiver<StreamEvent>,
         tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
@@ -1996,10 +2044,10 @@ impl OpenFangKernel {
         // Enforce quota before spawning the streaming task
         self.scheduler
             .check_quota(agent_id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         let entry = self.registry.get(agent_id).ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+            KernelError::OMTAE(OMTAEError::AgentNotFound(agent_id.to_string()))
         })?;
 
         let is_wasm = entry.manifest.module.starts_with("wasm:");
@@ -2033,7 +2081,7 @@ impl OpenFangKernel {
                             .await;
                         let _ = tx
                             .send(StreamEvent::ContentComplete {
-                                stop_reason: openfang_types::message::StopReason::EndTurn,
+                                stop_reason: omtae_types::message::StopReason::EndTurn,
                                 usage: result.total_usage,
                             })
                             .await;
@@ -2060,8 +2108,8 @@ impl OpenFangKernel {
         let mut session = self
             .memory
             .get_session(entry.session_id)
-            .map_err(KernelError::OpenFang)?
-            .unwrap_or_else(|| openfang_memory::session::Session {
+            .map_err(KernelError::OMTAE)?
+            .unwrap_or_else(|| omtae_memory::session::Session {
                 id: entry.session_id,
                 agent_id,
                 messages: Vec::new(),
@@ -2069,19 +2117,26 @@ impl OpenFangKernel {
                 label: None,
             });
 
+        let driver = self.resolve_driver(&entry.manifest)?;
+
+        // Look up model's actual context window from the catalog
+        let ctx_window = self.model_catalog.read().ok().and_then(|cat| {
+            cat.find_model(&entry.manifest.model.model)
+                .map(|m| m.context_window as usize)
+        });
+
         // Check if auto-compaction is needed: message-count OR token-count OR quota-headroom trigger
         let needs_compact = {
-            use openfang_runtime::compactor::{
-                estimate_token_count, needs_compaction as check_compact,
-                needs_compaction_by_tokens, CompactionConfig,
+            use omtae_runtime::compactor::{
+                estimate_token_count, needs_compaction, needs_compaction_by_tokens,
             };
-            let config = CompactionConfig::default();
-            let by_messages = check_compact(&session, &config);
+            let config = self.agent_compaction_config(ctx_window);
             let estimated = estimate_token_count(
                 &session.messages,
                 Some(&entry.manifest.model.system_prompt),
                 None,
             );
+            let by_messages = needs_compaction(&session, &config);
             let by_tokens = needs_compaction_by_tokens(estimated, &config);
             if by_tokens && !by_messages {
                 info!(
@@ -2110,20 +2165,12 @@ impl OpenFangKernel {
             by_messages || by_tokens || by_quota
         };
 
-        let driver = self.resolve_driver(&entry.manifest)?;
-
-        // Look up model's actual context window from the catalog
-        let ctx_window = self.model_catalog.read().ok().and_then(|cat| {
-            cat.find_model(&entry.manifest.model.model)
-                .map(|m| m.context_window as usize)
-        });
-
         let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let mut manifest = entry.manifest.clone();
 
         // Lazy backfill: create state_dir and workspace for existing agents
         // spawned before this field existed. Private state always lives under
-        // ~/.openfang/workspaces/{name}/; the user-facing workspace defaults
+        // ~/.omtae/workspaces/{name}/; the user-facing workspace defaults
         // to the same path unless the manifest already pinned one. See #1097.
         if manifest.state_dir.is_none() {
             let state_dir = self.config.effective_workspaces_dir().join(&manifest.name);
@@ -2149,7 +2196,7 @@ impl OpenFangKernel {
         }
 
         // Build workspace-aware skill snapshot BEFORE tool list and prompt building.
-        // Loading order: bundled → global (~/.openfang/skills) → workspace skills.
+        // Loading order: bundled → global (~/.omtae/skills) → workspace skills.
         // Each layer overrides duplicates from the previous layer. (#851, #808)
         let skill_snapshot = {
             let mut snapshot = self
@@ -2197,7 +2244,7 @@ impl OpenFangKernel {
                 })
                 .collect();
 
-            let prompt_ctx = openfang_runtime::prompt_builder::PromptContext {
+            let prompt_ctx = omtae_runtime::prompt_builder::PromptContext {
                 agent_name: manifest.name.clone(),
                 agent_description: manifest.description.clone(),
                 base_system_prompt: manifest.model.system_prompt.clone(),
@@ -2249,7 +2296,7 @@ impl OpenFangKernel {
                     .and_then(|s| read_identity_file(s, "BOOTSTRAP.md")),
                 workspace_context: manifest.workspace.as_ref().map(|w| {
                     let mut ws_ctx =
-                        openfang_runtime::workspace_context::WorkspaceContext::detect(w);
+                        omtae_runtime::workspace_context::WorkspaceContext::detect(w);
                     ws_ctx.build_context_section()
                 }),
                 identity_md: manifest
@@ -2276,15 +2323,15 @@ impl OpenFangKernel {
                 // (cron jobs, integrations) reach the LLM on the next message.
                 // Opt out via `cache_context = true` on the manifest. (#843)
                 context_md: manifest.workspace.as_ref().and_then(|w| {
-                    openfang_runtime::agent_context::load_context_md(w, manifest.cache_context)
+                    omtae_runtime::agent_context::load_context_md(w, manifest.cache_context)
                 }),
             };
             manifest.model.system_prompt =
-                openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
+                omtae_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
             // Store canonical context separately for injection as user message
             // (keeps system prompt stable across turns for provider prompt caching)
             if let Some(cc_msg) =
-                openfang_runtime::prompt_builder::build_canonical_context_message(&prompt_ctx)
+                omtae_runtime::prompt_builder::build_canonical_context_message(&prompt_ctx)
             {
                 manifest.metadata.insert(
                     "canonical_context_msg".to_string(),
@@ -2296,7 +2343,7 @@ impl OpenFangKernel {
         let memory = Arc::clone(&self.memory);
         // Build link context from user message (auto-extract URLs for the agent)
         let message_owned = if let Some(link_ctx) =
-            openfang_runtime::link_understanding::build_link_context(message, &self.config.links)
+            omtae_runtime::link_understanding::build_link_context(message, &self.config.links)
         {
             format!("{message}{link_ctx}")
         } else {
@@ -2328,9 +2375,9 @@ impl OpenFangKernel {
 
             // Create a phase callback that emits PhaseChange events to WS/SSE clients
             let phase_tx = tx.clone();
-            let phase_cb: openfang_runtime::agent_loop::PhaseCallback =
+            let phase_cb: omtae_runtime::agent_loop::PhaseCallback =
                 std::sync::Arc::new(move |phase| {
-                    use openfang_runtime::agent_loop::LoopPhase;
+                    use omtae_runtime::agent_loop::LoopPhase;
                     let (phase_str, detail) = match &phase {
                         LoopPhase::Thinking => ("thinking".to_string(), None),
                         LoopPhase::ToolUse { tool_name } => {
@@ -2391,7 +2438,7 @@ impl OpenFangKernel {
             // ping timeout before post-processing finished).
             drop(phase_cb);
 
-            match result {
+            let loop_result = match result {
                 Ok(result) => {
                     // Append new messages to canonical session for cross-channel memory
                     if session.messages.len() > messages_before {
@@ -2431,7 +2478,7 @@ impl OpenFangKernel {
                     );
                     let _ = kernel_clone
                         .metering
-                        .record(&openfang_memory::usage::UsageRecord {
+                        .record(&omtae_memory::usage::UsageRecord {
                             agent_id,
                             model: model.clone(),
                             input_tokens: result.total_usage.input_tokens,
@@ -2447,10 +2494,10 @@ impl OpenFangKernel {
                     // Post-loop compaction check: if session now exceeds token threshold,
                     // trigger compaction in background for the next call.
                     {
-                        use openfang_runtime::compactor::{
-                            estimate_token_count, needs_compaction_by_tokens, CompactionConfig,
+                        use omtae_runtime::compactor::{
+                            estimate_token_count, needs_compaction_by_tokens,
                         };
-                        let config = CompactionConfig::default();
+                        let config = kernel_clone.agent_compaction_config(ctx_window);
                         let estimated = estimate_token_count(&session.messages, None, None);
                         if needs_compaction_by_tokens(estimated, &config) {
                             let kc = kernel_clone.clone();
@@ -2468,12 +2515,20 @@ impl OpenFangKernel {
                 Err(e) => {
                     kernel_clone.supervisor.record_panic();
                     warn!(agent_id = %agent_id, error = %e, "Streaming agent loop failed");
-                    Err(KernelError::OpenFang(e))
+                    Err(KernelError::OMTAE(e))
                 }
-            }
+            };
+            kernel_clone.running_tasks.remove(&agent_id);
+            kernel_clone.running_task_started.remove(&agent_id);
+            loop_result
         });
 
-        // Store abort handle for cancellation support
+        // Store abort handle for cancellation support (cleared when the loop task exits).
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.running_task_started.insert(agent_id, started_at);
         self.running_tasks.insert(agent_id, handle.abort_handle());
 
         Ok((rx, handle))
@@ -2499,7 +2554,7 @@ impl OpenFangKernel {
         info!(agent = %entry.name, path = %wasm_path.display(), "Executing WASM agent");
 
         let wasm_bytes = std::fs::read(&wasm_path).map_err(|e| {
-            KernelError::OpenFang(OpenFangError::Internal(format!(
+            KernelError::OMTAE(OMTAEError::Internal(format!(
                 "Failed to read WASM module '{}': {e}",
                 wasm_path.display()
             )))
@@ -2532,7 +2587,7 @@ impl OpenFangKernel {
             )
             .await
             .map_err(|e| {
-                KernelError::OpenFang(OpenFangError::Internal(format!(
+                KernelError::OMTAE(OMTAEError::Internal(format!(
                     "WASM execution failed: {e}"
                 )))
             })?;
@@ -2555,7 +2610,7 @@ impl OpenFangKernel {
 
         Ok(AgentLoopResult {
             response,
-            total_usage: openfang_types::message::TokenUsage {
+            total_usage: omtae_types::message::TokenUsage {
                 input_tokens: 0,
                 output_tokens: 0,
             },
@@ -2606,7 +2661,7 @@ impl OpenFangKernel {
         )
         .await
         .map_err(|e| {
-            KernelError::OpenFang(OpenFangError::Internal(format!(
+            KernelError::OMTAE(OMTAEError::Internal(format!(
                 "Python execution failed: {e}"
             )))
         })?;
@@ -2615,7 +2670,7 @@ impl OpenFangKernel {
 
         Ok(AgentLoopResult {
             response: result.response,
-            total_usage: openfang_types::message::TokenUsage {
+            total_usage: omtae_types::message::TokenUsage {
                 input_tokens: 0,
                 output_tokens: 0,
             },
@@ -2634,20 +2689,20 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
-        content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        content_blocks: Option<Vec<omtae_types::message::ContentBlock>>,
         sender_id: Option<String>,
         sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
             .check_quota(agent_id, &entry.manifest.resources)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         let mut session = self
             .memory
             .get_session(entry.session_id)
-            .map_err(KernelError::OpenFang)?
-            .unwrap_or_else(|| openfang_memory::session::Session {
+            .map_err(KernelError::OMTAE)?
+            .unwrap_or_else(|| omtae_memory::session::Session {
                 id: entry.session_id,
                 agent_id,
                 messages: Vec::new(),
@@ -2655,13 +2710,18 @@ impl OpenFangKernel {
                 label: None,
             });
 
+        let ctx_window = self.model_catalog.read().ok().and_then(|cat| {
+            cat.find_model(&entry.manifest.model.model)
+                .map(|m| m.context_window as usize)
+        });
+
         // Pre-emptive compaction: compact before LLM call if session is large or quota headroom is low
         {
-            use openfang_runtime::compactor::{
+            use omtae_runtime::compactor::{
                 estimate_token_count, needs_compaction as check_compact,
-                needs_compaction_by_tokens, CompactionConfig,
+                needs_compaction_by_tokens,
             };
-            let config = CompactionConfig::default();
+            let config = self.agent_compaction_config(ctx_window);
             let by_messages = check_compact(&session, &config);
             let estimated = estimate_token_count(
                 &session.messages,
@@ -2697,7 +2757,7 @@ impl OpenFangKernel {
         let mut manifest = entry.manifest.clone();
 
         // Lazy backfill: create state_dir and workspace for existing agents.
-        // Private state lives under ~/.openfang/workspaces/{name}/. User-facing
+        // Private state lives under ~/.omtae/workspaces/{name}/. User-facing
         // workspace stays at whatever the manifest pinned (or defaults to the
         // state_dir). See issue #1097.
         if manifest.state_dir.is_none() {
@@ -2724,7 +2784,7 @@ impl OpenFangKernel {
         }
 
         // Build workspace-aware skill snapshot BEFORE tool list and prompt building.
-        // Loading order: bundled → global (~/.openfang/skills) → workspace skills.
+        // Loading order: bundled → global (~/.omtae/skills) → workspace skills.
         // Each layer overrides duplicates from the previous layer. (#851, #808)
         let skill_snapshot = {
             let mut snapshot = self
@@ -2780,7 +2840,7 @@ impl OpenFangKernel {
                 })
                 .collect();
 
-            let prompt_ctx = openfang_runtime::prompt_builder::PromptContext {
+            let prompt_ctx = omtae_runtime::prompt_builder::PromptContext {
                 agent_name: manifest.name.clone(),
                 agent_description: manifest.description.clone(),
                 base_system_prompt: manifest.model.system_prompt.clone(),
@@ -2832,7 +2892,7 @@ impl OpenFangKernel {
                     .and_then(|s| read_identity_file(s, "BOOTSTRAP.md")),
                 workspace_context: manifest.workspace.as_ref().map(|w| {
                     let mut ws_ctx =
-                        openfang_runtime::workspace_context::WorkspaceContext::detect(w);
+                        omtae_runtime::workspace_context::WorkspaceContext::detect(w);
                     ws_ctx.build_context_section()
                 }),
                 identity_md: manifest
@@ -2857,15 +2917,15 @@ impl OpenFangKernel {
                 sender_name,
                 // Re-read context.md per turn by default (#843).
                 context_md: manifest.workspace.as_ref().and_then(|w| {
-                    openfang_runtime::agent_context::load_context_md(w, manifest.cache_context)
+                    omtae_runtime::agent_context::load_context_md(w, manifest.cache_context)
                 }),
             };
             manifest.model.system_prompt =
-                openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
+                omtae_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
             // Store canonical context separately for injection as user message
             // (keeps system prompt stable across turns for provider prompt caching)
             if let Some(cc_msg) =
-                openfang_runtime::prompt_builder::build_canonical_context_message(&prompt_ctx)
+                omtae_runtime::prompt_builder::build_canonical_context_message(&prompt_ctx)
             {
                 manifest.metadata.insert(
                     "canonical_context_msg".to_string(),
@@ -2874,7 +2934,7 @@ impl OpenFangKernel {
             }
         }
 
-        let is_stable = self.config.mode == openfang_types::config::KernelMode::Stable;
+        let is_stable = self.config.mode == omtae_types::config::KernelMode::Stable;
 
         if is_stable {
             // In Stable mode: use pinned_model if set, otherwise default model
@@ -2893,7 +2953,7 @@ impl OpenFangKernel {
             // Build a probe request to score complexity
             let probe = CompletionRequest {
                 model: strip_provider_prefix(&manifest.model.model, &manifest.model.provider),
-                messages: vec![openfang_types::message::Message::user(message)],
+                messages: vec![omtae_types::message::Message::user(message)],
                 tools: tools.clone(),
                 max_tokens: manifest.model.max_tokens,
                 temperature: manifest.model.temperature,
@@ -2921,7 +2981,7 @@ impl OpenFangKernel {
 
         let driver = self.resolve_driver(&manifest)?;
 
-        // Look up model's actual context window from the catalog
+        // Re-resolve context window after model routing may have changed the model id.
         let ctx_window = self.model_catalog.read().ok().and_then(|cat| {
             cat.find_model(&manifest.model.model)
                 .map(|m| m.context_window as usize)
@@ -2932,7 +2992,7 @@ impl OpenFangKernel {
 
         // Build link context from user message (auto-extract URLs for the agent)
         let message_with_links = if let Some(link_ctx) =
-            openfang_runtime::link_understanding::build_link_context(message, &self.config.links)
+            omtae_runtime::link_understanding::build_link_context(message, &self.config.links)
         {
             format!("{message}{link_ctx}")
         } else {
@@ -2971,7 +3031,7 @@ impl OpenFangKernel {
             content_blocks,
         )
         .await
-        .map_err(KernelError::OpenFang)?;
+        .map_err(KernelError::OMTAE)?;
 
         // Append new messages to canonical session for cross-channel memory
         if session.messages.len() > messages_before {
@@ -3002,7 +3062,7 @@ impl OpenFangKernel {
             result.total_usage.input_tokens,
             result.total_usage.output_tokens,
         );
-        let _ = self.metering.record(&openfang_memory::usage::UsageRecord {
+        let _ = self.metering.record(&omtae_memory::usage::UsageRecord {
             agent_id,
             model: model.clone(),
             input_tokens: result.total_usage.input_tokens,
@@ -3014,14 +3074,14 @@ impl OpenFangKernel {
         // Populate cost on the result based on usage_footer mode
         let mut result = result;
         match self.config.usage_footer {
-            openfang_types::config::UsageFooterMode::Off => {
+            omtae_types::config::UsageFooterMode::Off => {
                 result.cost_usd = None;
             }
-            openfang_types::config::UsageFooterMode::Cost
-            | openfang_types::config::UsageFooterMode::Full => {
+            omtae_types::config::UsageFooterMode::Cost
+            | omtae_types::config::UsageFooterMode::Full => {
                 result.cost_usd = if cost > 0.0 { Some(cost) } else { None };
             }
-            openfang_types::config::UsageFooterMode::Tokens => {
+            omtae_types::config::UsageFooterMode::Tokens => {
                 // Tokens are already in result.total_usage, omit cost
                 result.cost_usd = None;
             }
@@ -3047,7 +3107,7 @@ impl OpenFangKernel {
     /// and creates a fresh session ID.
     pub fn reset_session(&self, agent_id: AgentId) -> KernelResult<()> {
         let entry = self.registry.get(agent_id).ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+            KernelError::OMTAE(OMTAEError::AgentNotFound(agent_id.to_string()))
         })?;
 
         // Auto-save session context to workspace memory before clearing
@@ -3064,12 +3124,12 @@ impl OpenFangKernel {
         let new_session = self
             .memory
             .create_session(agent_id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         // Update registry with new session ID
         self.registry
             .update_session_id(agent_id, new_session.id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         // Reset quota tracking so /new clears "token quota exceeded"
         self.scheduler.reset_usage(agent_id);
@@ -3083,7 +3143,7 @@ impl OpenFangKernel {
     /// Creates a fresh empty session afterward so the agent is still usable.
     pub fn clear_agent_history(&self, agent_id: AgentId) -> KernelResult<()> {
         let _entry = self.registry.get(agent_id).ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+            KernelError::OMTAE(OMTAEError::AgentNotFound(agent_id.to_string()))
         })?;
 
         // Delete all regular sessions
@@ -3096,12 +3156,12 @@ impl OpenFangKernel {
         let new_session = self
             .memory
             .create_session(agent_id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         // Update registry with new session ID
         self.registry
             .update_session_id(agent_id, new_session.id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         info!(agent_id = %agent_id, "All agent history cleared");
         Ok(())
@@ -3111,13 +3171,13 @@ impl OpenFangKernel {
     pub fn list_agent_sessions(&self, agent_id: AgentId) -> KernelResult<Vec<serde_json::Value>> {
         // Verify agent exists
         let entry = self.registry.get(agent_id).ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+            KernelError::OMTAE(OMTAEError::AgentNotFound(agent_id.to_string()))
         })?;
 
         let mut sessions = self
             .memory
             .list_agent_sessions(agent_id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         // Mark the active session
         for s in &mut sessions {
@@ -3142,18 +3202,18 @@ impl OpenFangKernel {
     ) -> KernelResult<serde_json::Value> {
         // Verify agent exists
         let _entry = self.registry.get(agent_id).ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+            KernelError::OMTAE(OMTAEError::AgentNotFound(agent_id.to_string()))
         })?;
 
         let session = self
             .memory
             .create_session_with_label(agent_id, label)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         // Switch to the new session
         self.registry
             .update_session_id(agent_id, session.id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         info!(agent_id = %agent_id, label = ?label, "Created new session");
 
@@ -3171,27 +3231,27 @@ impl OpenFangKernel {
     ) -> KernelResult<()> {
         // Verify agent exists
         let _entry = self.registry.get(agent_id).ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+            KernelError::OMTAE(OMTAEError::AgentNotFound(agent_id.to_string()))
         })?;
 
         // Verify session exists and belongs to this agent
         let session = self
             .memory
             .get_session(session_id)
-            .map_err(KernelError::OpenFang)?
+            .map_err(KernelError::OMTAE)?
             .ok_or_else(|| {
-                KernelError::OpenFang(OpenFangError::Internal("Session not found".to_string()))
+                KernelError::OMTAE(OMTAEError::Internal("Session not found".to_string()))
             })?;
 
         if session.agent_id != agent_id {
-            return Err(KernelError::OpenFang(OpenFangError::Internal(
+            return Err(KernelError::OMTAE(OMTAEError::Internal(
                 "Session belongs to a different agent".to_string(),
             )));
         }
 
         self.registry
             .update_session_id(agent_id, session_id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         info!(agent_id = %agent_id, session_id = %session_id.0, "Switched session");
         Ok(())
@@ -3202,9 +3262,9 @@ impl OpenFangKernel {
         &self,
         agent_id: AgentId,
         entry: &AgentEntry,
-        session: &openfang_memory::session::Session,
+        session: &omtae_memory::session::Session,
     ) {
-        use openfang_types::message::{MessageContent, Role};
+        use omtae_types::message::{MessageContent, Role};
 
         // Take last 10 messages (or all if fewer)
         let recent = &session.messages[session.messages.len().saturating_sub(10)..];
@@ -3243,7 +3303,7 @@ impl OpenFangKernel {
                 .take(5)
                 .enumerate()
                 .map(|(i, t)| {
-                    let truncated = openfang_types::truncate_str(t, 200);
+                    let truncated = omtae_types::truncate_str(t, 200);
                     format!("{}. {}", i + 1, truncated)
                 })
                 .collect::<Vec<_>>()
@@ -3277,6 +3337,47 @@ impl OpenFangKernel {
     ///
     /// This is best-effort: a failure to write is logged but does not
     /// propagate as an error — the authoritative copy lives in SQLite.
+    /// Reload an agent's manifest from `~/.omtae/agents/<name>/agent.toml` into
+    /// the in-memory registry (capabilities, exec_policy, tools, prompt, etc.).
+    /// Used by hot-reload paths so disk edits take effect without a daemon restart.
+    pub fn reload_agent_manifest_from_disk(&self, agent_id: AgentId) -> KernelResult<()> {
+        let entry = self
+            .registry
+            .get(agent_id)
+            .ok_or_else(|| OMTAEError::AgentNotFound(agent_id.to_string()))?;
+        let name = entry.name.clone();
+        let toml_path = self
+            .config
+            .home_dir
+            .join("agents")
+            .join(&name)
+            .join("agent.toml");
+        let toml_str = std::fs::read_to_string(&toml_path).map_err(|e| {
+            OMTAEError::Config(format!(
+                "Failed to read {}: {e}",
+                toml_path.display()
+            ))
+        })?;
+        let disk_manifest: AgentManifest = toml::from_str(&toml_str).map_err(|e| {
+            OMTAEError::Config(format!("Invalid agent TOML for {name}: {e}"))
+        })?;
+        let merged = merge_disk_manifest_preserving_kernel_defaults(disk_manifest, &entry.manifest);
+        let caps = manifest_to_capabilities(&merged);
+        self.capabilities.grant(agent_id, caps);
+        let mut updated = entry;
+        updated.manifest = merged;
+        normalize_request_driven_agent_schedule(&mut updated.manifest);
+        if updated.manifest.exec_policy.is_none() {
+            updated.manifest.exec_policy = Some(self.config.exec_policy.clone());
+        }
+        self.registry.replace_manifest(agent_id, updated.manifest.clone())?;
+        if let Some(entry) = self.registry.get(agent_id) {
+            let _ = self.memory.save_agent(&entry);
+        }
+        info!(agent = %name, "Reloaded agent manifest from disk");
+        Ok(())
+    }
+
     pub fn persist_manifest_to_disk(&self, agent_id: AgentId) {
         if let Some(entry) = self.registry.get(agent_id) {
             let dir = self.config.home_dir.join("agents").join(&entry.name);
@@ -3384,12 +3485,12 @@ impl OpenFangKernel {
                     api_key_env,
                     None,
                 )
-                .map_err(KernelError::OpenFang)?;
+                .map_err(KernelError::OMTAE)?;
             info!(agent_id = %agent_id, model = %normalized_model, provider = %provider, "Agent model+provider updated");
         } else {
             self.registry
                 .update_model(agent_id, normalized_model.clone())
-                .map_err(KernelError::OpenFang)?;
+                .map_err(KernelError::OMTAE)?;
             info!(agent_id = %agent_id, model = %normalized_model, "Agent model updated (provider unchanged)");
         }
 
@@ -3419,7 +3520,7 @@ impl OpenFangKernel {
             let known = registry.skill_names();
             for name in &skills {
                 if !known.contains(name) {
-                    return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                    return Err(KernelError::OMTAE(OMTAEError::Internal(format!(
                         "Unknown skill: {name}"
                     ))));
                 }
@@ -3428,7 +3529,7 @@ impl OpenFangKernel {
 
         self.registry
             .update_skills(agent_id, skills.clone())
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         if let Some(entry) = self.registry.get(agent_id) {
             let _ = self.memory.save_agent(&entry);
@@ -3450,14 +3551,14 @@ impl OpenFangKernel {
                 let mut known_servers: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
                 for tool in mcp_tools.iter() {
-                    if let Some(s) = openfang_runtime::mcp::extract_mcp_server(&tool.name) {
+                    if let Some(s) = omtae_runtime::mcp::extract_mcp_server(&tool.name) {
                         known_servers.insert(s.to_string());
                     }
                 }
                 for name in &servers {
-                    let normalized = openfang_runtime::mcp::normalize_name(name);
+                    let normalized = omtae_runtime::mcp::normalize_name(name);
                     if !known_servers.contains(&normalized) {
-                        return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+                        return Err(KernelError::OMTAE(OMTAEError::Internal(format!(
                             "Unknown MCP server: {name}"
                         ))));
                     }
@@ -3467,7 +3568,7 @@ impl OpenFangKernel {
 
         self.registry
             .update_mcp_servers(agent_id, servers.clone())
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         if let Some(entry) = self.registry.get(agent_id) {
             let _ = self.memory.save_agent(&entry);
@@ -3486,7 +3587,7 @@ impl OpenFangKernel {
     ) -> KernelResult<()> {
         self.registry
             .update_tool_filters(agent_id, allowlist.clone(), blocklist.clone())
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         if let Some(entry) = self.registry.get(agent_id) {
             let _ = self.memory.save_agent(&entry);
@@ -3504,13 +3605,13 @@ impl OpenFangKernel {
     /// Get session token usage and estimated cost for an agent.
     pub fn session_usage_cost(&self, agent_id: AgentId) -> KernelResult<(u64, u64, f64)> {
         let entry = self.registry.get(agent_id).ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+            KernelError::OMTAE(OMTAEError::AgentNotFound(agent_id.to_string()))
         })?;
 
         let session = self
             .memory
             .get_session(entry.session_id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         let (input_tokens, output_tokens) = session
             .map(|s| {
@@ -3521,9 +3622,9 @@ impl OpenFangKernel {
                     let len = msg.content.text_content().len() as u64;
                     let tokens = len / 4;
                     match msg.role {
-                        openfang_types::message::Role::User => input += tokens,
-                        openfang_types::message::Role::Assistant => output += tokens,
-                        openfang_types::message::Role::System => input += tokens,
+                        omtae_types::message::Role::User => input += tokens,
+                        omtae_types::message::Role::Assistant => output += tokens,
+                        omtae_types::message::Role::System => input += tokens,
                     }
                 }
                 (input, output)
@@ -3542,32 +3643,64 @@ impl OpenFangKernel {
     }
 
     /// Cancel an agent's currently running LLM task.
+    ///
+    /// Also pauses continuous/periodic background ticks so the agent does not
+    /// immediately restart from an autonomous schedule.
     pub fn stop_agent_run(&self, agent_id: AgentId) -> KernelResult<bool> {
+        // Pause background schedule first so a tick cannot race with abort.
+        if let Some(entry) = self.registry.get(agent_id) {
+            if !matches!(entry.manifest.schedule, ScheduleMode::Reactive) {
+                self.background.pause_agent(agent_id);
+            }
+        }
+
         if let Some((_, handle)) = self.running_tasks.remove(&agent_id) {
+            self.running_task_started.remove(&agent_id);
             handle.abort();
             info!(agent_id = %agent_id, "Agent run cancelled");
             Ok(true)
         } else {
+            self.running_task_started.remove(&agent_id);
             Ok(false)
         }
     }
 
-    /// Compact an agent's session using LLM-based summarization.
+    /// Resolved compaction settings for an agent (catalog context window + `[compaction]` overrides).
+    fn agent_compaction_config(&self, ctx_window: Option<usize>) -> omtae_runtime::compactor::CompactionConfig {
+        omtae_runtime::compactor::build_compaction_config(
+            ctx_window,
+            &omtae_runtime::compactor::CompactionUserSettings {
+                threshold: self.config.compaction.threshold,
+                keep_recent: self.config.compaction.keep_recent,
+                token_threshold_ratio: self.config.compaction.token_threshold_ratio,
+                max_summary_tokens: self.config.compaction.max_summary_tokens,
+            },
+        )
+    }
+
+    /// Shrink a target agent's session before an inbound `agent_send` delegation.
     ///
-    /// Replaces the existing text-truncation compaction with an intelligent
-    /// LLM-generated summary of older messages, keeping only recent messages.
-    pub async fn compact_agent_session(&self, agent_id: AgentId) -> KernelResult<String> {
-        use openfang_runtime::compactor::{compact_session, needs_compaction, CompactionConfig};
+    /// Specialist agents often accumulate large tool outputs (web_fetch, etc.). On 16k
+    /// local models that leaves no headroom for the delegated message and causes
+    /// `Context too long` failures that look like "agents can't hear each other".
+    async fn prepare_session_for_inbound(&self, agent_id: AgentId) -> KernelResult<()> {
+        use omtae_runtime::compactor::estimate_token_count;
+        use omtae_runtime::context_overflow::{recover_from_overflow, RecoveryStage};
 
         let entry = self.registry.get(agent_id).ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+            KernelError::OMTAE(OMTAEError::AgentNotFound(agent_id.to_string()))
         })?;
+
+        let ctx_window = self.model_catalog.read().ok().and_then(|cat| {
+            cat.find_model(&entry.manifest.model.model)
+                .map(|m| m.context_window as usize)
+        });
 
         let session = self
             .memory
             .get_session(entry.session_id)
-            .map_err(KernelError::OpenFang)?
-            .unwrap_or_else(|| openfang_memory::session::Session {
+            .map_err(KernelError::OMTAE)?
+            .unwrap_or_else(|| omtae_memory::session::Session {
                 id: entry.session_id,
                 agent_id,
                 messages: Vec::new(),
@@ -3575,13 +3708,141 @@ impl OpenFangKernel {
                 label: None,
             });
 
-        let config = CompactionConfig::default();
+        let config = self.agent_compaction_config(ctx_window);
+        let cw = config.context_window_tokens.max(ctx_window.unwrap_or(8192));
+        let estimated = estimate_token_count(
+            &session.messages,
+            Some(&entry.manifest.model.system_prompt),
+            None,
+        );
+        // Delegation needs more headroom than a normal turn (nested tools + reply).
+        let delegation_threshold = ((cw as f64) * 0.55) as usize;
+        if estimated <= delegation_threshold {
+            return Ok(());
+        }
 
-        if !needs_compaction(&session, &config) {
+        info!(
+            agent_id = %agent_id,
+            agent = %entry.name,
+            estimated_tokens = estimated,
+            threshold = delegation_threshold,
+            "Preparing target session for inbound delegation"
+        );
+
+        if let Err(e) = self.compact_agent_session(agent_id).await {
+            warn!(agent_id = %agent_id, error = %e, "Pre-delegation compaction failed");
+        }
+
+        let session = self
+            .memory
+            .get_session(entry.session_id)
+            .map_err(KernelError::OMTAE)?
+            .unwrap_or(session);
+
+        let estimated = estimate_token_count(
+            &session.messages,
+            Some(&entry.manifest.model.system_prompt),
+            None,
+        );
+        if estimated <= delegation_threshold {
+            return Ok(());
+        }
+
+        let mut msgs = session.messages.clone();
+        let stage = recover_from_overflow(
+            &mut msgs,
+            &entry.manifest.model.system_prompt,
+            &[],
+            cw,
+        );
+        if stage != RecoveryStage::None && stage != RecoveryStage::FinalError {
+            let mut updated = session;
+            updated.messages = omtae_runtime::session_repair::validate_and_repair(&msgs);
+            self.memory
+                .save_session(&updated)
+                .map_err(KernelError::OMTAE)?;
+            info!(agent_id = %agent_id, ?stage, "Applied overflow recovery before delegation");
+        }
+
+        Ok(())
+    }
+
+    /// Compact an agent's session using LLM-based summarization.
+    ///
+    /// Replaces the existing text-truncation compaction with an intelligent
+    /// LLM-generated summary of older messages, keeping only recent messages.
+    pub async fn compact_agent_session(&self, agent_id: AgentId) -> KernelResult<String> {
+        use omtae_runtime::compactor::{
+            compact_session, estimate_token_count, needs_compaction, needs_compaction_by_tokens,
+        };
+        use omtae_runtime::context_overflow::{recover_from_overflow, RecoveryStage};
+
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::OMTAE(OMTAEError::AgentNotFound(agent_id.to_string()))
+        })?;
+
+        let ctx_window = self.model_catalog.read().ok().and_then(|cat| {
+            cat.find_model(&entry.manifest.model.model)
+                .map(|m| m.context_window as usize)
+        });
+
+        let session = self
+            .memory
+            .get_session(entry.session_id)
+            .map_err(KernelError::OMTAE)?
+            .unwrap_or_else(|| omtae_memory::session::Session {
+                id: entry.session_id,
+                agent_id,
+                messages: Vec::new(),
+                context_window_tokens: 0,
+                label: None,
+            });
+
+        let config = self.agent_compaction_config(ctx_window);
+        let estimated = estimate_token_count(
+            &session.messages,
+            Some(&entry.manifest.model.system_prompt),
+            None,
+        );
+
+        if !needs_compaction(&session, &config) && !needs_compaction_by_tokens(estimated, &config) {
             return Ok(format!(
                 "No compaction needed ({} messages, threshold {})",
                 session.messages.len(),
                 config.threshold
+            ));
+        }
+
+        // Few messages but high token count (large tool outputs) — trim before LLM summarization.
+        if session.messages.len() <= config.keep_recent
+            && needs_compaction_by_tokens(estimated, &config)
+        {
+            let mut msgs = session.messages.clone();
+            let cw = config.context_window_tokens.max(ctx_window.unwrap_or(8192));
+            let stage = recover_from_overflow(
+                &mut msgs,
+                &entry.manifest.model.system_prompt,
+                &[],
+                cw,
+            );
+            if stage != RecoveryStage::None {
+                let mut updated_session = session;
+                updated_session.messages =
+                    omtae_runtime::session_repair::validate_and_repair(&msgs);
+                self.memory
+                    .save_session(&updated_session)
+                    .map_err(KernelError::OMTAE)?;
+                return Ok(format!(
+                    "Applied overflow recovery ({stage:?}) — trimmed session for token pressure."
+                ));
+            }
+        }
+
+        if session.messages.len() <= config.keep_recent {
+            return Ok(format!(
+                "Session has {} messages (keep_recent={}); could not reduce token usage further.",
+                session.messages.len(),
+                config.keep_recent
             ));
         }
 
@@ -3590,23 +3851,23 @@ impl OpenFangKernel {
 
         let result = compact_session(driver, &model, &session, &config)
             .await
-            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(e)))?;
+            .map_err(|e| KernelError::OMTAE(OMTAEError::Internal(e)))?;
 
         // Store the LLM summary in the canonical session
         self.memory
             .store_llm_summary(agent_id, &result.summary, result.kept_messages.clone())
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         // Post-compaction audit: validate and repair the kept messages
         let (repaired_messages, repair_stats) =
-            openfang_runtime::session_repair::validate_and_repair_with_stats(&result.kept_messages);
+            omtae_runtime::session_repair::validate_and_repair_with_stats(&result.kept_messages);
 
         // Also update the regular session with the repaired messages
         let mut updated_session = session;
         updated_session.messages = repaired_messages;
         self.memory
             .save_session(&updated_session)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         // Build result message with audit summary
         let mut msg = format!(
@@ -3638,18 +3899,18 @@ impl OpenFangKernel {
     pub fn context_report(
         &self,
         agent_id: AgentId,
-    ) -> KernelResult<openfang_runtime::compactor::ContextReport> {
-        use openfang_runtime::compactor::generate_context_report;
+    ) -> KernelResult<omtae_runtime::compactor::ContextReport> {
+        use omtae_runtime::compactor::generate_context_report;
 
         let entry = self.registry.get(agent_id).ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+            KernelError::OMTAE(OMTAEError::AgentNotFound(agent_id.to_string()))
         })?;
 
         let session = self
             .memory
             .get_session(entry.session_id)
-            .map_err(KernelError::OpenFang)?
-            .unwrap_or_else(|| openfang_memory::session::Session {
+            .map_err(KernelError::OMTAE)?
+            .unwrap_or_else(|| omtae_memory::session::Session {
                 id: entry.session_id,
                 agent_id,
                 messages: Vec::new(),
@@ -3660,11 +3921,17 @@ impl OpenFangKernel {
         let system_prompt = &entry.manifest.model.system_prompt;
         // Use the agent's actual filtered tools instead of all builtins
         let tools = self.available_tools(agent_id);
-        // Use 200K default or the model's known context window
         let context_window = if session.context_window_tokens > 0 {
-            session.context_window_tokens
+            session.context_window_tokens as usize
         } else {
-            200_000
+            self.model_catalog
+                .read()
+                .ok()
+                .and_then(|cat| {
+                    cat.find_model(&entry.manifest.model.model)
+                        .map(|m| m.context_window as usize)
+                })
+                .unwrap_or(200_000)
         };
 
         Ok(generate_context_report(
@@ -3685,11 +3952,11 @@ impl OpenFangKernel {
     /// See issue #890 — allows an orchestrator agent to wake other agents.
     pub fn activate_agent(&self, agent_id: AgentId) -> KernelResult<String> {
         let entry = self.registry.get(agent_id).ok_or_else(|| {
-            KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
+            KernelError::OMTAE(OMTAEError::AgentNotFound(agent_id.to_string()))
         })?;
 
         if entry.state == AgentState::Terminated {
-            return Err(KernelError::OpenFang(OpenFangError::Internal(format!(
+            return Err(KernelError::OMTAE(OMTAEError::Internal(format!(
                 "Agent {} is Terminated and cannot be activated",
                 entry.name
             ))));
@@ -3701,7 +3968,7 @@ impl OpenFangKernel {
 
         self.registry
             .set_state(agent_id, AgentState::Running)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
 
         info!(
             agent = %name,
@@ -3718,7 +3985,7 @@ impl OpenFangKernel {
         let entry = self
             .registry
             .remove(agent_id)
-            .map_err(KernelError::OpenFang)?;
+            .map_err(KernelError::OMTAE)?;
         self.background.stop_agent(agent_id);
         self.scheduler.unregister(agent_id);
         self.capabilities.revoke_all(agent_id);
@@ -3739,7 +4006,7 @@ impl OpenFangKernel {
         // SECURITY: Record agent kill in audit trail
         self.audit_log.record(
             agent_id.to_string(),
-            openfang_runtime::audit::AuditAction::AgentKill,
+            omtae_runtime::audit::AuditAction::AgentKill,
             format!("name={}", entry.name),
             "ok",
         );
@@ -3756,14 +4023,14 @@ impl OpenFangKernel {
         hand_id: &str,
         config: std::collections::HashMap<String, serde_json::Value>,
         instance_name: Option<String>,
-    ) -> KernelResult<openfang_hands::HandInstance> {
-        use openfang_hands::HandError;
+    ) -> KernelResult<omtae_hands::HandInstance> {
+        use omtae_hands::HandError;
 
         let def = self
             .hand_registry
             .get_definition(hand_id)
             .ok_or_else(|| {
-                KernelError::OpenFang(OpenFangError::AgentNotFound(format!(
+                KernelError::OMTAE(OMTAEError::AgentNotFound(format!(
                     "Hand not found: {hand_id}"
                 )))
             })?
@@ -3774,10 +4041,10 @@ impl OpenFangKernel {
             .hand_registry
             .activate(hand_id, config, instance_name.clone())
             .map_err(|e| match e {
-                HandError::AlreadyActive(id) => KernelError::OpenFang(OpenFangError::Internal(
+                HandError::AlreadyActive(id) => KernelError::OMTAE(OMTAEError::Internal(
                     format!("Hand already active: {id}"),
                 )),
-                other => KernelError::OpenFang(OpenFangError::Internal(other.to_string())),
+                other => KernelError::OMTAE(OMTAEError::Internal(other.to_string())),
             })?;
 
         // Build an agent manifest from the hand definition.
@@ -3843,8 +4110,8 @@ impl OpenFangKernel {
             mcp_servers: def.mcp_servers.clone(),
             // Hands are curated packages — if they declare shell_exec, grant full exec access
             exec_policy: if def.tools.iter().any(|t| t == "shell_exec") {
-                Some(openfang_types::config::ExecPolicy {
-                    mode: openfang_types::config::ExecSecurityMode::Full,
+                Some(omtae_types::config::ExecPolicy {
+                    mode: omtae_types::config::ExecSecurityMode::Full,
                     timeout_secs: 300, // hands may run long commands (ffmpeg, yt-dlp)
                     no_output_timeout_secs: 120,
                     ..Default::default()
@@ -3864,7 +4131,7 @@ impl OpenFangKernel {
         };
 
         // Resolve hand settings → prompt block + env vars
-        let resolved = openfang_hands::resolve_settings(&def.settings, &instance.config);
+        let resolved = omtae_hands::resolve_settings(&def.settings, &instance.config);
         if !resolved.prompt_block.is_empty() {
             manifest.model.system_prompt = format!(
                 "{}\n\n---\n\n{}",
@@ -3875,8 +4142,8 @@ impl OpenFangKernel {
         let mut allowed_env = resolved.env_vars;
         for req in &def.requires {
             match req.requirement_type {
-                openfang_hands::RequirementType::ApiKey
-                | openfang_hands::RequirementType::EnvVar
+                omtae_hands::RequirementType::ApiKey
+                | omtae_hands::RequirementType::EnvVar
                     if !req.check_value.is_empty() && !allowed_env.contains(&req.check_value) =>
                 {
                     allowed_env.push(req.check_value.clone());
@@ -3917,7 +4184,7 @@ impl OpenFangKernel {
         // would always be a no-op without this snapshot — same pattern as
         // saved_triggers above. Fixes the silent loss of cron jobs across
         // every daemon restart for hand-style agents.
-        let saved_crons: Vec<openfang_types::scheduler::CronJob> = old_agent_id
+        let saved_crons: Vec<omtae_types::scheduler::CronJob> = old_agent_id
             .map(|id| self.cron_scheduler.list_jobs(id))
             .unwrap_or_default();
         if let Some(old) = existing {
@@ -3994,7 +4261,7 @@ impl OpenFangKernel {
         // Link agent to instance
         self.hand_registry
             .set_agent(instance.instance_id, agent_id)
-            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(e.to_string())))?;
+            .map_err(|e| KernelError::OMTAE(OMTAEError::Internal(e.to_string())))?;
 
         info!(
             hand = %hand_id,
@@ -4018,7 +4285,7 @@ impl OpenFangKernel {
         let instance = self
             .hand_registry
             .deactivate(instance_id)
-            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(e.to_string())))?;
+            .map_err(|e| KernelError::OMTAE(OMTAEError::Internal(e.to_string())))?;
 
         if let Some(agent_id) = instance.agent_id {
             if let Err(e) = self.kill_agent(agent_id) {
@@ -4054,14 +4321,14 @@ impl OpenFangKernel {
     pub fn pause_hand(&self, instance_id: uuid::Uuid) -> KernelResult<()> {
         self.hand_registry
             .pause(instance_id)
-            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(e.to_string())))
+            .map_err(|e| KernelError::OMTAE(OMTAEError::Internal(e.to_string())))
     }
 
     /// Resume a paused hand.
     pub fn resume_hand(&self, instance_id: uuid::Uuid) -> KernelResult<()> {
         self.hand_registry
             .resume(instance_id)
-            .map_err(|e| KernelError::OpenFang(OpenFangError::Internal(e.to_string())))
+            .map_err(|e| KernelError::OMTAE(OMTAEError::Internal(e.to_string())))
     }
 
     /// Set the weak self-reference for trigger dispatch.
@@ -4074,7 +4341,7 @@ impl OpenFangKernel {
     // ─── Agent Binding management ──────────────────────────────────────
 
     /// List all agent bindings.
-    pub fn list_bindings(&self) -> Vec<openfang_types::config::AgentBinding> {
+    pub fn list_bindings(&self) -> Vec<omtae_types::config::AgentBinding> {
         self.bindings
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -4082,7 +4349,7 @@ impl OpenFangKernel {
     }
 
     /// Add a binding at runtime.
-    pub fn add_binding(&self, binding: openfang_types::config::AgentBinding) {
+    pub fn add_binding(&self, binding: omtae_types::config::AgentBinding) {
         let mut bindings = self.bindings.lock().unwrap_or_else(|e| e.into_inner());
         bindings.push(binding);
         // Sort by specificity descending
@@ -4090,7 +4357,7 @@ impl OpenFangKernel {
     }
 
     /// Remove a binding by index, returns the removed binding if valid.
-    pub fn remove_binding(&self, index: usize) -> Option<openfang_types::config::AgentBinding> {
+    pub fn remove_binding(&self, index: usize) -> Option<omtae_types::config::AgentBinding> {
         let mut bindings = self.bindings.lock().unwrap_or_else(|e| e.into_inner());
         if index < bindings.len() {
             Some(bindings.remove(index))
@@ -4135,7 +4402,7 @@ impl OpenFangKernel {
     fn apply_hot_actions(
         &self,
         plan: &crate::config_reload::ReloadPlan,
-        new_config: &openfang_types::config::KernelConfig,
+        new_config: &omtae_types::config::KernelConfig,
     ) {
         use crate::config_reload::HotAction;
 
@@ -4244,7 +4511,7 @@ impl OpenFangKernel {
     ) -> KernelResult<TriggerId> {
         // Verify agent exists
         if self.registry.get(agent_id).is_none() {
-            return Err(KernelError::OpenFang(OpenFangError::AgentNotFound(
+            return Err(KernelError::OMTAE(OMTAEError::AgentNotFound(
                 agent_id.to_string(),
             )));
         }
@@ -4287,7 +4554,7 @@ impl OpenFangKernel {
             .create_run(workflow_id, input)
             .await
             .ok_or_else(|| {
-                KernelError::OpenFang(OpenFangError::Internal("Workflow not found".to_string()))
+                KernelError::OMTAE(OMTAEError::Internal("Workflow not found".to_string()))
             })?;
 
         // Agent resolver: looks up by name or ID in the registry
@@ -4328,12 +4595,12 @@ impl OpenFangKernel {
         )
         .await
         .map_err(|_| {
-            KernelError::OpenFang(OpenFangError::Internal(format!(
+            KernelError::OMTAE(OMTAEError::Internal(format!(
                 "Workflow timed out after {MAX_WORKFLOW_SECS}s"
             )))
         })?
         .map_err(|e| {
-            KernelError::OpenFang(OpenFangError::Internal(format!("Workflow failed: {e}")))
+            KernelError::OMTAE(OMTAEError::Internal(format!("Workflow failed: {e}")))
         })?;
 
         Ok((run_id, output))
@@ -4390,7 +4657,7 @@ impl OpenFangKernel {
     pub fn start_background_agents(self: &Arc<Self>) {
         // Restore previously active hands from persisted state
         let state_path = self.config.home_dir.join("hand_state.json");
-        let saved_hands = openfang_hands::registry::HandRegistry::load_state(&state_path);
+        let saved_hands = omtae_hands::registry::HandRegistry::load_state(&state_path);
         if !saved_hands.is_empty() {
             info!("Restoring {} persisted hand(s)", saved_hands.len());
             for (hand_id, config, old_agent_id) in saved_hands {
@@ -4444,7 +4711,7 @@ impl OpenFangKernel {
         }
 
         let agents = self.registry.list();
-        let mut bg_agents: Vec<(openfang_types::agent::AgentId, String, ScheduleMode)> = Vec::new();
+        let mut bg_agents: Vec<(omtae_types::agent::AgentId, String, ScheduleMode)> = Vec::new();
 
         for entry in &agents {
             if matches!(entry.manifest.schedule, ScheduleMode::Reactive) {
@@ -4521,9 +4788,27 @@ impl OpenFangKernel {
                 }
 
                 for (provider_id, base_url) in &local_providers {
-                    let result =
-                        openfang_runtime::provider_health::probe_provider(provider_id, base_url)
-                            .await;
+                    let api_key = kernel
+                        .model_catalog
+                        .read()
+                        .ok()
+                        .and_then(|catalog| {
+                            catalog.get_provider(provider_id).and_then(|p| {
+                                if p.api_key_env.is_empty() {
+                                    None
+                                } else {
+                                    std::env::var(&p.api_key_env)
+                                        .ok()
+                                        .filter(|k| !k.is_empty())
+                                }
+                            })
+                        });
+                    let result = omtae_runtime::provider_health::probe_provider(
+                        provider_id,
+                        base_url,
+                        api_key.as_deref(),
+                    )
+                    .await;
                     if result.reachable {
                         info!(
                             provider = %provider_id,
@@ -4649,7 +4934,7 @@ impl OpenFangKernel {
             }
         }
 
-        // One-shot migration of legacy shared-memory `__openfang_schedules`
+        // One-shot migration of legacy shared-memory `__omtae_schedules`
         // entries (from the old broken `schedule_create` path) into the real
         // cron scheduler. Idempotent via a marker key.
         self.migrate_shared_memory_schedules();
@@ -4714,7 +4999,7 @@ impl OpenFangKernel {
                 let kernel = Arc::clone(self);
                 let agents = a2a_config.external_agents.clone();
                 tokio::spawn(async move {
-                    let discovered = openfang_runtime::a2a::discover_external_agents(&agents).await;
+                    let discovered = omtae_runtime::a2a::discover_external_agents(&agents).await;
                     if let Ok(mut store) = kernel.a2a_external_agents.lock() {
                         *store = discovered;
                     }
@@ -4737,7 +5022,7 @@ impl OpenFangKernel {
     /// Binds a TCP listener, registers with the peer registry, and connects
     /// to bootstrap peers from config.
     async fn start_ofp_node(self: &Arc<Self>) {
-        use openfang_wire::{PeerConfig, PeerNode, PeerRegistry};
+        use omtae_wire::{PeerConfig, PeerNode, PeerRegistry};
 
         let listen_addr_str = self
             .config
@@ -4763,7 +5048,7 @@ impl OpenFangKernel {
         };
 
         let node_id = uuid::Uuid::new_v4().to_string();
-        let node_name = gethostname().unwrap_or_else(|| "openfang-node".to_string());
+        let node_name = gethostname().unwrap_or_else(|| "omtae-node".to_string());
 
         let peer_config = PeerConfig {
             listen_addr,
@@ -4774,7 +5059,7 @@ impl OpenFangKernel {
 
         let registry = PeerRegistry::new();
 
-        let handle: Arc<dyn openfang_wire::peer::PeerHandle> = self.self_arc();
+        let handle: Arc<dyn omtae_wire::peer::PeerHandle> = self.self_arc();
 
         match PeerNode::start(peer_config, registry.clone(), handle.clone()).await {
             Ok((node, _accept_task)) => {
@@ -5005,6 +5290,33 @@ impl OpenFangKernel {
         name: &str,
         schedule: &ScheduleMode,
     ) {
+        if self.background.is_paused(agent_id) {
+            debug!(agent = %name, id = %agent_id, "Skipping background loop — paused");
+            return;
+        }
+
+        // Continuous mode is for Hands and other explicitly scheduled collectors.
+        // `[autonomous]` on chat agents (e.g. orchestrator) only caps tool rounds per
+        // user message — it must not authorize a self-prompting background loop.
+        if let ScheduleMode::Continuous { .. } = schedule {
+            if let Some(entry) = self.registry.get(agent_id) {
+                let is_hand = entry
+                    .manifest
+                    .tags
+                    .iter()
+                    .any(|t| t.starts_with("hand:"));
+                if !is_hand {
+                    warn!(
+                        agent = %name,
+                        id = %agent_id,
+                        "Refusing continuous background loop for non-hand agent. \
+                         Use reactive (default) or [schedule] periodic for request-driven agents."
+                    );
+                    return;
+                }
+            }
+        }
+
         // For proactive agents, auto-register triggers from conditions
         if let ScheduleMode::Proactive { conditions } = schedule {
             for condition in conditions {
@@ -5037,7 +5349,7 @@ impl OpenFangKernel {
             });
     }
 
-    /// Migrate legacy `__openfang_schedules` shared-memory entries into the
+    /// Migrate legacy `__omtae_schedules` shared-memory entries into the
     /// real cron scheduler.
     ///
     /// The old `schedule_create` tool and `/api/schedules` POST route wrote
@@ -5050,8 +5362,8 @@ impl OpenFangKernel {
     /// level). Successfully migrated entries are added to the cron scheduler
     /// and the scheduler is persisted.
     pub(crate) fn migrate_shared_memory_schedules(&self) {
-        const LEGACY_KEY: &str = "__openfang_schedules";
-        const MARKER_KEY: &str = "__openfang_schedules_migrated_v1";
+        const LEGACY_KEY: &str = "__omtae_schedules";
+        const MARKER_KEY: &str = "__omtae_schedules_migrated_v1";
 
         let shared = shared_memory_agent_id();
 
@@ -5105,7 +5417,7 @@ impl OpenFangKernel {
             migrated,
             skipped,
             total = entries.len(),
-            "Migrated legacy __openfang_schedules entries to cron scheduler"
+            "Migrated legacy __omtae_schedules entries to cron scheduler"
         );
 
         // Clear the legacy key (store an empty array) and mark migrated so
@@ -5134,7 +5446,7 @@ impl OpenFangKernel {
     /// the cron scheduler. Returns `Err` with a human-readable reason when
     /// the entry cannot be migrated (so the caller can log and skip).
     fn migrate_single_schedule_entry(&self, entry: &serde_json::Value) -> Result<(), String> {
-        use openfang_types::scheduler::{
+        use omtae_types::scheduler::{
             CronAction, CronDelivery, CronJob, CronJobId, CronSchedule,
         };
 
@@ -5229,7 +5541,7 @@ impl OpenFangKernel {
     /// This cleanly shuts down in-memory state but preserves persistent agent
     /// data so agents are restored on the next boot.
     pub fn shutdown(&self) {
-        info!("Shutting down OpenFang kernel...");
+        info!("Shutting down OMTAE kernel...");
 
         // Kill WhatsApp gateway child process if running
         if let Ok(guard) = self.whatsapp_gateway_pid.lock() {
@@ -5265,7 +5577,7 @@ impl OpenFangKernel {
         }
 
         info!(
-            "OpenFang kernel shut down ({} agents preserved)",
+            "OMTAE kernel shut down ({} agents preserved)",
             self.registry.list().len()
         );
     }
@@ -5412,7 +5724,7 @@ impl OpenFangKernel {
             .fallback_providers_override
             .read()
             .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
-        let fb_iter: &[openfang_types::config::FallbackProviderConfig] = fb_override
+        let fb_iter: &[omtae_types::config::FallbackProviderConfig] = fb_override
             .as_deref()
             .unwrap_or(&self.config.fallback_providers);
         for fb in fb_iter {
@@ -5447,7 +5759,7 @@ impl OpenFangKernel {
         // to a specific model, which resolves to a concrete provider through
         // the catalog. Skip when no override is set.
         let ch = &self.config.channels;
-        let channel_overrides: [Option<&openfang_types::config::ChannelOverrides>; 43] = [
+        let channel_overrides: [Option<&omtae_types::config::ChannelOverrides>; 43] = [
             ch.telegram.as_ref().map(|c| &c.overrides),
             ch.discord.as_ref().map(|c| &c.overrides),
             ch.slack.as_ref().map(|c| &c.overrides),
@@ -5583,7 +5895,7 @@ impl OpenFangKernel {
             .fallback_providers_override
             .read()
             .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
-        let effective_fallbacks: &[openfang_types::config::FallbackProviderConfig] =
+        let effective_fallbacks: &[omtae_types::config::FallbackProviderConfig] =
             fb_override_guard
                 .as_deref()
                 .unwrap_or(&self.config.fallback_providers);
@@ -5691,7 +6003,7 @@ impl OpenFangKernel {
         // Primary driver uses an empty model name so the request's `model` field
         // (which is the agent's own model) is used as-is.
         let mut chain: Vec<(
-            std::sync::Arc<dyn openfang_runtime::llm_driver::LlmDriver>,
+            std::sync::Arc<dyn omtae_runtime::llm_driver::LlmDriver>,
             String,
         )> = vec![(primary.clone(), String::new())];
 
@@ -5790,7 +6102,7 @@ impl OpenFangKernel {
 
         if chain.len() > 1 {
             return Ok(Arc::new(
-                openfang_runtime::drivers::fallback::FallbackDriver::with_models(chain),
+                omtae_runtime::drivers::fallback::FallbackDriver::with_models(chain),
             ));
         }
 
@@ -5799,8 +6111,8 @@ impl OpenFangKernel {
 
     /// Connect to all configured MCP servers and cache their tool definitions.
     async fn connect_mcp_servers(self: &Arc<Self>) {
-        use openfang_runtime::mcp::{McpConnection, McpServerConfig, McpTransport};
-        use openfang_types::config::McpTransportEntry;
+        use omtae_runtime::mcp::{McpConnection, McpServerConfig, McpTransport};
+        use omtae_types::config::McpTransportEntry;
 
         let servers = self
             .effective_mcp_servers
@@ -5879,8 +6191,8 @@ impl OpenFangKernel {
     ///
     /// Called by the API reload endpoint after CLI installs/removes integrations.
     pub async fn reload_extension_mcps(self: &Arc<Self>) -> Result<usize, String> {
-        use openfang_runtime::mcp::{McpConnection, McpServerConfig, McpTransport};
-        use openfang_types::config::McpTransportEntry;
+        use omtae_runtime::mcp::{McpConnection, McpServerConfig, McpTransport};
+        use omtae_types::config::McpTransportEntry;
 
         // 1. Reload installed integrations from disk
         let installed_count = {
@@ -6017,8 +6329,8 @@ impl OpenFangKernel {
 
     /// Reconnect a single extension MCP server by ID.
     pub async fn reconnect_extension_mcp(self: &Arc<Self>, id: &str) -> Result<usize, String> {
-        use openfang_runtime::mcp::{McpConnection, McpServerConfig, McpTransport};
-        use openfang_types::config::McpTransportEntry;
+        use omtae_runtime::mcp::{McpConnection, McpServerConfig, McpTransport};
+        use omtae_types::config::McpTransportEntry;
 
         // Find the config for this server
         let server_config = {
@@ -6148,7 +6460,7 @@ impl OpenFangKernel {
     fn available_tools_with_registry(
         &self,
         agent_id: AgentId,
-        skill_snapshot: Option<&openfang_skills::registry::SkillRegistry>,
+        skill_snapshot: Option<&omtae_skills::registry::SkillRegistry>,
     ) -> Vec<ToolDefinition> {
         let all_builtins = if self.config.browser.enabled {
             builtin_tool_definitions()
@@ -6258,12 +6570,12 @@ impl OpenFangKernel {
             } else {
                 let normalized: Vec<String> = mcp_allowlist
                     .iter()
-                    .map(|s| openfang_runtime::mcp::normalize_name(s))
+                    .map(|s| omtae_runtime::mcp::normalize_name(s))
                     .collect();
                 mcp_tools
                     .iter()
                     .filter(|t| {
-                        openfang_runtime::mcp::extract_mcp_server(&t.name)
+                        omtae_runtime::mcp::extract_mcp_server(&t.name)
                             .map(|s| normalized.iter().any(|n| n == s))
                             .unwrap_or(false)
                     })
@@ -6311,7 +6623,7 @@ impl OpenFangKernel {
             e.manifest
                 .exec_policy
                 .as_ref()
-                .is_some_and(|p| p.mode == openfang_types::config::ExecSecurityMode::Deny)
+                .is_some_and(|p| p.mode == omtae_types::config::ExecSecurityMode::Deny)
         });
         if exec_blocks_shell {
             all_tools.retain(|t| t.name != "shell_exec");
@@ -6338,7 +6650,7 @@ impl OpenFangKernel {
             return;
         }
         let skills_dir = self.config.home_dir.join("skills");
-        let mut fresh = openfang_skills::registry::SkillRegistry::new(skills_dir);
+        let mut fresh = omtae_skills::registry::SkillRegistry::new(skills_dir);
         // Prefer the live override (from `PUT /api/skills/{id}/config`) so
         // dashboard edits survive hot-reloads without restarting the kernel.
         // Fall back to the boot-time config.
@@ -6392,7 +6704,7 @@ impl OpenFangKernel {
     /// Build a compact skill summary using the provided registry (which may
     /// include workspace skill overrides).
     fn build_skill_summary_from(
-        registry: &openfang_skills::registry::SkillRegistry,
+        registry: &omtae_skills::registry::SkillRegistry,
         skill_allowlist: &[String],
     ) -> String {
         let skills: Vec<_> = registry
@@ -6424,7 +6736,7 @@ impl OpenFangKernel {
                 summary.push_str(&format!("- {name}: {desc} [tools: {}]\n", tools.join(", ")));
             }
         }
-        // Issue #1038: skill directories (e.g. ~/.openfang/skills/) live OUTSIDE
+        // Issue #1038: skill directories (e.g. ~/.omtae/skills/) live OUTSIDE
         // the workspace sandbox. Tell the agent to use the dedicated skill_*
         // tools instead of falling back to file_read / shell_exec to inspect them.
         summary.push_str(
@@ -6451,7 +6763,7 @@ impl OpenFangKernel {
         // Normalize allowlist for matching
         let normalized: Vec<String> = mcp_allowlist
             .iter()
-            .map(|s| openfang_runtime::mcp::normalize_name(s))
+            .map(|s| omtae_runtime::mcp::normalize_name(s))
             .collect();
 
         // Group tools by MCP server prefix (mcp_{server}_{tool})
@@ -6523,7 +6835,7 @@ impl OpenFangKernel {
     /// Collect prompt context using the provided registry (which may include
     /// workspace skill overrides).
     fn collect_prompt_context_from(
-        registry: &openfang_skills::registry::SkillRegistry,
+        registry: &omtae_skills::registry::SkillRegistry,
         skill_allowlist: &[String],
     ) -> String {
         let mut context_parts = Vec::new();
@@ -6536,7 +6848,7 @@ impl OpenFangKernel {
                     if !ctx.is_empty() {
                         let is_bundled = matches!(
                             skill.manifest.source,
-                            Some(openfang_skills::SkillSource::Bundled)
+                            Some(omtae_skills::SkillSource::Bundled)
                         );
                         if is_bundled {
                             // Bundled skills are trusted (shipped with binary)
@@ -6572,9 +6884,9 @@ impl OpenFangKernel {
     /// Records success/failure on the job's metadata just like the scheduler does.
     pub async fn cron_run_job(
         self: &Arc<Self>,
-        job: &openfang_types::scheduler::CronJob,
+        job: &omtae_types::scheduler::CronJob,
     ) -> Result<String, String> {
-        use openfang_types::scheduler::CronAction;
+        use omtae_types::scheduler::CronAction;
 
         let job_id = job.id;
         let agent_id = job.agent_id;
@@ -6730,11 +7042,23 @@ impl OpenFangKernel {
     }
 }
 
-/// Convert a manifest's capability declarations into Capability enums.
-///
-/// If a `profile` is set and the manifest has no explicit tools, the profile's
-/// implied capabilities are used as a base — preserving any non-tool overrides
-/// from the manifest.
+/// Request-driven meta-agents use `[autonomous]` only for per-message iteration caps.
+/// They must never run a continuous self-prompt loop (causes context overflow on vLLM).
+pub(crate) fn normalize_request_driven_agent_schedule(manifest: &mut AgentManifest) {
+    const REQUEST_DRIVEN: &[&str] = &["orchestrator"];
+    if !REQUEST_DRIVEN.iter().any(|n| n == &manifest.name) {
+        return;
+    }
+    if !matches!(manifest.schedule, ScheduleMode::Reactive) {
+        warn!(
+            agent = %manifest.name,
+            schedule = ?manifest.schedule,
+            "Resetting schedule to reactive for request-driven meta-agent"
+        );
+        manifest.schedule = ScheduleMode::Reactive;
+    }
+}
+
 /// Merge `disk` (manifest read from agent.toml) onto `entry` (manifest in DB),
 /// preserving kernel-assigned defaults that the user didn't write to TOML.
 ///
@@ -6829,7 +7153,7 @@ fn manifest_to_capabilities(manifest: &AgentManifest) -> Vec<Capability> {
 /// When the global budget config specifies limits and the agent still has
 /// the built-in defaults, override them so agents respect the user's config.
 fn apply_budget_defaults(
-    budget: &openfang_types::config::BudgetConfig,
+    budget: &omtae_types::config::BudgetConfig,
     resources: &mut ResourceQuota,
 ) {
     // Only override hourly if agent has unlimited (0.0) and global is set
@@ -6989,12 +7313,12 @@ fn sanitize_cron_job_name(raw: &str) -> String {
 
 /// Deliver a cron job's agent response to the configured delivery target.
 async fn cron_deliver_response(
-    kernel: &OpenFangKernel,
+    kernel: &OMTAEKernel,
     agent_id: AgentId,
     response: &str,
-    delivery: &openfang_types::scheduler::CronDelivery,
+    delivery: &omtae_types::scheduler::CronDelivery,
 ) -> Result<(), String> {
-    use openfang_types::scheduler::CronDelivery;
+    use omtae_types::scheduler::CronDelivery;
 
     if response.is_empty() {
         return Ok(());
@@ -7080,11 +7404,11 @@ async fn cron_deliver_response(
 /// (they intentionally return "not implemented" / empty values since the
 /// fan-out engine never calls them).
 struct KernelCronBridge {
-    kernel: Arc<OpenFangKernel>,
+    kernel: Arc<OMTAEKernel>,
 }
 
 #[async_trait]
-impl openfang_channels::bridge::ChannelBridgeHandle for KernelCronBridge {
+impl omtae_channels::bridge::ChannelBridgeHandle for KernelCronBridge {
     async fn send_message(&self, _agent_id: AgentId, _message: &str) -> Result<String, String> {
         Err("KernelCronBridge only supports send_channel_message".to_string())
     }
@@ -7120,15 +7444,15 @@ impl openfang_channels::bridge::ChannelBridgeHandle for KernelCronBridge {
 /// has already succeeded. Per-target failures are logged and counted, and
 /// the aggregate pass/fail counts are returned for the scheduler log.
 async fn cron_fan_out_targets(
-    kernel: &Arc<OpenFangKernel>,
+    kernel: &Arc<OMTAEKernel>,
     job_name: &str,
     output: &str,
-    targets: &[openfang_types::scheduler::CronDeliveryTarget],
+    targets: &[omtae_types::scheduler::CronDeliveryTarget],
 ) {
     if targets.is_empty() || output.is_empty() {
         return;
     }
-    let bridge: Arc<dyn openfang_channels::bridge::ChannelBridgeHandle> =
+    let bridge: Arc<dyn omtae_channels::bridge::ChannelBridgeHandle> =
         Arc::new(KernelCronBridge {
             kernel: kernel.clone(),
         });
@@ -7163,14 +7487,14 @@ async fn cron_fan_out_targets(
 }
 
 #[async_trait]
-impl KernelHandle for OpenFangKernel {
+impl KernelHandle for OMTAEKernel {
     async fn spawn_agent(
         &self,
         manifest_toml: &str,
         parent_id: Option<&str>,
     ) -> Result<(String, String), String> {
         // Verify manifest integrity if a signed manifest hash is present
-        let content_hash = openfang_types::manifest_signing::hash_manifest(manifest_toml);
+        let content_hash = omtae_types::manifest_signing::hash_manifest(manifest_toml);
         tracing::debug!(hash = %content_hash, "Manifest SHA-256 computed for integrity tracking");
 
         let manifest: AgentManifest =
@@ -7183,21 +7507,81 @@ impl KernelHandle for OpenFangKernel {
         Ok((id.to_string(), name))
     }
 
-    async fn send_to_agent(&self, agent_id: &str, message: &str) -> Result<String, String> {
-        // Try UUID first, then fall back to name lookup
-        let id: AgentId = match agent_id.parse() {
-            Ok(id) => id,
-            Err(_) => self
-                .registry
-                .find_by_name(agent_id)
-                .map(|e| e.id)
-                .ok_or_else(|| format!("Agent not found: {agent_id}"))?,
-        };
+    async fn send_to_agent(
+        &self,
+        agent_id: &str,
+        message: &str,
+        caller_id: Option<&str>,
+        caller_name: Option<&str>,
+    ) -> Result<String, String> {
+        let entry = self
+            .registry
+            .find_by_name_insensitive(agent_id)
+            .or_else(|| {
+                agent_id
+                    .parse::<AgentId>()
+                    .ok()
+                    .and_then(|id| self.registry.get(id))
+            })
+            .ok_or_else(|| {
+                format!(
+                    "Agent not found: '{agent_id}'. Call agent_list first, then pass agent_id (UUID) from that list."
+                )
+            })?;
+
+        let id = entry.id;
+        let target_name = entry.name.clone();
+
+        match entry.state {
+            AgentState::Terminated => {
+                return Err(format!(
+                    "agent_send FAILED: agent '{target_name}' (id: {id}) is Terminated and cannot receive messages."
+                ));
+            }
+            AgentState::Running => {}
+            _ => {
+                let woken = self
+                    .activate_agent(id)
+                    .map_err(|e| format!("agent_send FAILED: could not activate '{target_name}': {e}"))?;
+                info!(agent = %woken, state = ?entry.state, "Activated specialist for agent_send");
+            }
+        }
+
+        if let Err(e) = self.prepare_session_for_inbound(id).await {
+            warn!(target = %agent_id, error = %e, "Session prep before agent_send failed");
+        }
+
+        let handle: Option<Arc<dyn KernelHandle>> = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+
         let result = self
-            .send_message(id, message)
+            .send_message_with_handle(
+                id,
+                message,
+                handle,
+                caller_id.map(str::to_string),
+                caller_name.map(str::to_string),
+            )
             .await
-            .map_err(|e| format!("Send failed: {e}"))?;
-        Ok(result.response)
+            .map_err(|e| format!("agent_send FAILED: Send failed: {e}"))?;
+
+        let body = result.response.trim();
+        if result.silent || body.is_empty() {
+            return Err(format!(
+                "agent_send FAILED: agent '{target_name}' (id: {id}) returned an empty response. \
+                 The specialist may have hit context limits, returned NO_REPLY, or failed silently. \
+                 Run agent_list and check state; retry after compaction or with a shorter message."
+            ));
+        }
+
+        Ok(format!(
+            "agent_send OK — target: {target_name} (id: {id})\n\n\
+             --- Specialist response (quote verbatim in your reply; do not invent text) ---\n\
+             {body}"
+        ))
     }
 
     fn list_agents(&self) -> Vec<kernel_handle::AgentInfo> {
@@ -7227,7 +7611,7 @@ impl KernelHandle for OpenFangKernel {
         let id: AgentId = agent_id
             .parse()
             .map_err(|_| "Invalid agent ID".to_string())?;
-        OpenFangKernel::kill_agent(self, id).map_err(|e| format!("Kill failed: {e}"))
+        OMTAEKernel::kill_agent(self, id).map_err(|e| format!("Kill failed: {e}"))
     }
 
     fn activate_agent(&self, agent_id: &str) -> Result<String, String> {
@@ -7240,7 +7624,7 @@ impl KernelHandle for OpenFangKernel {
                 .map(|e| e.id)
                 .ok_or_else(|| format!("Agent not found: {agent_id}"))?,
         };
-        OpenFangKernel::activate_agent(self, id).map_err(|e| format!("Activate failed: {e}"))
+        OMTAEKernel::activate_agent(self, id).map_err(|e| format!("Activate failed: {e}"))
     }
 
     fn memory_store(&self, key: &str, value: serde_json::Value) -> Result<(), String> {
@@ -7335,13 +7719,13 @@ impl KernelHandle for OpenFangKernel {
             EventTarget::Broadcast,
             EventPayload::Custom(payload_bytes),
         );
-        OpenFangKernel::publish_event(self, event).await;
+        OMTAEKernel::publish_event(self, event).await;
         Ok(())
     }
 
     async fn knowledge_add_entity(
         &self,
-        entity: openfang_types::memory::Entity,
+        entity: omtae_types::memory::Entity,
     ) -> Result<String, String> {
         self.memory
             .add_entity(entity)
@@ -7351,7 +7735,7 @@ impl KernelHandle for OpenFangKernel {
 
     async fn knowledge_add_relation(
         &self,
-        relation: openfang_types::memory::Relation,
+        relation: omtae_types::memory::Relation,
     ) -> Result<String, String> {
         self.memory
             .add_relation(relation)
@@ -7361,8 +7745,8 @@ impl KernelHandle for OpenFangKernel {
 
     async fn knowledge_query(
         &self,
-        pattern: openfang_types::memory::GraphPattern,
-    ) -> Result<Vec<openfang_types::memory::GraphMatch>, String> {
+        pattern: omtae_types::memory::GraphPattern,
+    ) -> Result<Vec<omtae_types::memory::GraphMatch>, String> {
         self.memory
             .query_graph(pattern)
             .await
@@ -7377,7 +7761,7 @@ impl KernelHandle for OpenFangKernel {
         agent_id: &str,
         job_json: serde_json::Value,
     ) -> Result<String, String> {
-        use openfang_types::scheduler::{
+        use omtae_types::scheduler::{
             CronAction, CronDelivery, CronDeliveryTarget, CronJob, CronJobId, CronSchedule,
         };
 
@@ -7403,7 +7787,7 @@ impl KernelHandle for OpenFangKernel {
         };
         let one_shot = job_json["one_shot"].as_bool().unwrap_or(false);
 
-        let aid = openfang_types::agent::AgentId(
+        let aid = omtae_types::agent::AgentId(
             uuid::Uuid::parse_str(agent_id).map_err(|e| format!("Invalid agent ID: {e}"))?,
         );
 
@@ -7439,7 +7823,7 @@ impl KernelHandle for OpenFangKernel {
     }
 
     async fn cron_list(&self, agent_id: &str) -> Result<Vec<serde_json::Value>, String> {
-        let aid = openfang_types::agent::AgentId(
+        let aid = omtae_types::agent::AgentId(
             uuid::Uuid::parse_str(agent_id).map_err(|e| format!("Invalid agent ID: {e}"))?,
         );
         let jobs = self.cron_scheduler.list_jobs(aid);
@@ -7451,7 +7835,7 @@ impl KernelHandle for OpenFangKernel {
     }
 
     async fn cron_cancel(&self, job_id: &str) -> Result<(), String> {
-        let id = openfang_types::scheduler::CronJobId(
+        let id = omtae_types::scheduler::CronJobId(
             uuid::Uuid::parse_str(job_id).map_err(|e| format!("Invalid job ID: {e}"))?,
         );
         self.cron_scheduler
@@ -7579,7 +7963,7 @@ impl KernelHandle for OpenFangKernel {
         tool_name: &str,
         action_summary: &str,
     ) -> Result<bool, String> {
-        use openfang_types::approval::{ApprovalDecision, ApprovalRequest as TypedRequest};
+        use omtae_types::approval::{ApprovalDecision, ApprovalRequest as TypedRequest};
 
         // Hand agents are curated trusted packages — auto-approve tool execution.
         // Check if this agent has a "hand:" tag indicating it was spawned by activate_hand().
@@ -7674,10 +8058,10 @@ impl KernelHandle for OpenFangKernel {
             })?
             .clone();
 
-        let user = openfang_channels::types::ChannelUser {
+        let user = omtae_channels::types::ChannelUser {
             platform_id: recipient.to_string(),
             display_name: recipient.to_string(),
-            openfang_user: None,
+            omtae_user: None,
         };
 
         let formatted = if channel == "wecom" {
@@ -7688,12 +8072,12 @@ impl KernelHandle for OpenFangKernel {
                 .as_ref()
                 .and_then(|c| c.overrides.output_format)
                 .unwrap_or(OutputFormat::PlainText);
-            openfang_channels::formatter::format_for_wecom(message, output_format)
+            omtae_channels::formatter::format_for_wecom(message, output_format)
         } else {
             message.to_string()
         };
 
-        let content = openfang_channels::types::ChannelContent::Text(formatted);
+        let content = omtae_channels::types::ChannelContent::Text(formatted);
 
         if let Some(tid) = thread_id {
             adapter
@@ -7736,18 +8120,18 @@ impl KernelHandle for OpenFangKernel {
             })?
             .clone();
 
-        let user = openfang_channels::types::ChannelUser {
+        let user = omtae_channels::types::ChannelUser {
             platform_id: recipient.to_string(),
             display_name: recipient.to_string(),
-            openfang_user: None,
+            omtae_user: None,
         };
 
         let content = match media_type {
-            "image" => openfang_channels::types::ChannelContent::Image {
+            "image" => omtae_channels::types::ChannelContent::Image {
                 url: media_url.to_string(),
                 caption: caption.map(|s| s.to_string()),
             },
-            "file" => openfang_channels::types::ChannelContent::File {
+            "file" => omtae_channels::types::ChannelContent::File {
                 url: media_url.to_string(),
                 filename: filename.unwrap_or("file").to_string(),
                 mime: None,
@@ -7803,13 +8187,13 @@ impl KernelHandle for OpenFangKernel {
             })?
             .clone();
 
-        let user = openfang_channels::types::ChannelUser {
+        let user = omtae_channels::types::ChannelUser {
             platform_id: recipient.to_string(),
             display_name: recipient.to_string(),
-            openfang_user: None,
+            omtae_user: None,
         };
 
-        let content = openfang_channels::types::ChannelContent::FileData {
+        let content = omtae_channels::types::ChannelContent::FileData {
             data,
             filename: filename.to_string(),
             mime_type: mime_type.to_string(),
@@ -7837,7 +8221,7 @@ impl KernelHandle for OpenFangKernel {
         &self,
         manifest_toml: &str,
         parent_id: Option<&str>,
-        parent_caps: &[openfang_types::capability::Capability],
+        parent_caps: &[omtae_types::capability::Capability],
     ) -> Result<(String, String), String> {
         // Parse the child manifest to extract its capabilities
         let child_manifest: AgentManifest =
@@ -7845,7 +8229,7 @@ impl KernelHandle for OpenFangKernel {
         let child_caps = manifest_to_capabilities(&child_manifest);
 
         // Enforce: child capabilities must be a subset of parent capabilities
-        openfang_types::capability::validate_capability_inheritance(parent_caps, &child_caps)?;
+        omtae_types::capability::validate_capability_inheritance(parent_caps, &child_caps)?;
 
         tracing::info!(
             parent = parent_id.unwrap_or("kernel"),
@@ -7862,12 +8246,12 @@ impl KernelHandle for OpenFangKernel {
 // --- OFP Wire Protocol integration ---
 
 #[async_trait]
-impl openfang_wire::peer::PeerHandle for OpenFangKernel {
-    fn local_agents(&self) -> Vec<openfang_wire::message::RemoteAgentInfo> {
+impl omtae_wire::peer::PeerHandle for OMTAEKernel {
+    fn local_agents(&self) -> Vec<omtae_wire::message::RemoteAgentInfo> {
         self.registry
             .list()
             .iter()
-            .map(|entry| openfang_wire::message::RemoteAgentInfo {
+            .map(|entry| omtae_wire::message::RemoteAgentInfo {
                 id: entry.id.0.to_string(),
                 name: entry.name.clone(),
                 description: entry.manifest.description.clone(),
@@ -7897,13 +8281,17 @@ impl openfang_wire::peer::PeerHandle for OpenFangKernel {
                 .ok_or_else(|| format!("Agent not found: {agent}"))?
         };
 
+        if let Err(e) = self.prepare_session_for_inbound(agent_id).await {
+            warn!(target = %agent, error = %e, "Session prep before peer agent message failed");
+        }
+
         match self.send_message(agent_id, message).await {
             Ok(result) => Ok(result.response),
             Err(e) => Err(format!("{e}")),
         }
     }
 
-    fn discover_agents(&self, query: &str) -> Vec<openfang_wire::message::RemoteAgentInfo> {
+    fn discover_agents(&self, query: &str) -> Vec<omtae_wire::message::RemoteAgentInfo> {
         let q = query.to_lowercase();
         self.registry
             .list()
@@ -7917,7 +8305,7 @@ impl openfang_wire::peer::PeerHandle for OpenFangKernel {
                         .iter()
                         .any(|t| t.to_lowercase().contains(&q))
             })
-            .map(|entry| openfang_wire::message::RemoteAgentInfo {
+            .map(|entry| omtae_wire::message::RemoteAgentInfo {
                 id: entry.id.0.to_string(),
                 name: entry.name.clone(),
                 description: entry.manifest.description.clone(),
@@ -7936,7 +8324,7 @@ impl openfang_wire::peer::PeerHandle for OpenFangKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openfang_types::config::ExecPolicy;
+    use omtae_types::config::ExecPolicy;
     use std::collections::HashMap;
 
     #[test]
@@ -8006,7 +8394,7 @@ mod tests {
             routing: None,
             autonomous: None,
             pinned_model: None,
-            workspace: Some(std::path::PathBuf::from("/var/lib/openfang/agents/demo")),
+            workspace: Some(std::path::PathBuf::from("/var/lib/omtae/agents/demo")),
             state_dir: None,
             generate_identity_files: true,
             exec_policy: Some(ExecPolicy::default()),
@@ -8031,6 +8419,19 @@ mod tests {
             merged.exec_policy.is_some(),
             "inherited exec_policy must survive"
         );
+    }
+
+    #[test]
+    fn test_orchestrator_schedule_forced_reactive() {
+        let mut manifest = AgentManifest {
+            name: "orchestrator".to_string(),
+            schedule: ScheduleMode::Continuous {
+                check_interval_secs: 120,
+            },
+            ..Default::default()
+        };
+        normalize_request_driven_agent_schedule(&mut manifest);
+        assert_eq!(manifest.schedule, ScheduleMode::Reactive);
     }
 
     /// User explicitly setting workspace in TOML must take effect.
@@ -8086,7 +8487,7 @@ mod tests {
     /// the on-disk `agent.toml`.
     #[test]
     fn test_exec_policy_reinherits_from_kernel_config_on_restart() {
-        use openfang_types::config::ExecSecurityMode;
+        use omtae_types::config::ExecSecurityMode;
 
         // Cached manifest from an earlier boot — still Allowlist.
         let cached_policy = ExecPolicy {
@@ -8166,7 +8567,7 @@ mod tests {
     /// config.toml edits take effect.
     #[test]
     fn test_persist_strips_inherited_exec_policy() {
-        use openfang_types::config::ExecSecurityMode;
+        use omtae_types::config::ExecSecurityMode;
 
         let kernel_policy = ExecPolicy {
             mode: ExecSecurityMode::Full,
@@ -8343,7 +8744,7 @@ mod tests {
 
     #[test]
     fn test_manifest_to_capabilities_with_profile() {
-        use openfang_types::agent::ToolProfile;
+        use omtae_types::agent::ToolProfile;
         let manifest = AgentManifest {
             profile: Some(ToolProfile::Coding),
             ..Default::default()
@@ -8362,7 +8763,7 @@ mod tests {
 
     #[test]
     fn test_manifest_to_capabilities_profile_overridden_by_explicit_tools() {
-        use openfang_types::agent::ToolProfile;
+        use omtae_types::agent::ToolProfile;
         let mut manifest = AgentManifest {
             profile: Some(ToolProfile::Coding),
             ..Default::default()
@@ -8382,7 +8783,7 @@ mod tests {
     #[test]
     fn test_hand_activation_does_not_seed_runtime_tool_filters() {
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-kernel-hand-test");
+        let home_dir = tmp.path().join("omtae-kernel-hand-test");
         std::fs::create_dir_all(&home_dir).unwrap();
 
         let config = KernelConfig {
@@ -8391,7 +8792,7 @@ mod tests {
             ..KernelConfig::default()
         };
 
-        let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
         let instance = kernel
             .activate_hand("browser", HashMap::new(), None)
             .expect("browser hand should activate");
@@ -8421,7 +8822,7 @@ mod tests {
     #[test]
     fn test_hand_owned_agent_stop_clears_hand_for_reactivation() {
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-kernel-hand-stop-test");
+        let home_dir = tmp.path().join("omtae-kernel-hand-stop-test");
         std::fs::create_dir_all(&home_dir).unwrap();
 
         let config = KernelConfig {
@@ -8429,7 +8830,7 @@ mod tests {
             data_dir: home_dir.join("data"),
             ..KernelConfig::default()
         };
-        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boots");
 
         // Activate a hand and grab its agent id (mirrors what the wizard does).
         let instance = kernel
@@ -8481,7 +8882,7 @@ mod tests {
     #[test]
     fn test_activate_agent_wakes_suspended_and_crashed() {
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-kernel-activate-test");
+        let home_dir = tmp.path().join("omtae-kernel-activate-test");
         std::fs::create_dir_all(&home_dir).unwrap();
 
         let config = KernelConfig {
@@ -8489,7 +8890,7 @@ mod tests {
             data_dir: home_dir.join("data"),
             ..KernelConfig::default()
         };
-        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boots");
 
         // Suspended agent: should flip to Running.
         let suspended = register_test_agent(&kernel, "sleepy");
@@ -8556,10 +8957,10 @@ mod tests {
 
     #[test]
     fn test_activate_agent_handle_accepts_name_and_uuid() {
-        use openfang_runtime::kernel_handle::KernelHandle;
+        use omtae_runtime::kernel_handle::KernelHandle;
 
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-kernel-activate-handle-test");
+        let home_dir = tmp.path().join("omtae-kernel-activate-handle-test");
         std::fs::create_dir_all(&home_dir).unwrap();
 
         let config = KernelConfig {
@@ -8567,7 +8968,7 @@ mod tests {
             data_dir: home_dir.join("data"),
             ..KernelConfig::default()
         };
-        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boots");
 
         let agent = register_test_agent(&kernel, "worker");
         kernel
@@ -8637,7 +9038,7 @@ mod tests {
     /// Register a minimal test agent in a booted kernel and return its ID.
     /// Kept local to the tests module to avoid widening the kernel's public
     /// surface.
-    fn register_test_agent(kernel: &OpenFangKernel, name: &str) -> AgentId {
+    fn register_test_agent(kernel: &OMTAEKernel, name: &str) -> AgentId {
         let agent_id = AgentId::new();
         let entry = AgentEntry {
             id: agent_id,
@@ -8662,7 +9063,7 @@ mod tests {
     #[test]
     fn test_migrate_shared_memory_schedules_imports_legacy_entries() {
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-migrate");
+        let home_dir = tmp.path().join("omtae-migrate");
         std::fs::create_dir_all(&home_dir).unwrap();
         let config = KernelConfig {
             home_dir: home_dir.clone(),
@@ -8670,7 +9071,7 @@ mod tests {
             ..KernelConfig::default()
         };
 
-        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boots");
 
         // Register a target agent the legacy entries can point at.
         let agent = register_test_agent(&kernel, "report-agent");
@@ -8694,7 +9095,7 @@ mod tests {
         ]);
         kernel
             .memory
-            .structured_set(shared, "__openfang_schedules", legacy_entries)
+            .structured_set(shared, "__omtae_schedules", legacy_entries)
             .unwrap();
 
         // Sanity: before migration, the cron scheduler is empty.
@@ -8718,12 +9119,12 @@ mod tests {
         // it again.
         let remaining = kernel
             .memory
-            .structured_get(shared, "__openfang_schedules")
+            .structured_get(shared, "__omtae_schedules")
             .unwrap();
         assert_eq!(remaining, Some(serde_json::Value::Array(vec![])));
         let marker = kernel
             .memory
-            .structured_get(shared, "__openfang_schedules_migrated_v1")
+            .structured_get(shared, "__omtae_schedules_migrated_v1")
             .unwrap();
         assert_eq!(marker, Some(serde_json::Value::Bool(true)));
 
@@ -8733,14 +9134,14 @@ mod tests {
     #[test]
     fn test_migrate_shared_memory_schedules_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-migrate-idem");
+        let home_dir = tmp.path().join("omtae-migrate-idem");
         std::fs::create_dir_all(&home_dir).unwrap();
         let config = KernelConfig {
             home_dir: home_dir.clone(),
             data_dir: home_dir.join("data"),
             ..KernelConfig::default()
         };
-        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boots");
         let agent = register_test_agent(&kernel, "idem-agent");
         let shared = super::shared_memory_agent_id();
 
@@ -8748,7 +9149,7 @@ mod tests {
             .memory
             .structured_set(
                 shared,
-                "__openfang_schedules",
+                "__omtae_schedules",
                 serde_json::json!([{
                     "description": "Ping",
                     "cron": "*/5 * * * *",
@@ -8766,7 +9167,7 @@ mod tests {
             .memory
             .structured_set(
                 shared,
-                "__openfang_schedules",
+                "__omtae_schedules",
                 serde_json::json!([{
                     "description": "Ping again",
                     "cron": "*/5 * * * *",
@@ -8787,14 +9188,14 @@ mod tests {
     #[test]
     fn test_migrate_shared_memory_schedules_skips_unknown_agent() {
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-migrate-skip");
+        let home_dir = tmp.path().join("omtae-migrate-skip");
         std::fs::create_dir_all(&home_dir).unwrap();
         let config = KernelConfig {
             home_dir: home_dir.clone(),
             data_dir: home_dir.join("data"),
             ..KernelConfig::default()
         };
-        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boots");
         let shared = super::shared_memory_agent_id();
 
         // Entry references an agent that does not exist in the registry.
@@ -8802,7 +9203,7 @@ mod tests {
             .memory
             .structured_set(
                 shared,
-                "__openfang_schedules",
+                "__omtae_schedules",
                 serde_json::json!([{
                     "description": "Ping",
                     "cron": "*/5 * * * *",
@@ -8817,7 +9218,7 @@ mod tests {
         assert_eq!(kernel.cron_scheduler.total_jobs(), 0);
         let marker = kernel
             .memory
-            .structured_get(shared, "__openfang_schedules_migrated_v1")
+            .structured_get(shared, "__omtae_schedules_migrated_v1")
             .unwrap();
         assert_eq!(marker, Some(serde_json::Value::Bool(true)));
 
@@ -8836,10 +9237,10 @@ mod tests {
     #[test]
     fn test_subprocess_timeout_hot_reload_fallback_providers() {
         use crate::config_reload::{build_reload_plan, HotAction};
-        use openfang_types::config::FallbackProviderConfig;
+        use omtae_types::config::FallbackProviderConfig;
 
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-1129-fallback-timeout");
+        let home_dir = tmp.path().join("omtae-1129-fallback-timeout");
         std::fs::create_dir_all(&home_dir).unwrap();
 
         // Boot with one fallback provider configured at 120s.
@@ -8856,7 +9257,7 @@ mod tests {
             subprocess_timeout_secs: Some(120),
         });
 
-        let kernel = OpenFangKernel::boot_with_config(config.clone()).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config.clone()).expect("kernel boots");
 
         // Pre-condition: nothing has been hot-reloaded yet — override slot is empty.
         {
@@ -8913,7 +9314,7 @@ mod tests {
         use crate::config_reload::{build_reload_plan, HotAction};
 
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-1129-default-timeout");
+        let home_dir = tmp.path().join("omtae-1129-default-timeout");
         std::fs::create_dir_all(&home_dir).unwrap();
 
         let mut config = KernelConfig {
@@ -8923,7 +9324,7 @@ mod tests {
         };
         config.default_model.subprocess_timeout_secs = Some(180);
 
-        let kernel = OpenFangKernel::boot_with_config(config.clone()).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config.clone()).expect("kernel boots");
 
         // Operator raises the timeout to 1200s.
         let mut new_config = config.clone();
@@ -8959,10 +9360,10 @@ mod tests {
     #[test]
     fn test_subprocess_timeout_hot_reload_adds_new_fallback() {
         use crate::config_reload::{build_reload_plan, HotAction};
-        use openfang_types::config::FallbackProviderConfig;
+        use omtae_types::config::FallbackProviderConfig;
 
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-1129-add-fallback");
+        let home_dir = tmp.path().join("omtae-1129-add-fallback");
         std::fs::create_dir_all(&home_dir).unwrap();
 
         let config = KernelConfig {
@@ -8970,7 +9371,7 @@ mod tests {
             data_dir: home_dir.join("data"),
             ..KernelConfig::default()
         };
-        let kernel = OpenFangKernel::boot_with_config(config.clone()).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config.clone()).expect("kernel boots");
 
         // Operator adds a codex fallback with a 600s timeout.
         let mut new_config = config.clone();
@@ -9010,10 +9411,10 @@ mod tests {
 
     #[test]
     fn test_referenced_providers_only_includes_configured_ones() {
-        use openfang_types::config::{DefaultModelConfig, FallbackProviderConfig};
+        use omtae_types::config::{DefaultModelConfig, FallbackProviderConfig};
 
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-1031-referenced");
+        let home_dir = tmp.path().join("omtae-1031-referenced");
         std::fs::create_dir_all(&home_dir).unwrap();
 
         // Operator uses Groq as the default and Ollama as a single fallback.
@@ -9047,7 +9448,7 @@ mod tests {
             ..KernelConfig::default()
         };
 
-        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boots");
         let referenced = kernel.referenced_providers();
 
         // Configured providers ARE referenced.
@@ -9082,10 +9483,10 @@ mod tests {
 
     #[test]
     fn test_1188_referenced_providers_resolves_alias_to_provider() {
-        use openfang_types::config::DefaultModelConfig;
+        use omtae_types::config::DefaultModelConfig;
 
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-1188-alias");
+        let home_dir = tmp.path().join("omtae-1188-alias");
         std::fs::create_dir_all(&home_dir).unwrap();
 
         // Operator sets provider = "default" and picks the model by its
@@ -9105,7 +9506,7 @@ mod tests {
             ..KernelConfig::default()
         };
 
-        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boots");
         let referenced = kernel.referenced_providers();
         assert!(
             referenced.contains("anthropic"),
@@ -9116,12 +9517,12 @@ mod tests {
 
     #[test]
     fn test_1188_referenced_providers_walks_channel_overrides() {
-        use openfang_types::config::{
+        use omtae_types::config::{
             ChannelOverrides, ChannelsConfig, DefaultModelConfig, TelegramConfig,
         };
 
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-1188-channel");
+        let home_dir = tmp.path().join("omtae-1188-channel");
         std::fs::create_dir_all(&home_dir).unwrap();
 
         let overrides = ChannelOverrides {
@@ -9149,7 +9550,7 @@ mod tests {
             ..KernelConfig::default()
         };
 
-        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boots");
         let referenced = kernel.referenced_providers();
         assert!(
             referenced.contains("anthropic"),
@@ -9160,10 +9561,10 @@ mod tests {
 
     #[test]
     fn test_1188_referenced_providers_walks_mcp_env() {
-        use openfang_types::config::{DefaultModelConfig, McpServerConfigEntry, McpTransportEntry};
+        use omtae_types::config::{DefaultModelConfig, McpServerConfigEntry, McpTransportEntry};
 
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-1188-mcp");
+        let home_dir = tmp.path().join("omtae-1188-mcp");
         std::fs::create_dir_all(&home_dir).unwrap();
 
         // MCP server passes through OPENAI_API_KEY, which is the api_key_env
@@ -9191,7 +9592,7 @@ mod tests {
             ..KernelConfig::default()
         };
 
-        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boots");
         let referenced = kernel.referenced_providers();
         assert!(
             referenced.contains("openai"),
@@ -9202,10 +9603,10 @@ mod tests {
 
     #[test]
     fn test_1188_referenced_providers_walks_skill_tags() {
-        use openfang_types::config::DefaultModelConfig;
+        use omtae_types::config::DefaultModelConfig;
 
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-1188-skill");
+        let home_dir = tmp.path().join("omtae-1188-skill");
         std::fs::create_dir_all(&home_dir).unwrap();
 
         let config = KernelConfig {
@@ -9221,7 +9622,7 @@ mod tests {
             ..KernelConfig::default()
         };
 
-        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boots");
 
         // Drop a minimal skill manifest with a tag matching a known
         // provider ID, then load it through the kernel's registry.
@@ -9252,20 +9653,20 @@ type = "promptonly"
     }
 
     // ----------------------------------------------------------------------
-    // Issue #1140: agents placed at ~/.openfang/agents/<name>/agent.toml
+    // Issue #1140: agents placed at ~/.omtae/agents/<name>/agent.toml
     // must auto-spawn on boot so they appear in the chat tab.
     // ----------------------------------------------------------------------
     #[test]
     fn test_1140_auto_spawn_agents_from_disk() {
         let tmp = tempfile::tempdir().unwrap();
-        let home_dir = tmp.path().join("openfang-1140");
+        let home_dir = tmp.path().join("omtae-1140");
         let agents_dir = home_dir.join("agents");
         std::fs::create_dir_all(agents_dir.join("my-custom-agent")).unwrap();
 
         // Write a minimal valid agent.toml for a user-placed agent.
         let manifest_toml = r#"
 name = "my-custom-agent"
-description = "A user-installed agent placed in ~/.openfang/agents"
+description = "A user-installed agent placed in ~/.omtae/agents"
 
 [model]
 provider = "default"
@@ -9294,13 +9695,13 @@ system_prompt = "You are a test agent."
             data_dir: home_dir.join("data"),
             ..KernelConfig::default()
         };
-        let kernel = OpenFangKernel::boot_with_config(config).expect("kernel boots");
+        let kernel = OMTAEKernel::boot_with_config(config).expect("kernel boots");
 
         // The disk-placed agent must be in the registry and visible via list().
         let entry = kernel
             .registry
             .find_by_name("my-custom-agent")
-            .expect("my-custom-agent must be auto-spawned from ~/.openfang/agents");
+            .expect("my-custom-agent must be auto-spawned from ~/.omtae/agents");
         assert_eq!(entry.name, "my-custom-agent");
 
         // GET /api/agents pulls from kernel.registry.list(); confirm the agent
@@ -9328,7 +9729,7 @@ system_prompt = "You are a test agent."
             data_dir: home_dir.join("data"),
             ..KernelConfig::default()
         };
-        let kernel2 = OpenFangKernel::boot_with_config(config2).expect("kernel re-boots");
+        let kernel2 = OMTAEKernel::boot_with_config(config2).expect("kernel re-boots");
         let count_after = kernel2.registry.list().len();
         assert_eq!(
             count_before, count_after,
@@ -9346,7 +9747,7 @@ system_prompt = "You are a test agent."
     /// private state directory; only the lightweight user-facing layout
     /// (`data/`, `output/`, `skills/`) may appear in the workspace.
     #[test]
-    fn test_workspace_outside_openfang_stays_clean() {
+    fn test_workspace_outside_omtae_stays_clean() {
         use tempfile::TempDir;
 
         let user_workspace = TempDir::new().expect("temp user workspace");

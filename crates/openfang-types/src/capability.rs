@@ -1,6 +1,6 @@
 //! Capability-based security types.
 //!
-//! OpenFang uses capability-based security: an agent can only perform actions
+//! OMTAE uses capability-based security: an agent can only perform actions
 //! that it has been explicitly granted permission to do. Capabilities are
 //! immutable after agent creation and enforced at the kernel level.
 
@@ -54,7 +54,7 @@ pub enum Capability {
     /// Read environment variables matching the pattern.
     EnvRead(String),
 
-    // -- OFP (OpenFang Wire Protocol) --
+    // -- OFP (OMTAE Wire Protocol) --
     /// Can discover remote agents.
     OfpDiscover,
     /// Can connect to remote peers matching the pattern.
@@ -87,10 +87,10 @@ impl CapabilityCheck {
     }
 
     /// Returns an error if denied, Ok(()) if granted.
-    pub fn require(&self) -> Result<(), crate::error::OpenFangError> {
+    pub fn require(&self) -> Result<(), crate::error::OMTAEError> {
         match self {
             Self::Granted => Ok(()),
-            Self::Denied(reason) => Err(crate::error::OpenFangError::CapabilityDenied(
+            Self::Denied(reason) => Err(crate::error::OMTAEError::CapabilityDenied(
                 reason.clone(),
             )),
         }

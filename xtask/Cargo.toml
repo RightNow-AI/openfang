@@ -3,4 +3,4 @@ name = "xtask"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Build automation for the OpenFang workspace"
+description = "Build automation for the OMTAE workspace"

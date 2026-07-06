@@ -1,71 +1,71 @@
-//! Channel bridge wiring — connects the OpenFang kernel to channel adapters.
+//! Channel bridge wiring — connects the OMTAE kernel to channel adapters.
 //!
-//! Implements `ChannelBridgeHandle` on `OpenFangKernel` and provides the
+//! Implements `ChannelBridgeHandle` on `OMTAEKernel` and provides the
 //! `start_channel_bridge()` entry point called by the daemon.
 
-use openfang_channels::bridge::{BridgeManager, ChannelBridgeHandle};
-use openfang_channels::discord::DiscordAdapter;
-use openfang_channels::email::EmailAdapter;
-use openfang_channels::google_chat::GoogleChatAdapter;
-use openfang_channels::irc::IrcAdapter;
-use openfang_channels::matrix::MatrixAdapter;
-use openfang_channels::mattermost::MattermostAdapter;
-use openfang_channels::rocketchat::RocketChatAdapter;
-use openfang_channels::router::AgentRouter;
-use openfang_channels::signal::SignalAdapter;
-use openfang_channels::slack::SlackAdapter;
-use openfang_channels::teams::TeamsAdapter;
-use openfang_channels::telegram::TelegramAdapter;
-use openfang_channels::twitch::TwitchAdapter;
-use openfang_channels::types::ChannelAdapter;
-use openfang_channels::whatsapp::WhatsAppAdapter;
-use openfang_channels::xmpp::XmppAdapter;
-use openfang_channels::zulip::ZulipAdapter;
+use omtae_channels::bridge::{BridgeManager, ChannelBridgeHandle};
+use omtae_channels::discord::DiscordAdapter;
+use omtae_channels::email::EmailAdapter;
+use omtae_channels::google_chat::GoogleChatAdapter;
+use omtae_channels::irc::IrcAdapter;
+use omtae_channels::matrix::MatrixAdapter;
+use omtae_channels::mattermost::MattermostAdapter;
+use omtae_channels::rocketchat::RocketChatAdapter;
+use omtae_channels::router::AgentRouter;
+use omtae_channels::signal::SignalAdapter;
+use omtae_channels::slack::SlackAdapter;
+use omtae_channels::teams::TeamsAdapter;
+use omtae_channels::telegram::TelegramAdapter;
+use omtae_channels::twitch::TwitchAdapter;
+use omtae_channels::types::ChannelAdapter;
+use omtae_channels::whatsapp::WhatsAppAdapter;
+use omtae_channels::xmpp::XmppAdapter;
+use omtae_channels::zulip::ZulipAdapter;
 // Wave 3
-use openfang_channels::bluesky::BlueskyAdapter;
-use openfang_channels::feishu::FeishuAdapter;
-use openfang_channels::line::LineAdapter;
-use openfang_channels::mastodon::MastodonAdapter;
-use openfang_channels::messenger::MessengerAdapter;
-use openfang_channels::reddit::RedditAdapter;
-use openfang_channels::revolt::RevoltAdapter;
-use openfang_channels::viber::ViberAdapter;
-use openfang_types::config::FeishuMode;
+use omtae_channels::bluesky::BlueskyAdapter;
+use omtae_channels::feishu::FeishuAdapter;
+use omtae_channels::line::LineAdapter;
+use omtae_channels::mastodon::MastodonAdapter;
+use omtae_channels::messenger::MessengerAdapter;
+use omtae_channels::reddit::RedditAdapter;
+use omtae_channels::revolt::RevoltAdapter;
+use omtae_channels::viber::ViberAdapter;
+use omtae_types::config::FeishuMode;
 // Wave 4
-use openfang_channels::flock::FlockAdapter;
-use openfang_channels::guilded::GuildedAdapter;
-use openfang_channels::keybase::KeybaseAdapter;
-use openfang_channels::nextcloud::NextcloudAdapter;
-use openfang_channels::nostr::NostrAdapter;
-use openfang_channels::pumble::PumbleAdapter;
-use openfang_channels::threema::ThreemaAdapter;
-use openfang_channels::twist::TwistAdapter;
-use openfang_channels::webex::WebexAdapter;
+use omtae_channels::flock::FlockAdapter;
+use omtae_channels::guilded::GuildedAdapter;
+use omtae_channels::keybase::KeybaseAdapter;
+use omtae_channels::nextcloud::NextcloudAdapter;
+use omtae_channels::nostr::NostrAdapter;
+use omtae_channels::pumble::PumbleAdapter;
+use omtae_channels::threema::ThreemaAdapter;
+use omtae_channels::twist::TwistAdapter;
+use omtae_channels::webex::WebexAdapter;
 // Wave 5
 use async_trait::async_trait;
-use openfang_channels::dingtalk::DingTalkAdapter;
-use openfang_channels::dingtalk_stream::DingTalkStreamAdapter;
-use openfang_channels::discourse::DiscourseAdapter;
-use openfang_channels::gitter::GitterAdapter;
-use openfang_channels::gotify::GotifyAdapter;
-use openfang_channels::linkedin::LinkedInAdapter;
-use openfang_channels::mqtt::MqttAdapter;
-use openfang_channels::mumble::MumbleAdapter;
-use openfang_channels::ntfy::NtfyAdapter;
-use openfang_channels::webhook::WebhookAdapter;
-use openfang_channels::wecom::WeComAdapter;
-use openfang_kernel::OpenFangKernel;
-use openfang_runtime::kernel_handle::KernelHandle;
-use openfang_types::agent::AgentId;
+use omtae_channels::dingtalk::DingTalkAdapter;
+use omtae_channels::dingtalk_stream::DingTalkStreamAdapter;
+use omtae_channels::discourse::DiscourseAdapter;
+use omtae_channels::gitter::GitterAdapter;
+use omtae_channels::gotify::GotifyAdapter;
+use omtae_channels::linkedin::LinkedInAdapter;
+use omtae_channels::mqtt::MqttAdapter;
+use omtae_channels::mumble::MumbleAdapter;
+use omtae_channels::ntfy::NtfyAdapter;
+use omtae_channels::webhook::WebhookAdapter;
+use omtae_channels::wecom::WeComAdapter;
+use omtae_kernel::OMTAEKernel;
+use omtae_runtime::kernel_handle::KernelHandle;
+use omtae_types::agent::AgentId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
-use openfang_runtime::str_utils::safe_truncate_str;
+use omtae_runtime::str_utils::safe_truncate_str;
 
-/// Wraps `OpenFangKernel` to implement `ChannelBridgeHandle`.
+/// Wraps `OMTAEKernel` to implement `ChannelBridgeHandle`.
 pub struct KernelBridgeAdapter {
-    kernel: Arc<OpenFangKernel>,
+    kernel: Arc<OMTAEKernel>,
     started_at: Instant,
 }
 
@@ -87,13 +87,13 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
     async fn send_message_with_blocks(
         &self,
         agent_id: AgentId,
-        blocks: Vec<openfang_types::message::ContentBlock>,
+        blocks: Vec<omtae_types::message::ContentBlock>,
     ) -> Result<String, String> {
         // Extract text for the message parameter (used for memory recall / logging)
         let text: String = blocks
             .iter()
             .filter_map(|b| match b {
-                openfang_types::message::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                omtae_types::message::ContentBlock::Text { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -126,7 +126,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
     }
 
     async fn spawn_agent_by_name(&self, manifest_name: &str) -> Result<AgentId, String> {
-        // Look for manifest at ~/.openfang/agents/{name}/agent.toml
+        // Look for manifest at ~/.omtae/agents/{name}/agent.toml
         let manifest_path = self
             .kernel
             .config
@@ -142,7 +142,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         let contents = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("Failed to read manifest: {e}"))?;
 
-        let manifest: openfang_types::agent::AgentManifest =
+        let manifest: omtae_types::agent::AgentManifest =
             toml::from_str(&contents).map_err(|e| format!("Invalid manifest TOML: {e}"))?;
 
         let agent_id = self
@@ -161,14 +161,14 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         let mins = (secs % 3600) / 60;
         if hours > 0 {
             format!(
-                "OpenFang status: {}h {}m uptime, {} agent(s)",
+                "OMTAE status: {}h {}m uptime, {} agent(s)",
                 hours,
                 mins,
                 agents.len()
             )
         } else {
             format!(
-                "OpenFang status: {}m uptime, {} agent(s)",
+                "OMTAE status: {}m uptime, {} agent(s)",
                 mins,
                 agents.len()
             )
@@ -189,7 +189,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         // Group by provider
         let mut by_provider: std::collections::HashMap<
             &str,
-            Vec<&openfang_types::model_catalog::ModelCatalogEntry>,
+            Vec<&omtae_types::model_catalog::ModelCatalogEntry>,
         > = std::collections::HashMap::new();
         for m in &available {
             by_provider.entry(m.provider.as_str()).or_default().push(m);
@@ -226,9 +226,9 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         let mut msg = "Providers:\n".to_string();
         for p in catalog.list_providers() {
             let status = match p.auth_status {
-                openfang_types::model_catalog::AuthStatus::Configured => "configured",
-                openfang_types::model_catalog::AuthStatus::Missing => "not configured",
-                openfang_types::model_catalog::AuthStatus::NotRequired => "local (no key needed)",
+                omtae_types::model_catalog::AuthStatus::Configured => "configured",
+                omtae_types::model_catalog::AuthStatus::Missing => "not configured",
+                omtae_types::model_catalog::AuthStatus::NotRequired => "local (no key needed)",
             };
             msg.push_str(&format!(
                 "  {} — {} [{}, {} model(s)]\n",
@@ -246,7 +246,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             .unwrap_or_else(|e| e.into_inner());
         let skills = skills.list();
         if skills.is_empty() {
-            return "No skills installed. Place skills in ~/.openfang/skills/ or install from the marketplace.".to_string();
+            return "No skills installed. Place skills in ~/.omtae/skills/ or install from the marketplace.".to_string();
         }
         let mut msg = format!("Installed skills ({}):\n", skills.len());
         for skill in &skills {
@@ -342,12 +342,12 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             .execute_run(
                 run_id,
                 |step_agent| match step_agent {
-                    openfang_kernel::workflow::StepAgent::ById { id } => {
+                    omtae_kernel::workflow::StepAgent::ById { id } => {
                         let aid: AgentId = id.parse().ok()?;
                         let entry = registry_ref.get(aid)?;
                         Some((aid, entry.name.clone()))
                     }
-                    openfang_kernel::workflow::StepAgent::ByName { name } => {
+                    omtae_kernel::workflow::StepAgent::ByName { name } => {
                         let entry = registry_ref.find_by_name(name)?;
                         Some((entry.id, entry.name.clone()))
                     }
@@ -472,11 +472,11 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             let id_str = job.id.0.to_string();
             let id_short = safe_truncate_str(&id_str, 8);
             let sched = match &job.schedule {
-                openfang_types::scheduler::CronSchedule::Cron { expr, .. } => expr.clone(),
-                openfang_types::scheduler::CronSchedule::Every { every_secs } => {
+                omtae_types::scheduler::CronSchedule::Cron { expr, .. } => expr.clone(),
+                omtae_types::scheduler::CronSchedule::Every { every_secs } => {
                     format!("every {every_secs}s")
                 }
-                openfang_types::scheduler::CronSchedule::At { at } => {
+                omtae_types::scheduler::CronSchedule::At { at } => {
                     format!("at {}", at.format("%Y-%m-%d %H:%M"))
                 }
             };
@@ -509,21 +509,21 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                 let cron_expr = args[1..6].join(" ");
                 let message = args[6..].join(" ");
 
-                let job = openfang_types::scheduler::CronJob {
-                    id: openfang_types::scheduler::CronJobId::new(),
+                let job = omtae_types::scheduler::CronJob {
+                    id: omtae_types::scheduler::CronJobId::new(),
                     agent_id: agent.id,
                     name: format!("chat-{}", &agent.name),
                     enabled: true,
-                    schedule: openfang_types::scheduler::CronSchedule::Cron {
+                    schedule: omtae_types::scheduler::CronSchedule::Cron {
                         expr: cron_expr.clone(),
                         tz: None,
                     },
-                    action: openfang_types::scheduler::CronAction::AgentTurn {
+                    action: omtae_types::scheduler::CronAction::AgentTurn {
                         message: message.clone(),
                         model_override: None,
                         timeout_secs: None,
                     },
-                    delivery: openfang_types::scheduler::CronDelivery::None,
+                    delivery: omtae_types::scheduler::CronDelivery::None,
                     delivery_targets: Vec::new(),
                     created_at: chrono::Utc::now(),
                     last_run: None,
@@ -583,13 +583,13 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                     1 => {
                         let j = matched[0];
                         let message = match &j.action {
-                            openfang_types::scheduler::CronAction::AgentTurn {
+                            omtae_types::scheduler::CronAction::AgentTurn {
                                 message, ..
                             } => message.clone(),
-                            openfang_types::scheduler::CronAction::SystemEvent { text } => {
+                            omtae_types::scheduler::CronAction::SystemEvent { text } => {
                                 text.clone()
                             }
-                            openfang_types::scheduler::CronAction::WorkflowRun {
+                            omtae_types::scheduler::CronAction::WorkflowRun {
                                 workflow_id,
                                 input,
                                 ..
@@ -657,9 +657,9 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             1 => {
                 let req = matched[0];
                 let decision = if approve {
-                    openfang_types::approval::ApprovalDecision::Approved
+                    omtae_types::approval::ApprovalDecision::Approved
                 } else {
-                    openfang_types::approval::ApprovalDecision::Denied
+                    omtae_types::approval::ApprovalDecision::Denied
                 };
                 match self.kernel.approval_manager.resolve(
                     req.id,
@@ -762,7 +762,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
     async fn channel_overrides(
         &self,
         channel_type: &str,
-    ) -> Option<openfang_types::config::ChannelOverrides> {
+    ) -> Option<omtae_types::config::ChannelOverrides> {
         let channels = &self.kernel.config.channels;
         match channel_type {
             "telegram" => channels.telegram.as_ref().map(|c| c.overrides.clone()),
@@ -848,11 +848,11 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             .ok_or_else(|| "Unrecognized user. Contact an admin to get access.".to_string())?;
 
         let auth_action = match action {
-            "chat" => openfang_kernel::auth::Action::ChatWithAgent,
-            "spawn" => openfang_kernel::auth::Action::SpawnAgent,
-            "kill" => openfang_kernel::auth::Action::KillAgent,
-            "install_skill" => openfang_kernel::auth::Action::InstallSkill,
-            _ => openfang_kernel::auth::Action::ChatWithAgent,
+            "chat" => omtae_kernel::auth::Action::ChatWithAgent,
+            "spawn" => omtae_kernel::auth::Action::SpawnAgent,
+            "kill" => omtae_kernel::auth::Action::KillAgent,
+            "install_skill" => omtae_kernel::auth::Action::InstallSkill,
+            _ => omtae_kernel::auth::Action::ChatWithAgent,
         };
 
         self.kernel
@@ -871,9 +871,9 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         thread_id: Option<&str>,
     ) {
         let receipt = if success {
-            openfang_kernel::DeliveryTracker::sent_receipt(channel, recipient)
+            omtae_kernel::DeliveryTracker::sent_receipt(channel, recipient)
         } else {
-            openfang_kernel::DeliveryTracker::failed_receipt(
+            omtae_kernel::DeliveryTracker::failed_receipt(
                 channel,
                 recipient,
                 error.unwrap_or("Unknown error"),
@@ -901,7 +901,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         recipient: &str,
         message: &str,
     ) -> Result<(), String> {
-        <OpenFangKernel as KernelHandle>::send_channel_message(
+        <OMTAEKernel as KernelHandle>::send_channel_message(
             &self.kernel,
             channel_type,
             recipient,
@@ -1009,7 +1009,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             msg.push_str(&format!("  {} — {}\n", card.name, url));
             let desc = &card.description;
             if !desc.is_empty() {
-                let short = openfang_types::truncate_str(desc, 60);
+                let short = omtae_types::truncate_str(desc, 60);
                 msg.push_str(&format!("    {short}\n"));
             }
         }
@@ -1018,8 +1018,8 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
 }
 
 /// Parse a trigger pattern string from chat into a `TriggerPattern`.
-fn parse_trigger_pattern(s: &str) -> Option<openfang_kernel::triggers::TriggerPattern> {
-    use openfang_kernel::triggers::TriggerPattern;
+fn parse_trigger_pattern(s: &str) -> Option<omtae_kernel::triggers::TriggerPattern> {
+    use omtae_kernel::triggers::TriggerPattern;
     if let Some(rest) = s.strip_prefix("spawned:") {
         return Some(TriggerPattern::AgentSpawned {
             name_pattern: rest.to_string(),
@@ -1092,7 +1092,7 @@ fn read_token(env_var_or_token: &str, adapter_name: &str) -> Option<String> {
 ///
 /// Returns `Some(BridgeManager)` if any channels were configured and started,
 /// or `None` if no channels are configured.
-pub async fn start_channel_bridge(kernel: Arc<OpenFangKernel>) -> Option<BridgeManager> {
+pub async fn start_channel_bridge(kernel: Arc<OMTAEKernel>) -> Option<BridgeManager> {
     let channels = kernel.config.channels.clone();
     let (bridge, _names) = start_channel_bridge_with_config(kernel, &channels).await;
     bridge
@@ -1102,8 +1102,8 @@ pub async fn start_channel_bridge(kernel: Arc<OpenFangKernel>) -> Option<BridgeM
 ///
 /// Returns `(Option<BridgeManager>, Vec<started_channel_names>)`.
 pub async fn start_channel_bridge_with_config(
-    kernel: Arc<OpenFangKernel>,
-    config: &openfang_types::config::ChannelsConfig,
+    kernel: Arc<OMTAEKernel>,
+    config: &omtae_types::config::ChannelsConfig,
 ) -> (Option<BridgeManager>, Vec<String>) {
     let has_any = config.telegram.is_some()
         || config.discord.is_some()
@@ -1470,7 +1470,7 @@ pub async fn start_channel_bridge_with_config(
     // Feishu/Lark
     if let Some(ref fs_config) = config.feishu {
         if let Some(secret) = read_token(&fs_config.app_secret_env, "Feishu") {
-            let region = openfang_channels::feishu::FeishuRegion::parse_region(&fs_config.region);
+            let region = omtae_channels::feishu::FeishuRegion::parse_region(&fs_config.region);
             let encrypt_key = fs_config
                 .encrypt_key_env
                 .as_ref()
@@ -1882,7 +1882,7 @@ pub async fn reload_channels_from_disk(
 
     // Re-read config from disk
     let config_path = state.kernel.config.home_dir.join("config.toml");
-    let fresh_config = openfang_kernel::config::load_config(Some(&config_path));
+    let fresh_config = omtae_kernel::config::load_config(Some(&config_path));
 
     // Update the live channels config so list_channels() reflects reality
     *state.channels_config.write().await = fresh_config.channels.clone();
@@ -1907,7 +1907,7 @@ pub async fn reload_channels_from_disk(
 mod tests {
     #[tokio::test]
     async fn test_bridge_skips_when_no_config() {
-        let config = openfang_types::config::KernelConfig::default();
+        let config = omtae_types::config::KernelConfig::default();
         assert!(config.channels.telegram.is_none());
         assert!(config.channels.discord.is_none());
         assert!(config.channels.slack.is_none());
@@ -1955,7 +1955,7 @@ mod tests {
 
     #[test]
     fn test_feishu_bridge_mode_defaults_to_websocket() {
-        let config: openfang_types::config::KernelConfig = toml::from_str(
+        let config: omtae_types::config::KernelConfig = toml::from_str(
             r#"
             [channels.feishu]
             app_id = "cli_test"
@@ -1965,12 +1965,12 @@ mod tests {
         .unwrap();
 
         let feishu = config.channels.feishu.expect("feishu config should exist");
-        assert_eq!(feishu.mode, openfang_types::config::FeishuMode::Websocket);
+        assert_eq!(feishu.mode, omtae_types::config::FeishuMode::Websocket);
     }
 
     #[test]
     fn test_feishu_bridge_mode_supports_websocket() {
-        let config: openfang_types::config::KernelConfig = toml::from_str(
+        let config: omtae_types::config::KernelConfig = toml::from_str(
             r#"
             [channels.feishu]
             app_id = "cli_test"
@@ -1981,6 +1981,6 @@ mod tests {
         .unwrap();
 
         let feishu = config.channels.feishu.expect("feishu config should exist");
-        assert_eq!(feishu.mode, openfang_types::config::FeishuMode::Websocket);
+        assert_eq!(feishu.mode, omtae_types::config::FeishuMode::Websocket);
     }
 }

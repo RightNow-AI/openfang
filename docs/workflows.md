@@ -2,7 +2,7 @@
 
 ## Overview
 
-The OpenFang workflow engine enables multi-step agent pipelines -- orchestrated sequences of tasks where each step routes work to a specific agent, and output from one step flows as input to the next. Workflows let you compose complex behaviors from simple, single-purpose agents without writing any Rust code.
+The OMTAE workflow engine enables multi-step agent pipelines -- orchestrated sequences of tasks where each step routes work to a specific agent, and output from one step flows as input to the next. Workflows let you compose complex behaviors from simple, single-purpose agents without writing any Rust code.
 
 Use workflows when you need to:
 
@@ -12,7 +12,7 @@ Use workflows when you need to:
 - Iterate a step in a loop until a quality gate is met.
 - Build reproducible, auditable multi-agent processes that can be triggered via API or CLI.
 
-The implementation lives in `openfang-kernel/src/workflow.rs`. The workflow engine is decoupled from the kernel through closures -- it never directly owns or references the kernel, making it testable in isolation.
+The implementation lives in `omtae-kernel/src/workflow.rs`. The workflow engine is decoupled from the kernel through closures -- it never directly owns or references the kernel, making it testable in isolation.
 
 ---
 
@@ -412,7 +412,7 @@ The loop runs the reviewer up to 4 times. Each iteration receives the previous i
 
 ## Trigger Engine
 
-The trigger engine (`openfang-kernel/src/triggers.rs`) provides event-driven automation. Triggers watch the kernel's event bus and automatically send messages to agents when matching events arrive.
+The trigger engine (`omtae-kernel/src/triggers.rs`) provides event-driven automation. Triggers watch the kernel's event bus and automatically send messages to agents when matching events arrive.
 
 ### Core Types
 
@@ -683,34 +683,34 @@ Toggle a trigger's enabled state.
 
 ## CLI Commands
 
-All workflow and trigger CLI commands require a running OpenFang daemon.
+All workflow and trigger CLI commands require a running OMTAE daemon.
 
 ### Workflow Commands
 
 ```
-openfang workflow list
+omtae workflow list
 ```
 Lists all registered workflows with their ID, name, step count, and creation date.
 
 ```
-openfang workflow create <file>
+omtae workflow create <file>
 ```
 Creates a workflow from a JSON file. The file should contain the same JSON structure as the `POST /api/workflows` request body.
 
 ```
-openfang workflow run <workflow_id> <input>
+omtae workflow run <workflow_id> <input>
 ```
 Executes a workflow by its UUID with the given input text. Blocks until completion and prints the output.
 
 ### Trigger Commands
 
 ```
-openfang trigger list [--agent-id <uuid>]
+omtae trigger list [--agent-id <uuid>]
 ```
 Lists all registered triggers. Optionally filter by agent ID.
 
 ```
-openfang trigger create <agent_id> <pattern_json> [--prompt <template>] [--max-fires <n>]
+omtae trigger create <agent_id> <pattern_json> [--prompt <template>] [--max-fires <n>]
 ```
 Creates a trigger for the specified agent. The `pattern_json` argument is a JSON string describing the pattern.
 
@@ -721,17 +721,17 @@ Defaults:
 Examples:
 ```bash
 # Watch all lifecycle events
-openfang trigger create <agent-id> '"lifecycle"' --prompt "Lifecycle: {{event}}"
+omtae trigger create <agent-id> '"lifecycle"' --prompt "Lifecycle: {{event}}"
 
 # Watch for a specific agent spawn
-openfang trigger create <agent-id> '{"agent_spawned":{"name_pattern":"coder"}}' --max-fires 1
+omtae trigger create <agent-id> '{"agent_spawned":{"name_pattern":"coder"}}' --max-fires 1
 
 # Watch for content containing "error"
-openfang trigger create <agent-id> '{"content_match":{"substring":"error"}}'
+omtae trigger create <agent-id> '{"content_match":{"substring":"error"}}'
 ```
 
 ```
-openfang trigger delete <trigger_id>
+omtae trigger delete <trigger_id>
 ```
 Deletes a trigger by its UUID.
 
@@ -753,7 +753,7 @@ Loop steps are bounded by `max_iterations` (default: 5 in the API). The engine w
 
 ### Hourly Token Quota
 
-The `AgentScheduler` (in `openfang-kernel/src/scheduler.rs`) tracks per-agent token usage with a rolling 1-hour window via `UsageTracker`. If an agent exceeds its `ResourceQuota.max_llm_tokens_per_hour`, the scheduler returns `OpenFangError::QuotaExceeded`. The window resets automatically after 3600 seconds. This quota applies to all agent interactions, including those invoked by workflows.
+The `AgentScheduler` (in `omtae-kernel/src/scheduler.rs`) tracks per-agent token usage with a rolling 1-hour window via `UsageTracker`. If an agent exceeds its `ResourceQuota.max_llm_tokens_per_hour`, the scheduler returns `OMTAEError::QuotaExceeded`. The window resets automatically after 3600 seconds. This quota applies to all agent interactions, including those invoked by workflows.
 
 ---
 
@@ -805,7 +805,7 @@ The `AgentScheduler` (in `openfang-kernel/src/scheduler.rs`) tracks per-agent to
 
 ## Internal Architecture Notes
 
-- The `WorkflowEngine` is decoupled from `OpenFangKernel`. The `execute_run` method takes two closures: `agent_resolver` (resolves `StepAgent` to `AgentId` + name) and `send_message` (sends a prompt to an agent and returns output + token counts). This design makes the engine testable without a live kernel.
+- The `WorkflowEngine` is decoupled from `OMTAEKernel`. The `execute_run` method takes two closures: `agent_resolver` (resolves `StepAgent` to `AgentId` + name) and `send_message` (sends a prompt to an agent and returns output + token counts). This design makes the engine testable without a live kernel.
 - All state is held in `Arc<RwLock<HashMap>>`, allowing concurrent read access and serialized writes.
 - The `TriggerEngine` uses `DashMap` for lock-free concurrent access, with an `agent_triggers` index for efficient per-agent trigger lookups.
 - Fan-out parallelism uses `futures::future::join_all` -- all fan-out steps in a consecutive group are launched simultaneously.

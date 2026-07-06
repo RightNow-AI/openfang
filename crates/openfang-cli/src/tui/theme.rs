@@ -1,6 +1,4 @@
-//! Color palette matching the OpenFang landing page design system.
-//!
-//! Core palette from globals.css + code syntax from constants.ts.
+//! Color palette matching the OMTAE tactical matte design system.
 
 #![allow(dead_code)] // Full palette — some colors reserved for future screens.
 
@@ -8,8 +6,8 @@ use ratatui::style::{Color, Modifier, Style};
 
 // ── Core Palette (dark mode for terminal) ───────────────────────────────────
 
-pub const ACCENT: Color = Color::Rgb(255, 92, 0); // #FF5C00 — OpenFang orange
-pub const ACCENT_DIM: Color = Color::Rgb(224, 82, 0); // #E05200
+pub const ACCENT: Color = Color::Rgb(240, 136, 62); // #F0883E — Tactical Amber
+pub const ACCENT_DIM: Color = Color::Rgb(196, 110, 40); // #C46E28 — Dark Amber
 
 pub const BG_PRIMARY: Color = Color::Rgb(15, 14, 14); // #0F0E0E — dark background
 pub const BG_CARD: Color = Color::Rgb(31, 29, 28); // #1F1D1C — dark surface

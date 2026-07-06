@@ -1,4 +1,4 @@
-// OpenFang Hands Page — curated autonomous capability packages
+// OMTAE Hands Page — curated autonomous capability packages
 'use strict';
 
 function handsPage() {
@@ -42,7 +42,7 @@ function handsPage() {
       this.loading = true;
       this.loadError = '';
       try {
-        var data = await OpenFangAPI.get('/api/hands');
+        var data = await OMTAEAPI.get('/api/hands');
         this.hands = data.hands || [];
       } catch(e) {
         this.hands = [];
@@ -54,7 +54,7 @@ function handsPage() {
     async loadActive() {
       this.activeLoading = true;
       try {
-        var data = await OpenFangAPI.get('/api/hands/active');
+        var data = await OMTAEAPI.get('/api/hands/active');
         this.instances = (data.instances || []).map(function(i) {
           i._stats = null;
           return i;
@@ -74,7 +74,7 @@ function handsPage() {
 
     async showDetail(handId) {
       try {
-        var data = await OpenFangAPI.get('/api/hands/' + handId);
+        var data = await OMTAEAPI.get('/api/hands/' + handId);
         this.detailHand = data;
       } catch(e) {
         for (var i = 0; i < this.hands.length; i++) {
@@ -96,7 +96,7 @@ function handsPage() {
       this.setupLoading = true;
       this.setupWizard = null;
       try {
-        var data = await OpenFangAPI.get('/api/hands/' + handId);
+        var data = await OMTAEAPI.get('/api/hands/' + handId);
         // Pre-populate settings defaults
         this.settingsValues = {};
         if (data.settings && data.settings.length > 0) {
@@ -167,7 +167,7 @@ function handsPage() {
       };
 
       try {
-        var data = await OpenFangAPI.post('/api/hands/' + handId + '/install-deps', {});
+        var data = await OMTAEAPI.post('/api/hands/' + handId + '/install-deps', {});
         var results = data.results || [];
         this.installProgress.results = results;
         this.installProgress.current = results.length;
@@ -229,7 +229,7 @@ function handsPage() {
       if (!this.setupWizard) return;
       this.setupChecking = true;
       try {
-        var data = await OpenFangAPI.post('/api/hands/' + this.setupWizard.id + '/check-deps', {});
+        var data = await OMTAEAPI.post('/api/hands/' + this.setupWizard.id + '/check-deps', {});
         if (data.requirements && this.setupWizard.requirements) {
           for (var i = 0; i < this.setupWizard.requirements.length; i++) {
             var existing = this.setupWizard.requirements[i];
@@ -415,7 +415,7 @@ function handsPage() {
         if (name) {
           payload.instance_name = name;
         }
-        var data = await OpenFangAPI.post('/api/hands/' + handId + '/activate', payload);
+        var data = await OMTAEAPI.post('/api/hands/' + handId + '/activate', payload);
         var label = data.instance_name || data.agent_name || data.instance_id;
         this.showToast('Hand "' + handId + '" activated as ' + label);
         this.closeSetupWizard();
@@ -448,7 +448,7 @@ function handsPage() {
 
     async pauseHand(inst) {
       try {
-        await OpenFangAPI.post('/api/hands/instances/' + inst.instance_id + '/pause', {});
+        await OMTAEAPI.post('/api/hands/instances/' + inst.instance_id + '/pause', {});
         inst.status = 'Paused';
       } catch(e) {
         this.showToast('Pause failed: ' + (e.message || 'unknown error'));
@@ -457,7 +457,7 @@ function handsPage() {
 
     async resumeHand(inst) {
       try {
-        await OpenFangAPI.post('/api/hands/instances/' + inst.instance_id + '/resume', {});
+        await OMTAEAPI.post('/api/hands/instances/' + inst.instance_id + '/resume', {});
         inst.status = 'Active';
       } catch(e) {
         this.showToast('Resume failed: ' + (e.message || 'unknown error'));
@@ -467,20 +467,20 @@ function handsPage() {
     async deactivate(inst) {
       var self = this;
       var handName = inst.agent_name || inst.hand_id;
-      OpenFangToast.confirm('Deactivate Hand', 'Deactivate hand "' + handName + '"? This will kill its agent.', async function() {
+      OMTAEToast.confirm('Deactivate Hand', 'Deactivate hand "' + handName + '"? This will kill its agent.', async function() {
         try {
-          await OpenFangAPI.delete('/api/hands/instances/' + inst.instance_id);
+          await OMTAEAPI.delete('/api/hands/instances/' + inst.instance_id);
           self.instances = self.instances.filter(function(i) { return i.instance_id !== inst.instance_id; });
-          OpenFangToast.success('Hand deactivated.');
+          OMTAEToast.success('Hand deactivated.');
         } catch(e) {
-          OpenFangToast.error('Deactivation failed: ' + (e.message || 'unknown error'));
+          OMTAEToast.error('Deactivation failed: ' + (e.message || 'unknown error'));
         }
       });
     },
 
     async loadStats(inst) {
       try {
-        var data = await OpenFangAPI.get('/api/hands/instances/' + inst.instance_id + '/stats');
+        var data = await OMTAEAPI.get('/api/hands/instances/' + inst.instance_id + '/stats');
         inst._stats = data.metrics || {};
       } catch(e) {
         inst._stats = { 'Error': { value: e.message || 'Could not load stats', format: 'text' } };
@@ -541,7 +541,7 @@ function handsPage() {
       if (!this.browserViewer) return;
       var id = this.browserViewer.instance_id;
       try {
-        var data = await OpenFangAPI.get('/api/hands/instances/' + id + '/browser');
+        var data = await OMTAEAPI.get('/api/hands/instances/' + id + '/browser');
         if (data.active) {
           this.browserViewer.url = data.url || '';
           this.browserViewer.title = data.title || '';
@@ -635,7 +635,7 @@ function handsPage() {
 
       // Fetch basic stats from the hand stats endpoint
       try {
-        var stats = await OpenFangAPI.get('/api/hands/instances/' + inst.instance_id + '/stats');
+        var stats = await OMTAEAPI.get('/api/hands/instances/' + inst.instance_id + '/stats');
         var m = stats.metrics || {};
         if (m['Portfolio Value']) data.portfolio_value = this._metricVal(m['Portfolio Value']);
         if (m['Total P&L']) data.total_pnl = this._metricVal(m['Total P&L']);
@@ -665,7 +665,7 @@ function handsPage() {
 
       for (var i = 0; i < kvKeys.length; i++) {
         try {
-          var resp = await OpenFangAPI.get('/api/memory/agents/' + agentId + '/kv/' + kvKeys[i]);
+          var resp = await OMTAEAPI.get('/api/memory/agents/' + agentId + '/kv/' + kvKeys[i]);
           if (resp && resp.value !== null && resp.value !== undefined) {
             var val = resp.value;
             this._applyKvToData(data, kvKeys[i], val);
@@ -749,7 +749,7 @@ function handsPage() {
         (!document.documentElement.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
       var gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
       var textColor = isDark ? '#8A8380' : '#6B6560';
-      var accentColor = '#FF5C00';
+      var accentColor = '#00F0FF';
       var successColor = isDark ? '#4ADE80' : '#22C55E';
       var errorColor = '#EF4444';
 
@@ -766,8 +766,8 @@ function handsPage() {
           // Determine gradient
           var eqCtx = eqCanvas.getContext('2d');
           var gradient = eqCtx.createLinearGradient(0, 0, 0, eqCanvas.parentElement.clientHeight || 180);
-          gradient.addColorStop(0, isDark ? 'rgba(255, 92, 0, 0.25)' : 'rgba(255, 92, 0, 0.15)');
-          gradient.addColorStop(1, 'rgba(255, 92, 0, 0)');
+          gradient.addColorStop(0, isDark ? 'rgba(0, 240, 255, 0.25)' : 'rgba(0, 240, 255, 0.15)');
+          gradient.addColorStop(1, 'rgba(0, 240, 255, 0)');
 
           this._chartEquity = new Chart(eqCtx, {
             type: 'line',
@@ -910,7 +910,7 @@ function handsPage() {
               datasets: [{
                 data: radarValues,
                 borderColor: accentColor,
-                backgroundColor: isDark ? 'rgba(255, 92, 0, 0.2)' : 'rgba(255, 92, 0, 0.12)',
+                backgroundColor: isDark ? 'rgba(0, 240, 255, 0.2)' : 'rgba(0, 240, 255, 0.12)',
                 borderWidth: 2,
                 pointBackgroundColor: accentColor,
                 pointRadius: 4,

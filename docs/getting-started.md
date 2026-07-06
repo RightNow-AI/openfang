@@ -1,6 +1,6 @@
-# Getting Started with OpenFang
+# Getting Started with OMTAE
 
-This guide walks you through installing OpenFang, configuring your first LLM provider, spawning an agent, and chatting with it.
+This guide walks you through installing OMTAE, configuring your first LLM provider, spawning an agent, and chatting with it.
 
 ## Table of Contents
 
@@ -18,7 +18,7 @@ This guide walks you through installing OpenFang, configuring your first LLM pro
 
 ### Option 1: Desktop App (Windows / macOS / Linux)
 
-Download the installer for your platform from the [latest release](https://github.com/RightNow-AI/openfang/releases/latest):
+Download the installer for your platform from the [latest release](https://github.com/RightNow-AI/omtae/releases/latest):
 
 | Platform | File |
 |---|---|
@@ -26,20 +26,20 @@ Download the installer for your platform from the [latest release](https://githu
 | macOS | `.dmg` disk image |
 | Linux | `.AppImage` or `.deb` |
 
-The desktop app includes the full OpenFang system with a native window, system tray, auto-updates, and OS notifications. Updates are installed automatically in the background.
+The desktop app includes the full OMTAE system with a native window, system tray, auto-updates, and OS notifications. Updates are installed automatically in the background.
 
 ### Option 2: Shell Installer (Linux / macOS)
 
 ```bash
-curl -sSf https://openfang.sh | sh
+curl -sSf https://omtae.sh | sh
 ```
 
-This downloads the latest CLI binary and installs it to `~/.openfang/bin/`.
+This downloads the latest CLI binary and installs it to `~/.omtae/bin/`.
 
 ### Option 3: PowerShell Installer (Windows)
 
 ```powershell
-irm https://openfang.sh/install.ps1 | iex
+irm https://omtae.sh/install.ps1 | iex
 ```
 
 Downloads the latest CLI binary, verifies its SHA256 checksum, and adds it to your user PATH.
@@ -49,35 +49,35 @@ Downloads the latest CLI binary, verifies its SHA256 checksum, and adds it to yo
 Requires Rust 1.75+:
 
 ```bash
-cargo install --git https://github.com/RightNow-AI/openfang openfang-cli
+cargo install --git https://github.com/RightNow-AI/omtae omtae-cli
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/RightNow-AI/openfang.git
-cd openfang
-cargo install --path crates/openfang-cli
+git clone https://github.com/RightNow-AI/omtae.git
+cd omtae
+cargo install --path crates/omtae-cli
 ```
 
 ### Option 5: Docker
 
 ```bash
-docker pull ghcr.io/RightNow-AI/openfang:latest
+docker pull ghcr.io/RightNow-AI/omtae:latest
 
 docker run -d \
-  --name openfang \
+  --name omtae \
   -p 4200:4200 \
   -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
-  -v openfang-data:/data \
-  ghcr.io/RightNow-AI/openfang:latest
+  -v omtae-data:/data \
+  ghcr.io/RightNow-AI/omtae:latest
 ```
 
 Or use Docker Compose:
 
 ```bash
-git clone https://github.com/RightNow-AI/openfang.git
-cd openfang
+git clone https://github.com/RightNow-AI/omtae.git
+cd omtae
 # Set your API keys in environment or .env file
 docker compose up -d
 ```
@@ -91,7 +91,7 @@ docker run -d \
   --add-host=host.docker.internal:host-gateway \
   -e OLLAMA_HOST=http://host.docker.internal:11434 \
   -p 4200:4200 \
-  ghcr.io/rightnow-ai/openfang:latest
+  ghcr.io/rightnow-ai/omtae:latest
 ```
 
 For Compose, add `extra_hosts: ["host.docker.internal:host-gateway"]` to the
@@ -102,7 +102,7 @@ if you need in-container `curl` for healthchecks.
 ### Verify Installation
 
 ```bash
-openfang --version
+omtae --version
 ```
 
 ---
@@ -111,16 +111,16 @@ openfang --version
 
 ### Initialize
 
-Run the init command to create the `~/.openfang/` directory and a default config file:
+Run the init command to create the `~/.omtae/` directory and a default config file:
 
 ```bash
-openfang init
+omtae init
 ```
 
 This creates:
 
 ```
-~/.openfang/
+~/.omtae/
   config.toml    # Main configuration
   data/          # Database and runtime data
   agents/        # Agent manifests (optional)
@@ -128,7 +128,7 @@ This creates:
 
 ### Set Up an API Key
 
-OpenFang needs at least one LLM provider API key. Set it as an environment variable:
+OMTAE needs at least one LLM provider API key. Set it as an environment variable:
 
 ```bash
 # Anthropic (Claude)
@@ -145,7 +145,7 @@ Add the export to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to persist 
 
 ### Edit the Config
 
-The default config uses Anthropic. To change the provider, edit `~/.openfang/config.toml`:
+The default config uses Anthropic. To change the provider, edit `~/.omtae/config.toml`:
 
 ```toml
 [default_model]
@@ -163,7 +163,7 @@ listen_addr = "127.0.0.1:4200"        # OFP listen address
 ### Verify Your Setup
 
 ```bash
-openfang doctor
+omtae doctor
 ```
 
 This checks that your config exists, API keys are set, and the toolchain is available.
@@ -174,10 +174,10 @@ This checks that your config exists, API keys are set, and the toolchain is avai
 
 ### Using a Built-in Template
 
-OpenFang ships with 30 agent templates. Spawn the hello-world agent:
+OMTAE ships with 30 agent templates. Spawn the hello-world agent:
 
 ```bash
-openfang agent spawn agents/hello-world/agent.toml
+omtae agent spawn agents/hello-world/agent.toml
 ```
 
 Output:
@@ -212,13 +212,13 @@ memory_write = ["self.*"]
 Then spawn it:
 
 ```bash
-openfang agent spawn my-agent.toml
+omtae agent spawn my-agent.toml
 ```
 
 ### List Running Agents
 
 ```bash
-openfang agent list
+omtae agent list
 ```
 
 Output:
@@ -236,19 +236,19 @@ a1b2c3d4-e5f6-...                     hello-world      Running    groq         l
 Start an interactive chat session using the agent ID:
 
 ```bash
-openfang agent chat a1b2c3d4-e5f6-...
+omtae agent chat a1b2c3d4-e5f6-...
 ```
 
 Or use the quick chat command (picks the first available agent):
 
 ```bash
-openfang chat
+omtae chat
 ```
 
 Or specify an agent by name:
 
 ```bash
-openfang chat hello-world
+omtae chat hello-world
 ```
 
 Example session:
@@ -258,7 +258,7 @@ Chat session started (daemon mode). Type 'exit' or Ctrl+C to quit.
 
 you> Hello! What can you do?
 
-agent> I'm the hello-world agent running on OpenFang. I can:
+agent> I'm the hello-world agent running on OMTAE. I can:
 - Read files from the filesystem
 - List directory contents
 - Fetch web pages
@@ -289,14 +289,14 @@ Chat session ended.
 For persistent agents, multi-user access, and the WebChat UI, start the daemon:
 
 ```bash
-openfang start
+omtae start
 ```
 
 Output:
 
 ```
-Starting OpenFang daemon...
-OpenFang daemon running on http://127.0.0.1:4200
+Starting OMTAE daemon...
+OMTAE daemon running on http://127.0.0.1:4200
 Press Ctrl+C to stop.
 ```
 
@@ -309,7 +309,7 @@ The daemon provides:
 ### Check Status
 
 ```bash
-openfang status
+omtae status
 ```
 
 ### Stop the Daemon
@@ -340,7 +340,7 @@ The embedded WebChat UI allows you to:
 
 ## Next Steps
 
-Now that you have OpenFang running:
+Now that you have OMTAE running:
 
 - **Explore agent templates**: Browse the `agents/` directory for 30 pre-built agents (coder, researcher, writer, ops, analyst, security-auditor, and more).
 - **Create custom agents**: Write your own `agent.toml` manifests. See the [Architecture guide](architecture.md) for details on capabilities and scheduling.
@@ -349,45 +349,45 @@ Now that you have OpenFang running:
 - **Build custom skills**: Extend agents with Python, WASM, or prompt-only skills. See [Skill Development](skill-development.md).
 - **Use the API**: 76 REST/WS/SSE endpoints, including an OpenAI-compatible `/v1/chat/completions`. See [API Reference](api-reference.md).
 - **Switch LLM providers**: 20 providers supported (Anthropic, OpenAI, Gemini, Groq, DeepSeek, xAI, Ollama, and more). Per-agent model overrides.
-- **Set up workflows**: Chain multiple agents together. Use `openfang workflow create` with a TOML workflow definition.
+- **Set up workflows**: Chain multiple agents together. Use `omtae workflow create` with a TOML workflow definition.
 - **Use MCP**: Connect to external tools via Model Context Protocol. Configure in `config.toml` under `[[mcp_servers]]`.
-- **Migrate from OpenClaw**: Run `openfang migrate --from openclaw`. See [MIGRATION.md](../MIGRATION.md).
+- **Migrate from OpenClaw**: Run `omtae migrate --from openclaw`. See [MIGRATION.md](../MIGRATION.md).
 - **Desktop app**: Run `cargo tauri dev` for a native desktop experience with system tray.
-- **Run diagnostics**: `openfang doctor` checks your entire setup.
+- **Run diagnostics**: `omtae doctor` checks your entire setup.
 
 ### Useful Commands Reference
 
 ```bash
-openfang init                          # Initialize ~/.openfang/
-openfang start                         # Start the daemon
-openfang status                        # Check daemon status
-openfang doctor                        # Run diagnostic checks
+omtae init                          # Initialize ~/.omtae/
+omtae start                         # Start the daemon
+omtae status                        # Check daemon status
+omtae doctor                        # Run diagnostic checks
 
-openfang agent spawn <manifest.toml>   # Spawn an agent
-openfang agent list                    # List all agents
-openfang agent chat <id>               # Chat with an agent
-openfang agent kill <id>               # Kill an agent
+omtae agent spawn <manifest.toml>   # Spawn an agent
+omtae agent list                    # List all agents
+omtae agent chat <id>               # Chat with an agent
+omtae agent kill <id>               # Kill an agent
 
-openfang workflow list                 # List workflows
-openfang workflow create <file.json>   # Create a workflow
-openfang workflow run <id> <input>     # Run a workflow
+omtae workflow list                 # List workflows
+omtae workflow create <file.json>   # Create a workflow
+omtae workflow run <id> <input>     # Run a workflow
 
-openfang trigger list                  # List event triggers
-openfang trigger create <args>         # Create a trigger
-openfang trigger delete <id>           # Delete a trigger
+omtae trigger list                  # List event triggers
+omtae trigger create <args>         # Create a trigger
+omtae trigger delete <id>           # Delete a trigger
 
-openfang skill install <source>        # Install a skill
-openfang skill list                    # List installed skills
-openfang skill search <query>          # Search FangHub
-openfang skill create                  # Scaffold a new skill
+omtae skill install <source>        # Install a skill
+omtae skill list                    # List installed skills
+omtae skill search <query>          # Search FangHub
+omtae skill create                  # Scaffold a new skill
 
-openfang channel list                  # List channel status
-openfang channel setup <channel>       # Interactive setup wizard
+omtae channel list                  # List channel status
+omtae channel setup <channel>       # Interactive setup wizard
 
-openfang config show                   # Show current config
-openfang config edit                   # Open config in editor
+omtae config show                   # Show current config
+omtae config edit                   # Open config in editor
 
-openfang chat [agent]                  # Quick chat (alias)
-openfang migrate --from openclaw       # Migrate from OpenClaw
-openfang mcp                           # Start MCP server (stdio)
+omtae chat [agent]                  # Quick chat (alias)
+omtae migrate --from openclaw       # Migrate from OpenClaw
+omtae mcp                           # Start MCP server (stdio)
 ```

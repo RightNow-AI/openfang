@@ -21,7 +21,7 @@ pub struct SkillRegistry {
     /// Number of workspace skills blocked for critical prompt injection.
     blocked_skills_count: usize,
     /// User-supplied config values per skill name (from `[skills.<name>]` in
-    /// `~/.openfang/config.toml`). Used by the loader to resolve declared
+    /// `~/.omtae/config.toml`). Used by the loader to resolve declared
     /// `config:` vars before injecting prompt context.
     skill_configs: HashMap<String, HashMap<String, String>>,
 }
@@ -230,10 +230,10 @@ impl SkillRegistry {
 
                             info!(
                                 skill = %converted.manifest.skill.name,
-                                "Auto-converting SKILL.md to OpenFang format"
+                                "Auto-converting SKILL.md to OMTAE format"
                             );
                             if let Err(e) =
-                                openclaw_compat::write_openfang_manifest(&path, &converted.manifest)
+                                openclaw_compat::write_omtae_manifest(&path, &converted.manifest)
                             {
                                 warn!("Failed to write skill.toml for {}: {e}", path.display());
                                 continue;
@@ -418,7 +418,7 @@ impl SkillRegistry {
                             }
 
                             if let Err(e) =
-                                openclaw_compat::write_openfang_manifest(&path, &converted.manifest)
+                                openclaw_compat::write_omtae_manifest(&path, &converted.manifest)
                             {
                                 warn!("Failed to write skill.toml for {}: {e}", path.display());
                                 continue;

@@ -1,12 +1,12 @@
 [package]
-name = "openfang-extensions"
+name = "omtae-extensions"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Extension & integration system for OpenFang — one-click MCP server setup, credential vault, OAuth2 PKCE"
+description = "Extension & integration system for OMTAE — one-click MCP server setup, credential vault, OAuth2 PKCE"
 
 [dependencies]
-openfang-types = { path = "../openfang-types" }
+omtae-types = { path = "../omtae-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

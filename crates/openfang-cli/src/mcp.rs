@@ -1,12 +1,12 @@
-//! MCP (Model Context Protocol) server for OpenFang.
+//! MCP (Model Context Protocol) server for OMTAE.
 //!
 //! Exposes running agents as MCP tools over JSON-RPC 2.0 stdio.
-//! Each agent becomes a callable tool named `openfang_agent_{name}`.
+//! Each agent becomes a callable tool named `omtae_agent_{name}`.
 //!
 //! Protocol: Content-Length framing over stdin/stdout.
 //! Connects to running daemon via HTTP, falls back to in-process kernel.
 
-use openfang_kernel::OpenFangKernel;
+use omtae_kernel::OMTAEKernel;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 
@@ -17,7 +17,7 @@ enum McpBackend {
         client: reqwest::blocking::Client,
     },
     InProcess {
-        kernel: Box<OpenFangKernel>,
+        kernel: Box<OMTAEKernel>,
         rt: tokio::runtime::Runtime,
     },
 }
@@ -80,7 +80,7 @@ impl McpBackend {
                 }
             }
             McpBackend::InProcess { kernel, rt } => {
-                let aid: openfang_types::agent::AgentId =
+                let aid: omtae_types::agent::AgentId =
                     agent_id.parse().map_err(|_| "Invalid agent ID")?;
                 let result = rt
                     .block_on(kernel.send_message(aid, message))
@@ -90,9 +90,9 @@ impl McpBackend {
         }
     }
 
-    /// Find agent ID by tool name (strip `openfang_agent_` prefix, match by name).
+    /// Find agent ID by tool name (strip `omtae_agent_` prefix, match by name).
     fn resolve_tool_agent(&self, tool_name: &str) -> Option<String> {
-        let agent_name = tool_name.strip_prefix("openfang_agent_")?.replace('_', "-");
+        let agent_name = tool_name.strip_prefix("omtae_agent_")?.replace('_', "-");
         let agents = self.list_agents();
         // Try exact match first (with underscores replaced by hyphens)
         for (id, name, _) in &agents {
@@ -101,7 +101,7 @@ impl McpBackend {
             }
         }
         // Try with underscores
-        let agent_name_underscore = tool_name.strip_prefix("openfang_agent_")?;
+        let agent_name_underscore = tool_name.strip_prefix("omtae_agent_")?;
         for (id, name, _) in &agents {
             if name.replace('-', "_").to_lowercase() == agent_name_underscore.to_lowercase() {
                 return Some(id.clone());
@@ -145,7 +145,7 @@ fn create_backend(config: Option<std::path::PathBuf>) -> McpBackend {
     }
 
     // Fall back to in-process kernel
-    let kernel = match OpenFangKernel::boot(config.as_deref()) {
+    let kernel = match OMTAEKernel::boot(config.as_deref()) {
         Ok(k) => k,
         Err(e) => {
             eprintln!("Failed to boot kernel for MCP: {e}");
@@ -242,7 +242,7 @@ fn handle_message(backend: &McpBackend, msg: &Value) -> Option<Value> {
                     "tools": {}
                 },
                 "serverInfo": {
-                    "name": "openfang",
+                    "name": "omtae",
                     "version": env!("CARGO_PKG_VERSION")
                 }
             });
@@ -256,9 +256,9 @@ fn handle_message(backend: &McpBackend, msg: &Value) -> Option<Value> {
             let tools: Vec<Value> = agents
                 .iter()
                 .map(|(_, name, description)| {
-                    let tool_name = format!("openfang_agent_{}", name.replace('-', "_"));
+                    let tool_name = format!("omtae_agent_{}", name.replace('-', "_"));
                     let desc = if description.is_empty() {
-                        format!("Send a message to OpenFang agent '{name}'")
+                        format!("Send a message to OMTAE agent '{name}'")
                     } else {
                         description.clone()
                     };
@@ -378,7 +378,7 @@ mod tests {
         let resp = handle_message(&backend, &msg).unwrap();
         assert_eq!(resp["id"], 1);
         assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
-        assert_eq!(resp["result"]["serverInfo"]["name"], "openfang");
+        assert_eq!(resp["result"]["serverInfo"]["name"], "omtae");
     }
 
     #[test]

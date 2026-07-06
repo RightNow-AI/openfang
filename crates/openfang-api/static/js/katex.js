@@ -32,7 +32,7 @@ function ensureKatexLoaded() {
   if (katexLoadPromise) return katexLoadPromise;
 
   katexLoadPromise = new Promise(function (resolve) {
-    var cssId = 'openfang-katex-css';
+    var cssId = 'omtae-katex-css';
     if (!document.getElementById(cssId)) {
       var link = document.createElement('link');
       link.id = cssId;

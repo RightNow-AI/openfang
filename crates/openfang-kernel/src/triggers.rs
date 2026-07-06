@@ -6,8 +6,8 @@
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use openfang_types::agent::AgentId;
-use openfang_types::event::{Event, EventPayload, LifecycleEvent, SystemEvent};
+use omtae_types::agent::AgentId;
+use omtae_types::event::{Event, EventPayload, LifecycleEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 use uuid::Uuid;
@@ -377,7 +377,7 @@ fn describe_event(event: &Event) -> String {
                 tr.tool_id,
                 if tr.success { "succeeded" } else { "failed" },
                 tr.execution_time_ms,
-                openfang_types::truncate_str(&tr.content, 200)
+                omtae_types::truncate_str(&tr.content, 200)
             )
         }
         EventPayload::MemoryUpdate(delta) => {
@@ -467,7 +467,7 @@ fn describe_event(event: &Event) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openfang_types::event::*;
+    use omtae_types::event::*;
 
     #[test]
     fn test_register_trigger() {

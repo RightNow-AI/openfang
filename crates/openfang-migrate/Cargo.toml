@@ -1,12 +1,12 @@
 [package]
-name = "openfang-migrate"
+name = "omtae-migrate"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Migration engine for importing from other agent frameworks into OpenFang"
+description = "Migration engine for importing from other agent frameworks into OMTAE"
 
 [dependencies]
-openfang-types = { path = "../openfang-types" }
+omtae-types = { path = "../omtae-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

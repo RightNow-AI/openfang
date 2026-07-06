@@ -1,12 +1,12 @@
 [package]
-name = "openfang-skills"
+name = "omtae-skills"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Skill system for OpenFang — registry, loader, marketplace, and OpenClaw compatibility"
+description = "Skill system for OMTAE — registry, loader, marketplace, and OpenClaw compatibility"
 
 [dependencies]
-openfang-types = { path = "../openfang-types" }
+omtae-types = { path = "../omtae-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

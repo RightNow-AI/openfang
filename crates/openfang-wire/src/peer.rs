@@ -1,7 +1,7 @@
-//! PeerNode — TCP server and client for the OpenFang Wire Protocol.
+//! PeerNode — TCP server and client for the OMTAE Wire Protocol.
 //!
 //! A [`PeerNode`] binds a local TCP listener and accepts incoming connections
-//! from other OpenFang kernels. It also connects outward to known peers. Each
+//! from other OMTAE kernels. It also connects outward to known peers. Each
 //! connection performs a handshake to exchange identity and agent lists, then
 //! enters a message dispatch loop.
 //!
@@ -58,7 +58,7 @@ impl NonceTracker {
         if self.seen.contains_key(nonce) {
             return Err(format!(
                 "Nonce replay detected: {}",
-                openfang_types::truncate_str(nonce, 16)
+                omtae_types::truncate_str(nonce, 16)
             ));
         }
 
@@ -126,7 +126,7 @@ impl Default for PeerConfig {
         Self {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             node_id: uuid::Uuid::new_v4().to_string(),
-            node_name: "openfang-node".to_string(),
+            node_name: "omtae-node".to_string(),
             shared_secret: String::new(),
         }
     }
@@ -1227,7 +1227,7 @@ mod tests {
     #[test]
     fn test_peer_config_default() {
         let config = PeerConfig::default();
-        assert_eq!(config.node_name, "openfang-node");
+        assert_eq!(config.node_name, "omtae-node");
         assert!(!config.node_id.is_empty());
     }
 

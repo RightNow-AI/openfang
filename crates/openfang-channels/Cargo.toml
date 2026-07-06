@@ -1,12 +1,12 @@
 [package]
-name = "openfang-channels"
+name = "omtae-channels"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Channel Bridge Layer — pluggable messaging integrations for OpenFang"
+description = "Channel Bridge Layer — pluggable messaging integrations for OMTAE"
 
 [dependencies]
-openfang-types = { path = "../openfang-types" }
+omtae-types = { path = "../omtae-types" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

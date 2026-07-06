@@ -1,10 +1,10 @@
 //! WhatsApp Web gateway — embedded Node.js process management.
 //!
-//! Embeds the gateway JS at compile time, extracts it to `~/.openfang/whatsapp-gateway/`,
+//! Embeds the gateway JS at compile time, extracts it to `~/.omtae/whatsapp-gateway/`,
 //! runs `npm install` if needed, and spawns `node index.js` as a managed child process
 //! that auto-restarts on crash.
 
-use crate::config::openfang_home;
+use crate::config::omtae_home;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -24,7 +24,7 @@ const RESTART_DELAYS: [u64; 3] = [5, 10, 20];
 
 /// Get the gateway installation directory.
 fn gateway_dir() -> PathBuf {
-    openfang_home().join("whatsapp-gateway")
+    omtae_home().join("whatsapp-gateway")
 }
 
 /// Compute a simple hash of content for change detection.
@@ -127,7 +127,7 @@ async fn node_available() -> bool {
 /// 5. Monitors the process and restarts on crash (up to 3 times)
 ///
 /// The PID is stored in the kernel's `whatsapp_gateway_pid` for shutdown cleanup.
-pub async fn start_whatsapp_gateway(kernel: &Arc<super::kernel::OpenFangKernel>) {
+pub async fn start_whatsapp_gateway(kernel: &Arc<super::kernel::OMTAEKernel>) {
     // Only start if WhatsApp is configured
     let wa_config = match &kernel.config.channels.whatsapp {
         Some(cfg) => cfg.clone(),
@@ -154,7 +154,7 @@ pub async fn start_whatsapp_gateway(kernel: &Arc<super::kernel::OpenFangKernel>)
 
     let port = DEFAULT_GATEWAY_PORT;
     let api_listen = &kernel.config.api_listen;
-    let openfang_url = format!("http://{api_listen}");
+    let omtae_url = format!("http://{api_listen}");
     let default_agent = wa_config
         .default_agent
         .as_deref()
@@ -184,7 +184,7 @@ pub async fn start_whatsapp_gateway(kernel: &Arc<super::kernel::OpenFangKernel>)
                 .arg("index.js")
                 .current_dir(&gateway_path)
                 .env("WHATSAPP_GATEWAY_PORT", port.to_string())
-                .env("OPENFANG_URL", &openfang_url)
+                .env("OPENFANG_URL", &omtae_url)
                 .env("OPENFANG_DEFAULT_AGENT", &default_agent)
                 .stdout(std::process::Stdio::inherit())
                 .stderr(std::process::Stdio::inherit())
@@ -272,7 +272,7 @@ mod tests {
         assert_ne!(GATEWAY_INDEX_JS, "");
         assert_ne!(GATEWAY_PACKAGE_JSON, "");
         assert!(GATEWAY_INDEX_JS.contains("WhatsApp"));
-        assert!(GATEWAY_PACKAGE_JSON.contains("@openfang/whatsapp-gateway"));
+        assert!(GATEWAY_PACKAGE_JSON.contains("@omtae/whatsapp-gateway"));
     }
 
     #[test]
@@ -290,19 +290,19 @@ mod tests {
     }
 
     #[test]
-    fn test_gateway_dir_under_openfang_home() {
+    fn test_gateway_dir_under_omtae_home() {
         let dir = gateway_dir();
         assert!(dir.ends_with("whatsapp-gateway"));
         assert!(dir
             .parent()
             .unwrap()
             .to_string_lossy()
-            .contains(".openfang"));
+            .contains(".omtae"));
     }
 
     #[test]
     fn test_write_if_changed_creates_new_file() {
-        let tmp = std::env::temp_dir().join("openfang_test_gateway");
+        let tmp = std::env::temp_dir().join("omtae_test_gateway");
         let _ = std::fs::create_dir_all(&tmp);
         let path = tmp.join("test_write.js");
         let hash_path = path.with_extension("hash");

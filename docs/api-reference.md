@@ -1,8 +1,8 @@
 # API Reference
 
-OpenFang exposes a REST API, WebSocket endpoints, and SSE streaming when the daemon is running. The default listen address is `http://127.0.0.1:4200`.
+OMTAE exposes a REST API, WebSocket endpoints, and SSE streaming when the daemon is running. The default listen address is `http://127.0.0.1:4200`.
 
-All responses include security headers (CSP, X-Frame-Options, X-Content-Type-Options, HSTS) and are protected by a GCRA cost-aware rate limiter with per-IP token bucket tracking and automatic stale entry cleanup. OpenFang implements 16 security systems including Merkle audit trails, taint tracking, WASM dual metering, Ed25519 manifest signing, SSRF protection, subprocess sandboxing, and secret zeroization.
+All responses include security headers (CSP, X-Frame-Options, X-Content-Type-Options, HSTS) and are protected by a GCRA cost-aware rate limiter with per-IP token bucket tracking and automatic stale entry cleanup. OMTAE implements 16 security systems including Merkle audit trails, taint tracking, WASM dual metering, Ed25519 manifest signing, SSRF protection, subprocess sandboxing, and secret zeroization.
 
 ## Table of Contents
 
@@ -41,7 +41,7 @@ Authorization: Bearer <your-api-key>
 
 ### Setting the API Key
 
-Add to `~/.openfang/config.toml`:
+Add to `~/.omtae/config.toml`:
 
 ```toml
 api_key = "your-secret-api-key"
@@ -579,12 +579,12 @@ List available agent templates from the agents directory.
     {
       "name": "hello-world",
       "description": "A friendly greeting agent",
-      "path": "/home/user/.openfang/agents/hello-world/agent.toml"
+      "path": "/home/user/.omtae/agents/hello-world/agent.toml"
     },
     {
       "name": "coder",
       "description": "Expert coding assistant",
-      "path": "/home/user/.openfang/agents/coder/agent.toml"
+      "path": "/home/user/.omtae/agents/coder/agent.toml"
     }
   ],
   "total": 30
@@ -667,7 +667,7 @@ Detailed kernel status including all agents.
 {
   "status": "running",
   "agent_count": 2,
-  "data_dir": "/home/user/.openfang/data",
+  "data_dir": "/home/user/.omtae/data",
   "default_provider": "groq",
   "default_model": "llama-3.3-70b-versatile",
   "uptime_seconds": 3600,
@@ -692,7 +692,7 @@ Build and version information.
 
 ```json
 {
-  "name": "openfang",
+  "name": "omtae",
   "version": "0.1.0",
   "build_date": "2025-01-15",
   "git_sha": "abc1234",
@@ -768,7 +768,7 @@ Retrieve current kernel configuration (secrets are redacted).
 
 ```json
 {
-  "data_dir": "/home/user/.openfang/data",
+  "data_dir": "/home/user/.omtae/data",
   "default_provider": "groq",
   "default_model": "llama-3.3-70b-versatile",
   "listen_addr": "127.0.0.1:4200",
@@ -780,7 +780,7 @@ Retrieve current kernel configuration (secrets are redacted).
 
 ### GET /api/peers
 
-List OFP (OpenFang Protocol) wire peers and their connection status.
+List OFP (OMTAE Protocol) wire peers and their connection status.
 
 **Response** `200 OK`:
 
@@ -835,7 +835,7 @@ Delete a specific session and its conversation history.
 
 ## Model Catalog Endpoints
 
-OpenFang maintains a built-in catalog of 51+ models across 20 providers. These endpoints allow you to browse available models, check provider authentication status, and resolve model aliases.
+OMTAE maintains a built-in catalog of 51+ models across 20 providers. These endpoints allow you to browse available models, check provider authentication status, and resolve model aliases.
 
 ### GET /api/models
 
@@ -1127,7 +1127,7 @@ Create a new skill from a template.
 {
   "status": "created",
   "skill": "my-skill",
-  "path": "/home/user/.openfang/skills/my-skill"
+  "path": "/home/user/.omtae/skills/my-skill"
 }
 ```
 
@@ -1233,7 +1233,7 @@ Get detailed information about a specific ClawHub skill.
 
 ### POST /api/clawhub/install
 
-Install a skill from ClawHub. Downloads, verifies SHA256 checksum, scans for prompt injection, and converts SKILL.md format to OpenFang skill.toml automatically.
+Install a skill from ClawHub. Downloads, verifies SHA256 checksum, scans for prompt injection, and converts SKILL.md format to OMTAE skill.toml automatically.
 
 **Request Body**:
 
@@ -1258,7 +1258,7 @@ Install a skill from ClawHub. Downloads, verifies SHA256 checksum, scans for pro
 
 ## MCP & A2A Protocol Endpoints
 
-OpenFang supports both Model Context Protocol (MCP) for tool interoperability and Agent-to-Agent (A2A) protocol for cross-system agent communication.
+OMTAE supports both Model Context Protocol (MCP) for tool interoperability and Agent-to-Agent (A2A) protocol for cross-system agent communication.
 
 ### GET /api/mcp/servers
 
@@ -1293,7 +1293,7 @@ List configured and connected MCP servers with their available tools.
 
 ### POST /mcp
 
-MCP HTTP transport endpoint. Accepts JSON-RPC 2.0 requests and exposes OpenFang tools via the MCP protocol to external clients.
+MCP HTTP transport endpoint. Accepts JSON-RPC 2.0 requests and exposes OMTAE tools via the MCP protocol to external clients.
 
 **Request Body** (JSON-RPC 2.0):
 
@@ -1336,8 +1336,8 @@ A2A agent card discovery endpoint. Returns the server's A2A agent card, which de
 
 ```json
 {
-  "name": "OpenFang",
-  "description": "OpenFang Agent Operating System",
+  "name": "OMTAE",
+  "description": "OMTAE Agent Operating System",
   "url": "http://127.0.0.1:4200",
   "version": "0.1.0",
   "capabilities": {
@@ -1444,7 +1444,7 @@ Cancel a running A2A task.
 
 ## Audit & Security Endpoints
 
-OpenFang maintains a Merkle hash chain audit trail for all security-relevant operations. These endpoints allow inspection and verification of the audit log integrity.
+OMTAE maintains a Merkle hash chain audit trail for all security-relevant operations. These endpoints allow inspection and verification of the audit log integrity.
 
 ### GET /api/audit/recent
 
@@ -2108,7 +2108,7 @@ data: {"done":true,"usage":{"input_tokens":150,"output_tokens":340}}
 
 ## OpenAI-Compatible API
 
-OpenFang exposes an OpenAI-compatible API for drop-in integration with tools that support the OpenAI API format (Cursor, Continue, Open WebUI, etc.).
+OMTAE exposes an OpenAI-compatible API for drop-in integration with tools that support the OpenAI API format (Cursor, Continue, Open WebUI, etc.).
 
 ### POST /v1/chat/completions
 
@@ -2118,7 +2118,7 @@ Send a chat completion request using the OpenAI message format.
 
 ```json
 {
-  "model": "openfang:coder",
+  "model": "omtae:coder",
   "messages": [
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "Hello!"}
@@ -2129,11 +2129,11 @@ Send a chat completion request using the OpenAI message format.
 }
 ```
 
-**Model resolution** (the `model` field maps to an OpenFang agent):
+**Model resolution** (the `model` field maps to an OMTAE agent):
 
 | Format | Example | Behavior |
 |--------|---------|----------|
-| `openfang:<name>` | `openfang:coder` | Find agent by name |
+| `omtae:<name>` | `omtae:coder` | Find agent by name |
 | UUID | `a1b2c3d4-...` | Find agent by ID |
 | Plain string | `coder` | Try as agent name |
 | Any other | `gpt-4o` | Falls back to first registered agent |
@@ -2142,7 +2142,7 @@ Send a chat completion request using the OpenAI message format.
 
 ```json
 {
-  "model": "openfang:analyst",
+  "model": "omtae:analyst",
   "messages": [
     {
       "role": "user",
@@ -2204,16 +2204,16 @@ List available models (agents) in OpenAI format.
   "object": "list",
   "data": [
     {
-      "id": "openfang:coder",
+      "id": "omtae:coder",
       "object": "model",
       "created": 1708617600,
-      "owned_by": "openfang"
+      "owned_by": "omtae"
     },
     {
-      "id": "openfang:researcher",
+      "id": "omtae:researcher",
       "object": "model",
       "created": 1708617600,
-      "owned_by": "openfang"
+      "owned_by": "omtae"
     }
   ]
 }

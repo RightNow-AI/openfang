@@ -109,7 +109,7 @@ pub struct DaemonAgent {
 
 #[derive(Clone)]
 pub struct InProcessAgent {
-    pub id: openfang_types::agent::AgentId,
+    pub id: omtae_types::agent::AgentId,
     pub name: String,
     pub state: String,
     pub provider: String,
@@ -231,7 +231,7 @@ impl AgentSelectState {
     }
 
     /// Load in-process agents from the kernel.
-    pub fn load_inprocess_agents(&mut self, kernel: &openfang_kernel::OpenFangKernel) {
+    pub fn load_inprocess_agents(&mut self, kernel: &omtae_kernel::OMTAEKernel) {
         self.inprocess_agents.clear();
         for entry in kernel.registry.list() {
             self.inprocess_agents.push(InProcessAgent {
@@ -1496,7 +1496,7 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         format!(
             "{}\u{2026}",
-            openfang_types::truncate_str(s, max.saturating_sub(1))
+            omtae_types::truncate_str(s, max.saturating_sub(1))
         )
     }
 }

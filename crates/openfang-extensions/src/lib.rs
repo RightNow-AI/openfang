@@ -1,11 +1,11 @@
-//! OpenFang Extensions — one-click integration system.
+//! OMTAE Extensions — one-click integration system.
 //!
 //! This crate provides:
 //! - **Integration Registry**: 25 bundled MCP server templates (GitHub, Slack, etc.)
 //! - **Credential Vault**: AES-256-GCM encrypted storage with OS keyring support
 //! - **OAuth2 PKCE**: Localhost callback flows for Google/GitHub/Microsoft/Slack
 //! - **Health Monitor**: Auto-reconnect with exponential backoff
-//! - **Installer**: One-click `openfang add <name>` flow
+//! - **Installer**: One-click `omtae add <name>` flow
 
 pub mod bundled;
 pub mod credentials;
@@ -225,7 +225,7 @@ pub struct InstalledIntegration {
     pub config: HashMap<String, String>,
 }
 
-/// Top-level structure for `~/.openfang/integrations.toml`.
+/// Top-level structure for `~/.omtae/integrations.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IntegrationsFile {
     #[serde(default)]

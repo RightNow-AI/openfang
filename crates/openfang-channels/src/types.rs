@@ -1,7 +1,7 @@
 //! Core channel bridge types.
 
 use chrono::{DateTime, Utc};
-use openfang_types::agent::AgentId;
+use omtae_types::agent::AgentId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -35,8 +35,8 @@ pub struct ChannelUser {
     pub platform_id: String,
     /// Human-readable display name.
     pub display_name: String,
-    /// Optional mapping to an OpenFang user identity.
-    pub openfang_user: Option<String>,
+    /// Optional mapping to an OMTAE user identity.
+    pub omtae_user: Option<String>,
 }
 
 /// Content types that can be received from a channel.
@@ -113,9 +113,9 @@ pub struct ChannelMessage {
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
-// Re-export the adapter allowlist from openfang-types so config validation
+// Re-export the adapter allowlist from omtae-types so config validation
 // and routing share a single source of truth (no drift between the two).
-pub use openfang_types::config::CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL;
+pub use omtae_types::config::CHANNELS_WITH_PLATFORM_ID_AS_CHANNEL;
 
 impl ChannelMessage {
     /// Return the platform-native channel/conversation ID for this message,
@@ -281,12 +281,12 @@ pub struct ChannelStatus {
     pub last_error: Option<String>,
 }
 
-// Re-export policy/format types from openfang-types for convenience.
-pub use openfang_types::config::{DmPolicy, GroupPolicy, OutputFormat};
+// Re-export policy/format types from omtae-types for convenience.
+pub use omtae_types::config::{DmPolicy, GroupPolicy, OutputFormat};
 
 /// Trait that every channel adapter must implement.
 ///
-/// A channel adapter bridges a messaging platform to the OpenFang kernel by converting
+/// A channel adapter bridges a messaging platform to the OMTAE kernel by converting
 /// platform-specific messages into `ChannelMessage` events and sending responses back.
 #[async_trait]
 pub trait ChannelAdapter: Send + Sync {
@@ -385,7 +385,7 @@ pub fn split_message(text: &str, max_len: usize) -> Vec<&str> {
             break;
         }
         // Try to split at a newline near the boundary (UTF-8 safe)
-        let safe_end = openfang_types::truncate_str(remaining, max_len).len();
+        let safe_end = omtae_types::truncate_str(remaining, max_len).len();
         let split_at = remaining[..safe_end].rfind('\n').unwrap_or(safe_end);
         let (chunk, rest) = remaining.split_at(split_at);
         chunks.push(chunk);
@@ -410,7 +410,7 @@ mod tests {
             sender: ChannelUser {
                 platform_id: "user1".to_string(),
                 display_name: "Alice".to_string(),
-                openfang_user: None,
+                omtae_user: None,
             },
             content: ChannelContent::Text("Hello!".to_string()),
             target_agent: None,
@@ -464,7 +464,7 @@ mod tests {
             sender: ChannelUser {
                 platform_id: "C123".to_string(),
                 display_name: "x".to_string(),
-                openfang_user: None,
+                omtae_user: None,
             },
             content: ChannelContent::Text("hi".to_string()),
             target_agent: None,

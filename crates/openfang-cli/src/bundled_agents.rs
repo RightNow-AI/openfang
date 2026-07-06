@@ -1,7 +1,7 @@
 //! Compile-time embedded agent templates.
 //!
 //! All 30 bundled agent templates are embedded into the binary via `include_str!`.
-//! This ensures `openfang agent new` works immediately after install — no filesystem
+//! This ensures `omtae agent new` works immediately after install — no filesystem
 //! discovery needed.
 
 /// Returns all bundled agent templates as `(name, toml_content)` pairs.
@@ -118,7 +118,7 @@ pub fn bundled_agents() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-/// Install bundled agent templates to `~/.openfang/agents/`.
+/// Install bundled agent templates to `~/.omtae/agents/`.
 /// Skips any template that already exists on disk (user customization preserved).
 pub fn install_bundled_agents(agents_dir: &std::path::Path) {
     for (name, content) in bundled_agents() {

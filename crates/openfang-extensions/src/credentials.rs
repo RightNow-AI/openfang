@@ -1,8 +1,8 @@
 //! Credential resolution chain — resolves secrets from multiple sources.
 //!
 //! Resolution order:
-//! 1. Encrypted vault (`~/.openfang/vault.enc`)
-//! 2. Dotenv file (`~/.openfang/.env`)
+//! 1. Encrypted vault (`~/.omtae/vault.enc`)
+//! 2. Dotenv file (`~/.omtae/.env`)
 //! 3. Process environment variable
 //! 4. Interactive prompt (CLI only, when `interactive` is true)
 
@@ -17,7 +17,7 @@ use zeroize::Zeroizing;
 pub struct CredentialResolver {
     /// Reference to the credential vault.
     vault: Option<CredentialVault>,
-    /// Dotenv entries (loaded from `~/.openfang/.env`).
+    /// Dotenv entries (loaded from `~/.omtae/.env`).
     dotenv: HashMap<String, String>,
     /// Whether to prompt interactively as a last resort.
     interactive: bool,

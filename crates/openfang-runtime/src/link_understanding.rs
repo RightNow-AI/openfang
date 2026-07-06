@@ -3,7 +3,7 @@
 use tracing::warn;
 
 /// Configuration for link understanding (re-exported from types).
-pub use openfang_types::media::LinkConfig;
+pub use omtae_types::media::LinkConfig;
 
 /// Summary of a fetched link.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -1,6 +1,6 @@
 //! Graceful shutdown — ordered subsystem teardown for clean exit.
 //!
-//! When OpenFang receives a shutdown signal (SIGTERM, Ctrl+C, API call), this
+//! When OMTAE receives a shutdown signal (SIGTERM, Ctrl+C, API call), this
 //! module orchestrates an ordered shutdown sequence to prevent data loss and
 //! ensure clean resource cleanup.
 //!

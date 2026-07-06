@@ -83,7 +83,7 @@ impl WebexAdapter {
         let bot_id = body["id"].as_str().unwrap_or("unknown").to_string();
         let display_name = body["displayName"]
             .as_str()
-            .unwrap_or("OpenFang Bot")
+            .unwrap_or("OMTAE Bot")
             .to_string();
 
         *self.bot_info.write().await = Some((bot_id.clone(), display_name.clone()));
@@ -122,7 +122,7 @@ impl WebexAdapter {
     ) -> Result<String, Box<dyn std::error::Error>> {
         let url = format!("{}/webhooks", WEBEX_API_BASE);
         let body = serde_json::json!({
-            "name": "OpenFang Bot Webhook",
+            "name": "OMTAE Bot Webhook",
             "targetUrl": target_url,
             "resource": "messages",
             "event": "created",
@@ -406,7 +406,7 @@ impl ChannelAdapter for WebexAdapter {
                         sender: ChannelUser {
                             platform_id: full_room_id,
                             display_name: sender_email.to_string(),
-                            openfang_user: None,
+                            omtae_user: None,
                         },
                         content: msg_content,
                         target_agent: None,

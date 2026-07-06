@@ -4,11 +4,11 @@
 //! and graceful shutdown sequence.
 
 use axum::Router;
-use openfang_api::middleware;
-use openfang_api::routes::{self, AppState};
-use openfang_api::server::{read_daemon_info, DaemonInfo};
-use openfang_kernel::OpenFangKernel;
-use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use omtae_api::middleware;
+use omtae_api::routes::{self, AppState};
+use omtae_api::server::{read_daemon_info, DaemonInfo};
+use omtae_kernel::OMTAEKernel;
+use omtae_types::config::{DefaultModelConfig, KernelConfig};
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::cors::CorsLayer;
@@ -103,7 +103,7 @@ async fn test_full_daemon_lifecycle() {
         ..KernelConfig::default()
     };
 
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
@@ -115,7 +115,7 @@ async fn test_full_daemon_lifecycle() {
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
-        provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        provider_probe_cache: omtae_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(Default::default())),
     });
 
@@ -231,7 +231,7 @@ async fn test_server_immediate_responsiveness() {
         ..KernelConfig::default()
     };
 
-    let kernel = OpenFangKernel::boot_with_config(config).unwrap();
+    let kernel = OMTAEKernel::boot_with_config(config).unwrap();
     let kernel = Arc::new(kernel);
 
     let state = Arc::new(AppState {
@@ -242,7 +242,7 @@ async fn test_server_immediate_responsiveness() {
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
-        provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        provider_probe_cache: omtae_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(Default::default())),
     });
 

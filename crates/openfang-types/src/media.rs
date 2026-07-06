@@ -84,7 +84,7 @@ pub struct MediaConfig {
     /// `audio_provider` semantics ("openai" or "groq" still selects which
     /// `*_API_KEY` env var is used for the Authorization header).
     ///
-    /// Closes <https://github.com/RightNow-AI/openfang/issues/1051>.
+    /// Closes <https://github.com/RightNow-AI/omtae/issues/1051>.
     ///
     /// Example:
     /// ```toml
@@ -106,7 +106,7 @@ pub struct MediaConfig {
     /// header is still built from `OPENAI_API_KEY` (local services
     /// usually accept any non-empty bearer token).
     ///
-    /// Closes <https://github.com/RightNow-AI/openfang/issues/1051>.
+    /// Closes <https://github.com/RightNow-AI/omtae/issues/1051>.
     #[serde(default)]
     pub tts_openai_base_url: Option<String>,
 
@@ -118,7 +118,7 @@ pub struct MediaConfig {
     /// gateway. The `xi-api-key` header still comes from
     /// `ELEVENLABS_API_KEY`.
     ///
-    /// Closes <https://github.com/RightNow-AI/openfang/issues/1051>.
+    /// Closes <https://github.com/RightNow-AI/omtae/issues/1051>.
     #[serde(default)]
     pub tts_elevenlabs_base_url: Option<String>,
 
@@ -131,7 +131,7 @@ pub struct MediaConfig {
     /// format. The Authorization header is still built from
     /// `OPENAI_API_KEY`.
     ///
-    /// Closes <https://github.com/RightNow-AI/openfang/issues/1051>.
+    /// Closes <https://github.com/RightNow-AI/omtae/issues/1051>.
     #[serde(default)]
     pub image_gen_base_url: Option<String>,
 }

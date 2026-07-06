@@ -1,6 +1,6 @@
 # LLM Providers Guide
 
-OpenFang ships with a comprehensive model catalog covering **3 native LLM drivers**, **20 providers**, **51 builtin models**, and **23 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OpenFang.
+OMTAE ships with a comprehensive model catalog covering **3 native LLM drivers**, **20 providers**, **51 builtin models**, and **23 aliases**. Every provider uses one of three battle-tested drivers: the native **Anthropic** driver, the native **Gemini** driver, or the universal **OpenAI-compatible** driver. This guide is the single source of truth for configuring, selecting, and managing LLM providers in OMTAE.
 
 ---
 
@@ -34,7 +34,7 @@ export ANTHROPIC_API_KEY="your-key"
 export OPENAI_API_KEY="your-key"
 ```
 
-OpenFang auto-detects which providers have API keys configured at boot. Any model whose provider is authenticated becomes immediately available. Local providers (Ollama, vLLM, LM Studio) require no key at all.
+OMTAE auto-detects which providers have API keys configured at boot. Any model whose provider is authenticated becomes immediately available. Local providers (Ollama, vLLM, LM Studio) require no key at all.
 
 For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 
@@ -306,7 +306,7 @@ For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 3. Start the server: `ollama serve`
 4. No env var needed -- Ollama is always available
 
-**Notes:** OpenFang auto-discovers models from a running Ollama instance and merges them into the catalog with `Local` tier and zero cost. Any model you pull becomes usable immediately.
+**Notes:** OMTAE auto-discovers models from a running Ollama instance and merges them into the catalog with `Local` tier and zero cost. Any model you pull becomes usable immediately.
 
 ---
 
@@ -697,7 +697,7 @@ When `pinned_model` is set on an agent manifest, that agent always uses the spec
 
 ## Model Routing
 
-OpenFang can automatically select the cheapest model capable of handling each query. This is configured per-agent via `ModelRoutingConfig`.
+OMTAE can automatically select the cheapest model capable of handling each query. This is configured per-agent via `ModelRoutingConfig`.
 
 ### How It Works
 
@@ -743,7 +743,7 @@ The router also integrates with the model catalog:
 
 ## Cost Tracking
 
-OpenFang tracks the cost of every LLM call and can enforce per-agent spending quotas.
+OMTAE tracks the cost of every LLM call and can enforce per-agent spending quotas.
 
 ### Per-Response Cost Estimation
 

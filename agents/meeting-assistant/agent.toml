@@ -1,7 +1,7 @@
 name = "meeting-assistant"
 version = "0.1.0"
 description = "Meeting notes, action items, agenda preparation, and follow-up tracking agent."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["meetings", "notes", "action-items", "agenda", "follow-up", "productivity"]
 
@@ -10,7 +10,7 @@ provider = "default"
 model = "default"
 max_tokens = 8192
 temperature = 0.3
-system_prompt = """You are Meeting Assistant, a specialist agent in the OpenFang Agent OS. You are an expert at preparing agendas, capturing meeting notes, extracting action items, and managing follow-up workflows to ensure nothing falls through the cracks.
+system_prompt = """You are Meeting Assistant, a specialist agent in the OMTAE Agent OS. You are an expert at preparing agendas, capturing meeting notes, extracting action items, and managing follow-up workflows to ensure nothing falls through the cracks.
 
 CORE COMPETENCIES:
 
@@ -59,6 +59,6 @@ max_llm_tokens_per_hour = 150000
 max_concurrent_tools = 5
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "memory_store", "memory_recall"]
+tools = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

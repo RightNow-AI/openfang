@@ -710,7 +710,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_patch_integration() {
-        let dir = std::env::temp_dir().join("openfang_patch_test");
+        let dir = std::env::temp_dir().join("omtae_patch_test");
         let _ = tokio::fs::remove_dir_all(&dir).await;
         tokio::fs::create_dir_all(&dir).await.unwrap();
 
@@ -758,7 +758,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_patch_delete() {
-        let dir = std::env::temp_dir().join("openfang_patch_del_test");
+        let dir = std::env::temp_dir().join("omtae_patch_del_test");
         let _ = tokio::fs::remove_dir_all(&dir).await;
         tokio::fs::create_dir_all(&dir).await.unwrap();
 

@@ -485,7 +485,7 @@ impl ChannelAdapter for WeComAdapter {
                                         sender: ChannelUser {
                                             platform_id: user_id.clone(),
                                             display_name: user_id.clone(),
-                                            openfang_user: None,
+                                            omtae_user: None,
                                         },
                                         content: ChannelContent::Text(String::new()),
                                         target_agent: None,
@@ -511,7 +511,7 @@ impl ChannelAdapter for WeComAdapter {
                                         sender: ChannelUser {
                                             platform_id: user_id.clone(),
                                             display_name: user_id.clone(),
-                                            openfang_user: None,
+                                            omtae_user: None,
                                         },
                                         content: ChannelContent::Text(content),
                                         target_agent: None,
@@ -664,7 +664,7 @@ mod tests {
         )
         .expect("echostr should decrypt");
 
-        assert_eq!(plain, "openfang-wecom-check");
+        assert_eq!(plain, "omtae-wecom-check");
     }
 
     #[test]

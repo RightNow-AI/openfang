@@ -1,8 +1,8 @@
 //! Usage tracking store — records LLM usage events for cost monitoring.
 
 use chrono::Utc;
-use openfang_types::agent::AgentId;
-use openfang_types::error::{OpenFangError, OpenFangResult};
+use omtae_types::agent::AgentId;
+use omtae_types::error::{OMTAEError, OMTAEResult};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -80,11 +80,11 @@ impl UsageStore {
     }
 
     /// Record a usage event.
-    pub fn record(&self, record: &UsageRecord) -> OpenFangResult<()> {
+    pub fn record(&self, record: &UsageRecord) -> OMTAEResult<()> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         conn.execute(
@@ -101,16 +101,16 @@ impl UsageStore {
                 record.tool_calls as i64,
             ],
         )
-        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(())
     }
 
     /// Query total cost in the last hour for an agent.
-    pub fn query_hourly(&self, agent_id: AgentId) -> OpenFangResult<f64> {
+    pub fn query_hourly(&self, agent_id: AgentId) -> OMTAEResult<f64> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let cost: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_events
@@ -118,16 +118,16 @@ impl UsageStore {
                 rusqlite::params![agent_id.0.to_string()],
                 |row| row.get(0),
             )
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(cost)
     }
 
     /// Query total cost today for an agent.
-    pub fn query_daily(&self, agent_id: AgentId) -> OpenFangResult<f64> {
+    pub fn query_daily(&self, agent_id: AgentId) -> OMTAEResult<f64> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let cost: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_events
@@ -135,16 +135,16 @@ impl UsageStore {
                 rusqlite::params![agent_id.0.to_string()],
                 |row| row.get(0),
             )
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(cost)
     }
 
     /// Query total cost in the current calendar month for an agent.
-    pub fn query_monthly(&self, agent_id: AgentId) -> OpenFangResult<f64> {
+    pub fn query_monthly(&self, agent_id: AgentId) -> OMTAEResult<f64> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let cost: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_events
@@ -152,16 +152,16 @@ impl UsageStore {
                 rusqlite::params![agent_id.0.to_string()],
                 |row| row.get(0),
             )
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(cost)
     }
 
     /// Query total cost across all agents for the current hour.
-    pub fn query_global_hourly(&self) -> OpenFangResult<f64> {
+    pub fn query_global_hourly(&self) -> OMTAEResult<f64> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let cost: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_events
@@ -169,16 +169,16 @@ impl UsageStore {
                 [],
                 |row| row.get(0),
             )
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(cost)
     }
 
     /// Query total cost across all agents for the current calendar month.
-    pub fn query_global_monthly(&self) -> OpenFangResult<f64> {
+    pub fn query_global_monthly(&self) -> OMTAEResult<f64> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let cost: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_events
@@ -186,16 +186,16 @@ impl UsageStore {
                 [],
                 |row| row.get(0),
             )
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(cost)
     }
 
     /// Query usage summary, optionally filtered by agent.
-    pub fn query_summary(&self, agent_id: Option<AgentId>) -> OpenFangResult<UsageSummary> {
+    pub fn query_summary(&self, agent_id: Option<AgentId>) -> OMTAEResult<UsageSummary> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
 
         let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match agent_id {
             Some(aid) => (
@@ -225,17 +225,17 @@ impl UsageStore {
                     total_tool_calls: row.get::<_, i64>(4)? as u64,
                 })
             })
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
         Ok(summary)
     }
 
     /// Query usage grouped by model.
-    pub fn query_by_model(&self) -> OpenFangResult<Vec<ModelUsage>> {
+    pub fn query_by_model(&self) -> OMTAEResult<Vec<ModelUsage>> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
 
         let mut stmt = conn
             .prepare(
@@ -243,7 +243,7 @@ impl UsageStore {
                         COALESCE(SUM(output_tokens), 0), COUNT(*)
                  FROM usage_events GROUP BY model ORDER BY SUM(cost_usd) DESC",
             )
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
         let rows = stmt
             .query_map([], |row| {
@@ -255,21 +255,21 @@ impl UsageStore {
                     call_count: row.get::<_, i64>(4)? as u64,
                 })
             })
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
         let mut results = Vec::new();
         for row in rows {
-            results.push(row.map_err(|e| OpenFangError::Memory(e.to_string()))?);
+            results.push(row.map_err(|e| OMTAEError::Memory(e.to_string()))?);
         }
         Ok(results)
     }
 
     /// Query daily usage breakdown for the last N days.
-    pub fn query_daily_breakdown(&self, days: u32) -> OpenFangResult<Vec<DailyBreakdown>> {
+    pub fn query_daily_breakdown(&self, days: u32) -> OMTAEResult<Vec<DailyBreakdown>> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
 
         let mut stmt = conn
             .prepare(&format!(
@@ -282,7 +282,7 @@ impl UsageStore {
                      GROUP BY day
                      ORDER BY day ASC"
             ))
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
         let rows = stmt
             .query_map([], |row| {
@@ -293,35 +293,35 @@ impl UsageStore {
                     calls: row.get::<_, i64>(3)? as u64,
                 })
             })
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
         let mut results = Vec::new();
         for row in rows {
-            results.push(row.map_err(|e| OpenFangError::Memory(e.to_string()))?);
+            results.push(row.map_err(|e| OMTAEError::Memory(e.to_string()))?);
         }
         Ok(results)
     }
 
     /// Query the timestamp of the earliest usage event.
-    pub fn query_first_event_date(&self) -> OpenFangResult<Option<String>> {
+    pub fn query_first_event_date(&self) -> OMTAEResult<Option<String>> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let result: Option<String> = conn
             .query_row("SELECT MIN(timestamp) FROM usage_events", [], |row| {
                 row.get(0)
             })
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(result)
     }
 
     /// Query today's total cost across all agents.
-    pub fn query_today_cost(&self) -> OpenFangResult<f64> {
+    pub fn query_today_cost(&self) -> OMTAEResult<f64> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let cost: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_events
@@ -329,16 +329,16 @@ impl UsageStore {
                 [],
                 |row| row.get(0),
             )
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(cost)
     }
 
     /// Delete usage events older than the given number of days.
-    pub fn cleanup_old(&self, days: u32) -> OpenFangResult<usize> {
+    pub fn cleanup_old(&self, days: u32) -> OMTAEResult<usize> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let deleted = conn
             .execute(
                 &format!(
@@ -346,7 +346,7 @@ impl UsageStore {
                 ),
                 [],
             )
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(deleted)
     }
 }

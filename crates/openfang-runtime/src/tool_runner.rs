@@ -6,10 +6,10 @@
 use crate::kernel_handle::KernelHandle;
 use crate::mcp;
 use crate::web_search::{parse_ddg_results, WebToolsContext};
-use openfang_skills::registry::SkillRegistry;
-use openfang_types::taint::{TaintLabel, TaintSink, TaintedValue};
-use openfang_types::tool::{ToolDefinition, ToolResult};
-use openfang_types::tool_compat::normalize_tool_name;
+use omtae_skills::registry::SkillRegistry;
+use omtae_types::taint::{TaintLabel, TaintSink, TaintedValue};
+use omtae_types::tool::{ToolDefinition, ToolResult};
+use omtae_types::tool_compat::normalize_tool_name;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -120,13 +120,13 @@ pub async fn execute_tool(
     allowed_env_vars: Option<&[String]>,
     workspace_root: Option<&Path>,
     media_engine: Option<&crate::media_understanding::MediaEngine>,
-    exec_policy: Option<&openfang_types::config::ExecPolicy>,
+    exec_policy: Option<&omtae_types::config::ExecPolicy>,
     tts_engine: Option<&crate::tts::TtsEngine>,
-    docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
+    docker_config: Option<&omtae_types::config::DockerSandboxConfig>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
 ) -> ToolResult {
     // Normalize the tool name through compat mappings so LLM-hallucinated aliases
-    // (e.g. "fs-write" → "file_write") resolve to the canonical OpenFang name.
+    // (e.g. "fs-write" → "file_write") resolve to the canonical OMTAE name.
     let tool_name = normalize_tool_name(tool_name);
 
     // Capability enforcement: reject tools not in the allowed list
@@ -151,8 +151,8 @@ pub async fn execute_tool(
     // the user already whitelisted is contradictory (GitHub issue #772).
     let exec_policy_bypasses_approval = is_shell_tool(tool_name)
         && exec_policy.is_some_and(|p| {
-            p.mode == openfang_types::config::ExecSecurityMode::Full
-                || (p.mode == openfang_types::config::ExecSecurityMode::Allowlist
+            p.mode == omtae_types::config::ExecSecurityMode::Full
+                || (p.mode == omtae_types::config::ExecSecurityMode::Allowlist
                     && p.allowed_commands.iter().any(|c| c == "*"))
         });
 
@@ -170,7 +170,7 @@ pub async fn execute_tool(
             let summary = format!(
                 "{}: {}",
                 tool_name,
-                openfang_types::truncate_str(&input_str, 200)
+                omtae_types::truncate_str(&input_str, 200)
             );
             match kh.request_approval(agent_id_str, tool_name, &summary).await {
                 Ok(true) => {
@@ -244,18 +244,23 @@ pub async fn execute_tool(
         "shell_exec" => {
             let command = input["command"].as_str().unwrap_or("");
 
-            // SECURITY: Always check for shell metacharacters, even in Full mode.
-            // These enable command injection regardless of exec policy.
-            if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command)
-            {
-                return ToolResult {
-                    tool_use_id: tool_use_id.to_string(),
-                    content: format!(
-                        "shell_exec blocked: command contains {reason}. \
-                         Shell metacharacters are never allowed."
-                    ),
-                    is_error: true,
-                };
+            let is_full_exec = exec_policy
+                .is_some_and(|p| p.mode == omtae_types::config::ExecSecurityMode::Full);
+
+            // SECURITY: Check for shell metacharacters unless in Full mode.
+            // In Full mode, the operator has explicitly requested unrestricted execution.
+            if !is_full_exec {
+                if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command)
+                {
+                    return ToolResult {
+                        tool_use_id: tool_use_id.to_string(),
+                        content: format!(
+                            "shell_exec blocked: command contains {reason}. \
+                             Shell metacharacters are never allowed."
+                        ),
+                        is_error: true,
+                    };
+                }
             }
 
             // Exec policy enforcement (allowlist / deny / full)
@@ -275,8 +280,6 @@ pub async fn execute_tool(
                 }
             }
             // Skip heuristic taint patterns for Full exec policy (e.g. hand agents that need curl)
-            let is_full_exec = exec_policy
-                .is_some_and(|p| p.mode == openfang_types::config::ExecSecurityMode::Full);
             if !is_full_exec {
                 if let Some(violation) = check_taint_shell_exec(command) {
                     return ToolResult {
@@ -296,7 +299,7 @@ pub async fn execute_tool(
         }
 
         // Inter-agent tools (require kernel handle)
-        "agent_send" => tool_agent_send(input, kernel).await,
+        "agent_send" => tool_agent_send(input, kernel, caller_agent_id).await,
         "agent_spawn" => tool_agent_spawn(input, kernel, caller_agent_id).await,
         "agent_list" => tool_agent_list(kernel),
         "agent_kill" => tool_agent_kill(input, kernel),
@@ -521,7 +524,7 @@ pub async fn execute_tool(
             else if let Some(registry) = skill_registry {
                 if let Some(skill) = registry.find_tool_provider(other) {
                     debug!(tool = other, skill = %skill.manifest.skill.name, "Dispatching to skill");
-                    match openfang_skills::loader::execute_skill_tool(
+                    match omtae_skills::loader::execute_skill_tool(
                         &skill.manifest,
                         &skill.path,
                         other,
@@ -669,14 +672,32 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         // --- Inter-agent tools ---
         ToolDefinition {
             name: "agent_send".to_string(),
-            description: "Send a message to another agent and receive their response. Accepts UUID or agent name. Use agent_find first to discover agents.".to_string(),
+            description: "Send a message to another agent and receive their full response. REQUIRED workflow: (1) call agent_list once, (2) copy the target's id (UUID) from that output, (3) call agent_send with agent_id and message. Do NOT emit JSON like {\"name\":\"researcher\"} in plain text — use this function only. Returns agent_send OK with specialist text, or agent_send FAILED with the exact error.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "agent_id": { "type": "string", "description": "The target agent's UUID or name" },
-                    "message": { "type": "string", "description": "The message to send to the agent" }
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Target agent UUID from agent_list (preferred). Name match also works (e.g. researcher, coder)."
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Task or question for the specialist agent"
+                    },
+                    "agent": {
+                        "type": "string",
+                        "description": "Alias for agent_id (deprecated — use agent_id)"
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Alias for agent_id"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Alias for agent_id (agent name, not tool name)"
+                    }
                 },
-                "required": ["agent_id", "message"]
+                "required": ["message"]
             }),
         },
         ToolDefinition {
@@ -1174,7 +1195,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "url": { "type": "string", "description": "Base URL of the remote OpenFang/A2A-compatible agent (e.g., 'https://agent.example.com')" }
+                    "url": { "type": "string", "description": "Base URL of the remote OMTAE/A2A-compatible agent (e.g., 'https://agent.example.com')" }
                 },
                 "required": ["url"]
             }),
@@ -1315,7 +1336,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         // --- Skill introspection tools (issue #1038) ---
         // These let the agent discover and read installed skills without
-        // touching the filesystem. Global skills live at ~/.openfang/skills/
+        // touching the filesystem. Global skills live at ~/.omtae/skills/
         // which is outside the workspace sandbox — file_read cannot reach them.
         ToolDefinition {
             name: "skill_list".to_string(),
@@ -1463,10 +1484,12 @@ fn resolve_directory_path_for_create(
         resolved.push(segment);
     }
 
-    if !resolved.starts_with(&canon_root) {
-        return Err(format!(
-            "Access denied: path '{raw_path}' resolves outside workspace"
-        ));
+    if std::env::var("OMTAE_UNRESTRICTED_FS").as_deref() != Ok("1") {
+        if !resolved.starts_with(&canon_root) {
+            return Err(format!(
+                "Access denied: path '{raw_path}' resolves outside workspace"
+            ));
+        }
     }
 
     Ok(resolved)
@@ -1592,7 +1615,7 @@ async fn tool_web_search_legacy(input: &serde_json::Value) -> Result<String, Str
     let resp = client
         .get("https://html.duckduckgo.com/html/")
         .query(&[("q", query)])
-        .header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)")
+        .header("User-Agent", "Mozilla/5.0 (compatible; OMTAEAgent/0.1)")
         .send()
         .await
         .map_err(|e| format!("Search request failed: {e}"))?;
@@ -1631,7 +1654,7 @@ async fn tool_shell_exec(
     input: &serde_json::Value,
     allowed_env: &[String],
     workspace_root: Option<&Path>,
-    exec_policy: Option<&openfang_types::config::ExecPolicy>,
+    exec_policy: Option<&omtae_types::config::ExecPolicy>,
 ) -> Result<String, String> {
     let command = input["command"]
         .as_str()
@@ -1649,7 +1672,7 @@ async fn tool_shell_exec(
     // In Full mode: User explicitly opted into unrestricted shell access,
     // so we use sh -c / cmd /C as before.
     let use_direct_exec = exec_policy
-        .map(|p| p.mode == openfang_types::config::ExecSecurityMode::Allowlist)
+        .map(|p| p.mode == omtae_types::config::ExecSecurityMode::Allowlist)
         .unwrap_or(true); // Default to safe mode
 
     let mut cmd = if use_direct_exec {
@@ -1783,17 +1806,50 @@ fn require_kernel(
     })
 }
 
+/// Resolve the target agent from tool input (LLMs often use `agent` instead of `agent_id`).
+fn parse_agent_target(input: &serde_json::Value) -> Result<&str, String> {
+    const KEYS: &[&str] = &["agent_id", "agent", "target", "to", "recipient", "name"];
+    for key in KEYS {
+        if let Some(v) = input.get(*key).and_then(|v| v.as_str()) {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed);
+            }
+        }
+    }
+    Err(
+        "Missing target agent: provide 'agent_id' (preferred) or 'agent' with the agent name or UUID."
+            .into(),
+    )
+}
+
 async fn tool_agent_send(
     input: &serde_json::Value,
     kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_agent_id: Option<&str>,
 ) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
-    let agent_id = input["agent_id"]
-        .as_str()
-        .ok_or("Missing 'agent_id' parameter")?;
+    let agent_id = parse_agent_target(input)?;
     let message = input["message"]
         .as_str()
         .ok_or("Missing 'message' parameter")?;
+
+    // Block self-delegation (orchestrator → orchestrator loops)
+    if let Some(caller) = caller_agent_id {
+        if agent_id == caller {
+            return Err(
+                "agent_send refused: cannot send a message to yourself (same agent_id).".into(),
+            );
+        }
+        for a in kh.list_agents() {
+            if a.id == caller && a.name.eq_ignore_ascii_case(agent_id) {
+                return Err(format!(
+                    "agent_send refused: cannot delegate to yourself ('{}').",
+                    a.name
+                ));
+            }
+        }
+    }
 
     // Check + increment inter-agent call depth
     let current_depth = AGENT_CALL_DEPTH.try_with(|d| d.get()).unwrap_or(0);
@@ -1805,9 +1861,17 @@ async fn tool_agent_send(
         ));
     }
 
+    let caller_name_owned = caller_agent_id.and_then(|cid| {
+        kh.list_agents()
+            .into_iter()
+            .find(|a| a.id == cid)
+            .map(|a| a.name)
+    });
+    let caller_name = caller_name_owned.as_deref();
+
     AGENT_CALL_DEPTH
         .scope(std::cell::Cell::new(current_depth + 1), async {
-            kh.send_to_agent(agent_id, message).await
+            kh.send_to_agent(agent_id, message, caller_agent_id, caller_name).await
         })
         .await
 }
@@ -1848,9 +1912,7 @@ fn tool_agent_kill(
     kernel: Option<&Arc<dyn KernelHandle>>,
 ) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
-    let agent_id = input["agent_id"]
-        .as_str()
-        .ok_or("Missing 'agent_id' parameter")?;
+    let agent_id = parse_agent_target(input)?;
     kh.kill_agent(agent_id)?;
     Ok(format!("Agent {agent_id} killed successfully."))
 }
@@ -1860,9 +1922,7 @@ fn tool_agent_activate(
     kernel: Option<&Arc<dyn KernelHandle>>,
 ) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
-    let agent_id = input["agent_id"]
-        .as_str()
-        .ok_or("Missing 'agent_id' parameter")?;
+    let agent_id = parse_agent_target(input)?;
     let name = kh.activate_agent(agent_id)?;
     Ok(format!(
         "Agent '{name}' activated. It is now Running and ready to receive messages."
@@ -2006,8 +2066,8 @@ async fn tool_event_publish(
 // Knowledge graph tools
 // ---------------------------------------------------------------------------
 
-fn parse_entity_type(s: &str) -> openfang_types::memory::EntityType {
-    use openfang_types::memory::EntityType;
+fn parse_entity_type(s: &str) -> omtae_types::memory::EntityType {
+    use omtae_types::memory::EntityType;
     match s.to_lowercase().as_str() {
         "person" => EntityType::Person,
         "organization" | "org" => EntityType::Organization,
@@ -2021,8 +2081,8 @@ fn parse_entity_type(s: &str) -> openfang_types::memory::EntityType {
     }
 }
 
-fn parse_relation_type(s: &str) -> openfang_types::memory::RelationType {
-    use openfang_types::memory::RelationType;
+fn parse_relation_type(s: &str) -> omtae_types::memory::RelationType {
+    use omtae_types::memory::RelationType;
     match s.to_lowercase().as_str() {
         "works_at" | "worksat" => RelationType::WorksAt,
         "knows_about" | "knowsabout" | "knows" => RelationType::KnowsAbout,
@@ -2053,7 +2113,7 @@ async fn tool_knowledge_add_entity(
         .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
         .unwrap_or_default();
 
-    let entity = openfang_types::memory::Entity {
+    let entity = omtae_types::memory::Entity {
         id: String::new(), // kernel/store assigns a real ID
         entity_type: parse_entity_type(entity_type_str),
         name: name.to_string(),
@@ -2087,7 +2147,7 @@ async fn tool_knowledge_add_relation(
         .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
         .unwrap_or_default();
 
-    let relation = openfang_types::memory::Relation {
+    let relation = omtae_types::memory::Relation {
         source: source.to_string(),
         relation: parse_relation_type(relation_str),
         target: target.to_string(),
@@ -2112,7 +2172,7 @@ async fn tool_knowledge_query(
     let relation = input["relation"].as_str().map(parse_relation_type);
     let max_depth = input["max_depth"].as_u64().unwrap_or(1) as u32;
 
-    let pattern = openfang_types::memory::GraphPattern {
+    let pattern = omtae_types::memory::GraphPattern {
         source,
         relation,
         target,
@@ -2930,7 +2990,7 @@ async fn tool_location_get() -> Result<String, String> {
     // Use ip-api.com (free, no API key, JSON response)
     let resp = client
         .get("https://ip-api.com/json/?fields=status,message,country,regionName,city,zip,lat,lon,timezone,isp,query")
-        .header("User-Agent", "OpenFang/0.1")
+        .header("User-Agent", "OMTAE/0.1")
         .send()
         .await
         .map_err(|e| format!("Location request failed: {e}"))?;
@@ -3020,10 +3080,10 @@ async fn tool_media_describe(
         _ => return Err(format!("Unsupported image format: .{ext}")),
     };
 
-    let attachment = openfang_types::media::MediaAttachment {
-        media_type: openfang_types::media::MediaType::Image,
+    let attachment = omtae_types::media::MediaAttachment {
+        media_type: omtae_types::media::MediaType::Image,
         mime_type: mime.to_string(),
-        source: openfang_types::media::MediaSource::Base64 {
+        source: omtae_types::media::MediaSource::Base64 {
             data: base64::engine::general_purpose::STANDARD.encode(&data),
             mime_type: mime.to_string(),
         },
@@ -3065,10 +3125,10 @@ async fn tool_media_transcribe(
         _ => return Err(format!("Unsupported audio format: .{ext}")),
     };
 
-    let attachment = openfang_types::media::MediaAttachment {
-        media_type: openfang_types::media::MediaType::Audio,
+    let attachment = omtae_types::media::MediaAttachment {
+        media_type: omtae_types::media::MediaType::Audio,
         mime_type: mime.to_string(),
-        source: openfang_types::media::MediaSource::Base64 {
+        source: omtae_types::media::MediaSource::Base64 {
             data: base64::engine::general_purpose::STANDARD.encode(&data),
             mime_type: mime.to_string(),
         },
@@ -3095,9 +3155,9 @@ async fn tool_image_generate(
 
     let model_str = input["model"].as_str().unwrap_or("dall-e-3");
     let model = match model_str {
-        "dall-e-3" | "dalle3" | "dalle-3" => openfang_types::media::ImageGenModel::DallE3,
-        "dall-e-2" | "dalle2" | "dalle-2" => openfang_types::media::ImageGenModel::DallE2,
-        "gpt-image-1" | "gpt_image_1" => openfang_types::media::ImageGenModel::GptImage1,
+        "dall-e-3" | "dalle3" | "dalle-3" => omtae_types::media::ImageGenModel::DallE3,
+        "dall-e-2" | "dalle2" | "dalle-2" => omtae_types::media::ImageGenModel::DallE2,
+        "gpt-image-1" | "gpt_image_1" => omtae_types::media::ImageGenModel::GptImage1,
         _ => {
             return Err(format!(
                 "Unknown image model: {model_str}. Use 'dall-e-3', 'dall-e-2', or 'gpt-image-1'."
@@ -3109,7 +3169,7 @@ async fn tool_image_generate(
     let quality = input["quality"].as_str().unwrap_or("hd").to_string();
     let count = input["count"].as_u64().unwrap_or(1).min(4) as u8;
 
-    let request = openfang_types::media::ImageGenRequest {
+    let request = omtae_types::media::ImageGenRequest {
         prompt: prompt.to_string(),
         model,
         size,
@@ -3140,7 +3200,7 @@ async fn tool_image_generate(
     let mut image_urls: Vec<String> = Vec::new();
     {
         use base64::Engine;
-        let upload_dir = std::env::temp_dir().join("openfang_uploads");
+        let upload_dir = std::env::temp_dir().join("omtae_uploads");
         let _ = std::fs::create_dir_all(&upload_dir);
         for img in &result.images {
             let file_id = uuid::Uuid::new_v4().to_string();
@@ -3245,7 +3305,7 @@ async fn tool_speech_to_text(
         _ => "audio/mpeg",
     };
 
-    use openfang_types::media::{MediaAttachment, MediaSource, MediaType};
+    use omtae_types::media::{MediaAttachment, MediaSource, MediaType};
     let attachment = MediaAttachment {
         media_type: MediaType::Audio,
         mime_type: mime_type.to_string(),
@@ -3276,7 +3336,7 @@ async fn tool_speech_to_text(
 
 async fn tool_docker_exec(
     input: &serde_json::Value,
-    docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
+    docker_config: Option<&omtae_types::config::DockerSandboxConfig>,
     workspace_root: Option<&Path>,
     caller_agent_id: Option<&str>,
 ) -> Result<String, String> {
@@ -3340,7 +3400,7 @@ async fn tool_process_start(
     input: &serde_json::Value,
     pm: Option<&crate::process_manager::ProcessManager>,
     caller_agent_id: Option<&str>,
-    exec_policy: Option<&openfang_types::config::ExecPolicy>,
+    exec_policy: Option<&omtae_types::config::ExecPolicy>,
 ) -> Result<String, String> {
     let pm = pm.ok_or("Process manager not available")?;
     let agent_id = caller_agent_id.unwrap_or("default");
@@ -3580,7 +3640,7 @@ async fn tool_canvas_present(
 // ---------------------------------------------------------------------------
 // Skill introspection tools (issue #1038)
 //
-// Global skills live at ~/.openfang/skills/ which is outside the agent
+// Global skills live at ~/.omtae/skills/ which is outside the agent
 // workspace sandbox. Without these tools the LLM falls back to file_read /
 // shell_exec to inspect SKILL.md files — which fail with path-resolution
 // errors because file_read is workspace-scoped. These tools surface the
@@ -3595,7 +3655,7 @@ fn tool_skill_list(skill_registry: Option<&SkillRegistry>) -> Result<String, Str
     };
     let skills = registry.list();
     if skills.is_empty() {
-        return Ok("No skills installed. Install skills via the dashboard or `openfang skill install <name>`.".to_string());
+        return Ok("No skills installed. Install skills via the dashboard or `omtae skill install <name>`.".to_string());
     }
     let entries: Vec<serde_json::Value> = skills
         .iter()
@@ -3710,7 +3770,7 @@ async fn tool_skill_execute(
         }
     };
 
-    match openfang_skills::loader::execute_skill_tool(
+    match omtae_skills::loader::execute_skill_tool(
         &skill.manifest,
         &skill.path,
         &resolved_tool,
@@ -3820,7 +3880,7 @@ mod tests {
     /// sandbox) are reachable by the agent.
     #[tokio::test]
     async fn test_skill_tools_no_filesystem_access() {
-        use openfang_skills::registry::SkillRegistry;
+        use omtae_skills::registry::SkillRegistry;
         use tempfile::TempDir;
 
         // Build a skills directory containing one prompt-only SKILL.md skill
@@ -3905,7 +3965,7 @@ mod tests {
     #[tokio::test]
     async fn test_file_read_missing() {
         let bad_path = std::env::temp_dir()
-            .join("openfang_test_nonexistent_99999")
+            .join("omtae_test_nonexistent_99999")
             .join("file.txt");
         let result = execute_tool(
             "test-id",
@@ -4214,7 +4274,7 @@ mod tests {
         let allowed = vec!["file_read".to_string()];
         // Use a cross-platform nonexistent path
         let bad_path = std::env::temp_dir()
-            .join("openfang_test_nonexistent_12345")
+            .join("omtae_test_nonexistent_12345")
             .join("file.txt");
         let result = execute_tool(
             "test-id",
@@ -4490,6 +4550,24 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_agent_target_prefers_agent_id() {
+        let input = serde_json::json!({"agent_id": "coder", "agent": "analyst"});
+        assert_eq!(parse_agent_target(&input).unwrap(), "coder");
+    }
+
+    #[test]
+    fn test_parse_agent_target_accepts_agent_alias() {
+        let input = serde_json::json!({"agent": "researcher", "message": "hi"});
+        assert_eq!(parse_agent_target(&input).unwrap(), "researcher");
+    }
+
+    #[test]
+    fn test_parse_agent_target_missing() {
+        let input = serde_json::json!({"message": "hi"});
+        assert!(parse_agent_target(&input).is_err());
+    }
+
+    #[test]
     fn test_depth_limit_constant() {
         assert_eq!(MAX_AGENT_CALL_DEPTH, 5);
     }
@@ -4611,7 +4689,7 @@ mod tests {
             "html": "<h1>Test Canvas</h1><p>Hello world</p>",
             "title": "Test"
         });
-        let tmp = std::env::temp_dir().join("openfang_canvas_test");
+        let tmp = std::env::temp_dir().join("omtae_canvas_test");
         let _ = std::fs::create_dir_all(&tmp);
         let result = tool_canvas_present(&input, Some(tmp.as_path())).await;
         assert!(result.is_ok());
@@ -4639,7 +4717,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_issue_919_process_start_rm_blocked_in_allowlist() {
-        use openfang_types::config::{ExecPolicy, ExecSecurityMode};
+        use omtae_types::config::{ExecPolicy, ExecSecurityMode};
 
         let pm = crate::process_manager::ProcessManager::new(5);
         let policy = ExecPolicy {
@@ -4649,7 +4727,7 @@ mod tests {
         };
         let input = serde_json::json!({
             "command": "rm",
-            "args": ["/tmp/openfang_test_should_not_be_deleted.txt"],
+            "args": ["/tmp/omtae_test_should_not_be_deleted.txt"],
         });
 
         let result = tool_process_start(&input, Some(&pm), Some("test-agent"), Some(&policy)).await;
@@ -4677,7 +4755,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_issue_919_process_start_metachar_in_command_blocked() {
-        use openfang_types::config::{ExecPolicy, ExecSecurityMode};
+        use omtae_types::config::{ExecPolicy, ExecSecurityMode};
 
         let pm = crate::process_manager::ProcessManager::new(5);
         let policy = ExecPolicy {
@@ -4697,7 +4775,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_issue_919_process_start_metachar_in_arg_blocked() {
-        use openfang_types::config::{ExecPolicy, ExecSecurityMode};
+        use omtae_types::config::{ExecPolicy, ExecSecurityMode};
 
         let pm = crate::process_manager::ProcessManager::new(5);
         let policy = ExecPolicy {
@@ -4720,7 +4798,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_issue_919_process_start_deny_mode_blocks_everything() {
-        use openfang_types::config::{ExecPolicy, ExecSecurityMode};
+        use omtae_types::config::{ExecPolicy, ExecSecurityMode};
 
         let pm = crate::process_manager::ProcessManager::new(5);
         let policy = ExecPolicy {
@@ -4781,7 +4859,7 @@ mod tests {
 
     // Minimal in-memory KernelHandle used to verify schedule_* tool wiring.
     // Records every cron_* call so tests can assert what the tool pushed into
-    // the kernel, without booting a real OpenFangKernel.
+    // the kernel, without booting a real OMTAEKernel.
     struct FakeKernelHandle {
         created: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
         cancelled: std::sync::Mutex<Vec<String>>,
@@ -4812,7 +4890,13 @@ mod tests {
         ) -> Result<(String, String), String> {
             Err("not used".into())
         }
-        async fn send_to_agent(&self, _agent_id: &str, _message: &str) -> Result<String, String> {
+        async fn send_to_agent(
+            &self,
+            _agent_id: &str,
+            _message: &str,
+            _caller_id: Option<&str>,
+            _caller_name: Option<&str>,
+        ) -> Result<String, String> {
             Err("not used".into())
         }
         fn list_agents(&self) -> Vec<crate::kernel_handle::AgentInfo> {
@@ -4857,20 +4941,20 @@ mod tests {
         }
         async fn knowledge_add_entity(
             &self,
-            _entity: openfang_types::memory::Entity,
+            _entity: omtae_types::memory::Entity,
         ) -> Result<String, String> {
             Err("not used".into())
         }
         async fn knowledge_add_relation(
             &self,
-            _relation: openfang_types::memory::Relation,
+            _relation: omtae_types::memory::Relation,
         ) -> Result<String, String> {
             Err("not used".into())
         }
         async fn knowledge_query(
             &self,
-            _pattern: openfang_types::memory::GraphPattern,
-        ) -> Result<Vec<openfang_types::memory::GraphMatch>, String> {
+            _pattern: omtae_types::memory::GraphPattern,
+        ) -> Result<Vec<omtae_types::memory::GraphMatch>, String> {
             Ok(vec![])
         }
 
@@ -4885,7 +4969,7 @@ mod tests {
                 .unwrap()
                 .push((agent_id.to_string(), job_json.clone()));
             // Mirror what the real kernel returns (see cron_create in
-            // openfang-kernel): `{ "job_id": "...", "status": "created" }`.
+            // omtae-kernel): `{ "job_id": "...", "status": "created" }`.
             let resp = serde_json::json!({ "job_id": id, "status": "created" });
             Ok(resp.to_string())
         }

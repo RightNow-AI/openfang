@@ -1,9 +1,9 @@
-# OpenFang Security Architecture
+# OMTAE Security Architecture
 
 > **Security Contact:** jaber@rightnowai.co — Report vulnerabilities via email. We respond within 48 hours.
 
 This document provides a comprehensive technical reference for every security
-system in the OpenFang Agent Operating System.  All struct names, function
+system in the OMTAE Agent Operating System.  All struct names, function
 signatures, constant values, and algorithm descriptions are drawn directly from
 the source code.
 
@@ -35,36 +35,36 @@ the source code.
 
 ## 1. Security Overview
 
-OpenFang implements **defense-in-depth** security.  No single mechanism is
+OMTAE implements **defense-in-depth** security.  No single mechanism is
 trusted to be the sole protector; instead, 16 independent systems form
 overlapping layers so that a failure in any one layer is caught by others.
 
 | # | System | Crate | Protects Against |
 |---|--------|-------|------------------|
-| 1 | Capability-Based Security | `openfang-types` | Unauthorized actions by agents |
-| 2 | WASM Dual Metering | `openfang-runtime` | Infinite loops, CPU DoS |
-| 3 | Merkle Audit Trail | `openfang-runtime` | Tampered audit logs |
-| 4 | Taint Tracking | `openfang-types` | Prompt injection, data exfiltration |
-| 5 | Ed25519 Manifest Signing | `openfang-types` | Supply chain attacks |
-| 6 | SSRF Protection | `openfang-runtime` | Server-Side Request Forgery |
-| 7 | Secret Zeroization | `openfang-runtime`, `openfang-channels` | Memory forensics, key leakage |
-| 8 | OFP Mutual Auth | `openfang-wire` | Unauthorized peer connections |
-| 9 | Security Headers | `openfang-api` | XSS, clickjacking, MIME sniffing |
-| 10 | GCRA Rate Limiter | `openfang-api` | API abuse, denial of service |
-| 11 | Path Traversal Prevention | `openfang-runtime` | Directory traversal attacks |
-| 12 | Subprocess Sandbox | `openfang-runtime` | Secret leakage via child processes |
-| 13 | Prompt Injection Scanner | `openfang-skills` | Malicious skill prompts |
-| 14 | Loop Guard | `openfang-runtime` | Stuck agent tool loops |
-| 15 | Session Repair | `openfang-runtime` | Corrupted LLM conversation history |
-| 16 | Health Endpoint Redaction | `openfang-api` | Information leakage |
+| 1 | Capability-Based Security | `omtae-types` | Unauthorized actions by agents |
+| 2 | WASM Dual Metering | `omtae-runtime` | Infinite loops, CPU DoS |
+| 3 | Merkle Audit Trail | `omtae-runtime` | Tampered audit logs |
+| 4 | Taint Tracking | `omtae-types` | Prompt injection, data exfiltration |
+| 5 | Ed25519 Manifest Signing | `omtae-types` | Supply chain attacks |
+| 6 | SSRF Protection | `omtae-runtime` | Server-Side Request Forgery |
+| 7 | Secret Zeroization | `omtae-runtime`, `omtae-channels` | Memory forensics, key leakage |
+| 8 | OFP Mutual Auth | `omtae-wire` | Unauthorized peer connections |
+| 9 | Security Headers | `omtae-api` | XSS, clickjacking, MIME sniffing |
+| 10 | GCRA Rate Limiter | `omtae-api` | API abuse, denial of service |
+| 11 | Path Traversal Prevention | `omtae-runtime` | Directory traversal attacks |
+| 12 | Subprocess Sandbox | `omtae-runtime` | Secret leakage via child processes |
+| 13 | Prompt Injection Scanner | `omtae-skills` | Malicious skill prompts |
+| 14 | Loop Guard | `omtae-runtime` | Stuck agent tool loops |
+| 15 | Session Repair | `omtae-runtime` | Corrupted LLM conversation history |
+| 16 | Health Endpoint Redaction | `omtae-api` | Information leakage |
 
 ---
 
 ## 2. Capability-Based Security
 
-**Source:** `openfang-types/src/capability.rs`
+**Source:** `omtae-types/src/capability.rs`
 
-OpenFang uses capability-based security.  An agent can only perform actions
+OMTAE uses capability-based security.  An agent can only perform actions
 it has been explicitly granted permission to do.  Capabilities are immutable
 after agent creation and are enforced at the kernel level.
 
@@ -185,7 +185,7 @@ which invokes this validation before the child is created.
 
 ## 3. WASM Dual Metering
 
-**Source:** `openfang-runtime/src/sandbox.rs`
+**Source:** `omtae-runtime/src/sandbox.rs`
 
 Untrusted WASM modules run inside a Wasmtime sandbox with **two
 independent** metering mechanisms running simultaneously.
@@ -268,7 +268,7 @@ pub enum SandboxError {
 
 ## 4. Merkle Hash Chain Audit Trail
 
-**Source:** `openfang-runtime/src/audit.rs`
+**Source:** `omtae-runtime/src/audit.rs`
 
 Every security-critical action is appended to a tamper-evident Merkle hash
 chain, similar to a blockchain.  Each entry contains the SHA-256 hash of its
@@ -383,9 +383,9 @@ mutexes, ensuring the audit log remains available even after a panic.
 
 ## 5. Information Flow Taint Tracking
 
-**Source:** `openfang-types/src/taint.rs`
+**Source:** `omtae-types/src/taint.rs`
 
-OpenFang implements a lattice-based taint propagation model that prevents
+OMTAE implements a lattice-based taint propagation model that prevents
 tainted values from flowing into sensitive sinks without explicit
 declassification.  This guards against prompt injection, data exfiltration,
 and confused-deputy attacks.
@@ -474,7 +474,7 @@ combined.merge_taint(&other_value);
 
 ## 6. Ed25519 Manifest Signing
 
-**Source:** `openfang-types/src/manifest_signing.rs`
+**Source:** `omtae-types/src/manifest_signing.rs`
 
 Agent manifests define an agent's capabilities, tools, and configuration.
 A compromised manifest can grant elevated privileges.  This module provides
@@ -553,7 +553,7 @@ pub fn verify(&self) -> Result<(), String> {
 
 ## 7. SSRF Protection
 
-**Source:** `openfang-runtime/src/host_functions.rs`
+**Source:** `omtae-runtime/src/host_functions.rs`
 
 The `host_net_fetch` function (WASM host call for network requests) includes
 comprehensive Server-Side Request Forgery protection.
@@ -648,7 +648,7 @@ http://example.com              ->  example.com:80
 
 **Source:** All LLM driver modules, channel adapters, and web search modules.
 
-OpenFang uses `Zeroizing<String>` from the `zeroize` crate on every field
+OMTAE uses `Zeroizing<String>` from the `zeroize` crate on every field
 that holds secret material.  When the value is dropped, its memory is
 overwritten with zeros, preventing secrets from lingering in memory.
 
@@ -668,7 +668,7 @@ client.post(url).header("authorization", format!("Bearer {}", &*key));
 
 ### 8.2 Fields Using Zeroization
 
-**LLM Drivers** (`openfang-runtime/src/drivers/`):
+**LLM Drivers** (`omtae-runtime/src/drivers/`):
 
 | Driver | Field |
 |--------|-------|
@@ -676,7 +676,7 @@ client.post(url).header("authorization", format!("Bearer {}", &*key));
 | `GeminiDriver` | `api_key: Zeroizing<String>` |
 | `OpenAiCompatDriver` | `api_key: Zeroizing<String>` |
 
-**Channel Adapters** (`openfang-channels/src/`):
+**Channel Adapters** (`omtae-channels/src/`):
 
 | Adapter | Field(s) |
 |---------|----------|
@@ -689,7 +689,7 @@ client.post(url).header("authorization", format!("Bearer {}", &*key));
 | `GitterAdapter` | `token: Zeroizing<String>` |
 | `GotifyAdapter` | `app_token: Zeroizing<String>`, `client_token: Zeroizing<String>` |
 
-**Web Search** (`openfang-runtime/src/web_search.rs`):
+**Web Search** (`omtae-runtime/src/web_search.rs`):
 
 ```rust
 fn resolve_api_key(env_var: &str) -> Option<Zeroizing<String>> {
@@ -697,7 +697,7 @@ fn resolve_api_key(env_var: &str) -> Option<Zeroizing<String>> {
 }
 ```
 
-**Embedding** (`openfang-runtime/src/embedding.rs`):
+**Embedding** (`omtae-runtime/src/embedding.rs`):
 
 | Struct | Field |
 |--------|-------|
@@ -714,9 +714,9 @@ the secret is overwritten as soon as it is no longer needed.
 
 ## 9. OFP Mutual Authentication
 
-**Source:** `openfang-wire/src/peer.rs`
+**Source:** `omtae-wire/src/peer.rs`
 
-The OpenFang Wire Protocol (OFP) uses HMAC-SHA256 with nonce-based mutual
+The OMTAE Wire Protocol (OFP) uses HMAC-SHA256 with nonce-based mutual
 authentication over TCP connections.
 
 ### 9.1 Pre-Shared Key Requirement
@@ -792,7 +792,7 @@ timing side-channel attacks.
 
 ## 10. Security Headers
 
-**Source:** `openfang-api/src/middleware.rs`
+**Source:** `omtae-api/src/middleware.rs`
 
 The `security_headers` middleware is applied to **all** API responses:
 
@@ -837,9 +837,9 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Bo
 
 ## 11. GCRA Rate Limiter
 
-**Source:** `openfang-api/src/rate_limiter.rs`
+**Source:** `omtae-api/src/rate_limiter.rs`
 
-OpenFang uses the Generic Cell Rate Algorithm (GCRA) for cost-aware API
+OMTAE uses the Generic Cell Rate Algorithm (GCRA) for cost-aware API
 rate limiting via the `governor` crate.
 
 ### 11.1 Algorithm
@@ -926,7 +926,7 @@ entry cleanup.
 
 ## 12. Path Traversal Prevention
 
-**Source:** `openfang-runtime/src/host_functions.rs`
+**Source:** `omtae-runtime/src/host_functions.rs`
 
 Two functions provide defense-in-depth against directory traversal.
 
@@ -995,7 +995,7 @@ pattern like `"*"`, path traversal is still blocked.
 
 ## 13. Subprocess Sandbox
 
-**Source:** `openfang-runtime/src/subprocess_sandbox.rs`
+**Source:** `omtae-runtime/src/subprocess_sandbox.rs`
 
 When the runtime spawns child processes (e.g., for the shell tool or skill
 execution), the inherited environment must be stripped to prevent accidental
@@ -1076,7 +1076,7 @@ process, preventing shell injection via metacharacters like `;`, `|`, `&&`.
 
 ## 14. Prompt Injection Scanner
 
-**Source:** `openfang-skills/src/verify.rs`
+**Source:** `omtae-skills/src/verify.rs`
 
 The `SkillVerifier` provides two scanning functions: `security_scan()` for
 skill manifests and `scan_prompt_content()` for skill prompt text (SKILL.md
@@ -1154,7 +1154,7 @@ pub struct SkillWarning {
 
 ## 15. Loop Guard
 
-**Source:** `openfang-runtime/src/loop_guard.rs`
+**Source:** `omtae-runtime/src/loop_guard.rs`
 
 The `LoopGuard` tracks tool calls within a single agent loop execution to
 detect when the agent is stuck calling the same tool repeatedly.
@@ -1234,7 +1234,7 @@ an agent that calls `web_search({"query": "test"})` 5 times will be blocked.
 
 ## 16. Session Repair
 
-**Source:** `openfang-runtime/src/session_repair.rs`
+**Source:** `omtae-runtime/src/session_repair.rs`
 
 Before sending message history to the LLM, this module validates and repairs
 common structural issues that would cause API errors.
@@ -1290,9 +1290,9 @@ fn merge_content(dst: &mut MessageContent, src: MessageContent) {
 
 ## 17. Health Endpoint Redaction
 
-**Source:** `openfang-api/src/routes.rs`
+**Source:** `omtae-api/src/routes.rs`
 
-OpenFang provides two health endpoints with different information levels.
+OMTAE provides two health endpoints with different information levels.
 
 ### 17.1 Public Endpoint: `GET /api/health`
 

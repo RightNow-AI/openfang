@@ -1,6 +1,6 @@
 //! Bundled skills — compile-time embedded SKILL.md files.
 //!
-//! Ships 60 prompt-only skills inside the OpenFang binary via `include_str!()`.
+//! Ships 60 prompt-only skills inside the OMTAE binary via `include_str!()`.
 //! User-installed skills with the same name override bundled ones.
 
 use crate::openclaw_compat::convert_skillmd_str;

@@ -1,4 +1,4 @@
-export class OpenFangError extends Error {
+export class OMTAEError extends Error {
   status: number;
   body: string;
   constructor(message: string, status: number, body: string);
@@ -23,7 +23,7 @@ export interface StreamEvent {
   [key: string]: unknown;
 }
 
-export class OpenFang {
+export class OMTAE {
   baseUrl: string;
   agents: AgentResource;
   sessions: SessionResource;

@@ -3928,6 +3928,372 @@ dependencies = [
 ]
 
 [[package]]
+name = "omtae-api"
+version = "0.6.9"
+dependencies = [
+ "argon2",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "dashmap",
+ "futures",
+ "governor",
+ "hex",
+ "hmac",
+ "omtae-channels",
+ "omtae-extensions",
+ "omtae-hands",
+ "omtae-kernel",
+ "omtae-memory",
+ "omtae-migrate",
+ "omtae-runtime",
+ "omtae-skills",
+ "omtae-types",
+ "omtae-wire",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "socket2 0.5.10",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tokio-test",
+ "toml 0.9.12+spec-1.1.0",
+ "tower",
+ "tower-http",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "omtae-channels"
+version = "0.6.9"
+dependencies = [
+ "aes",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "cbc",
+ "chrono",
+ "dashmap",
+ "futures",
+ "hex",
+ "hmac",
+ "html-escape",
+ "imap",
+ "lettre",
+ "mailparse",
+ "native-tls",
+ "omtae-types",
+ "prost",
+ "regex-lite",
+ "reqwest 0.12.28",
+ "roxmltree",
+ "rumqttc",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "tokio",
+ "tokio-stream",
+ "tokio-test",
+ "tokio-tungstenite 0.24.0",
+ "tracing",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "omtae-cli"
+version = "0.6.9"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "colored",
+ "dirs 6.0.0",
+ "omtae-api",
+ "omtae-extensions",
+ "omtae-kernel",
+ "omtae-migrate",
+ "omtae-runtime",
+ "omtae-skills",
+ "omtae-types",
+ "ratatui",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "omtae-desktop"
+version = "0.6.9"
+dependencies = [
+ "axum",
+ "omtae-api",
+ "omtae-kernel",
+ "omtae-types",
+ "open",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-dialog",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-notification",
+ "tauri-plugin-shell",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "omtae-extensions"
+version = "0.6.9"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "dashmap",
+ "dirs 6.0.0",
+ "omtae-types",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "omtae-hands"
+version = "0.6.9"
+dependencies = [
+ "chrono",
+ "dashmap",
+ "dirs 6.0.0",
+ "hex",
+ "omtae-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio-test",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "omtae-kernel"
+version = "0.6.9"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "cron",
+ "crossbeam",
+ "dashmap",
+ "dirs 6.0.0",
+ "futures",
+ "hex",
+ "libc",
+ "omtae-channels",
+ "omtae-extensions",
+ "omtae-hands",
+ "omtae-memory",
+ "omtae-runtime",
+ "omtae-skills",
+ "omtae-types",
+ "omtae-wire",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "omtae-memory"
+version = "0.6.9"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "omtae-types",
+ "reqwest 0.12.28",
+ "rmp-serde",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "omtae-migrate"
+version = "0.6.9"
+dependencies = [
+ "chrono",
+ "dirs 6.0.0",
+ "json5",
+ "omtae-types",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
+name = "omtae-runtime"
+version = "0.6.9"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "dashmap",
+ "futures",
+ "hex",
+ "http",
+ "omtae-memory",
+ "omtae-skills",
+ "omtae-types",
+ "regex-lite",
+ "reqwest 0.12.28",
+ "rmcp",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shlex",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-test",
+ "tokio-tungstenite 0.24.0",
+ "tracing",
+ "uuid",
+ "wasmtime",
+ "zeroize",
+]
+
+[[package]]
+name = "omtae-skills"
+version = "0.6.9"
+dependencies = [
+ "chrono",
+ "ed25519-dalek",
+ "hex",
+ "omtae-types",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "uuid",
+ "walkdir",
+ "zip",
+]
+
+[[package]]
+name = "omtae-types"
+version = "0.6.9"
+dependencies = [
+ "async-trait",
+ "bitflags 2.11.0",
+ "chrono",
+ "dirs 6.0.0",
+ "ed25519-dalek",
+ "hex",
+ "rand 0.8.5",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror 2.0.18",
+ "toml 0.9.12+spec-1.1.0",
+ "uuid",
+]
+
+[[package]]
+name = "omtae-wire"
+version = "0.6.9"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dashmap",
+ "hex",
+ "hmac",
+ "omtae-types",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3955,371 +4321,6 @@ dependencies = [
  "is-wsl",
  "libc",
  "pathdiff",
-]
-
-[[package]]
-name = "openfang-api"
-version = "0.6.9"
-dependencies = [
- "argon2",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "chrono",
- "dashmap",
- "futures",
- "governor",
- "hex",
- "hmac",
- "openfang-channels",
- "openfang-extensions",
- "openfang-hands",
- "openfang-kernel",
- "openfang-memory",
- "openfang-migrate",
- "openfang-runtime",
- "openfang-skills",
- "openfang-types",
- "openfang-wire",
- "rand 0.8.5",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2",
- "socket2 0.5.10",
- "subtle",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tokio-test",
- "toml 0.9.12+spec-1.1.0",
- "tower",
- "tower-http",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "openfang-channels"
-version = "0.6.9"
-dependencies = [
- "aes",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "cbc",
- "chrono",
- "dashmap",
- "futures",
- "hex",
- "hmac",
- "html-escape",
- "imap",
- "lettre",
- "mailparse",
- "native-tls",
- "openfang-types",
- "prost",
- "regex-lite",
- "reqwest 0.12.28",
- "roxmltree",
- "rumqttc",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "tokio",
- "tokio-stream",
- "tokio-test",
- "tokio-tungstenite 0.24.0",
- "tracing",
- "url",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "openfang-cli"
-version = "0.6.9"
-dependencies = [
- "clap",
- "clap_complete",
- "colored",
- "dirs 6.0.0",
- "openfang-api",
- "openfang-extensions",
- "openfang-kernel",
- "openfang-migrate",
- "openfang-runtime",
- "openfang-skills",
- "openfang-types",
- "ratatui",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "openfang-desktop"
-version = "0.6.9"
-dependencies = [
- "axum",
- "open",
- "openfang-api",
- "openfang-kernel",
- "openfang-types",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-dialog",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-notification",
- "tauri-plugin-shell",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "openfang-extensions"
-version = "0.6.9"
-dependencies = [
- "aes-gcm",
- "argon2",
- "axum",
- "base64 0.22.1",
- "chrono",
- "dashmap",
- "dirs 6.0.0",
- "openfang-types",
- "rand 0.8.5",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "url",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "openfang-hands"
-version = "0.6.9"
-dependencies = [
- "chrono",
- "dashmap",
- "dirs 6.0.0",
- "hex",
- "openfang-types",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "tokio-test",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "openfang-kernel"
-version = "0.6.9"
-dependencies = [
- "async-trait",
- "chrono",
- "chrono-tz",
- "cron",
- "crossbeam",
- "dashmap",
- "dirs 6.0.0",
- "futures",
- "hex",
- "libc",
- "openfang-channels",
- "openfang-extensions",
- "openfang-hands",
- "openfang-memory",
- "openfang-runtime",
- "openfang-skills",
- "openfang-types",
- "openfang-wire",
- "rand 0.8.5",
- "reqwest 0.12.28",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "openfang-memory"
-version = "0.6.9"
-dependencies = [
- "async-trait",
- "chrono",
- "openfang-types",
- "reqwest 0.12.28",
- "rmp-serde",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "openfang-migrate"
-version = "0.6.9"
-dependencies = [
- "chrono",
- "dirs 6.0.0",
- "json5",
- "openfang-types",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.18",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "uuid",
- "walkdir",
-]
-
-[[package]]
-name = "openfang-runtime"
-version = "0.6.9"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "chrono",
- "dashmap",
- "futures",
- "hex",
- "http",
- "openfang-memory",
- "openfang-skills",
- "openfang-types",
- "regex-lite",
- "reqwest 0.12.28",
- "rmcp",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "shlex",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tokio-test",
- "tokio-tungstenite 0.24.0",
- "tracing",
- "uuid",
- "wasmtime",
- "zeroize",
-]
-
-[[package]]
-name = "openfang-skills"
-version = "0.6.9"
-dependencies = [
- "chrono",
- "ed25519-dalek",
- "hex",
- "openfang-types",
- "rand 0.8.5",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "uuid",
- "walkdir",
- "zip",
-]
-
-[[package]]
-name = "openfang-types"
-version = "0.6.9"
-dependencies = [
- "async-trait",
- "bitflags 2.11.0",
- "chrono",
- "dirs 6.0.0",
- "ed25519-dalek",
- "hex",
- "rand 0.8.5",
- "rmp-serde",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "toml 0.9.12+spec-1.1.0",
- "uuid",
-]
-
-[[package]]
-name = "openfang-wire"
-version = "0.6.9"
-dependencies = [
- "async-trait",
- "chrono",
- "dashmap",
- "hex",
- "hmac",
- "openfang-types",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "tracing",
- "uuid",
 ]
 
 [[package]]

@@ -17,9 +17,314 @@
 //!   warnings for the same call.
 //! - **Statistics snapshot**: exposes internal state for debugging and API.
 
+use omtae_types::message::{ContentBlock, Message, MessageContent, Role};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+
+/// Injected when the agent repeats the same planning text without tool calls.
+pub const PLANNING_LOOP_NUDGE: &str = "[System: STOP PLANNING — call tools now. You repeated the same planning text without executing tools. Use shell_exec, file_list, memory_recall, or web_search immediately. Do not reply with more planning prose.]";
+
+/// Injected on first planning-only response (no tools yet).
+pub const PLANNING_WITHOUT_TOOLS_NUDGE: &str = "[System: You wrote planning text without calling tools. Execute tools NOW (shell_exec, file_list, memory_recall). Max one planning line, then a tool call. Never claim workspace/memory status without tool output.]";
+
+/// Injected when the agent states factual claims without any tool evidence.
+pub const TOOL_REQUIRED_NUDGE: &str = "[System: TOOL_REQUIRED — You stated factual claims (paths, URLs, status, lists, or counts) without tool evidence in this conversation. Call shell_exec, file_list, web_search, memory_recall, or curl /api/brain/* NOW. Do not guess workspace, brain vault, peer agents, or service status.]";
+
+/// Outcome when the agent loops on planning text without tool calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanningLoopAction {
+    Reprompt(&'static str),
+    ForceEnd(String),
+}
+
+/// Extract visible text from an assistant message for repetition checks.
+pub fn assistant_message_text(msg: &Message) -> String {
+    match &msg.content {
+        MessageContent::Text(t) => t.clone(),
+        MessageContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+/// Normalize assistant text to a prefix for repetition detection.
+pub fn assistant_text_prefix(text: &str) -> String {
+    let t = text.trim().to_lowercase();
+    let end = t.find('\n').unwrap_or(t.len()).min(80);
+    t[..end].trim().to_string()
+}
+
+/// Topic stem for fuzzy planning-loop detection (same intent, wording drifts).
+pub fn assistant_planning_stem(text: &str) -> String {
+    let t = text.trim().to_lowercase();
+    if t.contains("obsidian") && t.contains("brain") {
+        return "topic:obsidian-brain".to_string();
+    }
+    if t.contains("obsidian") {
+        return "topic:obsidian".to_string();
+    }
+    for marker in [
+        " - let me ",
+        " let me ",
+        " i'll ",
+        " i will ",
+        " looking at ",
+        " let me also ",
+    ] {
+        if let Some(idx) = t.find(marker) {
+            let stem = t[..idx].trim();
+            if stem.len() >= 12 {
+                return stem.to_string();
+            }
+        }
+    }
+    assistant_text_prefix(text)
+}
+
+/// Count prior assistant turns whose opening prefix matches `prefix`.
+pub fn count_matching_assistant_prefix(messages: &[Message], prefix: &str) -> u32 {
+    if prefix.len() < 15 {
+        return 0;
+    }
+    messages
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .map(|m| assistant_text_prefix(&assistant_message_text(m)))
+        .filter(|p| p == prefix)
+        .count() as u32
+}
+
+/// Count prior assistant turns with the same planning stem (fuzzy).
+pub fn count_matching_planning_stem(messages: &[Message], stem: &str) -> u32 {
+    if stem.len() < 8 && !stem.starts_with("topic:") {
+        return 0;
+    }
+    messages
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .map(|m| assistant_planning_stem(&assistant_message_text(m)))
+        .filter(|s| s == stem)
+        .count() as u32
+}
+
+/// Count prior assistant turns that are planning prose without tools.
+pub fn count_prior_planning_prose(messages: &[Message]) -> u32 {
+    messages
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .filter(|m| planning_without_tools_detected(&assistant_message_text(m)))
+        .count() as u32
+}
+
+/// True when the assistant turn includes ToolResult blocks from prior tool calls.
+pub fn has_tool_results_in_context(messages: &[Message]) -> bool {
+    messages.iter().any(|m| {
+        matches!(
+            &m.content,
+            MessageContent::Blocks(blocks)
+                if blocks
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+        )
+    })
+}
+
+/// Detect meta-narration about the user's intent (planning without action).
+pub fn meta_narration_detected(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "the user is asking about",
+        "the user wants",
+        "the user is asking",
+        "based on the user's question",
+        "the user mentioned",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+}
+
+/// Count assistant turns with meta-narration in this loop (including current text).
+pub fn count_meta_narration(messages: &[Message], current: &str) -> u32 {
+    let prior = messages
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .filter(|m| meta_narration_detected(&assistant_message_text(m)))
+        .count() as u32;
+    prior + u32::from(meta_narration_detected(current))
+}
+
+/// Detect factual claims that require tool backing (URLs, paths, status, lists, counts).
+pub fn contains_factual_claims(text: &str) -> bool {
+    let lower = text.to_lowercase();
+
+    if text.contains("https://") || text.contains("http://") {
+        return true;
+    }
+
+    if text.contains("/home/")
+        || text.contains("~/.")
+        || text.contains("/etc/")
+        || text.contains("/api/brain/")
+        || lower.contains("vault at ")
+    {
+        return true;
+    }
+
+    let status_patterns = [
+        "is running",
+        "is healthy",
+        "status: ok",
+        "status: warning",
+        "status: critical",
+        "peer agent",
+        "agents listed",
+        "connected peers",
+        "daemon is",
+        "service is",
+        "vault contains",
+        "brain status",
+        "obsidian vault",
+        "found ",
+        "there are ",
+        "currently running",
+        "currently active",
+    ];
+    if status_patterns.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+
+    let numbered = text
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+                && (trimmed.contains(". ") || trimmed.contains(") "))
+        })
+        .count();
+    if numbered >= 3 {
+        return true;
+    }
+
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    for window in words.windows(2) {
+        if let [a, b] = window {
+            if a.chars().all(|c| c.is_ascii_digit())
+                && matches!(
+                    *b,
+                    "agents" | "files" | "peers" | "items" | "results" | "skills" | "agents."
+                )
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// ECC-inspired verification gate: block factual claims without tool evidence.
+pub fn check_verification_gate(
+    messages: &[Message],
+    text: &str,
+    any_tools_executed: bool,
+    verification_reprompts: u32,
+) -> Option<PlanningLoopAction> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    if any_tools_executed || has_tool_results_in_context(messages) {
+        return None;
+    }
+    if !contains_factual_claims(text) {
+        return None;
+    }
+    if verification_reprompts < 2 {
+        return Some(PlanningLoopAction::Reprompt(TOOL_REQUIRED_NUDGE));
+    }
+    Some(PlanningLoopAction::ForceEnd(
+        "TOOL_REQUIRED: Stopped — factual claims without tool evidence. Use shell_exec, file_list, web_search, or curl /api/brain/status.".to_string(),
+    ))
+}
+
+/// Detect planning prose without tool execution (first-offense nudge).
+pub fn planning_without_tools_detected(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "let me check",
+        "let me also check",
+        "i'll check",
+        "i will check",
+        "checking the workspace",
+        "checking workspace",
+        "check workspace and memory",
+        "let me look",
+        "let me look around",
+        "i need to check",
+        "first i'll",
+        "first i will",
+        "looking at the peer",
+        "peer agents listed",
+        "obsidian vault",
+        "obsidian skill",
+        "related setup",
+        "related files",
+        "the user is asking about",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+}
+
+/// Detect repeated planning text (same prefix 3x) or planning without tools.
+pub fn check_planning_loop(
+    messages: &[Message],
+    text: &str,
+    any_tools_executed: bool,
+    planning_reprompts: u32,
+) -> Option<PlanningLoopAction> {
+    if any_tools_executed || text.trim().is_empty() {
+        return None;
+    }
+    let prefix = assistant_text_prefix(text);
+    let stem = assistant_planning_stem(text);
+    let exact_repeat = count_matching_assistant_prefix(messages, &prefix) + 1;
+    let stem_repeat = count_matching_planning_stem(messages, &stem) + 1;
+    let planning_prose_repeat = count_prior_planning_prose(messages) + 1;
+    let meta_repeat = count_meta_narration(messages, text);
+    let repeat_count = exact_repeat
+        .max(stem_repeat)
+        .max(planning_prose_repeat)
+        .max(if meta_repeat >= 2 { meta_repeat } else { 0 });
+
+    if repeat_count >= 2 {
+        if planning_reprompts < 1 {
+            return Some(PlanningLoopAction::Reprompt(PLANNING_LOOP_NUDGE));
+        }
+        return Some(PlanningLoopAction::ForceEnd(format!(
+            "Stopped after repeating the same planning text {repeat_count} times without tool calls. \
+             Run shell_exec or file_list on your next message."
+        )));
+    }
+    if planning_without_tools_detected(text) {
+        if planning_reprompts < 2 {
+            return Some(PlanningLoopAction::Reprompt(PLANNING_WITHOUT_TOOLS_NUDGE));
+        }
+        return Some(PlanningLoopAction::ForceEnd(
+            "Stopped after planning prose without tool calls. Use shell_exec (curl /api/brain/status, \
+             file_list) or web_search — do not repeat planning."
+                .to_string(),
+        ));
+    }
+    None
+}
 
 /// Tools that are expected to be polled repeatedly.
 const POLL_TOOLS: &[&str] = &[
@@ -51,6 +356,8 @@ pub struct LoopGuardConfig {
     pub ping_pong_min_repeats: u32,
     /// Max warnings per unique tool call hash before upgrading to Block.
     pub max_warnings_per_call: u32,
+    /// Cap `agent_send` calls per agent loop (orchestrator / meta-agents).
+    pub max_agent_send_per_loop: Option<u32>,
 }
 
 impl Default for LoopGuardConfig {
@@ -64,6 +371,7 @@ impl Default for LoopGuardConfig {
             outcome_block_threshold: 3,
             ping_pong_min_repeats: 3,
             max_warnings_per_call: 3,
+            max_agent_send_per_loop: None,
         }
     }
 }
@@ -119,6 +427,8 @@ pub struct LoopGuard {
     blocked_calls: u32,
     /// Map from call hash to tool name (for stats reporting).
     hash_to_tool: HashMap<String, String>,
+    /// `agent_send` invocations in this loop (for delegation caps).
+    agent_send_calls: u32,
 }
 
 impl LoopGuard {
@@ -135,6 +445,7 @@ impl LoopGuard {
             poll_counts: HashMap::new(),
             blocked_calls: 0,
             hash_to_tool: HashMap::new(),
+            agent_send_calls: 0,
         }
     }
 
@@ -154,6 +465,21 @@ impl LoopGuard {
                  The agent appears to be stuck.",
                 self.config.global_circuit_breaker
             ));
+        }
+
+        // Per-turn delegation cap (orchestrator agent_send storms)
+        if tool_name == "agent_send" {
+            self.agent_send_calls += 1;
+            if let Some(max) = self.config.max_agent_send_per_loop {
+                if self.agent_send_calls > max {
+                    self.blocked_calls += 1;
+                    return LoopGuardVerdict::CircuitBreak(format!(
+                        "Delegation limit: agent_send called {} times (max {max} per turn). \
+                         Synthesize results from specialists already contacted and reply to the user.",
+                        self.agent_send_calls
+                    ));
+                }
+            }
         }
 
         let hash = Self::compute_hash(tool_name, params);
@@ -183,13 +509,18 @@ impl LoopGuard {
 
         // Determine effective thresholds (poll tools get relaxed thresholds)
         let is_poll = Self::is_poll_call(tool_name, params);
-        let multiplier = if is_poll {
-            self.config.poll_multiplier
+        let is_delegate = matches!(tool_name, "agent_send" | "agent_list" | "agent_spawn");
+        let (effective_warn, effective_block) = if is_delegate {
+            (2, 4)
+        } else if is_poll {
+            let m = self.config.poll_multiplier;
+            (
+                self.config.warn_threshold * m,
+                self.config.block_threshold * m,
+            )
         } else {
-            1
+            (self.config.warn_threshold, self.config.block_threshold)
         };
-        let effective_warn = self.config.warn_threshold * multiplier;
-        let effective_block = self.config.block_threshold * multiplier;
 
         // Check per-hash thresholds
         if count_val >= effective_block {
@@ -945,5 +1276,122 @@ mod tests {
         let stats = guard.stats();
         assert_eq!(stats.total_calls, 50);
         assert_eq!(stats.unique_calls, 50);
+    }
+
+    // ========================================================================
+    // Planning text loop detection
+    // ========================================================================
+
+    #[test]
+    fn test_planning_without_tools_nudge() {
+        let text = "Let me check workspace and memory first.";
+        let action = check_planning_loop(&[], text, false, 0);
+        assert!(matches!(
+            action,
+            Some(PlanningLoopAction::Reprompt(PLANNING_WITHOUT_TOOLS_NUDGE))
+        ));
+    }
+
+    #[test]
+    fn test_planning_loop_same_prefix_second_time() {
+        let msg = |t: &str| Message::assistant(t.to_string());
+        let messages = vec![msg("Let me check workspace and memory for status.")];
+        let action = check_planning_loop(
+            &messages,
+            "Let me check workspace and memory for status.",
+            false,
+            0,
+        );
+        assert!(matches!(
+            action,
+            Some(PlanningLoopAction::Reprompt(PLANNING_LOOP_NUDGE))
+        ));
+    }
+
+    #[test]
+    fn test_planning_loop_force_end_after_nudge() {
+        let msg = |t: &str| Message::assistant(t.to_string());
+        let messages = vec![
+            msg("Let me check workspace and memory for status."),
+            msg("Let me check workspace and memory for status."),
+        ];
+        let action = check_planning_loop(
+            &messages,
+            "Let me check workspace and memory for status.",
+            false,
+            1,
+        );
+        assert!(matches!(action, Some(PlanningLoopAction::ForceEnd(_))));
+    }
+
+    #[test]
+    fn test_planning_loop_skipped_after_tools() {
+        let action = check_planning_loop(
+            &[],
+            "Let me check workspace and memory.",
+            true,
+            0,
+        );
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn test_obsidian_brain_stem_catches_wording_drift() {
+        let msg = |t: &str| Message::assistant(t.to_string());
+        let messages = vec![msg(
+            "The user is asking about their Obsidian visual brain - let me check peer agents.",
+        )];
+        let action = check_planning_loop(
+            &messages,
+            "The user is asking about their Obsidian visual brain - let me look around for vault files.",
+            false,
+            0,
+        );
+        assert!(matches!(
+            action,
+            Some(PlanningLoopAction::Reprompt(PLANNING_LOOP_NUDGE))
+        ));
+        assert_eq!(
+            assistant_planning_stem("Obsidian visual brain - let me check"),
+            "topic:obsidian-brain"
+        );
+    }
+
+    #[test]
+    fn test_verification_gate_blocks_unbacked_claims() {
+        let text = "There are 5 peer agents listed. The brain vault at /home/jay/vaults/omtae-brain is running.";
+        let action = check_verification_gate(&[], text, false, 0);
+        assert!(matches!(
+            action,
+            Some(PlanningLoopAction::Reprompt(TOOL_REQUIRED_NUDGE))
+        ));
+    }
+
+    #[test]
+    fn test_verification_gate_allows_after_tools() {
+        let text = "There are 5 peer agents listed.";
+        let action = check_verification_gate(&[], text, true, 0);
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn test_verification_gate_allows_opinion_without_facts() {
+        let text = "Happy to help with your question about Obsidian.";
+        let action = check_verification_gate(&[], text, false, 0);
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn test_meta_narration_counts_toward_loop() {
+        let msg = |t: &str| Message::assistant(t.to_string());
+        let messages = vec![msg("The user is asking about their brain vault.")];
+        assert_eq!(count_meta_narration(&messages, "The user wants Obsidian info."), 2);
+    }
+
+    #[test]
+    fn test_planning_force_end_after_two_nudges() {
+        let text = "Let me check the obsidian vault and related files.";
+        let action = check_planning_loop(&[], text, false, 2);
+        assert!(matches!(action, Some(PlanningLoopAction::ForceEnd(_))));
     }
 }

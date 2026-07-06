@@ -8,8 +8,8 @@
 //! 3. Truncate historical tool results to 2K chars each
 //! 4. Return error suggesting /reset or /compact
 
-use openfang_types::message::{ContentBlock, Message, MessageContent, Role};
-use openfang_types::tool::ToolDefinition;
+use omtae_types::message::{ContentBlock, Message, MessageContent, Role};
+use omtae_types::tool::ToolDefinition;
 use tracing::{debug, warn};
 
 /// Adjust a drain boundary so it does not split a ToolUse/ToolResult pair.
@@ -121,8 +121,18 @@ pub fn recover_from_overflow(
     context_window: usize,
 ) -> RecoveryStage {
     let estimated = estimate_tokens(messages, system_prompt, tools);
-    let threshold_70 = (context_window as f64 * 0.70) as usize;
-    let threshold_90 = (context_window as f64 * 0.90) as usize;
+    // Tighter recovery for smaller context windows (local vLLM models).
+    let (low_ratio, high_ratio) = if context_window <= 8_192 {
+        (0.50, 0.72)
+    } else if context_window <= 16_384 {
+        (0.55, 0.75)
+    } else if context_window <= 32_768 {
+        (0.60, 0.80)
+    } else {
+        (0.70, 0.90)
+    };
+    let threshold_70 = (context_window as f64 * low_ratio) as usize;
+    let threshold_90 = (context_window as f64 * high_ratio) as usize;
 
     // No recovery needed
     if estimated <= threshold_70 {
@@ -224,7 +234,7 @@ pub fn recover_from_overflow(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openfang_types::message::{Message, Role};
+    use omtae_types::message::{Message, Role};
 
     fn make_messages(count: usize, size_each: usize) -> Vec<Message> {
         (0..count)

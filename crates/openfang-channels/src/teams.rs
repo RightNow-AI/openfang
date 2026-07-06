@@ -1,4 +1,4 @@
-//! Microsoft Teams channel adapter for the OpenFang channel bridge.
+//! Microsoft Teams channel adapter for the OMTAE channel bridge.
 //!
 //! Uses Bot Framework v3 REST API for sending messages and a lightweight axum
 //! HTTP webhook server for receiving inbound activities. OAuth2 client credentials
@@ -258,7 +258,7 @@ fn parse_teams_activity(
         sender: ChannelUser {
             platform_id: conversation_id,
             display_name: from_name.to_string(),
-            openfang_user: None,
+            omtae_user: None,
         },
         content,
         target_agent: None,
@@ -473,7 +473,7 @@ mod tests {
             "text": "Bot reply",
             "from": {
                 "id": "app-id-123",
-                "name": "OpenFang Bot"
+                "name": "OMTAE Bot"
             },
             "conversation": {
                 "id": "conv-789"

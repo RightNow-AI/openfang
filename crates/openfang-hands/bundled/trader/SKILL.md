@@ -2,7 +2,7 @@
 name: trader-hand-skill
 version: "1.0.0"
 description: "Expert knowledge for autonomous market intelligence and trading — technical analysis, risk management, Alpaca API, financial data sources"
-author: OpenFang
+author: OMTAE
 tags: [trading, finance, stocks, crypto, technical-analysis, risk-management]
 tools: [shell_exec, file_read, file_write, web_fetch, web_search, memory_store]
 runtime: prompt_only

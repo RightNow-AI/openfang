@@ -22,7 +22,7 @@ const NONCE_PLACEHOLDER: &str = "__NONCE__";
 /// Not used for the dashboard page (nonce prevents caching) but retained
 /// for potential future use by static asset handlers.
 #[allow(dead_code)]
-const ETAG: &str = concat!("\"openfang-", env!("CARGO_PKG_VERSION"), "\"");
+const ETAG: &str = concat!("\"omtae-", env!("CARGO_PKG_VERSION"), "\"");
 
 /// Embedded logo PNG for single-binary deployment.
 const LOGO_PNG: &[u8] = include_bytes!("../static/logo.png");
@@ -30,7 +30,7 @@ const LOGO_PNG: &[u8] = include_bytes!("../static/logo.png");
 /// Embedded favicon ICO for browser tabs.
 const FAVICON_ICO: &[u8] = include_bytes!("../static/favicon.ico");
 
-/// GET /logo.png — Serve the OpenFang logo.
+/// GET /logo.png — Serve the OMTAE logo.
 pub async fn logo_png() -> impl IntoResponse {
     (
         [
@@ -41,7 +41,7 @@ pub async fn logo_png() -> impl IntoResponse {
     )
 }
 
-/// GET /favicon.ico — Serve the OpenFang favicon.
+/// GET /favicon.ico — Serve the OMTAE favicon.
 pub async fn favicon_ico() -> impl IntoResponse {
     (
         [
@@ -57,6 +57,32 @@ const MANIFEST_JSON: &str = include_str!("../static/manifest.json");
 
 /// Embedded service worker for PWA support.
 const SW_JS: &str = include_str!("../static/sw.js");
+
+/// Embedded i18n translation bundles (served at `/i18n/{lang}.json`).
+const I18N_EN_JSON: &str = include_str!("../static/i18n/en.json");
+const I18N_RU_JSON: &str = include_str!("../static/i18n/ru.json");
+
+/// GET /i18n/en.json — English UI strings for the dashboard.
+pub async fn i18n_en_json() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        I18N_EN_JSON,
+    )
+}
+
+/// GET /i18n/ru.json — Russian UI strings for the dashboard.
+pub async fn i18n_ru_json() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        I18N_RU_JSON,
+    )
+}
 
 /// GET /manifest.json — Serve the PWA web app manifest.
 pub async fn manifest_json() -> impl IntoResponse {
@@ -80,7 +106,7 @@ pub async fn sw_js() -> impl IntoResponse {
     )
 }
 
-/// GET / — Serve the OpenFang Dashboard single-page application.
+/// GET / — Serve the OMTAE Dashboard single-page application.
 ///
 /// Generates a unique CSP nonce on every request and injects it into both
 /// the `<script>` tags and the `Content-Security-Policy` header. This
@@ -114,7 +140,7 @@ pub async fn webchat_page() -> impl IntoResponse {
     )
 }
 
-/// The embedded HTML/CSS/JS for the OpenFang Dashboard.
+/// The embedded HTML/CSS/JS for the OMTAE Dashboard.
 ///
 /// Assembled at compile time from organized static files.
 /// All vendor libraries (Alpine.js, marked.js, highlight.js) are bundled
@@ -143,6 +169,10 @@ const WEBCHAT_HTML: &str = concat!(
     "<script nonce=\"__NONCE__\">\n",
     include_str!("../static/vendor/chart.umd.min.js"),
     "\n</script>\n",
+    // i18n (must load before app code that calls window.i18n / window.t)
+    "<script nonce=\"__NONCE__\">\n",
+    include_str!("../static/i18n/i18n.js"),
+    "\n</script>\n",
     // App code
     "<script nonce=\"__NONCE__\">\n",
     include_str!("../static/js/api.js"),
@@ -164,6 +194,8 @@ const WEBCHAT_HTML: &str = concat!(
     include_str!("../static/js/pages/channels.js"),
     "\n",
     include_str!("../static/js/pages/skills.js"),
+    "\n",
+    include_str!("../static/js/pages/brain.js"),
     "\n",
     include_str!("../static/js/pages/hands.js"),
     "\n",

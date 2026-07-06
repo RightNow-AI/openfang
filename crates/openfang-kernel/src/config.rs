@@ -1,9 +1,9 @@
-//! Configuration loading from `~/.openfang/config.toml` with defaults.
+//! Configuration loading from `~/.omtae/config.toml` with defaults.
 //!
 //! Supports config includes: the `include` field specifies additional TOML files
 //! to load and deep-merge before the root config (root overrides includes).
 
-use openfang_types::config::KernelConfig;
+use omtae_types::config::KernelConfig;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -278,7 +278,7 @@ pub fn deep_merge_toml(base: &mut toml::Value, overlay: &toml::Value) {
 ///
 /// No-op if `root_value` is not a table or has no `bindings` array.
 fn lenient_extract_bindings(root_value: &mut toml::Value) {
-    use openfang_types::config::AgentBinding;
+    use omtae_types::config::AgentBinding;
 
     let tbl = match root_value {
         toml::Value::Table(t) => t,
@@ -341,21 +341,21 @@ fn lenient_extract_bindings(root_value: &mut toml::Value) {
 
 /// Get the default config file path.
 ///
-/// Respects `OPENFANG_HOME` env var (e.g. `OPENFANG_HOME=/opt/openfang`).
+/// Respects `OPENFANG_HOME` env var (e.g. `OPENFANG_HOME=/opt/omtae`).
 pub fn default_config_path() -> PathBuf {
-    openfang_home().join("config.toml")
+    omtae_home().join("config.toml")
 }
 
-/// Get the OpenFang home directory.
+/// Get the OMTAE home directory.
 ///
-/// Priority: `OPENFANG_HOME` env var > `~/.openfang`.
-pub fn openfang_home() -> PathBuf {
+/// Priority: `OPENFANG_HOME` env var > `~/.omtae`.
+pub fn omtae_home() -> PathBuf {
     if let Ok(home) = std::env::var("OPENFANG_HOME") {
         return PathBuf::from(home);
     }
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join(".openfang")
+        .join(".omtae")
 }
 
 #[cfg(test)]
@@ -755,6 +755,35 @@ match_rule = {{ channel = "discord", channel_id = "2" }}
             "binding with top-level field typo should be dropped"
         );
         assert_eq!(config.bindings[0].agent, "good");
+    }
+
+    #[test]
+    fn test_watchdog_manual_allowlist_deserializes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"
+log_level = "info"
+
+[agents]
+autospawn = ["coder"]
+
+[watchdog]
+kill_disallowed = false
+manual_allowlist = ["orchestrator", "browser-hand"]
+"#
+        )
+        .unwrap();
+        drop(f);
+
+        let config = load_config(Some(&path));
+        assert_eq!(
+            config.watchdog.manual_allowlist,
+            vec!["orchestrator".to_string(), "browser-hand".to_string()]
+        );
+        assert!(!config.watchdog.kill_disallowed);
     }
 
     #[test]

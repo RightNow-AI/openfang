@@ -4,8 +4,8 @@
 //! duplicate/similar memories.
 
 use chrono::Utc;
-use openfang_types::error::{OpenFangError, OpenFangResult};
-use openfang_types::memory::ConsolidationReport;
+use omtae_types::error::{OMTAEError, OMTAEResult};
+use omtae_types::memory::ConsolidationReport;
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 
@@ -24,12 +24,12 @@ impl ConsolidationEngine {
     }
 
     /// Run a consolidation cycle: decay old memories.
-    pub fn consolidate(&self) -> OpenFangResult<ConsolidationReport> {
+    pub fn consolidate(&self) -> OMTAEResult<ConsolidationReport> {
         let start = std::time::Instant::now();
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
 
         // Decay confidence of memories not accessed in the last 7 days
         let cutoff = (Utc::now() - chrono::Duration::days(7)).to_rfc3339();
@@ -41,7 +41,7 @@ impl ConsolidationEngine {
                  WHERE deleted = 0 AND accessed_at < ?2 AND confidence > 0.1",
                 rusqlite::params![decay_factor, cutoff],
             )
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 

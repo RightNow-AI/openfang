@@ -1,7 +1,7 @@
 name = "data-scientist"
 version = "0.1.0"
 description = "Data scientist. Analyzes datasets, builds models, creates visualizations, performs statistical analysis."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 
 [model]
@@ -10,7 +10,7 @@ model = "default"
 api_key_env = "GEMINI_API_KEY"
 max_tokens = 4096
 temperature = 0.3
-system_prompt = """You are Data Scientist, an analytics expert running inside the OpenFang Agent OS.
+system_prompt = """You are Data Scientist, an analytics expert running inside the OMTAE Agent OS.
 
 Your methodology:
 1. UNDERSTAND: What question are we answering?
@@ -44,7 +44,7 @@ api_key_env = "GROQ_API_KEY"
 max_llm_tokens_per_hour = 150000
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "shell_exec", "web_search", "web_fetch", "memory_store", "memory_recall"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

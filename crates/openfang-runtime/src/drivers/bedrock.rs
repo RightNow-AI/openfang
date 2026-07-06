@@ -4,8 +4,8 @@
 
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError};
 use async_trait::async_trait;
-use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
-use openfang_types::tool::{ToolCall, ToolDefinition};
+use omtae_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
+use omtae_types::tool::{ToolCall, ToolDefinition};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, warn};
@@ -223,7 +223,7 @@ struct BedrockErrorResponse {
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
 fn convert_messages(
-    messages: &[openfang_types::message::Message],
+    messages: &[omtae_types::message::Message],
     system: &Option<String>,
 ) -> (Vec<BedrockMessage>, Option<Vec<BedrockTextBlock>>) {
     let system_blocks = extract_system(messages, system);
@@ -252,7 +252,7 @@ fn convert_messages(
 }
 
 fn extract_system(
-    messages: &[openfang_types::message::Message],
+    messages: &[omtae_types::message::Message],
     system: &Option<String>,
 ) -> Option<Vec<BedrockTextBlock>> {
     let text = system.clone().or_else(|| {
@@ -781,8 +781,8 @@ impl LlmDriver for BedrockDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openfang_types::message::{Message, MessageContent, Role};
-    use openfang_types::tool::ToolDefinition;
+    use omtae_types::message::{Message, MessageContent, Role};
+    use omtae_types::tool::ToolDefinition;
 
     // ── Endpoint building ──────────────────────────────────────────────────────
 

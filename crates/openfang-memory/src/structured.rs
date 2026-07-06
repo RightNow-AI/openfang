@@ -1,8 +1,8 @@
 //! SQLite structured store for key-value pairs and agent persistence.
 
 use chrono::Utc;
-use openfang_types::agent::{AgentEntry, AgentId};
-use openfang_types::error::{OpenFangError, OpenFangResult};
+use omtae_types::agent::{AgentEntry, AgentId};
+use omtae_types::error::{OMTAEError, OMTAEResult};
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 
@@ -19,14 +19,14 @@ impl StructuredStore {
     }
 
     /// Get a value from the key-value store.
-    pub fn get(&self, agent_id: AgentId, key: &str) -> OpenFangResult<Option<serde_json::Value>> {
+    pub fn get(&self, agent_id: AgentId, key: &str) -> OMTAEResult<Option<serde_json::Value>> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let mut stmt = conn
             .prepare("SELECT value FROM kv_store WHERE agent_id = ?1 AND key = ?2")
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         let result = stmt.query_row(rusqlite::params![agent_id.0.to_string(), key], |row| {
             let blob: Vec<u8> = row.get(0)?;
             Ok(blob)
@@ -34,11 +34,11 @@ impl StructuredStore {
         match result {
             Ok(blob) => {
                 let value: serde_json::Value = serde_json::from_slice(&blob)
-                    .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+                    .map_err(|e| OMTAEError::Serialization(e.to_string()))?;
                 Ok(Some(value))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(OpenFangError::Memory(e.to_string())),
+            Err(e) => Err(OMTAEError::Memory(e.to_string())),
         }
     }
 
@@ -48,57 +48,57 @@ impl StructuredStore {
         agent_id: AgentId,
         key: &str,
         value: serde_json::Value,
-    ) -> OpenFangResult<()> {
+    ) -> OMTAEResult<()> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let blob =
-            serde_json::to_vec(&value).map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+            serde_json::to_vec(&value).map_err(|e| OMTAEError::Serialization(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO kv_store (agent_id, key, value, version, updated_at) VALUES (?1, ?2, ?3, 1, ?4)
              ON CONFLICT(agent_id, key) DO UPDATE SET value = ?3, version = version + 1, updated_at = ?4",
             rusqlite::params![agent_id.0.to_string(), key, blob, now],
         )
-        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(())
     }
 
     /// Delete a value from the key-value store.
-    pub fn delete(&self, agent_id: AgentId, key: &str) -> OpenFangResult<()> {
+    pub fn delete(&self, agent_id: AgentId, key: &str) -> OMTAEResult<()> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         conn.execute(
             "DELETE FROM kv_store WHERE agent_id = ?1 AND key = ?2",
             rusqlite::params![agent_id.0.to_string(), key],
         )
-        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(())
     }
 
     /// List all key-value pairs for an agent.
-    pub fn list_kv(&self, agent_id: AgentId) -> OpenFangResult<Vec<(String, serde_json::Value)>> {
+    pub fn list_kv(&self, agent_id: AgentId) -> OMTAEResult<Vec<(String, serde_json::Value)>> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let mut stmt = conn
             .prepare("SELECT key, value FROM kv_store WHERE agent_id = ?1 ORDER BY key")
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         let rows = stmt
             .query_map(rusqlite::params![agent_id.0.to_string()], |row| {
                 let key: String = row.get(0)?;
                 let blob: Vec<u8> = row.get(1)?;
                 Ok((key, blob))
             })
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
         let mut pairs = Vec::new();
         for row in rows {
-            let (key, blob) = row.map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            let (key, blob) = row.map_err(|e| OMTAEError::Memory(e.to_string()))?;
             let value: serde_json::Value = serde_json::from_slice(&blob).unwrap_or_else(|_| {
                 // Fallback: try as UTF-8 string
                 String::from_utf8(blob)
@@ -111,17 +111,17 @@ impl StructuredStore {
     }
 
     /// Save an agent entry to the database.
-    pub fn save_agent(&self, entry: &AgentEntry) -> OpenFangResult<()> {
+    pub fn save_agent(&self, entry: &AgentEntry) -> OMTAEResult<()> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         // Use named-field encoding so new fields with #[serde(default)] are
         // handled gracefully when the struct evolves between versions.
         let manifest_blob = rmp_serde::to_vec_named(&entry.manifest)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+            .map_err(|e| OMTAEError::Serialization(e.to_string()))?;
         let state_str = serde_json::to_string(&entry.state)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+            .map_err(|e| OMTAEError::Serialization(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
 
         // Add session_id column if it doesn't exist yet (migration compat)
@@ -136,7 +136,7 @@ impl StructuredStore {
         );
 
         let identity_json = serde_json::to_string(&entry.identity)
-            .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+            .map_err(|e| OMTAEError::Serialization(e.to_string()))?;
 
         conn.execute(
             "INSERT INTO agents (id, name, manifest, state, created_at, updated_at, session_id, identity)
@@ -153,16 +153,16 @@ impl StructuredStore {
                 identity_json,
             ],
         )
-        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(())
     }
 
     /// Load an agent entry from the database.
-    pub fn load_agent(&self, agent_id: AgentId) -> OpenFangResult<Option<AgentEntry>> {
+    pub fn load_agent(&self, agent_id: AgentId) -> OMTAEResult<Option<AgentEntry>> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
 
         let mut stmt = conn
             .prepare("SELECT id, name, manifest, state, created_at, updated_at, session_id, identity FROM agents WHERE id = ?1")
@@ -173,7 +173,7 @@ impl StructuredStore {
                         conn.prepare("SELECT id, name, manifest, state, created_at, updated_at FROM agents WHERE id = ?1")
                     })
             })
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
         let col_count = stmt.column_count();
         let result = stmt.query_row(rusqlite::params![agent_id.0.to_string()], |row| {
@@ -204,16 +204,16 @@ impl StructuredStore {
         match result {
             Ok((name, manifest_blob, state_str, created_str, session_id_str, identity_str)) => {
                 let manifest = rmp_serde::from_slice(&manifest_blob)
-                    .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+                    .map_err(|e| OMTAEError::Serialization(e.to_string()))?;
                 let state = serde_json::from_str(&state_str)
-                    .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+                    .map_err(|e| OMTAEError::Serialization(e.to_string()))?;
                 let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now());
                 let session_id = session_id_str
                     .and_then(|s| uuid::Uuid::parse_str(&s).ok())
-                    .map(openfang_types::agent::SessionId)
-                    .unwrap_or_else(openfang_types::agent::SessionId::new);
+                    .map(omtae_types::agent::SessionId)
+                    .unwrap_or_else(omtae_types::agent::SessionId::new);
                 let identity = identity_str
                     .and_then(|s| serde_json::from_str(&s).ok())
                     .unwrap_or_default();
@@ -235,21 +235,21 @@ impl StructuredStore {
                 }))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(OpenFangError::Memory(e.to_string())),
+            Err(e) => Err(OMTAEError::Memory(e.to_string())),
         }
     }
 
     /// Remove an agent from the database.
-    pub fn remove_agent(&self, agent_id: AgentId) -> OpenFangResult<()> {
+    pub fn remove_agent(&self, agent_id: AgentId) -> OMTAEResult<()> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         conn.execute(
             "DELETE FROM agents WHERE id = ?1",
             rusqlite::params![agent_id.0.to_string()],
         )
-        .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+        .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         Ok(())
     }
 
@@ -259,11 +259,11 @@ impl StructuredStore {
     /// fields gracefully. When an agent is loaded with lenient defaults, it is
     /// automatically re-saved to upgrade the stored blob. Duplicate agent names
     /// are deduplicated (first occurrence wins).
-    pub fn load_all_agents(&self) -> OpenFangResult<Vec<AgentEntry>> {
+    pub fn load_all_agents(&self) -> OMTAEResult<Vec<AgentEntry>> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
 
         // Try with identity+session_id columns first, fall back gracefully
         let mut stmt = conn
@@ -276,7 +276,7 @@ impl StructuredStore {
             .or_else(|_| {
                 conn.prepare("SELECT id, name, manifest, state, created_at, updated_at FROM agents")
             })
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
         let col_count = stmt.column_count();
         let rows = stmt
@@ -306,7 +306,7 @@ impl StructuredStore {
                     identity_str,
                 ))
             })
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
 
         let mut agents = Vec::new();
         let mut seen_names = std::collections::HashSet::new();
@@ -329,7 +329,7 @@ impl StructuredStore {
                 continue;
             }
 
-            let agent_id = match uuid::Uuid::parse_str(&id_str).map(openfang_types::agent::AgentId)
+            let agent_id = match uuid::Uuid::parse_str(&id_str).map(omtae_types::agent::AgentId)
             {
                 Ok(id) => id,
                 Err(e) => {
@@ -338,7 +338,7 @@ impl StructuredStore {
                 }
             };
 
-            let manifest: openfang_types::agent::AgentManifest = match rmp_serde::from_slice(
+            let manifest: omtae_types::agent::AgentManifest = match rmp_serde::from_slice(
                 &manifest_blob,
             ) {
                 Ok(m) => m,
@@ -354,7 +354,7 @@ impl StructuredStore {
             // Auto-repair: re-serialize with current schema and queue for update.
             // This upgrades the stored blob so future boots don't hit lenient paths.
             let new_blob = rmp_serde::to_vec_named(&manifest)
-                .map_err(|e| OpenFangError::Serialization(e.to_string()))?;
+                .map_err(|e| OMTAEError::Serialization(e.to_string()))?;
             if new_blob != manifest_blob {
                 tracing::info!(
                     agent = %name, id = %id_str,
@@ -375,8 +375,8 @@ impl StructuredStore {
                 .unwrap_or_else(|_| Utc::now());
             let session_id = session_id_str
                 .and_then(|s| uuid::Uuid::parse_str(&s).ok())
-                .map(openfang_types::agent::SessionId)
-                .unwrap_or_else(openfang_types::agent::SessionId::new);
+                .map(omtae_types::agent::SessionId)
+                .unwrap_or_else(omtae_types::agent::SessionId::new);
 
             let identity = identity_str
                 .and_then(|s| serde_json::from_str(&s).ok())
@@ -414,14 +414,14 @@ impl StructuredStore {
     }
 
     /// List all agents in the database.
-    pub fn list_agents(&self) -> OpenFangResult<Vec<(String, String, String)>> {
+    pub fn list_agents(&self) -> OMTAEResult<Vec<(String, String, String)>> {
         let conn = self
             .conn
             .lock()
-            .map_err(|e| OpenFangError::Internal(e.to_string()))?;
+            .map_err(|e| OMTAEError::Internal(e.to_string()))?;
         let mut stmt = conn
             .prepare("SELECT id, name, state FROM agents")
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok((
@@ -430,10 +430,10 @@ impl StructuredStore {
                     row.get::<_, String>(2)?,
                 ))
             })
-            .map_err(|e| OpenFangError::Memory(e.to_string()))?;
+            .map_err(|e| OMTAEError::Memory(e.to_string()))?;
         let mut agents = Vec::new();
         for row in rows {
-            agents.push(row.map_err(|e| OpenFangError::Memory(e.to_string()))?);
+            agents.push(row.map_err(|e| OMTAEError::Memory(e.to_string()))?);
         }
         Ok(agents)
     }

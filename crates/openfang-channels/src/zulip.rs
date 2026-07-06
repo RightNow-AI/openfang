@@ -391,7 +391,7 @@ impl ChannelAdapter for ZulipAdapter {
                         sender: ChannelUser {
                             platform_id,
                             display_name: sender_name.to_string(),
-                            openfang_user: None,
+                            omtae_user: None,
                         },
                         content: msg_content,
                         target_agent: None,
@@ -441,7 +441,7 @@ impl ChannelAdapter for ZulipAdapter {
                 .await?;
         } else {
             // Use the thread_id (topic) if available, otherwise default topic
-            let topic = "OpenFang";
+            let topic = "OMTAE";
             self.api_send_message("stream", &user.platform_id, topic, &text)
                 .await?;
         }

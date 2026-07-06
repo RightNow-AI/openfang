@@ -1,18 +1,18 @@
-//! Real HTTP integration tests for the OpenFang API.
+//! Real HTTP integration tests for the OMTAE API.
 //!
 //! These tests boot a real kernel, start a real axum HTTP server on a random
 //! port, and hit actual endpoints with reqwest.  No mocking.
 //!
 //! Tests that require an LLM API call are gated behind GROQ_API_KEY.
 //!
-//! Run: cargo test -p openfang-api --test api_integration_test -- --nocapture
+//! Run: cargo test -p omtae-api --test api_integration_test -- --nocapture
 
 use axum::Router;
-use openfang_api::middleware;
-use openfang_api::routes::{self, AppState};
-use openfang_api::ws;
-use openfang_kernel::OpenFangKernel;
-use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use omtae_api::middleware;
+use omtae_api::routes::{self, AppState};
+use omtae_api::ws;
+use omtae_kernel::OMTAEKernel;
+use omtae_types::config::{DefaultModelConfig, KernelConfig};
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::cors::CorsLayer;
@@ -66,7 +66,7 @@ async fn start_test_server_with_provider(
         ..KernelConfig::default()
     };
 
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
@@ -78,7 +78,7 @@ async fn start_test_server_with_provider(
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
-        provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        provider_probe_cache: omtae_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(Default::default())),
     });
 
@@ -324,7 +324,7 @@ async fn test_list_agents_includes_inferencing_flag() {
     assert_eq!(resp.status(), 201);
     let body: serde_json::Value = resp.json().await.unwrap();
     let agent_id_str = body["agent_id"].as_str().unwrap().to_string();
-    let agent_id: openfang_types::agent::AgentId = agent_id_str.parse().unwrap();
+    let agent_id: omtae_types::agent::AgentId = agent_id_str.parse().unwrap();
 
     // Baseline: idle agent must report is_inferencing = false.
     let resp = client
@@ -429,7 +429,7 @@ async fn test_agent_session_empty() {
 ///      mode opt-in).
 #[tokio::test]
 async fn test_agent_session_filters_system_messages() {
-    use openfang_types::message::{Message, Role};
+    use omtae_types::message::{Message, Role};
 
     let server = start_test_server().await;
     let client = reqwest::Client::new();
@@ -447,7 +447,7 @@ async fn test_agent_session_filters_system_messages() {
     // Look up the agent's session id and inject a forged history that
     // contains a system-role message (simulating what an OpenAI-compat
     // client could push, or what a future regression might persist).
-    let agent_id: openfang_types::agent::AgentId = agent_id_str.parse().unwrap();
+    let agent_id: omtae_types::agent::AgentId = agent_id_str.parse().unwrap();
     let entry = server.state.kernel.registry.get(agent_id).unwrap();
     let session_id = entry.session_id;
     let mut session = server
@@ -461,7 +461,7 @@ async fn test_agent_session_filters_system_messages() {
     session.messages = vec![
         Message {
             role: Role::System,
-            content: openfang_types::message::MessageContent::Text(
+            content: omtae_types::message::MessageContent::Text(
                 "INTERNAL SYSTEM PROMPT — must not leak to UI".to_string(),
             ),
             ..Default::default()
@@ -911,7 +911,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         ..KernelConfig::default()
     };
 
-    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
 
@@ -923,18 +923,18 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         channels_config: tokio::sync::RwLock::new(Default::default()),
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
-        provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        provider_probe_cache: omtae_runtime::provider_health::ProbeCache::new(),
         budget_config: Arc::new(tokio::sync::RwLock::new(Default::default())),
     });
 
-    let api_key = state.kernel.config.api_key.trim().to_string();
+    let api_key = state.kernel.config.effective_api_key_for_auth();
     let auth_state = middleware::AuthState {
         api_key: api_key.clone(),
-        auth_enabled: state.kernel.config.auth.enabled,
-        session_secret: if !api_key.is_empty() {
-            api_key.clone()
-        } else if state.kernel.config.auth.enabled {
-            state.kernel.config.auth.password_hash.clone()
+        raw_api_key: state.kernel.config.api_key.trim().to_string(),
+        auth_enabled: state.kernel.config.dashboard_auth_enabled(),
+        session_secret: state.kernel.config.dashboard_session_secret(),
+        dashboard_pin: if state.kernel.config.dashboard.pin_auth_active() {
+            state.kernel.config.dashboard.pin.trim().to_string()
         } else {
             String::new()
         },
@@ -1286,7 +1286,7 @@ async fn test_schedules_delivery_targets_roundtrip() {
     let delivery_targets = serde_json::json!([
         { "type": "channel", "channel_type": "telegram", "recipient": "chat_12345" },
         { "type": "webhook", "url": "https://example.com/hook", "auth_header": "Bearer abc" },
-        { "type": "local_file", "path": "/tmp/openfang-test.log", "append": true },
+        { "type": "local_file", "path": "/tmp/omtae-test.log", "append": true },
         { "type": "email", "to": "alice@example.com", "subject_template": "Cron: {job}" },
     ]);
 

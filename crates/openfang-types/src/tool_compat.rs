@@ -1,12 +1,12 @@
-//! Shared tool name mappings between OpenClaw and OpenFang.
+//! Shared tool name mappings between OpenClaw and OMTAE.
 //!
 //! These mappings are used by both the migration engine and the skill system
-//! to normalize OpenClaw tool names into OpenFang equivalents.
+//! to normalize OpenClaw tool names into OMTAE equivalents.
 
-/// Map an OpenClaw tool name to its OpenFang equivalent.
+/// Map an OpenClaw tool name to its OMTAE equivalent.
 ///
 /// Returns `None` if the name has no known mapping (may already be
-/// an OpenFang tool name — check with [`is_known_openfang_tool`]).
+/// an OMTAE tool name — check with [`is_known_omtae_tool`]).
 pub fn map_tool_name(openclaw_name: &str) -> Option<&'static str> {
     match openclaw_name {
         // Claude-style tool names (capitalized)
@@ -26,7 +26,7 @@ pub fn map_tool_name(openclaw_name: &str) -> Option<&'static str> {
         "memory_save" | "memory_store" => Some("memory_store"),
         "sessions_send" | "agent_message" => Some("agent_send"),
         "sessions_list" | "agents_list" | "agent_list" => Some("agent_list"),
-        "sessions_spawn" => Some("agent_send"),
+        "sessions_spawn" | "spawn_agent" => Some("agent_spawn"),
 
         // LLM-hallucinated aliases (fs-* style names)
         "fs-read" | "fs_read" | "fsRead" | "readFile" => Some("file_read"),
@@ -40,20 +40,20 @@ pub fn map_tool_name(openclaw_name: &str) -> Option<&'static str> {
     }
 }
 
-/// Normalize a tool name to its canonical OpenFang form.
+/// Normalize a tool name to its canonical OMTAE form.
 ///
-/// If the name is already a known OpenFang tool, returns it as-is.
+/// If the name is already a known OMTAE tool, returns it as-is.
 /// Otherwise, tries to map it through [`map_tool_name`].
 /// Returns the original name if no mapping is found.
 pub fn normalize_tool_name(name: &str) -> &str {
-    if is_known_openfang_tool(name) {
+    if is_known_omtae_tool(name) {
         return name;
     }
     map_tool_name(name).unwrap_or(name)
 }
 
-/// Check if a tool name is a known OpenFang built-in tool.
-pub fn is_known_openfang_tool(name: &str) -> bool {
+/// Check if a tool name is a known OMTAE built-in tool.
+pub fn is_known_omtae_tool(name: &str) -> bool {
     matches!(
         name,
         "file_read"
@@ -127,7 +127,8 @@ mod tests {
         assert_eq!(map_tool_name("sessions_list"), Some("agent_list"));
         assert_eq!(map_tool_name("agents_list"), Some("agent_list"));
         assert_eq!(map_tool_name("agent_list"), Some("agent_list"));
-        assert_eq!(map_tool_name("sessions_spawn"), Some("agent_send"));
+        assert_eq!(map_tool_name("sessions_spawn"), Some("agent_spawn"));
+        assert_eq!(map_tool_name("spawn_agent"), Some("agent_spawn"));
 
         // LLM-hallucinated fs-* aliases
         assert_eq!(map_tool_name("fs-read"), Some("file_read"));
@@ -166,7 +167,7 @@ mod tests {
 
     #[test]
     fn test_normalize_tool_name() {
-        // Known OpenFang tools pass through unchanged
+        // Known OMTAE tools pass through unchanged
         assert_eq!(normalize_tool_name("file_read"), "file_read");
         assert_eq!(normalize_tool_name("file_write"), "file_write");
         assert_eq!(normalize_tool_name("shell_exec"), "shell_exec");
@@ -186,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_known_openfang_tool() {
+    fn test_is_known_omtae_tool() {
         // All 23 built-in tools + location_get
         let known = [
             "file_read",
@@ -216,12 +217,12 @@ mod tests {
             "location_get",
         ];
         for tool in &known {
-            assert!(is_known_openfang_tool(tool), "Expected {tool} to be known");
+            assert!(is_known_omtae_tool(tool), "Expected {tool} to be known");
         }
 
         // Unknown
-        assert!(!is_known_openfang_tool("unknown"));
-        assert!(!is_known_openfang_tool("Read"));
-        assert!(!is_known_openfang_tool("Bash"));
+        assert!(!is_known_omtae_tool("unknown"));
+        assert!(!is_known_omtae_tool("Read"));
+        assert!(!is_known_omtae_tool("Bash"));
     }
 }

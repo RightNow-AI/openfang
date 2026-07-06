@@ -1,6 +1,6 @@
-# Migrating to OpenFang
+# Migrating to OMTAE
 
-This guide covers migrating from OpenClaw (and other frameworks) to OpenFang. The migration engine handles config conversion, agent import, memory transfer, channel re-configuration, and skill scanning.
+This guide covers migrating from OpenClaw (and other frameworks) to OMTAE. The migration engine handles config conversion, agent import, memory transfer, channel re-configuration, and skill scanning.
 
 ## Table of Contents
 
@@ -19,61 +19,61 @@ This guide covers migrating from OpenClaw (and other frameworks) to OpenFang. Th
 Run a single command to migrate your entire OpenClaw workspace:
 
 ```bash
-openfang migrate --from openclaw
+omtae migrate --from openclaw
 ```
 
-This auto-detects your OpenClaw workspace at `~/.openclaw/` and imports everything into `~/.openfang/`.
+This auto-detects your OpenClaw workspace at `~/.openclaw/` and imports everything into `~/.omtae/`.
 
 ### Options
 
 ```bash
 # Specify a custom source directory
-openfang migrate --from openclaw --source-dir /path/to/openclaw/workspace
+omtae migrate --from openclaw --source-dir /path/to/openclaw/workspace
 
 # Dry run -- see what would be imported without making changes
-openfang migrate --from openclaw --dry-run
+omtae migrate --from openclaw --dry-run
 ```
 
 ### Migration Report
 
-After a successful migration, a `migration_report.md` file is saved to `~/.openfang/` with a summary of everything that was imported, skipped, or needs manual attention.
+After a successful migration, a `migration_report.md` file is saved to `~/.omtae/` with a summary of everything that was imported, skipped, or needs manual attention.
 
 ### Other Frameworks
 
 LangChain and AutoGPT migration support is planned:
 
 ```bash
-openfang migrate --from langchain   # Coming soon
-openfang migrate --from autogpt     # Coming soon
+omtae migrate --from langchain   # Coming soon
+omtae migrate --from autogpt     # Coming soon
 ```
 
 ---
 
 ## What Gets Migrated
 
-| Item | Source (OpenClaw) | Destination (OpenFang) | Status |
+| Item | Source (OpenClaw) | Destination (OMTAE) | Status |
 |------|-------------------|------------------------|--------|
-| **Config** | `~/.openclaw/config.yaml` | `~/.openfang/config.toml` | Fully automated |
-| **Agents** | `~/.openclaw/agents/*/agent.yaml` | `~/.openfang/agents/*/agent.toml` | Fully automated |
-| **Memory** | `~/.openclaw/agents/*/MEMORY.md` | `~/.openfang/agents/*/imported_memory.md` | Fully automated |
-| **Channels** | `~/.openclaw/messaging/*.yaml` | `~/.openfang/channels_import.toml` | Automated (manual merge) |
+| **Config** | `~/.openclaw/config.yaml` | `~/.omtae/config.toml` | Fully automated |
+| **Agents** | `~/.openclaw/agents/*/agent.yaml` | `~/.omtae/agents/*/agent.toml` | Fully automated |
+| **Memory** | `~/.openclaw/agents/*/MEMORY.md` | `~/.omtae/agents/*/imported_memory.md` | Fully automated |
+| **Channels** | `~/.openclaw/messaging/*.yaml` | `~/.omtae/channels_import.toml` | Automated (manual merge) |
 | **Skills** | `~/.openclaw/skills/` | Scanned and reported | Manual reinstall |
 | **Sessions** | `~/.openclaw/agents/*/sessions/` | Not migrated | Fresh start recommended |
 | **Workspace files** | `~/.openclaw/agents/*/workspace/` | Not migrated | Copy manually if needed |
 
 ### Channel Import Note
 
-Channel configurations (Telegram, Discord, Slack) are exported to a `channels_import.toml` file. You must manually merge the `[channels]` section into your `~/.openfang/config.toml`.
+Channel configurations (Telegram, Discord, Slack) are exported to a `channels_import.toml` file. You must manually merge the `[channels]` section into your `~/.omtae/config.toml`.
 
 ### Skills Note
 
 OpenClaw skills (Node.js) are detected and listed in the migration report but not automatically converted. After migration, reinstall skills using:
 
 ```bash
-openfang skill install <skill-name-or-path>
+omtae skill install <skill-name-or-path>
 ```
 
-OpenFang automatically detects OpenClaw-format skills and converts them during installation.
+OMTAE automatically detects OpenClaw-format skills and converts them during installation.
 
 ---
 
@@ -81,13 +81,13 @@ OpenFang automatically detects OpenClaw-format skills and converts them during i
 
 If you prefer migrating by hand (or need to handle edge cases), follow these steps:
 
-### 1. Initialize OpenFang
+### 1. Initialize OMTAE
 
 ```bash
-openfang init
+omtae init
 ```
 
-This creates `~/.openfang/` with a default `config.toml`.
+This creates `~/.omtae/` with a default `config.toml`.
 
 ### 2. Convert Your Config
 
@@ -103,7 +103,7 @@ memory:
   decay_rate: 0.05
 ```
 
-**OpenFang** (`~/.openfang/config.toml`):
+**OMTAE** (`~/.omtae/config.toml`):
 ```toml
 [default_model]
 provider = "anthropic"
@@ -136,12 +136,12 @@ tags:
   - dev
 ```
 
-**OpenFang** (`~/.openfang/agents/coder/agent.toml`):
+**OMTAE** (`~/.omtae/agents/coder/agent.toml`):
 ```toml
 name = "coder"
 version = "0.1.0"
 description = "A coding assistant"
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["coding", "dev"]
 
@@ -166,7 +166,7 @@ allowed_users:
   - "123456789"
 ```
 
-**OpenFang** (add to `~/.openfang/config.toml`):
+**OMTAE** (add to `~/.omtae/config.toml`):
 ```toml
 [channels.telegram]
 bot_token_env = "TELEGRAM_BOT_TOKEN"
@@ -176,10 +176,10 @@ allowed_users = ["123456789"]
 
 ### 5. Import Memory
 
-Copy any `MEMORY.md` files from OpenClaw agents to OpenFang agent directories:
+Copy any `MEMORY.md` files from OpenClaw agents to OMTAE agent directories:
 
 ```bash
-cp ~/.openclaw/agents/coder/MEMORY.md ~/.openfang/agents/coder/imported_memory.md
+cp ~/.openclaw/agents/coder/MEMORY.md ~/.omtae/agents/coder/imported_memory.md
 ```
 
 The kernel will ingest these on first boot.
@@ -188,10 +188,10 @@ The kernel will ingest these on first boot.
 
 ## Config Format Differences
 
-| Aspect | OpenClaw | OpenFang |
+| Aspect | OpenClaw | OMTAE |
 |--------|----------|----------|
 | Format | YAML | TOML |
-| Config location | `~/.openclaw/config.yaml` | `~/.openfang/config.toml` |
+| Config location | `~/.openclaw/config.yaml` | `~/.omtae/config.toml` |
 | Agent definition | `agent.yaml` | `agent.toml` |
 | Channel config | Separate files per channel | Unified in `config.toml` |
 | Tool permissions | Implicit (tool list) | Capability-based (tools, memory, network, shell) |
@@ -205,9 +205,9 @@ The kernel will ingest these on first boot.
 
 ## Tool Name Mapping
 
-Tools were renamed between OpenClaw and OpenFang for consistency. The migration engine handles this automatically.
+Tools were renamed between OpenClaw and OMTAE for consistency. The migration engine handles this automatically.
 
-| OpenClaw Tool | OpenFang Tool | Notes |
+| OpenClaw Tool | OMTAE Tool | Notes |
 |---------------|---------------|-------|
 | `read_file` | `file_read` | Noun-first naming |
 | `write_file` | `file_write` | |
@@ -225,7 +225,7 @@ Tools were renamed between OpenClaw and OpenFang for consistency. The migration 
 | `agents_list` | `agent_list` | |
 | `agent_list` | `agent_list` | |
 
-### New Tools in OpenFang
+### New Tools in OMTAE
 
 These tools have no OpenClaw equivalent:
 
@@ -251,7 +251,7 @@ These tools have no OpenClaw equivalent:
 
 OpenClaw's tool profiles map to explicit tool lists:
 
-| OpenClaw Profile | OpenFang Tools |
+| OpenClaw Profile | OMTAE Tools |
 |------------------|----------------|
 | `minimal` | `file_read`, `file_list` |
 | `coding` | `file_read`, `file_write`, `file_list`, `shell_exec`, `web_fetch` |
@@ -263,7 +263,7 @@ OpenClaw's tool profiles map to explicit tool lists:
 
 ## Provider Mapping
 
-| OpenClaw Name | OpenFang Name | API Key Env Var |
+| OpenClaw Name | OMTAE Name | API Key Env Var |
 |---------------|---------------|-----------------|
 | `anthropic` | `anthropic` | `ANTHROPIC_API_KEY` |
 | `claude` | `anthropic` | `ANTHROPIC_API_KEY` |
@@ -277,7 +277,7 @@ OpenClaw's tool profiles map to explicit tool lists:
 | `mistral` | `mistral` | `MISTRAL_API_KEY` |
 | `fireworks` | `fireworks` | `FIREWORKS_API_KEY` |
 
-### New Providers in OpenFang
+### New Providers in OMTAE
 
 | Provider | Description |
 |----------|-------------|
@@ -288,7 +288,7 @@ OpenClaw's tool profiles map to explicit tool lists:
 
 ## Feature Comparison
 
-| Feature | OpenClaw | OpenFang |
+| Feature | OpenClaw | OMTAE |
 |---------|----------|----------|
 | **Language** | Node.js / TypeScript | Rust |
 | **Config format** | YAML | TOML |
@@ -305,7 +305,7 @@ OpenClaw's tool profiles map to explicit tool lists:
 | **Event triggers** | None | Pattern-matching event triggers with templated prompts |
 | **WASM sandbox** | None | Wasmtime-based sandboxed execution |
 | **Python runtime** | None | Subprocess-based Python agent execution |
-| **Networking** | None | OFP (OpenFang Protocol) peer-to-peer |
+| **Networking** | None | OFP (OMTAE Protocol) peer-to-peer |
 | **API server** | Basic REST | REST + WebSocket + SSE streaming |
 | **WebChat UI** | Separate | Embedded in daemon |
 | **Channel adapters** | Telegram, Discord | Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Email |
@@ -324,7 +324,7 @@ OpenClaw's tool profiles map to explicit tool lists:
 The migration engine looks for `~/.openclaw/` by default. If your OpenClaw workspace is elsewhere:
 
 ```bash
-openfang migrate --from openclaw --source-dir /path/to/your/workspace
+omtae migrate --from openclaw --source-dir /path/to/your/workspace
 ```
 
 ### Agent fails to spawn after migration
@@ -339,7 +339,7 @@ Check the converted `agent.toml` for:
 OpenClaw Node.js skills must be reinstalled:
 
 ```bash
-openfang skill install /path/to/openclaw/skills/my-skill
+omtae skill install /path/to/openclaw/skills/my-skill
 ```
 
 The installer auto-detects OpenClaw format and converts the skill manifest.
@@ -349,12 +349,12 @@ The installer auto-detects OpenClaw format and converts the skill manifest.
 After migration, channels are exported to `channels_import.toml`. You must merge them into your `config.toml` manually:
 
 ```bash
-cat ~/.openfang/channels_import.toml
-# Copy the [channels.*] sections into ~/.openfang/config.toml
+cat ~/.omtae/channels_import.toml
+# Copy the [channels.*] sections into ~/.omtae/config.toml
 ```
 
 Then restart the daemon:
 
 ```bash
-openfang start
+omtae start
 ```

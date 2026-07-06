@@ -21,7 +21,7 @@
   <text x="50" y="90" fill="#e2e8f0" font-size="13" font-weight="600">Cold Start Time</text>
   <text x="50" y="104" fill="#64748b" font-size="10">Time from process launch to first API response</text>
 
-  <text x="175" y="132" text-anchor="end" fill="#e2e8f0" font-size="11">OpenFang</text>
+  <text x="175" y="132" text-anchor="end" fill="#e2e8f0" font-size="11">OMTAE</text>
   <rect x="180" y="118" width="52" height="22" rx="3" fill="url(#pf)"/>
   <text x="238" y="133" fill="#10b981" font-size="12" font-weight="700">&lt;200ms</text>
 
@@ -37,7 +37,7 @@
   <text x="50" y="240" fill="#e2e8f0" font-size="13" font-weight="600">Install Footprint</text>
   <text x="50" y="254" fill="#64748b" font-size="10">Total disk space required for full installation</text>
 
-  <text x="175" y="282" text-anchor="end" fill="#e2e8f0" font-size="11">OpenFang</text>
+  <text x="175" y="282" text-anchor="end" fill="#e2e8f0" font-size="11">OMTAE</text>
   <rect x="180" y="268" width="36" height="22" rx="3" fill="url(#pf)"/>
   <text x="222" y="283" fill="#10b981" font-size="12" font-weight="700">~32 MB</text>
   <text x="290" y="283" fill="#475569" font-size="10">(single binary)</text>
@@ -53,6 +53,6 @@
   <text x="660" y="343" fill="#475569" font-size="10">(Python + deps)</text>
 
   <!-- Bottom note -->
-  <text x="400" y="390" text-anchor="middle" fill="#64748b" font-size="10">OpenFang compiled with Rust 1.93 (release profile, LTO enabled). Python frameworks measured with pip install + dependencies.</text>
+  <text x="400" y="390" text-anchor="middle" fill="#64748b" font-size="10">OMTAE compiled with Rust 1.93 (release profile, LTO enabled). Python frameworks measured with pip install + dependencies.</text>
   <text x="400" y="404" text-anchor="middle" fill="#64748b" font-size="10">Startup = time until HTTP health endpoint responds. Install size = du -sh after clean install.</text>
 </svg>

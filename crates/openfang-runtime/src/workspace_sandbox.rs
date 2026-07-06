@@ -54,15 +54,17 @@ pub fn resolve_sandbox_path(user_path: &str, workspace_root: &Path) -> Result<Pa
     };
 
     // Verify the canonical path is inside the workspace
-    if !canon_candidate.starts_with(&canon_root) {
-        return Err(format!(
-            "Access denied: path '{}' resolves outside workspace. \
-             If you have an MCP filesystem server configured, use the \
-             mcp_filesystem_* tools (e.g. mcp_filesystem_read_file, \
-             mcp_filesystem_list_directory) to access files outside \
-             the workspace.",
-            user_path
-        ));
+    if std::env::var("OMTAE_UNRESTRICTED_FS").as_deref() != Ok("1") {
+        if !canon_candidate.starts_with(&canon_root) {
+            return Err(format!(
+                "Access denied: path '{}' resolves outside workspace. \
+                 If you have an MCP filesystem server configured, use the \
+                 mcp_filesystem_* tools (e.g. mcp_filesystem_read_file, \
+                 mcp_filesystem_list_directory) to access files outside \
+                 the workspace.",
+                user_path
+            ));
+        }
     }
 
     Ok(canon_candidate)

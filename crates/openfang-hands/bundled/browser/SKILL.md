@@ -2,7 +2,7 @@
 name: browser-automation
 version: "1.0.0"
 description: Playwright-based browser automation patterns for autonomous web interaction
-author: OpenFang
+author: OMTAE
 tags: [browser, automation, playwright, web, scraping]
 tools: [browser_navigate, browser_click, browser_type, browser_screenshot, browser_read_page, browser_close]
 runtime: prompt_only

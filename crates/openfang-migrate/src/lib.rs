@@ -1,4 +1,4 @@
-//! Migration engine for importing from other agent frameworks into OpenFang.
+//! Migration engine for importing from other agent frameworks into OMTAE.
 //!
 //! Supports importing agents, memory, sessions, skills, and channel configs
 //! from OpenClaw and other frameworks.
@@ -36,7 +36,7 @@ pub struct MigrateOptions {
     pub source: MigrateSource,
     /// Path to the source workspace directory.
     pub source_dir: PathBuf,
-    /// Path to the OpenFang home directory.
+    /// Path to the OMTAE home directory.
     pub target_dir: PathBuf,
     /// If true, only report what would be done without making changes.
     pub dry_run: bool,

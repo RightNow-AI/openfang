@@ -5,7 +5,7 @@
 //! - Slack mrkdwn: `**bold**` → `*bold*`, `[text](url)` → `<url|text>`
 //! - Plain text: strips all formatting
 
-use openfang_types::config::OutputFormat;
+use omtae_types::config::OutputFormat;
 
 /// Format a message for a specific channel output format.
 pub fn format_for_channel(text: &str, format: OutputFormat) -> String {

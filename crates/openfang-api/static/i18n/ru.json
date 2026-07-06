@@ -1,5 +1,5 @@
 {
-  "app.name": "OpenFang",
+  "app.name": "OMTAE",
   "app.version": "v",
 
   "nav.chat": "Чат",
@@ -28,9 +28,13 @@
   "auth.password": "Пароль",
   "auth.api_key_required": "Требуется API-ключ",
   "auth.api_key_desc": "Этот экземпляр требует API-ключ. Введите ключ из вашего config.toml.",
-  "auth.api_key_hint": "Добавьте api_key = \"your-key\" в начало ~/.openfang/config.toml (не внутри секции).",
+  "auth.api_key_hint": "Добавьте api_key = \"your-key\" в начало ~/.omtae/config.toml (не внутри секции).",
   "auth.enter_api_key": "Введите API-ключ...",
   "auth.unlock_dashboard": "Разблокировать панель",
+  "auth.pin_title": "Введите PIN",
+  "auth.pin_desc": "PIN панели из ~/.omtae/config.toml, секция [dashboard].",
+  "auth.pin_placeholder": "PIN 4–6 цифр",
+  "auth.pin_failed": "Неверный PIN",
   "auth.login_failed": "Ошибка входа",
 
   "status.agents_running": "агент(ов) запущено",
@@ -125,7 +129,7 @@
   "theme.dark": "Тёмная",
 
   "errors.connection_error": "Ошибка подключения",
-  "errors.daemon_unreachable": "Не удаётся связаться с демоном — запущен ли openfang?",
+  "errors.daemon_unreachable": "Не удаётся связаться с демоном — запущен ли omtae?",
   "errors.not_authorized": "Не авторизован — проверьте API-ключ",
   "errors.permission_denied": "Доступ запрещён",
   "errors.resource_not_found": "Ресурс не найден",
@@ -162,7 +166,7 @@
   "toasts.mcp_connected": "MCP подключён",
   "toasts.session_deleted": "Сессия удалена",
 
-  "overview.welcome": "Добро пожаловать в OpenFang",
+  "overview.welcome": "Добро пожаловать в OMTAE",
   "overview.getting_started": "Начало работы",
   "overview.setup_wizard": "Мастер настройки",
   "overview.steps_completed": "из 5 шагов выполнено",
@@ -197,7 +201,7 @@
   "tooltips.ready": "готово",
   "tooltips.not_configured": "не настроено",
 
-  "chat.placeholder": "Напишите OpenFang... (/ для команд)",
+  "chat.placeholder": "Напишите OMTAE... (/ для команд)",
   "chat.ready": "Готово",
   "chat.generating": "Генерация...",
   "chat.queued": "в очереди",
@@ -225,7 +229,7 @@
   "chat.stop_agent_confirm": "Остановить агента",
   "chat.agent_stopped": "Агент остановлен",
   "chat.stop_agent_failed": "Не удалось остановить агента",
-  "chat.welcome_message": "**Добро пожаловать в OpenFang Чат!**\n\n- Введите `/` для просмотра команд\n- `/help` покажет все команды\n- `/think on` включает расширенные размышления\n- `/context` покажет использование контекста\n- `/verbose off` скроет детали инструментов\n- `Ctrl+Shift+F` переключает режим фокуса\n- Перетащите файлы для прикрепления\n- `Ctrl+/` открывает палитру команд",
+  "chat.welcome_message": "**Добро пожаловать в OMTAE Чат!**\n\n- Введите `/` для просмотра команд\n- `/help` покажет все команды\n- `/think on` включает расширенные размышления\n- `/context` покажет использование контекста\n- `/verbose off` скроет детали инструментов\n- `Ctrl+Shift+F` переключает режим фокуса\n- Перетащите файлы для прикрепления\n- `Ctrl+/` открывает палитру команд",
 
   "chat.slash.help": "Показать доступные команды",
   "chat.slash.agents": "Перейти на страницу агентов",

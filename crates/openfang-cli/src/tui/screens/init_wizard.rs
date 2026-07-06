@@ -1,6 +1,6 @@
 //! Standalone ratatui init wizard: 6-step onboarding flow.
 //!
-//! Launched by `openfang init` (without `--quick`). Takes over the terminal,
+//! Launched by `omtae init` (without `--quick`). Takes over the terminal,
 //! runs its own event loop, and returns an `InitResult`.
 
 use ratatui::crossterm::event::{self, Event as CtEvent, KeyCode, KeyEventKind};
@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::tui::theme;
-use openfang_runtime::model_catalog::ModelCatalog;
-use openfang_types::model_catalog::ModelTier;
+use omtae_runtime::model_catalog::ModelCatalog;
+use omtae_types::model_catalog::ModelTier;
 
 // ── Provider metadata ──────────────────────────────────────────────────────
 
@@ -240,7 +240,7 @@ const PROVIDERS: &[ProviderInfo] = &[
         name: "vllm",
         display: "vLLM",
         env_var: "VLLM_API_KEY",
-        default_model: "local-model",
+        default_model: "Qwen2.5-Coder-32B-Instruct-AWQ",
         needs_key: false,
         hint: "local",
     },
@@ -275,7 +275,7 @@ mod tests {
         let minimax = PROVIDERS.iter().find(|provider| provider.name == "minimax");
         assert!(
             minimax.is_some(),
-            "MiniMax should be selectable in openfang init"
+            "MiniMax should be selectable in omtae init"
         );
         let minimax = minimax.unwrap();
         assert_eq!(minimax.env_var, "MINIMAX_API_KEY");
@@ -368,8 +368,8 @@ struct State {
     migration_phase: MigrationPhase,
     migration_choice_list: ListState,
     openclaw_path: Option<PathBuf>,
-    openclaw_scan: Option<openfang_migrate::openclaw::ScanResult>,
-    migration_report: Option<openfang_migrate::report::MigrationReport>,
+    openclaw_scan: Option<omtae_migrate::openclaw::ScanResult>,
+    migration_report: Option<omtae_migrate::report::MigrationReport>,
     migration_error: Option<String>,
     migration_done_at: Option<Instant>,
     migrated_provider: Option<String>,
@@ -465,7 +465,7 @@ impl State {
         let gemini_via_google = std::env::var("GOOGLE_API_KEY").is_ok();
         for (i, p) in PROVIDERS.iter().enumerate() {
             let detected = if p.name == "claude-code" {
-                openfang_runtime::drivers::claude_code::claude_code_available()
+                omtae_runtime::drivers::claude_code::claude_code_available()
             } else {
                 (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
                     || (p.name == "gemini" && gemini_via_google)
@@ -476,7 +476,7 @@ impl State {
         }
         for (i, p) in PROVIDERS.iter().enumerate() {
             let detected = if p.name == "claude-code" {
-                openfang_runtime::drivers::claude_code::claude_code_available()
+                omtae_runtime::drivers::claude_code::claude_code_available()
             } else {
                 (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
                     || (p.name == "gemini" && gemini_via_google)
@@ -521,7 +521,7 @@ impl State {
     fn is_provider_detected(&self, prov_idx: usize) -> bool {
         let p = &PROVIDERS[prov_idx];
         if p.name == "claude-code" {
-            return openfang_runtime::drivers::claude_code::claude_code_available();
+            return omtae_runtime::drivers::claude_code::claude_code_available();
         }
         (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
             || (p.name == "gemini" && std::env::var("GOOGLE_API_KEY").is_ok())
@@ -675,7 +675,7 @@ pub fn run() -> InitResult {
 
     let (test_tx, test_rx) = std::sync::mpsc::channel::<bool>();
     let (migrate_tx, migrate_rx) =
-        std::sync::mpsc::channel::<Result<openfang_migrate::report::MigrationReport, String>>();
+        std::sync::mpsc::channel::<Result<omtae_migrate::report::MigrationReport, String>>();
     let (copilot_tx, copilot_rx) = std::sync::mpsc::channel::<Result<CopilotAuthEvent, String>>();
 
     let result = loop {
@@ -748,13 +748,13 @@ pub fn run() -> InitResult {
 
         // ── Migration detection (resolves in 1 frame) ──
         if state.step == Step::Migration && state.migration_phase == MigrationPhase::Detecting {
-            match openfang_migrate::openclaw::detect_openclaw_home() {
+            match omtae_migrate::openclaw::detect_openclaw_home() {
                 None => {
                     // No OpenClaw found — skip migration entirely
                     state.advance_to_provider();
                 }
                 Some(path) => {
-                    let scan = openfang_migrate::openclaw::scan_openclaw_workspace(&path);
+                    let scan = omtae_migrate::openclaw::scan_openclaw_workspace(&path);
                     let has_content = scan.has_config
                         || !scan.agents.is_empty()
                         || !scan.channels.is_empty()
@@ -865,7 +865,7 @@ pub fn run() -> InitResult {
                                     // Kick off background auth
                                     let copilot_tx = copilot_tx.clone();
                                     std::thread::spawn(move || {
-                                        let openfang_dir = crate::cli_openfang_home();
+                                        let omtae_dir = crate::cli_omtae_home();
                                         let rt = match tokio::runtime::Runtime::new() {
                                             Ok(rt) => rt,
                                             Err(e) => {
@@ -889,7 +889,7 @@ pub fn run() -> InitResult {
                                             };
 
                                             // Step 1: request device code
-                                            use openfang_runtime::drivers::copilot;
+                                            use omtae_runtime::drivers::copilot;
                                             let device =
                                                 match copilot::request_device_code(&http).await {
                                                     Ok(d) => d,
@@ -926,7 +926,7 @@ pub fn run() -> InitResult {
                                             };
 
                                             // Save tokens
-                                            if let Err(e) = tokens.save(&openfang_dir) {
+                                            if let Err(e) = tokens.save(&omtae_dir) {
                                                 let _ = copilot_tx.send(Err(e));
                                                 return;
                                             }
@@ -997,7 +997,7 @@ pub fn run() -> InitResult {
                                 CopilotAuthStatus::WaitingForUser
                             ) && !state.copilot_verification_uri.is_empty() =>
                         {
-                            let _ = openfang_runtime::drivers::copilot::open_verification_url(
+                            let _ = omtae_runtime::drivers::copilot::open_verification_url(
                                 &state.copilot_verification_uri,
                             );
                         }
@@ -1160,7 +1160,7 @@ pub fn run() -> InitResult {
 fn handle_migration_key(
     state: &mut State,
     code: KeyCode,
-    migrate_tx: &std::sync::mpsc::Sender<Result<openfang_migrate::report::MigrationReport, String>>,
+    migrate_tx: &std::sync::mpsc::Sender<Result<omtae_migrate::report::MigrationReport, String>>,
 ) {
     match state.migration_phase {
         MigrationPhase::Detecting => {} // auto-resolves, no keys
@@ -1190,18 +1190,18 @@ fn handle_migration_key(
                     } else {
                         dirs::home_dir()
                             .unwrap_or_else(|| PathBuf::from("."))
-                            .join(".openfang")
+                            .join(".omtae")
                     };
                     let tx = migrate_tx.clone();
                     std::thread::spawn(move || {
-                        let options = openfang_migrate::MigrateOptions {
-                            source: openfang_migrate::MigrateSource::OpenClaw,
+                        let options = omtae_migrate::MigrateOptions {
+                            source: omtae_migrate::MigrateSource::OpenClaw,
                             source_dir,
                             target_dir,
                             dry_run: false,
                         };
                         let result =
-                            openfang_migrate::run_migration(&options).map_err(|e| format!("{e}"));
+                            omtae_migrate::run_migration(&options).map_err(|e| format!("{e}"));
                         let _ = tx.send(result);
                     });
                 } else {
@@ -1310,20 +1310,20 @@ fn save_config(state: &mut State) {
         }
     };
 
-    let openfang_dir = if let Ok(h) = std::env::var("OPENFANG_HOME") {
+    let omtae_dir = if let Ok(h) = std::env::var("OPENFANG_HOME") {
         PathBuf::from(h)
     } else {
         match dirs::home_dir() {
-            Some(h) => h.join(".openfang"),
+            Some(h) => h.join(".omtae"),
             None => {
                 state.save_error = "Could not determine home directory".to_string();
                 return;
             }
         }
     };
-    let _ = std::fs::create_dir_all(openfang_dir.join("agents"));
-    let _ = std::fs::create_dir_all(openfang_dir.join("data"));
-    crate::restrict_dir_permissions(&openfang_dir);
+    let _ = std::fs::create_dir_all(omtae_dir.join("agents"));
+    let _ = std::fs::create_dir_all(omtae_dir.join("data"));
+    crate::restrict_dir_permissions(&omtae_dir);
 
     let model = if state.model_input.is_empty() {
         p.default_model
@@ -1349,7 +1349,7 @@ complex_threshold = 500
         String::new()
     };
 
-    let config_path = openfang_dir.join("config.toml");
+    let config_path = omtae_dir.join("config.toml");
     let api_key_line = if p.env_var.is_empty() {
         String::new()
     } else {
@@ -1357,8 +1357,8 @@ complex_threshold = 500
     };
 
     let config = format!(
-        r#"# OpenFang Agent OS configuration
-# See https://github.com/RightNow-AI/openfang for documentation
+        r#"# OMTAE Agent OS configuration
+# See https://github.com/RightNow-AI/omtae for documentation
 
 api_listen = "127.0.0.1:4200"
 
@@ -1397,15 +1397,15 @@ decay_rate = 0.05
     }
 }
 
-/// Check if the `openfang-desktop` binary exists next to the current exe.
+/// Check if the `omtae-desktop` binary exists next to the current exe.
 fn find_desktop_binary() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
 
     #[cfg(windows)]
-    let name = "openfang-desktop.exe";
+    let name = "omtae-desktop.exe";
     #[cfg(not(windows))]
-    let name = "openfang-desktop";
+    let name = "omtae-desktop";
 
     let path = dir.join(name);
     if path.exists() {
@@ -1446,10 +1446,10 @@ fn draw(f: &mut Frame, area: Rect, state: &mut State) {
     ])
     .split(content);
 
-    // Header: "OpenFang Init  Step X of 7"
+    // Header: "OMTAE Init  Step X of 7"
     let header = Line::from(vec![
         Span::styled(
-            "OpenFang",
+            "OMTAE",
             Style::default()
                 .fg(theme::ACCENT)
                 .add_modifier(Modifier::BOLD),
@@ -1805,7 +1805,7 @@ fn draw_migration_done(f: &mut Frame, area: Rect, state: &State) {
         ]));
     } else if let Some(ref report) = state.migration_report {
         // Group imported items by kind
-        use openfang_migrate::report::ItemKind;
+        use omtae_migrate::report::ItemKind;
         let config_count = report
             .imported
             .iter()
@@ -2174,7 +2174,7 @@ fn draw_api_key(f: &mut Frame, area: Rect, state: &mut State) {
             );
             f.render_widget(
                 Paragraph::new(Line::from(vec![Span::styled(
-                    "    Saved to ~/.openfang/.env",
+                    "    Saved to ~/.omtae/.env",
                     theme::dim_style(),
                 )])),
                 chunks[3],
@@ -2190,7 +2190,7 @@ fn draw_api_key(f: &mut Frame, area: Rect, state: &mut State) {
             );
             f.render_widget(
                 Paragraph::new(Line::from(vec![Span::styled(
-                    "    Saved to ~/.openfang/.env",
+                    "    Saved to ~/.omtae/.env",
                     theme::dim_style(),
                 )])),
                 chunks[3],
@@ -2402,7 +2402,7 @@ fn draw_routing_pick(f: &mut Frame, area: Rect, state: &mut State, tier: usize) 
                 .split('/')
                 .next_back()
                 .unwrap_or(&state.routing_models[t]);
-            let display = openfang_types::truncate_str(short, 14);
+            let display = omtae_types::truncate_str(short, 14);
             summary_spans.push(Span::styled(
                 format!("{name}:{display}"),
                 Style::default().fg(*c),
@@ -2609,7 +2609,7 @@ fn draw_complete(f: &mut Frame, area: Rect, state: &mut State) {
     // ── Question ──
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            "  How do you want to use OpenFang?",
+            "  How do you want to use OMTAE?",
             Style::default()
                 .fg(theme::ACCENT)
                 .add_modifier(Modifier::BOLD),

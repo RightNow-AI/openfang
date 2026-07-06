@@ -22,6 +22,6 @@ unhealthy_threshold = 3
 
 setup_instructions = """
 1. Click 'Connect' to initiate the OAuth flow with your Microsoft account.
-2. Sign in with your Microsoft 365 account and grant OpenFang permission to read teams and read/write chats.
+2. Sign in with your Microsoft 365 account and grant OMTAE permission to read teams and read/write chats.
 3. The connection will be established automatically after authorization.
 """

@@ -1,9 +1,9 @@
 """
-OpenFang Python SDK — helper library for writing Python agents.
+OMTAE Python SDK — helper library for writing Python agents.
 
 Usage:
 
-    from openfang_sdk import Agent
+    from omtae_sdk import Agent
 
     agent = Agent()
 
@@ -15,7 +15,7 @@ Usage:
 
 Or for simple scripts without the decorator pattern:
 
-    from openfang_sdk import read_input, respond
+    from omtae_sdk import read_input, respond
 
     data = read_input()
     result = f"Echo: {data['message']}"
@@ -29,7 +29,7 @@ from typing import Callable, Optional, Dict, Any
 
 
 def read_input() -> Dict[str, Any]:
-    """Read the input JSON from stdin (sent by the OpenFang kernel)."""
+    """Read the input JSON from stdin (sent by the OMTAE kernel)."""
     line = sys.stdin.readline().strip()
     if not line:
         # Fallback: check environment variables
@@ -45,7 +45,7 @@ def read_input() -> Dict[str, Any]:
 
 
 def respond(text: str, metadata: Optional[Dict[str, Any]] = None) -> None:
-    """Send a response back to the OpenFang kernel via stdout."""
+    """Send a response back to the OMTAE kernel via stdout."""
     response = {"type": "response", "text": text}
     if metadata:
         response["metadata"] = metadata
@@ -53,7 +53,7 @@ def respond(text: str, metadata: Optional[Dict[str, Any]] = None) -> None:
 
 
 def log(message: str, level: str = "info") -> None:
-    """Log a message to stderr (visible in OpenFang daemon logs)."""
+    """Log a message to stderr (visible in OMTAE daemon logs)."""
     print(f"[{level.upper()}] {message}", file=sys.stderr, flush=True)
 
 
@@ -131,12 +131,12 @@ class Agent:
 
 # Convenience: if this file is run directly, show usage
 if __name__ == "__main__":
-    print("OpenFang Python SDK")
+    print("OMTAE Python SDK")
     print("====================")
     print()
     print("Import this module in your agent scripts:")
     print()
-    print("  from openfang_sdk import Agent")
+    print("  from omtae_sdk import Agent")
     print()
     print("  agent = Agent()")
     print()

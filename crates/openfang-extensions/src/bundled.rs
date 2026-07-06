@@ -1,7 +1,7 @@
 //! Compile-time embedded integration templates.
 //!
 //! All 25 integration TOML files are baked into the binary via `include_str!()`,
-//! ensuring they ship with every OpenFang build with zero filesystem dependencies.
+//! ensuring they ship with every OMTAE build with zero filesystem dependencies.
 
 /// Returns all bundled integration templates as `(id, TOML content)` pairs.
 pub fn bundled_integrations() -> Vec<(&'static str, &'static str)> {

@@ -21,7 +21,7 @@ impl Default for MarketplaceConfig {
     fn default() -> Self {
         Self {
             registry_url: "https://api.github.com".to_string(),
-            github_org: "openfang-skills".to_string(),
+            github_org: "omtae-skills".to_string(),
         }
     }
 }
@@ -38,7 +38,7 @@ impl MarketplaceClient {
         Self {
             config,
             http: reqwest::Client::builder()
-                .user_agent("openfang-skills/0.1")
+                .user_agent("omtae-skills/0.1")
                 .build()
                 .expect("Failed to build HTTP client"),
         }
@@ -219,12 +219,12 @@ mod tests {
     fn test_default_config() {
         let config = MarketplaceConfig::default();
         assert!(config.registry_url.contains("github"));
-        assert_eq!(config.github_org, "openfang-skills");
+        assert_eq!(config.github_org, "omtae-skills");
     }
 
     #[test]
     fn test_client_creation() {
         let client = MarketplaceClient::new(MarketplaceConfig::default());
-        assert_eq!(client.config.github_org, "openfang-skills");
+        assert_eq!(client.config.github_org, "omtae-skills");
     }
 }

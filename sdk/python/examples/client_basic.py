@@ -10,9 +10,9 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from openfang_client import OpenFang
+from omtae_client import OMTAE
 
-client = OpenFang("http://localhost:3000")
+client = OMTAE("http://localhost:3000")
 
 # Check server health
 health = client.health()

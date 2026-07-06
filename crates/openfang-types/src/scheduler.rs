@@ -1,4 +1,4 @@
-//! Cron/scheduled job types for the OpenFang scheduler.
+//! Cron/scheduled job types for the OMTAE scheduler.
 //!
 //! Defines the core types for recurring and one-shot scheduled jobs that can
 //! trigger agent turns, system events, or webhook deliveries.

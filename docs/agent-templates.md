@@ -1,15 +1,15 @@
 # Agent Templates Catalog
 
-OpenFang ships with **30 pre-built agent templates** organized into 4 performance tiers. Each template is a ready-to-spawn `agent.toml` manifest located in the `agents/` directory. Templates cover software engineering, business operations, personal productivity, and everyday tasks.
+OMTAE ships with **30 pre-built agent templates** organized into 4 performance tiers. Each template is a ready-to-spawn `agent.toml` manifest located in the `agents/` directory. Templates cover software engineering, business operations, personal productivity, and everyday tasks.
 
 ## Quick Start
 
 Spawn any template from the CLI:
 
 ```bash
-openfang spawn orchestrator
-openfang spawn coder
-openfang spawn --template agents/writer/agent.toml
+omtae spawn orchestrator
+omtae spawn coder
+omtae spawn --template agents/writer/agent.toml
 ```
 
 Spawn via the REST API:
@@ -118,12 +118,13 @@ The orchestrator is the command center of the agent fleet. It analyzes user requ
 - **Temperature**: 0.3
 - **Max tokens**: 8192
 - **Token quota**: 500,000/hour
-- **Schedule**: Continuous check every 120 seconds
+- **Schedule**: Reactive (request-driven). Do not enable `[schedule] continuous` — it causes autonomous background ticks that look like an infinite loop. Use the Scheduler tab for timed runs.
+- **Max iterations**: 25 tool rounds per message (via `[autonomous]`)
 - **Tools**: `agent_send`, `agent_spawn`, `agent_list`, `agent_kill`, `memory_store`, `memory_recall`, `file_read`, `file_write`
 - **Capabilities**: `agent_spawn = true`, `agent_message = ["*"]`, `memory_read = ["*"]`, `memory_write = ["*"]`
 
 ```bash
-openfang spawn orchestrator
+omtae spawn orchestrator
 # "Plan and execute a full security audit of the codebase"
 ```
 
@@ -145,7 +146,7 @@ Designs systems following principles of separation of concerns, performance-awar
 - **Capabilities**: `agent_message = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn architect
+omtae spawn architect
 # "Design a microservices architecture for the payment processing system"
 ```
 
@@ -169,7 +170,7 @@ Focuses on OWASP Top 10, input validation, auth flaws, cryptographic misuse, inj
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn security-auditor
+omtae spawn security-auditor
 # "Audit the authentication module for vulnerabilities"
 ```
 
@@ -193,7 +194,7 @@ Writes clean, production-quality code with a step-by-step reasoning approach. Re
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*"]`
 
 ```bash
-openfang spawn coder
+omtae spawn coder
 # "Implement a rate limiter using the token bucket algorithm in Rust"
 ```
 
@@ -216,7 +217,7 @@ Reviews code by priority: correctness, security, performance, maintainability, s
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn code-reviewer
+omtae spawn code-reviewer
 # "Review the changes in the last 3 commits for production readiness"
 ```
 
@@ -239,7 +240,7 @@ Follows a structured methodology: understand the question, explore data (shape, 
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn data-scientist
+omtae spawn data-scientist
 # "Analyze this CSV dataset and identify the top 3 factors correlated with churn"
 ```
 
@@ -262,7 +263,7 @@ Follows a strict methodology: reproduce, isolate (binary search through code/dat
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn debugger
+omtae spawn debugger
 # "The API returns 500 on POST /api/agents when the name contains unicode -- find the root cause"
 ```
 
@@ -284,7 +285,7 @@ Fetches web pages, reads documents, and synthesizes findings into clear, structu
 - **Capabilities**: `network = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn researcher
+omtae spawn researcher
 # "Research the current state of WebAssembly component model and summarize the key proposals"
 ```
 
@@ -307,7 +308,7 @@ Analyzes data, finds patterns, generates insights, and creates structured report
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn analyst
+omtae spawn analyst
 # "Analyze the server access logs and report traffic patterns by hour and endpoint"
 ```
 
@@ -330,7 +331,7 @@ Tests document behavior, not implementation. Prefers fast, deterministic tests. 
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn test-engineer
+omtae spawn test-engineer
 # "Write comprehensive tests for the rate limiter module covering edge cases"
 ```
 
@@ -353,7 +354,7 @@ Systematically reviews contracts covering parties, termination provisions, payme
 - **Capabilities**: `network = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn legal-assistant
+omtae spawn legal-assistant
 # "Review this NDA and flag any one-sided or problematic clauses"
 ```
 
@@ -375,7 +376,7 @@ Follows a structured methodology: scope (in/out), decompose (epics to stories to
 - **Capabilities**: `agent_message = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn planner
+omtae spawn planner
 # "Create a project plan for migrating our monolith to microservices over 6 months"
 ```
 
@@ -397,7 +398,7 @@ Excels at documentation, technical writing, blog posts, and clear communication.
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*"]`
 
 ```bash
-openfang spawn writer
+omtae spawn writer
 # "Write a blog post about the benefits of agent-based architectures"
 ```
 
@@ -419,7 +420,7 @@ Writes for the reader: starts with WHY, then WHAT, then HOW. Uses progressive di
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn doc-writer
+omtae spawn doc-writer
 # "Write API documentation for all the /api/agents endpoints"
 ```
 
@@ -442,7 +443,7 @@ Covers CI/CD pipeline design, container orchestration (Docker, Kubernetes), Infr
 - **Capabilities**: `agent_message = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn devops-lead
+omtae spawn devops-lead
 # "Design a CI/CD pipeline for our Rust workspace with staging and production environments"
 ```
 
@@ -452,7 +453,7 @@ openfang spawn devops-lead
 
 **Tier 3 -- Balanced** | `groq/llama-3.3-70b-versatile` | Fallback: `gemini/gemini-2.0-flash`
 
-> General-purpose assistant. The default OpenFang agent for everyday tasks, questions, and conversations.
+> General-purpose assistant. The default OMTAE agent for everyday tasks, questions, and conversations.
 
 The versatile default agent covering conversational intelligence, task execution, research and synthesis, writing and communication, problem solving, agent delegation (routes specialized tasks to the right specialist), knowledge management, and creative brainstorming. Acts as the user's trusted first point of contact -- handles most tasks directly and delegates to specialists when they would do better.
 
@@ -466,7 +467,7 @@ The versatile default agent covering conversational intelligence, task execution
 - **Capabilities**: `network = ["*"]`, `agent_message = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn assistant
+omtae spawn assistant
 # "Help me plan my week and draft replies to these three emails"
 ```
 
@@ -489,7 +490,7 @@ Rapidly triages incoming email by urgency, category, and required action. Drafts
 - **Capabilities**: `network = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn email-assistant
+omtae spawn email-assistant
 # "Triage these 15 emails and draft responses for the urgent ones"
 ```
 
@@ -512,7 +513,7 @@ Crafts platform-optimized content for Twitter/X, LinkedIn, Instagram, Facebook, 
 - **Capabilities**: `network = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn social-media
+omtae spawn social-media
 # "Create a week of LinkedIn posts about our open-source launch"
 ```
 
@@ -535,7 +536,7 @@ Triages support tickets by category, severity, product area, and customer tier. 
 - **Capabilities**: `network = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn customer-support
+omtae spawn customer-support
 # "Triage this batch of support tickets and draft responses for the top 5 urgent ones"
 ```
 
@@ -558,7 +559,7 @@ Drafts personalized cold outreach emails using the AIDA framework. Manages CRM d
 - **Capabilities**: `network = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn sales-assistant
+omtae spawn sales-assistant
 # "Draft a 3-touch outreach sequence for CTOs at mid-market SaaS companies"
 ```
 
@@ -581,7 +582,7 @@ Evaluates resumes against job requirements with structured match scoring. Writes
 - **Capabilities**: `network = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn recruiter
+omtae spawn recruiter
 # "Screen these 10 resumes against the senior backend engineer job requirements"
 ```
 
@@ -604,7 +605,7 @@ Creates structured, time-boxed agendas. Transforms raw meeting notes or transcri
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn meeting-assistant
+omtae spawn meeting-assistant
 # "Process this meeting transcript and extract all action items with owners and deadlines"
 ```
 
@@ -628,7 +629,7 @@ Monitors system health, runs diagnostics, and helps with deployments. Precise an
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*"]`
 
 ```bash
-openfang spawn ops
+omtae spawn ops
 # "Check disk usage, memory, and running containers"
 ```
 
@@ -650,7 +651,7 @@ The simplest agent template -- a minimal starter agent with basic read-only capa
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*"]`, `agent_spawn = false`
 
 ```bash
-openfang spawn hello-world
+omtae spawn hello-world
 # "Hello! What can you do?"
 ```
 
@@ -673,7 +674,7 @@ Translates between 20+ major languages with high fidelity to meaning, tone, and 
 - **Capabilities**: `network = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn translator
+omtae spawn translator
 # "Translate this README from English to Japanese and Spanish, preserving code blocks"
 ```
 
@@ -697,7 +698,7 @@ Explains concepts at the learner's level using the Feynman Technique. Uses Socra
 - **Capabilities**: `network = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn tutor
+omtae spawn tutor
 # "Teach me how binary search trees work, starting from the basics"
 ```
 
@@ -721,7 +722,7 @@ Tracks weight, blood pressure, heart rate, sleep, water intake, steps, mood, and
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*"]`
 
 ```bash
-openfang spawn health-tracker
+omtae spawn health-tracker
 # "Log today's metrics: weight 175lbs, sleep 7.5 hours, mood 8/10, 8000 steps"
 ```
 
@@ -745,7 +746,7 @@ Creates detailed budgets using frameworks like 50/30/20, zero-based budgeting, a
 - **Capabilities**: `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn personal-finance
+omtae spawn personal-finance
 # "Analyze this month's expense CSV and show me where I'm over budget"
 ```
 
@@ -768,7 +769,7 @@ Builds day-by-day itineraries with estimated times, transportation, meal recomme
 - **Capabilities**: `network = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn travel-planner
+omtae spawn travel-planner
 # "Plan a 10-day trip to Japan for 2 people, mid-range budget, mix of culture and food"
 ```
 
@@ -792,7 +793,7 @@ Manages smart home devices (lights, thermostats, security, appliances, sensors).
 - **Capabilities**: `network = ["*"]`, `memory_read = ["*"]`, `memory_write = ["self.*", "shared.*"]`
 
 ```bash
-openfang spawn home-automation
+omtae spawn home-automation
 # "Create a bedtime automation: lock doors, arm cameras, dim lights, set thermostat to 68F"
 ```
 
@@ -896,22 +897,22 @@ shell = ["python *", "cargo *"]     # Allowed shell command patterns (whitelist)
 
 ```bash
 # Spawn by template name
-openfang spawn coder
+omtae spawn coder
 
 # Spawn with a custom name
-openfang spawn coder --name "backend-coder"
+omtae spawn coder --name "backend-coder"
 
 # Spawn from a TOML file path
-openfang spawn --template agents/custom/my-agent.toml
+omtae spawn --template agents/custom/my-agent.toml
 
 # List running agents
-openfang agents
+omtae agents
 
 # Send a message
-openfang message <agent-id> "Write a function to parse TOML files"
+omtae message <agent-id> "Write a function to parse TOML files"
 
 # Kill an agent
-openfang kill <agent-id>
+omtae kill <agent-id>
 ```
 
 ### REST API
@@ -945,7 +946,7 @@ DELETE /api/agents/{id}
 # Use any agent through the OpenAI-compatible endpoint
 POST /v1/chat/completions
 {
-  "model": "openfang:coder",
+  "model": "omtae:coder",
   "messages": [{"role": "user", "content": "Write a Rust HTTP server"}],
   "stream": true
 }

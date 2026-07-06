@@ -276,7 +276,7 @@ impl ChannelAdapter for GitterAdapter {
                                                 sender: ChannelUser {
                                                     platform_id: username.clone(),
                                                     display_name,
-                                                    openfang_user: None,
+                                                    omtae_user: None,
                                                 },
                                                 content,
                                                 target_agent: None,

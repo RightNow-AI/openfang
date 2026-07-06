@@ -22,6 +22,6 @@ unhealthy_threshold = 3
 
 setup_instructions = """
 1. Click 'Connect' to initiate the OAuth flow with your Google account.
-2. Grant OpenFang access to your Google Calendar when prompted.
+2. Grant OMTAE access to your Google Calendar when prompted.
 3. The connection will be established automatically after authorization.
 """

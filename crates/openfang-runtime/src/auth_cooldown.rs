@@ -404,7 +404,7 @@ impl ProviderCooldown {
     pub fn select_profile(
         &self,
         provider: &str,
-        profiles: &[openfang_types::config::AuthProfile],
+        profiles: &[omtae_types::config::AuthProfile],
     ) -> Option<(String, String)> {
         if profiles.is_empty() {
             return None;

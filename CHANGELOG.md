@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to OpenFang will be documented in this file.
+All notable changes to OMTAE will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -13,13 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Non-loopback requests with no `api_key` configured now return 401 by default. Opt out with `OPENFANG_ALLOW_NO_AUTH=1`. Fixes the B1/B2 authentication bypass from #1034.
 - Agent `context.md` is re-read on every turn so external updates take effect mid-session. Opt out per agent with `cache_context = true` on the manifest. Fixes #843.
-- `openfang config get default_model.base_url` now prints the configured URL instead of an empty string. Missing keys return a clear "not found" error. Fixes #905.
+- `omtae config get default_model.base_url` now prints the configured URL instead of an empty string. Missing keys return a clear "not found" error. Fixes #905.
 - `schedule_create`, `schedule_list`, and `schedule_delete` tools plus the `/api/schedules` routes now use the kernel cron scheduler, so scheduled jobs actually fire. One-shot idempotent migration imports legacy shared-memory entries at startup. Fixes #1069.
 - Multimodal user messages now combine text and image blocks into a single message so the LLM sees both. Fixes #1043.
 
 ### Added
 
-- `openfang hand config <id>` subcommand: get, set, unset, and list settings on an active hand instance. Fixes #809.
+- `omtae hand config <id>` subcommand: get, set, unset, and list settings on an active hand instance. Fixes #809.
 - Optional per-channel `prefix_agent_name` setting (`off` / `bracket` / `bold_bracket`). Wraps outbound agent responses so users in multi-agent channels can see which agent replied. Default is off, byte-identical to prior behavior. Fixes #980.
 
 ### Closed as invalid
@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING:** Dashboard password hashing switched from SHA256 to Argon2id. Existing `password_hash` values in `config.toml` must be regenerated with `openfang auth hash-password`. Only affects users with `[auth] enabled = true`.
+- **BREAKING:** Dashboard password hashing switched from SHA256 to Argon2id. Existing `password_hash` values in `config.toml` must be regenerated with `omtae auth hash-password`. Only affects users with `[auth] enabled = true`.
 
 ### Fixed
 
@@ -117,9 +117,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Visual workflow builder with drag-and-drop canvas
 
 #### Client SDKs
-- JavaScript SDK (`@openfang/sdk`): full REST API client with streaming, TypeScript declarations
-- Python client SDK (`openfang_client`): zero-dependency stdlib client with SSE streaming
-- Python agent SDK (`openfang_sdk`): decorator-based framework for writing Python agents
+- JavaScript SDK (`@omtae/sdk`): full REST API client with streaming, TypeScript declarations
+- Python client SDK (`omtae_client`): zero-dependency stdlib client with SSE streaming
+- Python agent SDK (`omtae_sdk`): decorator-based framework for writing Python agents
 - Usage examples for both languages (basic + streaming)
 
 #### CLI
@@ -167,7 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Interoperability
 - OpenClaw migration engine (YAML/JSON5 to TOML)
 - MCP client (JSON-RPC 2.0 over stdio/SSE, tool namespacing)
-- MCP server (exposes OpenFang tools via MCP protocol)
+- MCP server (exposes OMTAE tools via MCP protocol)
 - A2A protocol client and server
 - Tool name compatibility mappings (21 OpenClaw tool names)
 
@@ -194,4 +194,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prometheus metrics for monitoring
 - Config hot-reload without restart
 
-[0.1.0]: https://github.com/RightNow-AI/openfang/releases/tag/v0.1.0
+[0.1.0]: https://github.com/RightNow-AI/omtae/releases/tag/v0.1.0

@@ -1,4 +1,4 @@
-//! Discord Gateway adapter for the OpenFang channel bridge.
+//! Discord Gateway adapter for the OMTAE channel bridge.
 //!
 //! Uses Discord Gateway WebSocket (v10) for receiving messages and the REST API
 //! for sending responses. No external Discord crate — just `tokio-tungstenite` + `reqwest`.
@@ -483,8 +483,8 @@ impl ChannelAdapter for DiscordAdapter {
                                         "intents": intents,
                                         "properties": {
                                             "os": "linux",
-                                            "browser": "openfang",
-                                            "device": "openfang"
+                                            "browser": "omtae",
+                                            "device": "omtae"
                                         }
                                     }
                                 })
@@ -826,8 +826,8 @@ async fn parse_discord_message(
 ) -> Option<ChannelMessage> {
     // Diagnostic: dump the raw Discord payload so we can ground attachment
     // parsing in real JSON. Gated by RUST_LOG; silent at default `info` level.
-    // Enable with: RUST_LOG=openfang_channels::discord=debug
-    debug!(target: "openfang_channels::discord", payload = %d, "discord raw message payload");
+    // Enable with: RUST_LOG=omtae_channels::discord=debug
+    debug!(target: "omtae_channels::discord", payload = %d, "discord raw message payload");
 
     let author = d.get("author")?;
     let author_id = author["id"].as_str()?;
@@ -983,7 +983,7 @@ async fn parse_discord_message(
         sender: ChannelUser {
             platform_id: effective_channel_id,
             display_name,
-            openfang_user: None,
+            omtae_user: None,
         },
         content,
         target_agent: None,
@@ -1067,7 +1067,7 @@ mod tests {
             "content": "My own message",
             "author": {
                 "id": "bot123",
-                "username": "openfang",
+                "username": "omtae",
                 "discriminator": "0"
             },
             "timestamp": "2024-01-01T00:00:00+00:00"
@@ -1130,7 +1130,7 @@ mod tests {
             "content": "My own message",
             "author": {
                 "id": "bot123",
-                "username": "openfang",
+                "username": "omtae",
                 "discriminator": "0",
                 "bot": true
             },
@@ -1324,7 +1324,7 @@ mod tests {
             "channel_id": "ch1",
             "guild_id": "guild1",
             "content": "Hey <@bot123> help me",
-            "mentions": [{"id": "bot123", "username": "openfang"}],
+            "mentions": [{"id": "bot123", "username": "omtae"}],
             "author": {
                 "id": "user1",
                 "username": "alice",

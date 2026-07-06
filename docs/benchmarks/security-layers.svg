@@ -21,14 +21,14 @@
   <text x="360" y="58" text-anchor="middle" fill="#94a3b8" font-size="11">Measured: discrete, independently testable security mechanisms per framework</text>
 
   <!-- Y-axis labels -->
-  <text x="145" y="108" text-anchor="end" fill="#e2e8f0" font-size="13" font-weight="600">OpenFang</text>
+  <text x="145" y="108" text-anchor="end" fill="#e2e8f0" font-size="13" font-weight="600">OMTAE</text>
   <text x="145" y="158" text-anchor="end" fill="#cbd5e1" font-size="13">OpenClaw</text>
   <text x="145" y="208" text-anchor="end" fill="#cbd5e1" font-size="13">LangChain</text>
   <text x="145" y="258" text-anchor="end" fill="#cbd5e1" font-size="13">AutoGPT</text>
   <text x="145" y="308" text-anchor="end" fill="#cbd5e1" font-size="13">CrewAI</text>
 
   <!-- Bars -->
-  <!-- OpenFang: 16 layers -->
+  <!-- OMTAE: 16 layers -->
   <rect x="155" y="90" width="480" height="26" rx="4" fill="url(#sg)" filter="url(#ds)"/>
   <text x="642" y="108" fill="#10b981" font-size="14" font-weight="700">16</text>
 

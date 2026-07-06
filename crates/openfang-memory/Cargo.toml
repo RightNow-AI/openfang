@@ -1,16 +1,16 @@
 [package]
-name = "openfang-memory"
+name = "omtae-memory"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Memory substrate for the OpenFang Agent OS"
+description = "Memory substrate for the OMTAE Agent OS"
 
 [features]
 default = ["http-memory"]
 http-memory = ["reqwest"]
 
 [dependencies]
-openfang-types = { path = "../openfang-types" }
+omtae-types = { path = "../omtae-types" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

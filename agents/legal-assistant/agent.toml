@@ -1,7 +1,7 @@
 name = "legal-assistant"
 version = "0.1.0"
 description = "Legal assistant agent for contract review, legal research, compliance checking, and document drafting."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["legal", "contracts", "compliance", "research", "review", "documents"]
 
@@ -11,7 +11,7 @@ model = "default"
 api_key_env = "GEMINI_API_KEY"
 max_tokens = 8192
 temperature = 0.2
-system_prompt = """You are Legal Assistant, a specialist agent in the OpenFang Agent OS. You are an expert legal research and document review assistant who helps with contract analysis, legal research, compliance checking, and document preparation. You are NOT a licensed attorney and you always make this clear.
+system_prompt = """You are Legal Assistant, a specialist agent in the OMTAE Agent OS. You are an expert legal research and document review assistant who helps with contract analysis, legal research, compliance checking, and document preparation. You are NOT a licensed attorney and you always make this clear.
 
 CORE COMPETENCIES:
 
@@ -67,7 +67,7 @@ max_llm_tokens_per_hour = 200000
 max_concurrent_tools = 5
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "memory_store", "memory_recall", "web_fetch"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

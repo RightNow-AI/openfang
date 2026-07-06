@@ -1,4 +1,4 @@
-// OpenFang Agents Page — Multi-step spawn wizard, detail view with tabs, file editor, personality presets
+// OMTAE Agents Page — Multi-step spawn wizard, detail view with tabs, file editor, personality presets
 'use strict';
 
 /** Escape a string for use inside TOML triple-quoted strings ("""\n...\n""").
@@ -43,7 +43,7 @@ function agentsPage() {
     spawnProviders: [],       // populated from /api/providers on wizard open
     spawnProvidersLoading: false,
     spawnStep: 1,
-    spawnIdentity: { emoji: '', color: '#FF5C00', archetype: '' },
+    spawnIdentity: { emoji: '', color: '#00F0FF', archetype: '' },
     selectedPreset: '',
     soulContent: '',
     emojiOptions: [
@@ -142,7 +142,7 @@ function agentsPage() {
     async loadSpawnProfiles() {
       if (this.spawnProfilesLoaded) return;
       try {
-        var data = await OpenFangAPI.get('/api/profiles');
+        var data = await OMTAEAPI.get('/api/profiles');
         this.spawnProfiles = data.profiles || [];
         this.spawnProfilesLoaded = true;
       } catch(e) { this.spawnProfiles = []; }
@@ -223,6 +223,9 @@ function agentsPage() {
       }
       this.loading = false;
 
+      // Restore preferred chat agent (researcher/analyst/orchestrator/coder)
+      this._restorePreferredChat();
+
       // If a pending agent was set (e.g. from wizard or redirect), open chat inline
       var store = Alpine.store('app');
       if (store.pendingAgent) {
@@ -252,8 +255,8 @@ function agentsPage() {
       this.tplLoadError = '';
       try {
         var results = await Promise.all([
-          OpenFangAPI.get('/api/templates'),
-          OpenFangAPI.get('/api/providers').catch(function() { return { providers: [] }; })
+          OMTAEAPI.get('/api/templates'),
+          OMTAEAPI.get('/api/providers').catch(function() { return { providers: [] }; })
         ]);
         // Combine static and dynamic templates
         this.builtinTemplates = [
@@ -328,13 +331,50 @@ function agentsPage() {
     },
 
     chatWithAgent(agent) {
+      if (typeof ofIsPreferredAgent === 'function' && !ofIsPreferredAgent(agent)) {
+        var preferred = typeof ofPickPreferredAgent === 'function'
+          ? ofPickPreferredAgent(this.agents || [])
+          : null;
+        if (preferred) agent = preferred;
+      }
       Alpine.store('app').pendingAgent = agent;
       this.activeChatAgent = agent;
     },
 
+    _restorePreferredChat: function() {
+      var store = Alpine.store('app');
+      if (store && store.pendingAgent) return;
+      var agents = this.agents || [];
+      if (!agents.length) return;
+
+      var storedId = null;
+      try { storedId = localStorage.getItem('of-active-agent'); } catch(e) { /* ignore */ }
+
+      var match = null;
+      if (storedId) {
+        for (var i = 0; i < agents.length; i++) {
+          if (agents[i] && agents[i].id === storedId) { match = agents[i]; break; }
+        }
+      }
+
+      if (match && typeof ofIsPreferredAgent === 'function' && !ofIsPreferredAgent(match)) {
+        try { localStorage.removeItem('of-active-agent'); } catch(e) { /* ignore */ }
+        match = null;
+      }
+
+      if (!match && typeof ofPickPreferredAgent === 'function') {
+        match = ofPickPreferredAgent(agents);
+      }
+
+      if (match) {
+        store.pendingAgent = match;
+        this.activeChatAgent = match;
+      }
+    },
+
     closeChat() {
       this.activeChatAgent = null;
-      OpenFangAPI.wsDisconnect();
+      OMTAEAPI.wsDisconnect();
     },
 
     buildConfigForm(agent) {
@@ -343,7 +383,7 @@ function agentsPage() {
         name: (agent && agent.name) || '',
         system_prompt: (agent && agent.system_prompt) || '',
         emoji: identity.emoji || '',
-        color: identity.color || '#FF5C00',
+        color: identity.color || '#00F0FF',
         archetype: identity.archetype || '',
         vibe: identity.vibe || ''
       };
@@ -360,7 +400,7 @@ function agentsPage() {
       // fields such as system_prompt and identity metadata are hydrated.
       var detail = agent;
       try {
-        var full = await OpenFangAPI.get('/api/agents/' + agent.id);
+        var full = await OMTAEAPI.get('/api/agents/' + agent.id);
         detail = Object.assign({}, agent, full, {
           identity: Object.assign({}, (agent && agent.identity) || {}, (full && full.identity) || {})
         });
@@ -373,36 +413,36 @@ function agentsPage() {
 
     killAgent(agent) {
       var self = this;
-      OpenFangToast.confirm('Stop Agent', 'Stop agent "' + agent.name + '"? The agent will be shut down.', async function() {
+      OMTAEToast.confirm('Stop Agent', 'Stop agent "' + agent.name + '"? The agent will be shut down.', async function() {
         try {
-          await OpenFangAPI.del('/api/agents/' + agent.id);
-          OpenFangToast.success('Agent "' + agent.name + '" stopped');
+          await OMTAEAPI.del('/api/agents/' + agent.id);
+          OMTAEToast.success('Agent "' + agent.name + '" stopped');
           self.showDetailModal = false;
           await Alpine.store('app').refreshAgents();
         } catch(e) {
-          OpenFangToast.error('Failed to stop agent: ' + e.message);
+          OMTAEToast.error('Failed to stop agent: ' + e.message);
         }
       });
     },
 
-    // Issue #1163: uninstall an agent (kill + remove ~/.openfang/agents/<name>/).
+    // Issue #1163: uninstall an agent (kill + remove ~/.omtae/agents/<name>/).
     uninstallAgent(agent) {
       var self = this;
-      OpenFangToast.confirm(
+      OMTAEToast.confirm(
         'Uninstall Agent',
         'Uninstall agent "' + agent.name + '"? This stops the agent AND deletes its files from your workspace. This cannot be undone.',
         async function() {
           try {
-            var res = await OpenFangAPI.del('/api/agents/' + agent.id + '/uninstall');
+            var res = await OMTAEAPI.del('/api/agents/' + agent.id + '/uninstall');
             var msg = 'Agent "' + agent.name + '" uninstalled';
             if (res && res.dir_removed === false) {
               msg += ' (no on-disk files found)';
             }
-            OpenFangToast.success(msg);
+            OMTAEToast.success(msg);
             self.showDetailModal = false;
             await Alpine.store('app').refreshAgents();
           } catch(e) {
-            OpenFangToast.error('Failed to uninstall agent: ' + e.message);
+            OMTAEToast.error('Failed to uninstall agent: ' + e.message);
           }
         }
       );
@@ -411,18 +451,18 @@ function agentsPage() {
     killAllAgents() {
       var list = this.filteredAgents;
       if (!list.length) return;
-      OpenFangToast.confirm('Stop All Agents', 'Stop ' + list.length + ' agent(s)? All agents will be shut down.', async function() {
+      OMTAEToast.confirm('Stop All Agents', 'Stop ' + list.length + ' agent(s)? All agents will be shut down.', async function() {
         var errors = [];
         for (var i = 0; i < list.length; i++) {
           try {
-            await OpenFangAPI.del('/api/agents/' + list[i].id);
+            await OMTAEAPI.del('/api/agents/' + list[i].id);
           } catch(e) { errors.push(list[i].name + ': ' + e.message); }
         }
         await Alpine.store('app').refreshAgents();
         if (errors.length) {
-          OpenFangToast.error('Some agents failed to stop: ' + errors.join(', '));
+          OMTAEToast.error('Some agents failed to stop: ' + errors.join(', '));
         } else {
-          OpenFangToast.success(list.length + ' agent(s) stopped');
+          OMTAEToast.success(list.length + ' agent(s) stopped');
         }
       });
     },
@@ -432,7 +472,7 @@ function agentsPage() {
       this.showSpawnModal = true;
       this.spawnStep = 1;
       this.spawnMode = 'wizard';
-      this.spawnIdentity = { emoji: '', color: '#FF5C00', archetype: '' };
+      this.spawnIdentity = { emoji: '', color: '#00F0FF', archetype: '' };
       this.selectedPreset = '';
       this.soulContent = '';
       this.spawnForm.name = '';
@@ -444,8 +484,8 @@ function agentsPage() {
       this.spawnProvidersLoading = true;
       try {
         var results = await Promise.all([
-          OpenFangAPI.get('/api/status').catch(function() { return {}; }),
-          OpenFangAPI.get('/api/providers').catch(function() { return { providers: [] }; })
+          OMTAEAPI.get('/api/status').catch(function() { return {}; }),
+          OMTAEAPI.get('/api/providers').catch(function() { return { providers: [] }; })
         ]);
         var status = results[0];
         var provData = results[1];
@@ -460,7 +500,7 @@ function agentsPage() {
 
     nextStep() {
       if (this.spawnStep === 1 && !this.spawnForm.name.trim()) {
-        OpenFangToast.warn('Please enter an agent name');
+        OMTAEToast.warn('Please enter an agent name');
         return;
       }
       if (this.spawnStep < 5) this.spawnStep++;
@@ -502,12 +542,12 @@ function agentsPage() {
 
     async setMode(agent, mode) {
       try {
-        await OpenFangAPI.put('/api/agents/' + agent.id + '/mode', { mode: mode });
+        await OMTAEAPI.put('/api/agents/' + agent.id + '/mode', { mode: mode });
         agent.mode = mode;
-        OpenFangToast.success('Mode set to ' + mode);
+        OMTAEToast.success('Mode set to ' + mode);
         await Alpine.store('app').refreshAgents();
       } catch(e) {
-        OpenFangToast.error('Failed to set mode: ' + e.message);
+        OMTAEToast.error('Failed to set mode: ' + e.message);
       }
     },
 
@@ -516,12 +556,12 @@ function agentsPage() {
       var toml = this.spawnMode === 'wizard' ? this.generateToml() : this.spawnToml;
       if (!toml.trim()) {
         this.spawning = false;
-        OpenFangToast.warn('Manifest is empty \u2014 enter agent config first');
+        OMTAEToast.warn('Manifest is empty \u2014 enter agent config first');
         return;
       }
 
       try {
-        var res = await OpenFangAPI.post('/api/agents', { manifest_toml: toml });
+        var res = await OMTAEAPI.post('/api/agents', { manifest_toml: toml });
         if (res.agent_id) {
           // Post-spawn: update identity + write SOUL.md if personality preset selected
           var patchBody = {};
@@ -531,24 +571,24 @@ function agentsPage() {
           if (this.selectedPreset) patchBody.vibe = this.selectedPreset;
 
           if (Object.keys(patchBody).length) {
-            OpenFangAPI.patch('/api/agents/' + res.agent_id + '/config', patchBody).catch(function(e) { console.warn('Post-spawn config patch failed:', e.message); });
+            OMTAEAPI.patch('/api/agents/' + res.agent_id + '/config', patchBody).catch(function(e) { console.warn('Post-spawn config patch failed:', e.message); });
           }
           if (this.soulContent.trim()) {
-            OpenFangAPI.put('/api/agents/' + res.agent_id + '/files/SOUL.md', { content: '# Soul\n' + this.soulContent }).catch(function(e) { console.warn('SOUL.md write failed:', e.message); });
+            OMTAEAPI.put('/api/agents/' + res.agent_id + '/files/SOUL.md', { content: '# Soul\n' + this.soulContent }).catch(function(e) { console.warn('SOUL.md write failed:', e.message); });
           }
 
           this.showSpawnModal = false;
           this.spawnForm.name = '';
           this.spawnToml = '';
           this.spawnStep = 1;
-          OpenFangToast.success('Agent "' + (res.name || 'new') + '" spawned');
+          OMTAEToast.success('Agent "' + (res.name || 'new') + '" spawned');
           await Alpine.store('app').refreshAgents();
           this.chatWithAgent({ id: res.agent_id, name: res.name, model_provider: '?', model_name: '?' });
         } else {
-          OpenFangToast.error('Spawn failed: ' + (res.error || 'Unknown error'));
+          OMTAEToast.error('Spawn failed: ' + (res.error || 'Unknown error'));
         }
       } catch(e) {
-        OpenFangToast.error('Failed to spawn agent: ' + e.message);
+        OMTAEToast.error('Failed to spawn agent: ' + e.message);
       }
       this.spawning = false;
     },
@@ -558,11 +598,11 @@ function agentsPage() {
       if (!this.detailAgent) return;
       this.filesLoading = true;
       try {
-        var data = await OpenFangAPI.get('/api/agents/' + this.detailAgent.id + '/files');
+        var data = await OMTAEAPI.get('/api/agents/' + this.detailAgent.id + '/files');
         this.agentFiles = data.files || [];
       } catch(e) {
         this.agentFiles = [];
-        OpenFangToast.error('Failed to load files: ' + e.message);
+        OMTAEToast.error('Failed to load files: ' + e.message);
       }
       this.filesLoading = false;
     },
@@ -575,11 +615,11 @@ function agentsPage() {
         return;
       }
       try {
-        var data = await OpenFangAPI.get('/api/agents/' + this.detailAgent.id + '/files/' + encodeURIComponent(file.name));
+        var data = await OMTAEAPI.get('/api/agents/' + this.detailAgent.id + '/files/' + encodeURIComponent(file.name));
         this.editingFile = file.name;
         this.fileContent = data.content || '';
       } catch(e) {
-        OpenFangToast.error('Failed to read file: ' + e.message);
+        OMTAEToast.error('Failed to read file: ' + e.message);
       }
     },
 
@@ -587,11 +627,11 @@ function agentsPage() {
       if (!this.editingFile || !this.detailAgent) return;
       this.fileSaving = true;
       try {
-        await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/files/' + encodeURIComponent(this.editingFile), { content: this.fileContent });
-        OpenFangToast.success(this.editingFile + ' saved');
+        await OMTAEAPI.put('/api/agents/' + this.detailAgent.id + '/files/' + encodeURIComponent(this.editingFile), { content: this.fileContent });
+        OMTAEToast.success(this.editingFile + ' saved');
         await this.loadAgentFiles();
       } catch(e) {
-        OpenFangToast.error('Failed to save file: ' + e.message);
+        OMTAEToast.error('Failed to save file: ' + e.message);
       }
       this.fileSaving = false;
     },
@@ -606,11 +646,11 @@ function agentsPage() {
       if (!this.detailAgent) return;
       this.configSaving = true;
       try {
-        await OpenFangAPI.patch('/api/agents/' + this.detailAgent.id + '/config', this.configForm);
-        OpenFangToast.success('Config updated');
+        await OMTAEAPI.patch('/api/agents/' + this.detailAgent.id + '/config', this.configForm);
+        OMTAEToast.success('Config updated');
         await Alpine.store('app').refreshAgents();
       } catch(e) {
-        OpenFangToast.error('Failed to save config: ' + e.message);
+        OMTAEToast.error('Failed to save config: ' + e.message);
       }
       this.configSaving = false;
     },
@@ -619,14 +659,14 @@ function agentsPage() {
     async cloneAgent(agent) {
       var newName = (agent.name || 'agent') + '-copy';
       try {
-        var res = await OpenFangAPI.post('/api/agents/' + agent.id + '/clone', { new_name: newName });
+        var res = await OMTAEAPI.post('/api/agents/' + agent.id + '/clone', { new_name: newName });
         if (res.agent_id) {
-          OpenFangToast.success('Cloned as "' + res.name + '"');
+          OMTAEToast.success('Cloned as "' + res.name + '"');
           await Alpine.store('app').refreshAgents();
           this.showDetailModal = false;
         }
       } catch(e) {
-        OpenFangToast.error('Clone failed: ' + e.message);
+        OMTAEToast.error('Clone failed: ' + e.message);
       }
     },
 
@@ -636,31 +676,31 @@ function agentsPage() {
         var manifestToml = template.manifest_toml;
         if (!manifestToml) {
           // If template doesn't have manifest_toml, fetch it from the API
-          var data = await OpenFangAPI.get('/api/templates/' + encodeURIComponent(template.name));
+          var data = await OMTAEAPI.get('/api/templates/' + encodeURIComponent(template.name));
           manifestToml = data.manifest_toml;
         }
         if (manifestToml) {
-          var res = await OpenFangAPI.post('/api/agents', { manifest_toml: manifestToml });
+          var res = await OMTAEAPI.post('/api/agents', { manifest_toml: manifestToml });
           if (res.agent_id) {
-            OpenFangToast.success('Agent "' + (res.name || template.name) + '" spawned from template');
+            OMTAEToast.success('Agent "' + (res.name || template.name) + '" spawned from template');
             await Alpine.store('app').refreshAgents();
             this.chatWithAgent({ id: res.agent_id, name: res.name || template.name, model_provider: '?', model_name: '?' });
           }
         }
       } catch(e) {
-        OpenFangToast.error('Failed to spawn from template: ' + e.message);
+        OMTAEToast.error('Failed to spawn from template: ' + e.message);
       }
     },
 
     // ── Clear agent history ──
     async clearHistory(agent) {
       var self = this;
-      OpenFangToast.confirm('Clear History', 'Clear all conversation history for "' + agent.name + '"? This cannot be undone.', async function() {
+      OMTAEToast.confirm('Clear History', 'Clear all conversation history for "' + agent.name + '"? This cannot be undone.', async function() {
         try {
-          await OpenFangAPI.del('/api/agents/' + agent.id + '/history');
-          OpenFangToast.success('History cleared for "' + agent.name + '"');
+          await OMTAEAPI.del('/api/agents/' + agent.id + '/history');
+          OMTAEToast.success('History cleared for "' + agent.name + '"');
         } catch(e) {
-          OpenFangToast.error('Failed to clear history: ' + e.message);
+          OMTAEToast.error('Failed to clear history: ' + e.message);
         }
       });
     },
@@ -670,9 +710,9 @@ function agentsPage() {
       if (!this.detailAgent || !this.newModelValue.trim()) return;
       this.modelSaving = true;
       try {
-        var resp = await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/model', { model: this.newModelValue.trim() });
+        var resp = await OMTAEAPI.put('/api/agents/' + this.detailAgent.id + '/model', { model: this.newModelValue.trim() });
         var providerInfo = (resp && resp.provider) ? ' (provider: ' + resp.provider + ')' : '';
-        OpenFangToast.success('Model changed' + providerInfo + ' (memory reset)');
+        OMTAEToast.success('Model changed' + providerInfo + ' (memory reset)');
         this.editingModel = false;
         await Alpine.store('app').refreshAgents();
         // Refresh detailAgent
@@ -681,7 +721,7 @@ function agentsPage() {
           if (agents[i].id === this.detailAgent.id) { this.detailAgent = agents[i]; break; }
         }
       } catch(e) {
-        OpenFangToast.error('Failed to change model: ' + e.message);
+        OMTAEToast.error('Failed to change model: ' + e.message);
       }
       this.modelSaving = false;
     },
@@ -692,8 +732,8 @@ function agentsPage() {
       this.modelSaving = true;
       try {
         var combined = this.newProviderValue.trim() + '/' + this.detailAgent.model_name;
-        var resp = await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/model', { model: combined });
-        OpenFangToast.success('Provider changed to ' + (resp && resp.provider ? resp.provider : this.newProviderValue.trim()));
+        var resp = await OMTAEAPI.put('/api/agents/' + this.detailAgent.id + '/model', { model: combined });
+        OMTAEToast.success('Provider changed to ' + (resp && resp.provider ? resp.provider : this.newProviderValue.trim()));
         this.editingProvider = false;
         await Alpine.store('app').refreshAgents();
         var agents = Alpine.store('app').agents;
@@ -701,7 +741,7 @@ function agentsPage() {
           if (agents[i].id === this.detailAgent.id) { this.detailAgent = agents[i]; break; }
         }
       } catch(e) {
-        OpenFangToast.error('Failed to change provider: ' + e.message);
+        OMTAEToast.error('Failed to change provider: ' + e.message);
       }
       this.modelSaving = false;
     },
@@ -715,12 +755,12 @@ function agentsPage() {
       if (!this.detailAgent._fallbacks) this.detailAgent._fallbacks = [];
       this.detailAgent._fallbacks.push({ provider: provider, model: model });
       try {
-        await OpenFangAPI.patch('/api/agents/' + this.detailAgent.id + '/config', {
+        await OMTAEAPI.patch('/api/agents/' + this.detailAgent.id + '/config', {
           fallback_models: this.detailAgent._fallbacks
         });
-        OpenFangToast.success('Fallback added: ' + provider + '/' + model);
+        OMTAEToast.success('Fallback added: ' + provider + '/' + model);
       } catch(e) {
-        OpenFangToast.error('Failed to save fallbacks: ' + e.message);
+        OMTAEToast.error('Failed to save fallbacks: ' + e.message);
         this.detailAgent._fallbacks.pop();
       }
       this.editingFallback = false;
@@ -731,12 +771,12 @@ function agentsPage() {
       if (!this.detailAgent || !this.detailAgent._fallbacks) return;
       var removed = this.detailAgent._fallbacks.splice(idx, 1);
       try {
-        await OpenFangAPI.patch('/api/agents/' + this.detailAgent.id + '/config', {
+        await OMTAEAPI.patch('/api/agents/' + this.detailAgent.id + '/config', {
           fallback_models: this.detailAgent._fallbacks
         });
-        OpenFangToast.success('Fallback removed');
+        OMTAEToast.success('Fallback removed');
       } catch(e) {
-        OpenFangToast.error('Failed to save fallbacks: ' + e.message);
+        OMTAEToast.error('Failed to save fallbacks: ' + e.message);
         this.detailAgent._fallbacks.splice(idx, 0, removed[0]);
       }
     },
@@ -746,7 +786,7 @@ function agentsPage() {
       if (!this.detailAgent) return;
       this.toolFiltersLoading = true;
       try {
-        this.toolFilters = await OpenFangAPI.get('/api/agents/' + this.detailAgent.id + '/tools');
+        this.toolFilters = await OMTAEAPI.get('/api/agents/' + this.detailAgent.id + '/tools');
       } catch(e) {
         this.toolFilters = { tool_allowlist: [], tool_blocklist: [] };
       }
@@ -784,9 +824,9 @@ function agentsPage() {
     async saveToolFilters() {
       if (!this.detailAgent) return;
       try {
-        await OpenFangAPI.put('/api/agents/' + this.detailAgent.id + '/tools', this.toolFilters);
+        await OMTAEAPI.put('/api/agents/' + this.detailAgent.id + '/tools', this.toolFilters);
       } catch(e) {
-        OpenFangToast.error('Failed to update tool filters: ' + e.message);
+        OMTAEToast.error('Failed to update tool filters: ' + e.message);
       }
     },
 
@@ -799,14 +839,14 @@ function agentsPage() {
       toml += 'system_prompt = """\n' + tomlMultilineEscape(t.system_prompt) + '\n"""\n';
 
       try {
-        var res = await OpenFangAPI.post('/api/agents', { manifest_toml: toml });
+        var res = await OMTAEAPI.post('/api/agents', { manifest_toml: toml });
         if (res.agent_id) {
-          OpenFangToast.success('Agent "' + t.name + '" spawned');
+          OMTAEToast.success('Agent "' + t.name + '" spawned');
           await Alpine.store('app').refreshAgents();
           this.chatWithAgent({ id: res.agent_id, name: t.name, model_provider: t.provider, model_name: t.model });
         }
       } catch(e) {
-        OpenFangToast.error('Failed to spawn agent: ' + e.message);
+        OMTAEToast.error('Failed to spawn agent: ' + e.message);
       }
     }
   };

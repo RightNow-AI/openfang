@@ -23,7 +23,7 @@
 
   <!-- Legend -->
   <rect x="220" y="68" width="12" height="12" rx="2" fill="url(#of)"/>
-  <text x="237" y="79" fill="#e2e8f0" font-size="11" font-weight="600">OpenFang</text>
+  <text x="237" y="79" fill="#e2e8f0" font-size="11" font-weight="600">OMTAE</text>
   <rect x="320" y="68" width="12" height="12" rx="2" fill="url(#oc)"/>
   <text x="337" y="79" fill="#e2e8f0" font-size="11">OpenClaw</text>
   <rect x="420" y="68" width="12" height="12" rx="2" fill="url(#lc)"/>
@@ -46,7 +46,7 @@
   <text x="95" y="109" text-anchor="end" fill="#475569" font-size="9">max</text>
 
   <!-- === Channels (max ~40) === -->
-  <!-- OpenFang: 40 -->
+  <!-- OMTAE: 40 -->
   <rect x="130" y="112" width="24" height="284" rx="3" fill="url(#of)" opacity="0.95"/>
   <text x="142" y="107" text-anchor="middle" fill="#10b981" font-size="11" font-weight="700">40</text>
   <!-- OpenClaw: 38 -->
@@ -57,7 +57,7 @@
   <text x="198" y="393" text-anchor="middle" fill="#fbbf24" font-size="10">0</text>
 
   <!-- === Skills (max ~60) === -->
-  <!-- OpenFang: 60 -->
+  <!-- OMTAE: 60 -->
   <rect x="240" y="112" width="24" height="284" rx="3" fill="url(#of)" opacity="0.95"/>
   <text x="252" y="107" text-anchor="middle" fill="#10b981" font-size="11" font-weight="700">60</text>
   <!-- OpenClaw: 57 -->
@@ -68,7 +68,7 @@
   <text x="308" y="393" text-anchor="middle" fill="#fbbf24" font-size="10">0</text>
 
   <!-- === Tools (max ~53) === -->
-  <!-- OpenFang: 53 -->
+  <!-- OMTAE: 53 -->
   <rect x="350" y="112" width="24" height="284" rx="3" fill="url(#of)" opacity="0.95"/>
   <text x="362" y="107" text-anchor="middle" fill="#10b981" font-size="11" font-weight="700">53</text>
   <!-- OpenClaw: 15 -->
@@ -79,7 +79,7 @@
   <text x="418" y="347" text-anchor="middle" fill="#fbbf24" font-size="10">~8</text>
 
   <!-- === Providers (max ~27) === -->
-  <!-- OpenFang: 27 -->
+  <!-- OMTAE: 27 -->
   <rect x="460" y="112" width="24" height="284" rx="3" fill="url(#of)" opacity="0.95"/>
   <text x="472" y="107" text-anchor="middle" fill="#10b981" font-size="11" font-weight="700">27</text>
   <!-- OpenClaw: 3 -->
@@ -90,7 +90,7 @@
   <text x="528" y="190" text-anchor="middle" fill="#fbbf24" font-size="10">~20</text>
 
   <!-- === API Endpoints (max ~140) === -->
-  <!-- OpenFang: 140 -->
+  <!-- OMTAE: 140 -->
   <rect x="570" y="112" width="24" height="284" rx="3" fill="url(#of)" opacity="0.95"/>
   <text x="582" y="107" text-anchor="middle" fill="#10b981" font-size="11" font-weight="700">140</text>
   <!-- OpenClaw: ~30 -->
@@ -101,7 +101,7 @@
   <text x="638" y="393" text-anchor="middle" fill="#fbbf24" font-size="10">N/A</text>
 
   <!-- === Tests (max ~1759) === -->
-  <!-- OpenFang: 1759 -->
+  <!-- OMTAE: 1759 -->
   <rect x="680" y="112" width="24" height="284" rx="3" fill="url(#of)" opacity="0.95"/>
   <text x="692" y="107" text-anchor="middle" fill="#10b981" font-size="10" font-weight="700">1759</text>
   <!-- OpenClaw: unknown -->

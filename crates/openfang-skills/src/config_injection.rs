@@ -5,7 +5,7 @@
 //! endpoint URLs, etc.). This module resolves those variables from three
 //! layers in priority order:
 //!
-//! 1. User-supplied config (e.g., `[skills.<skill-name>]` in `~/.openfang/config.toml`)
+//! 1. User-supplied config (e.g., `[skills.<skill-name>]` in `~/.omtae/config.toml`)
 //! 2. Environment variable named by `var.env`
 //! 3. `var.default`
 //!
@@ -53,7 +53,7 @@ pub enum SkillConfigError {
 ///
 /// Resolution order per variable:
 /// 1. `user_config[name]` — usually from the `[skills.<skill-name>]` section
-///    of `~/.openfang/config.toml`, passed in by the caller.
+///    of `~/.omtae/config.toml`, passed in by the caller.
 /// 2. `std::env::var(var.env)` if `var.env` is set.
 /// 3. `var.default` if set.
 ///
@@ -154,7 +154,7 @@ pub fn render_config_block(resolved: &HashMap<String, String>) -> String {
     let mut keys: Vec<&String> = resolved.keys().collect();
     keys.sort();
 
-    let mut out = String::from("[Skill config from ~/.openfang/config.toml:\n");
+    let mut out = String::from("[Skill config from ~/.omtae/config.toml:\n");
     for key in keys {
         let raw = &resolved[key];
         let shown = redact_value(key, raw);

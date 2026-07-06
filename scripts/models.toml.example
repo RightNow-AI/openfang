@@ -1,0 +1,27 @@
+# OMTAE vLLM model profiles — copy to ~/.omtae/models.toml
+# Switch: omtae-model use <id>   Status: omtae-model status
+# Only one vLLM engine on :8000 at a time (dual RTX 3090, TP=2).
+
+[[profiles]]
+id = "qwen-coder-32b"
+display_name = "Qwen2.5 Coder 32B AWQ (vLLM)"
+vllm_path = "/home/jay/llm-models/Qwen2.5-Coder-32B-Instruct-AWQ"
+tensor_parallel = 2
+max_model_len = 16384
+gpu_mem_util = 0.78
+vllm_served_name = "Qwen2.5-Coder-32B-Instruct-AWQ"
+omtae_model_id = "Qwen2.5-Coder-32B-Instruct-AWQ"
+start_script = "/home/jay/start-vllm-qwen-coder.sh"
+quantization = "awq"
+
+[[profiles]]
+id = "qwen36-obliterated-27b"
+display_name = "Qwen3.6 27B OBLITERATED (FP8, ~17GiB/GPU min)"
+vllm_path = "/home/jay/llm-models/Qwen3.6-27B-OBLITERATED"
+tensor_parallel = 2
+max_model_len = 16384
+gpu_mem_util = 0.78
+vllm_served_name = "OBLITERATUS/Qwen3.6-27B-OBLITERATED"
+omtae_model_id = "OBLITERATUS/Qwen3.6-27B-OBLITERATED"
+start_script = "/home/jay/start-vllm-qwen36-obliterated.sh"
+quantization = "fp8"

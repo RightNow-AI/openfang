@@ -1,4 +1,4 @@
-//! Memory substrate for the OpenFang Agent Operating System.
+//! Memory substrate for the OMTAE Agent Operating System.
 //!
 //! Provides a unified memory API over three storage backends:
 //! - **Structured store** (SQLite): Key-value pairs, sessions, agent state

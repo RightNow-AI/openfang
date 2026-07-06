@@ -1,6 +1,6 @@
 //! Trait abstraction for kernel operations needed by the agent runtime.
 //!
-//! This trait allows `openfang-runtime` to call back into the kernel for
+//! This trait allows `omtae-runtime` to call back into the kernel for
 //! inter-agent operations (spawn, send, list, kill) without creating
 //! a circular dependency. The kernel implements this trait and passes
 //! it into the agent loop.
@@ -35,7 +35,14 @@ pub trait KernelHandle: Send + Sync {
     ) -> Result<(String, String), String>;
 
     /// Send a message to another agent and get the response.
-    async fn send_to_agent(&self, agent_id: &str, message: &str) -> Result<String, String>;
+    /// `caller_id` / `caller_name` annotate the inbound turn for the target agent.
+    async fn send_to_agent(
+        &self,
+        agent_id: &str,
+        message: &str,
+        caller_id: Option<&str>,
+        caller_name: Option<&str>,
+    ) -> Result<String, String>;
 
     /// List all running agents.
     fn list_agents(&self) -> Vec<AgentInfo>;
@@ -89,20 +96,20 @@ pub trait KernelHandle: Send + Sync {
     /// Add an entity to the knowledge graph.
     async fn knowledge_add_entity(
         &self,
-        entity: openfang_types::memory::Entity,
+        entity: omtae_types::memory::Entity,
     ) -> Result<String, String>;
 
     /// Add a relation to the knowledge graph.
     async fn knowledge_add_relation(
         &self,
-        relation: openfang_types::memory::Relation,
+        relation: omtae_types::memory::Relation,
     ) -> Result<String, String>;
 
     /// Query the knowledge graph with a pattern.
     async fn knowledge_query(
         &self,
-        pattern: openfang_types::memory::GraphPattern,
-    ) -> Result<Vec<openfang_types::memory::GraphMatch>, String>;
+        pattern: omtae_types::memory::GraphPattern,
+    ) -> Result<Vec<omtae_types::memory::GraphMatch>, String>;
 
     /// Create a cron job for the calling agent.
     async fn cron_create(
@@ -260,7 +267,7 @@ pub trait KernelHandle: Send + Sync {
         &self,
         manifest_toml: &str,
         parent_id: Option<&str>,
-        parent_caps: &[openfang_types::capability::Capability],
+        parent_caps: &[omtae_types::capability::Capability],
     ) -> Result<(String, String), String> {
         // Default: delegate to spawn_agent (no enforcement)
         // The kernel MUST override this with real enforcement

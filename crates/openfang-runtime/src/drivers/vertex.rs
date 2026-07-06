@@ -25,10 +25,10 @@
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
 use async_trait::async_trait;
 use futures::StreamExt;
-use openfang_types::message::{
+use omtae_types::message::{
     ContentBlock, Message, MessageContent, Role, StopReason, TokenUsage,
 };
-use openfang_types::tool::ToolCall;
+use omtae_types::tool::ToolCall;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -421,7 +421,7 @@ fn convert_tools(request: &CompletionRequest) -> Vec<VertexToolConfig> {
         .iter()
         .map(|t| {
             let normalized =
-                openfang_types::tool::normalize_schema_for_provider(&t.input_schema, "gemini");
+                omtae_types::tool::normalize_schema_for_provider(&t.input_schema, "gemini");
             VertexFunctionDeclaration {
                 name: t.name.clone(),
                 description: t.description.clone(),

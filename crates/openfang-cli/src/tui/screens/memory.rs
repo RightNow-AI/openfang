@@ -307,7 +307,7 @@ fn draw_agent_select(f: &mut Frame, area: Rect, state: &mut MemoryState) {
             .iter()
             .map(|a| {
                 let id_short = if a.id.len() > 12 {
-                    format!("{}\u{2026}", openfang_types::truncate_str(&a.id, 12))
+                    format!("{}\u{2026}", omtae_types::truncate_str(&a.id, 12))
                 } else {
                     a.id.clone()
                 };
@@ -395,7 +395,7 @@ fn draw_kv_browser(f: &mut Frame, area: Rect, state: &mut MemoryState) {
             .iter()
             .map(|kv| {
                 let val_display = if kv.value.len() > 40 {
-                    format!("{}\u{2026}", openfang_types::truncate_str(&kv.value, 39))
+                    format!("{}\u{2026}", omtae_types::truncate_str(&kv.value, 39))
                 } else {
                     kv.value.clone()
                 };
@@ -541,7 +541,7 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         format!(
             "{}\u{2026}",
-            openfang_types::truncate_str(s, max.saturating_sub(1))
+            omtae_types::truncate_str(s, max.saturating_sub(1))
         )
     }
 }

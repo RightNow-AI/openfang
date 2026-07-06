@@ -1,5 +1,5 @@
 {
-  description = "The OpenFang Agent OS";
+  description = "The OMTAE Agent OS";
   inputs = {
     flake-parts.url = "github:hercules-ci/flake-parts";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -33,11 +33,11 @@
           perl
           pkg-config
         ];
-        rust-project.crates.openfang-desktop.crane.args.nativeBuildInputs = with pkgs; [
+        rust-project.crates.omtae-desktop.crane.args.nativeBuildInputs = with pkgs; [
           pkg-config
           wrapGAppsHook3
         ];
-        rust-project.crates.openfang-desktop.crane.args.buildInputs = with pkgs; [
+        rust-project.crates.omtae-desktop.crane.args.buildInputs = with pkgs; [
           atk
           glib
           gtk3
@@ -46,23 +46,23 @@
           pkg-config
           webkitgtk_4_1
         ];
-        rust-project.crates.openfang-desktop.crane.args.preFixup = ''
+        rust-project.crates.omtae-desktop.crane.args.preFixup = ''
           gappsWrapperArgs+=(
             --prefix LD_LIBRARY_PATH : "${pkgs.libayatana-appindicator}/lib"
           )
         '';
 
-        packages.default = self'.packages.openfang-cli;
+        packages.default = self'.packages.omtae-cli;
         apps = {
-          openfang-cli = {
-            program = "${self'.packages.openfang-cli}/bin/openfang";
-            meta.description = "CLI tool for the OpenFang Agent OS";
+          omtae-cli = {
+            program = "${self'.packages.omtae-cli}/bin/omtae";
+            meta.description = "CLI tool for the OMTAE Agent OS";
           };
-          openfang-desktop = {
-            program = "${self'.packages.openfang-desktop}/bin/openfang-desktop";
-            meta.description = "Native desktop application for the OpenFang Agent OS (Tauri 2.0)";
+          omtae-desktop = {
+            program = "${self'.packages.omtae-desktop}/bin/omtae-desktop";
+            meta.description = "Native desktop application for the OMTAE Agent OS (Tauri 2.0)";
           };
-          default = self'.apps.openfang-cli;
+          default = self'.apps.omtae-cli;
         };
       };
       flake = {

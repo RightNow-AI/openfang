@@ -96,7 +96,13 @@ impl Default for ProbeCache {
 ///
 /// `base_url` should be the provider's base URL from the catalog (e.g.,
 /// `http://localhost:11434/v1` for Ollama, `http://localhost:8000/v1` for vLLM).
-pub async fn probe_provider(provider: &str, base_url: &str) -> ProbeResult {
+///
+/// When `api_key` is set, sends `Authorization: Bearer …` (required by some vLLM deployments).
+pub async fn probe_provider(
+    provider: &str,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> ProbeResult {
     let start = Instant::now();
 
     let client = match reqwest::Client::builder()
@@ -129,7 +135,11 @@ pub async fn probe_provider(provider: &str, base_url: &str) -> ProbeResult {
         (format!("{trimmed}/models"), false)
     };
 
-    let resp = match client.get(&url).send().await {
+    let mut req = client.get(&url);
+    if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+        req = req.header("Authorization", format!("Bearer {key}"));
+    }
+    let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
             return ProbeResult {
@@ -204,12 +214,13 @@ pub async fn probe_provider(provider: &str, base_url: &str) -> ProbeResult {
 pub async fn probe_provider_cached(
     provider: &str,
     base_url: &str,
+    api_key: Option<&str>,
     cache: &ProbeCache,
 ) -> ProbeResult {
     if let Some(cached) = cache.get(provider) {
         return cached;
     }
-    let result = probe_provider(provider, base_url).await;
+    let result = probe_provider(provider, base_url, api_key).await;
     cache.insert(provider, result.clone());
     result
 }
@@ -302,7 +313,7 @@ mod tests {
     #[tokio::test]
     async fn test_probe_unreachable_returns_error() {
         // Probe a port that's almost certainly not running a server
-        let result = probe_provider("ollama", "http://127.0.0.1:19999").await;
+        let result = probe_provider("ollama", "http://127.0.0.1:19999", None).await;
         assert!(!result.reachable);
         assert!(result.error.is_some());
     }

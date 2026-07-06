@@ -300,7 +300,7 @@ impl ChannelAdapter for DiscourseAdapter {
                         sender: ChannelUser {
                             platform_id: username.to_string(),
                             display_name,
-                            openfang_user: None,
+                            omtae_user: None,
                         },
                         content,
                         target_agent: None,

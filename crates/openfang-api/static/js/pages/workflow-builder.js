@@ -1,4 +1,4 @@
-// OpenFang Visual Workflow Builder — Drag-and-drop workflow designer
+// OMTAE Visual Workflow Builder — Drag-and-drop workflow designer
 'use strict';
 
 function workflowBuilder() {
@@ -48,7 +48,7 @@ function workflowBuilder() {
       var self = this;
       // Load agents for the agent step dropdown
       try {
-        var list = await OpenFangAPI.get('/api/agents');
+        var list = await OMTAEAPI.get('/api/agents');
         self.agents = Array.isArray(list) ? list : [];
       } catch(_) {
         self.agents = [];
@@ -558,15 +558,15 @@ function workflowBuilder() {
         steps.push(step);
       }
       try {
-        await OpenFangAPI.post('/api/workflows', {
+        await OMTAEAPI.post('/api/workflows', {
           name: this.workflowName || 'untitled',
           description: this.workflowDescription || '',
           steps: steps
         });
-        OpenFangToast.success('Workflow saved!');
+        OMTAEToast.success('Workflow saved!');
         this.showSaveModal = false;
       } catch(e) {
-        OpenFangToast.error('Failed to save: ' + e.message);
+        OMTAEToast.error('Failed to save: ' + e.message);
       }
     },
 

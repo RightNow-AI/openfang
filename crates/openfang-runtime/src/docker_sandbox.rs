@@ -3,7 +3,7 @@
 //! Provides secure command execution inside Docker containers with strict
 //! resource limits, network isolation, and capability dropping.
 
-use openfang_types::config::DockerSandboxConfig;
+use omtae_types::config::DockerSandboxConfig;
 use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -434,8 +434,8 @@ mod tests {
 
     #[test]
     fn test_sanitize_container_name_valid() {
-        let result = sanitize_container_name("openfang-sandbox-abc123").unwrap();
-        assert_eq!(result, "openfang-sandbox-abc123");
+        let result = sanitize_container_name("omtae-sandbox-abc123").unwrap();
+        assert_eq!(result, "omtae-sandbox-abc123");
     }
 
     #[test]
@@ -518,7 +518,7 @@ mod tests {
         let config = DockerSandboxConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.image, "python:3.12-slim");
-        assert_eq!(config.container_prefix, "openfang-sandbox");
+        assert_eq!(config.container_prefix, "omtae-sandbox");
         assert_eq!(config.workdir, "/workspace");
         assert_eq!(config.network, "none");
         assert_eq!(config.memory_limit, "512m");

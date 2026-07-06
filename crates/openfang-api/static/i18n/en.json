@@ -1,5 +1,5 @@
 {
-  "app.name": "OpenFang",
+  "app.name": "OMTAE",
   "app.version": "v",
 
   "nav.chat": "Chat",
@@ -28,9 +28,13 @@
   "auth.password": "Password",
   "auth.api_key_required": "API Key Required",
   "auth.api_key_desc": "This instance requires an API key. Enter the key from your config.toml.",
-  "auth.api_key_hint": "Add api_key = \"your-key\" at the top of ~/.openfang/config.toml (not under any [section]).",
+  "auth.api_key_hint": "Add api_key = \"your-key\" at the top of ~/.omtae/config.toml (not under any [section]).",
   "auth.enter_api_key": "Enter API key...",
   "auth.unlock_dashboard": "Unlock Dashboard",
+  "auth.pin_title": "Enter PIN",
+  "auth.pin_desc": "Enter the dashboard PIN from your ~/.omtae/config.toml [dashboard] section.",
+  "auth.pin_placeholder": "4–6 digit PIN",
+  "auth.pin_failed": "Invalid PIN",
   "auth.login_failed": "Login failed",
 
   "status.agents_running": "agent(s) running",
@@ -126,7 +130,7 @@
   "theme.dark": "Dark",
 
   "errors.connection_error": "Connection Error",
-  "errors.daemon_unreachable": "Cannot reach daemon — is openfang running?",
+  "errors.daemon_unreachable": "Cannot reach daemon — is omtae running?",
   "errors.not_authorized": "Not authorized — check your API key",
   "errors.permission_denied": "Permission denied",
   "errors.resource_not_found": "Resource not found",
@@ -163,7 +167,7 @@
   "toasts.mcp_connected": "MCP Connected",
   "toasts.session_deleted": "Session deleted",
 
-  "overview.welcome": "Welcome to OpenFang",
+  "overview.welcome": "Welcome to OMTAE",
   "overview.getting_started": "Getting Started",
   "overview.setup_wizard": "Setup Wizard",
   "overview.steps_completed": "of 5 steps completed",
@@ -198,7 +202,7 @@
   "tooltips.ready": "ready",
   "tooltips.not_configured": "not configured",
 
-  "chat.placeholder": "Message OpenFang... (/ for commands)",
+  "chat.placeholder": "Message OMTAE... (/ for commands)",
   "chat.ready": "Ready",
   "chat.generating": "Generating...",
   "chat.queued": "queued",
@@ -226,7 +230,7 @@
   "chat.stop_agent_confirm": "Stop agent",
   "chat.agent_stopped": "Agent stopped",
   "chat.stop_agent_failed": "Failed to stop agent",
-  "chat.welcome_message": "**Welcome to OpenFang Chat!**\n\n- Type `/` to see available commands\n- `/help` shows all commands\n- `/think on` enables extended reasoning\n- `/context` shows context window usage\n- `/verbose off` hides tool details\n- `Ctrl+Shift+F` toggles focus mode\n- Drag & drop files to attach them\n- `Ctrl+/` opens the command palette",
+  "chat.welcome_message": "**Welcome to OMTAE Chat!**\n\n- Type `/` to see available commands\n- `/help` shows all commands\n- `/think on` enables extended reasoning\n- `/context` shows context window usage\n- `/verbose off` hides tool details\n- `Ctrl+Shift+F` toggles focus mode\n- Drag & drop files to attach them\n- `Ctrl+/` opens the command palette",
 
   "chat.slash.help": "Show available commands",
   "chat.slash.agents": "Switch to Agents page",

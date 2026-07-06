@@ -3,7 +3,7 @@
 //! Provides a comprehensive catalog of 130+ builtin models across 28 providers,
 //! with alias resolution, auth status detection, and pricing lookups.
 
-use openfang_types::model_catalog::{
+use omtae_types::model_catalog::{
     AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
     AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
     DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
@@ -77,12 +77,12 @@ impl ModelCatalog {
 
             // GitHub Copilot: check for persisted OAuth tokens
             if provider.id == "github-copilot" || provider.id == "copilot" {
-                let openfang_dir = std::env::var("HOME")
+                let omtae_dir = std::env::var("HOME")
                     .or_else(|_| std::env::var("USERPROFILE"))
-                    .map(|h| std::path::PathBuf::from(h).join(".openfang"))
-                    .unwrap_or_else(|_| std::path::PathBuf::from(".openfang"));
+                    .map(|h| std::path::PathBuf::from(h).join(".omtae"))
+                    .unwrap_or_else(|_| std::path::PathBuf::from(".omtae"));
                 provider.auth_status =
-                    if crate::drivers::copilot::copilot_auth_available(&openfang_dir) {
+                    if crate::drivers::copilot::copilot_auth_available(&omtae_dir) {
                         AuthStatus::Configured
                     } else {
                         AuthStatus::Missing
@@ -276,16 +276,25 @@ impl ModelCatalog {
             .collect()
     }
 
-    /// Return the default model ID for a provider (first model in catalog order).
+    /// Return the default model ID for a provider.
+    ///
+    /// Prefers real models over builtin placeholders like `vllm-local` / `lmstudio-local`
+    /// (used only until dynamic discovery or `custom_models.json` adds entries).
     pub fn default_model_for_provider(&self, provider: &str) -> Option<String> {
         // Check aliases first — e.g. "minimax" alias resolves to "MiniMax-M2.5"
         if let Some(model_id) = self.aliases.get(provider) {
             return Some(model_id.clone());
         }
-        // Fall back to the first model registered for this provider
-        self.models
+        let provider_models: Vec<&ModelCatalogEntry> = self
+            .models
             .iter()
-            .find(|m| m.provider == provider)
+            .filter(|m| m.provider == provider)
+            .collect();
+        // Prefer custom/discovered models over *-local catalog placeholders
+        provider_models
+            .iter()
+            .find(|m| !m.id.ends_with("-local"))
+            .or_else(|| provider_models.first())
             .map(|m| m.id.clone())
     }
 
@@ -2592,8 +2601,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         // vLLM (1) — generic local entry + dynamic discovery
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
-            id: "vllm-local".into(),
-            display_name: "vLLM Local Model".into(),
+            id: "Qwen2.5-Coder-32B-Instruct-AWQ".into(),
+            display_name: "Qwen2.5 Coder 32B AWQ (vLLM)".into(),
             provider: "vllm".into(),
             tier: ModelTier::Local,
             context_window: 32_768,
@@ -2603,7 +2612,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
-            aliases: vec![],
+            aliases: vec!["vllm-local".into(), "local-model".into()],
         },
         // ══════════════════════════════════════════════════════════════
         // LM Studio (1) — generic local entry + dynamic discovery

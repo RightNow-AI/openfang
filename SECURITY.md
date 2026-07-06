@@ -8,7 +8,7 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in OpenFang, please report it responsibly.
+If you discover a security vulnerability in OMTAE, please report it responsibly.
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
@@ -45,7 +45,7 @@ The following are in scope for security reports:
 
 ## Security Architecture
 
-OpenFang implements defense-in-depth with the following security controls:
+OMTAE implements defense-in-depth with the following security controls:
 
 ### Access Control
 - **Capability-based permissions**: Agents only access resources explicitly granted

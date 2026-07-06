@@ -1,13 +1,13 @@
 //! Multi-agent integration test: spawn 6 agents, send messages, verify all respond.
 //!
-//! Run with: GROQ_API_KEY=gsk_... cargo test -p openfang-kernel --test multi_agent_test -- --nocapture
+//! Run with: GROQ_API_KEY=gsk_... cargo test -p omtae-kernel --test multi_agent_test -- --nocapture
 
-use openfang_kernel::OpenFangKernel;
-use openfang_types::agent::AgentManifest;
-use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use omtae_kernel::OMTAEKernel;
+use omtae_types::agent::AgentManifest;
+use omtae_types::config::{DefaultModelConfig, KernelConfig};
 
 fn test_config() -> KernelConfig {
-    let tmp = std::env::temp_dir().join("openfang-multi-agent-test");
+    let tmp = std::env::temp_dir().join("omtae-multi-agent-test");
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
 
@@ -36,7 +36,7 @@ async fn test_six_agent_fleet() {
         return;
     }
 
-    let kernel = OpenFangKernel::boot_with_config(test_config()).expect("Kernel should boot");
+    let kernel = OMTAEKernel::boot_with_config(test_config()).expect("Kernel should boot");
 
     // Define all 6 agents with different roles and models
     let agents = vec![

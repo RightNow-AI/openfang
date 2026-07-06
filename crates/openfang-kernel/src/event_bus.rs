@@ -1,8 +1,8 @@
 //! Event bus — pub/sub with pattern matching and history ring buffer.
 
 use dashmap::DashMap;
-use openfang_types::agent::AgentId;
-use openfang_types::event::{Event, EventTarget};
+use omtae_types::agent::AgentId;
+use omtae_types::event::{Event, EventTarget};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
@@ -107,7 +107,7 @@ impl Default for EventBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openfang_types::event::{EventPayload, SystemEvent};
+    use omtae_types::event::{EventPayload, SystemEvent};
 
     #[tokio::test]
     async fn test_publish_and_history() {

@@ -405,7 +405,7 @@ impl ChannelAdapter for EmailAdapter {
                         sender: ChannelUser {
                             platform_id: from_addr.clone(),
                             display_name: from_addr.clone(),
-                            openfang_user: None,
+                            omtae_user: None,
                         },
                         content: ChannelContent::Text(text),
                         target_agent: None, // Routing handled by bridge AgentRouter
@@ -451,7 +451,7 @@ impl ChannelAdapter for EmailAdapter {
                         let body = text[pos + 2..].to_string();
                         (subj, body)
                     } else {
-                        ("OpenFang Reply".to_string(), text)
+                        ("OMTAE Reply".to_string(), text)
                     }
                 } else {
                     // Check reply context for subject continuity
@@ -459,7 +459,7 @@ impl ChannelAdapter for EmailAdapter {
                         .reply_ctx
                         .get(&to_addr)
                         .map(|ctx| format!("Re: {}", ctx.subject))
-                        .unwrap_or_else(|| "OpenFang Reply".to_string());
+                        .unwrap_or_else(|| "OMTAE Reply".to_string());
                     (subj, text)
                 };
 

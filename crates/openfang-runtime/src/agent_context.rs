@@ -132,7 +132,7 @@ mod tests {
     fn fresh_workspace(tag: &str) -> PathBuf {
         // Unique temp dir per test to avoid cross-test cache pollution.
         let dir = std::env::temp_dir().join(format!(
-            "openfang_ctx_{}_{}",
+            "omtae_ctx_{}_{}",
             tag,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

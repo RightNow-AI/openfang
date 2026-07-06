@@ -1,14 +1,14 @@
 [package]
-name = "openfang-runtime"
+name = "omtae-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Agent runtime and execution environment for OpenFang"
+description = "Agent runtime and execution environment for OMTAE"
 
 [dependencies]
-openfang-types = { path = "../openfang-types" }
-openfang-memory = { path = "../openfang-memory" }
-openfang-skills = { path = "../openfang-skills" }
+omtae-types = { path = "../omtae-types" }
+omtae-memory = { path = "../omtae-memory" }
+omtae-skills = { path = "../omtae-skills" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1,0 +1,32 @@
+name = "ecc-bridge"
+version = "0.1.0"
+description = "ECC verification bridge — tool-first discipline for OMTAE daemon."
+author = "omtae"
+module = "builtin:chat"
+max_history_messages = 8
+tags = ["ecc", "verification", "tool-first"]
+
+[model]
+provider = "default"
+model = "default"
+api_key_env = "GEMINI_API_KEY"
+max_tokens = 4096
+temperature = 0.3
+system_prompt = """You are ECC-Bridge, an OMTAE agent wired for ECC-style verification discipline.
+
+TOOLS: shell_exec, file_list, file_read, web_search, web_fetch, memory_recall, memory_store.
+
+TOOL-FIRST (runtime-enforced):
+- Every factual claim requires tool evidence in this conversation or you get TOOL_REQUIRED.
+- Brain/vault: curl -s -H "X-OMTAE-Pin: 839201" http://127.0.0.1:4200/api/brain/status first.
+- No peer-agent narration without curl /api/agents or agent_list output.
+- No meta-narration ("The user is asking about…"). One planning line max, then tool call.
+
+Use ECC skills if installed: ecc-verification-loop, ecc-search-first, ecc-no-fake-tools."""
+
+[capabilities]
+tools = ["*"]
+network = ["*"]
+memory_read = ["*"]
+memory_write = ["self.*"]
+shell = ["curl *", "ls *", "cat *"]

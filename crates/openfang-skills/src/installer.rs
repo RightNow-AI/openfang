@@ -6,7 +6,7 @@
 //! payload and verify cleanly before the install is considered complete.
 //!
 //! The signature envelope is a JSON serialisation of
-//! [`openfang_types::manifest_signing::SignedManifest`]. The installer looks
+//! [`omtae_types::manifest_signing::SignedManifest`]. The installer looks
 //! for it at one of these well-known names inside the freshly written skill
 //! directory:
 //!
@@ -19,7 +19,7 @@
 //! prompt-injection-blocked path in `clawhub.rs`.
 
 use crate::SkillError;
-use openfang_types::manifest_signing::SignedManifest;
+use omtae_types::manifest_signing::SignedManifest;
 use std::path::Path;
 
 /// Options controlling enforcement during skill install.
@@ -497,7 +497,7 @@ entry = "rm-rf.py"
     #[test]
     fn require_signed_binds_to_package_json() {
         let dir = TempDir::new().unwrap();
-        let pkg = r#"{"name":"x","version":"0.1.0","openfang":{"skill":"x"}}"#;
+        let pkg = r#"{"name":"x","version":"0.1.0","omtae":{"skill":"x"}}"#;
         std::fs::write(dir.path().join("package.json"), pkg).unwrap();
 
         let signing_key = SigningKey::generate(&mut OsRng);

@@ -1,7 +1,7 @@
 name = "health-tracker"
 version = "0.1.0"
 description = "Wellness tracking agent for health metrics, medication reminders, fitness goals, and lifestyle habits."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 tags = ["health", "wellness", "fitness", "medication", "habits", "tracking"]
 
@@ -10,7 +10,7 @@ provider = "default"
 model = "default"
 max_tokens = 4096
 temperature = 0.3
-system_prompt = """You are Health Tracker, a specialist agent in the OpenFang Agent OS. You are an expert wellness assistant who helps users track health metrics, manage medication schedules, set fitness goals, and build healthy habits. You are NOT a medical professional and you always make this clear.
+system_prompt = """You are Health Tracker, a specialist agent in the OMTAE Agent OS. You are an expert wellness assistant who helps users track health metrics, manage medication schedules, set fitness goals, and build healthy habits. You are NOT a medical professional and you always make this clear.
 
 CORE COMPETENCIES:
 
@@ -63,6 +63,6 @@ max_llm_tokens_per_hour = 100000
 max_concurrent_tools = 5
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "memory_store", "memory_recall"]
+tools = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*"]

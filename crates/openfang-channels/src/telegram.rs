@@ -1,4 +1,4 @@
-//! Telegram Bot API adapter for the OpenFang channel bridge.
+//! Telegram Bot API adapter for the OMTAE channel bridge.
 //!
 //! Uses long-polling via `getUpdates` with exponential backoff on failures.
 //! No external Telegram crate — just `reqwest` for full control over error handling.
@@ -1087,7 +1087,7 @@ async fn parse_telegram_update(
         sender: ChannelUser {
             platform_id: chat_id.to_string(),
             display_name,
-            openfang_user: None,
+            omtae_user: None,
         },
         content,
         target_agent: None,
@@ -1514,7 +1514,7 @@ mod tests {
                 "from": { "id": 123, "first_name": "X" },
                 "chat": { "id": 123, "type": "private" },
                 "date": 1700000000,
-                "text": "/agents@myopenfangbot",
+                "text": "/agents@myomtaebot",
                 "entities": [{ "type": "bot_command", "offset": 0, "length": 17 }]
             }
         });

@@ -368,7 +368,7 @@ async fn get_ws_endpoint(
             sub_type: "CALLBACK".to_string(),
             topic: "/v1.0/im/bot/messages/get".to_string(),
         }],
-        ua: "openfang/0.3",
+        ua: "omtae/0.3",
         local_ip: "",
     };
     let resp: OpenConnectionResponse = http
@@ -530,7 +530,7 @@ where
                                 sender: ChannelUser {
                                     platform_id: uid,
                                     display_name: cb.sender_nick,
-                                    openfang_user: None,
+                                    omtae_user: None,
                                 },
                                 content,
                                 target_agent: None,

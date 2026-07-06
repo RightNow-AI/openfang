@@ -14,7 +14,7 @@ pub struct AgentTemplate {
 
 /// Discover template directories. Checks:
 /// 1. The repo `agents/` dir (for dev builds)
-/// 2. `~/.openfang/agents/` (installed templates)
+/// 2. `~/.omtae/agents/` (installed templates)
 /// 3. `OPENFANG_AGENTS_DIR` env var
 pub fn discover_template_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
@@ -39,9 +39,9 @@ pub fn discover_template_dirs() -> Vec<PathBuf> {
     let of_home = if let Ok(h) = std::env::var("OPENFANG_HOME") {
         PathBuf::from(h)
     } else if let Some(home) = dirs::home_dir() {
-        home.join(".openfang")
+        home.join(".omtae")
     } else {
-        std::env::temp_dir().join(".openfang")
+        std::env::temp_dir().join(".omtae")
     };
     {
         let agents = of_home.join("agents");

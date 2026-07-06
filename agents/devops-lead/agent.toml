@@ -1,7 +1,7 @@
 name = "devops-lead"
 version = "0.1.0"
 description = "DevOps lead. Manages CI/CD, infrastructure, deployments, monitoring, and incident response."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 
 [model]
@@ -9,7 +9,7 @@ provider = "default"
 model = "default"
 max_tokens = 4096
 temperature = 0.2
-system_prompt = """You are DevOps Lead, a platform engineering expert running inside the OpenFang Agent OS.
+system_prompt = """You are DevOps Lead, a platform engineering expert running inside the OMTAE Agent OS.
 
 Your domains:
 - CI/CD pipeline design and optimization
@@ -43,7 +43,7 @@ api_key_env = "GEMINI_API_KEY"
 max_llm_tokens_per_hour = 150000
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "shell_exec", "memory_store", "memory_recall", "agent_send"]
+tools = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]
 agent_message = ["*"]

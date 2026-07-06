@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# OMTAE local vLLM model profile switcher (dual-GPU workstation).
+# Profiles: ~/.omtae/models.toml  Active: ~/.omtae/active_model.txt
+set -euo pipefail
+
+OMTAE_HOME="${OMTAE_HOME:-$HOME/.omtae}"
+MODELS_TOML="${OMTAE_MODELS_TOML:-$OMTAE_HOME/models.toml}"
+ACTIVE_FILE="${OMTAE_ACTIVE_MODEL:-$OMTAE_HOME/active_model.txt}"
+CONFIG_TOML="$OMTAE_HOME/config.toml"
+API_BASE="${OMTAE_API:-http://127.0.0.1:4200}"
+VLLM_UNIT="${OMTAE_VLLM_UNIT:-omtae-vllm.service}"
+DROPIN_DIR="${HOME}/.config/systemd/user/${VLLM_UNIT}.d"
+DROPIN_FILE="${DROPIN_DIR}/profile.conf"
+
+usage() {
+  cat <<'EOF'
+Usage: omtae-model <command> [args]
+
+Commands:
+  list              Show profiles from ~/.omtae/models.toml
+  status            Active profile, OMTAE default, vLLM :8000 health
+  use <profile-id>  Switch profile: update config, restart omtae-vllm, reload daemon
+
+Examples:
+  omtae-model list
+  omtae-model use qwen-coder-32b
+  omtae-model use qwen36-obliterated-27b
+
+After switch, set agent.toml model to the profile's omtae_model_id (or leave empty for default).
+EOF
+}
+
+die() { echo "omtae-model: $*" >&2; exit 1; }
+
+require_models_toml() {
+  [[ -f "$MODELS_TOML" ]] || die "missing $MODELS_TOML — copy from openfang-core/scripts/models.toml.example"
+}
+
+py_profiles() {
+  require_models_toml
+  python3 - "$MODELS_TOML" "$@" <<'PY'
+import sys, tomllib, json
+from pathlib import Path
+
+path = Path(sys.argv[1])
+cmd = sys.argv[2] if len(sys.argv) > 2 else "list"
+data = tomllib.loads(path.read_text())
+profiles = data.get("profiles") or []
+
+def by_id(pid):
+    for p in profiles:
+        if p.get("id") == pid:
+            return p
+    return None
+
+if cmd == "list":
+    print(json.dumps(profiles))
+elif cmd == "get":
+    p = by_id(sys.argv[3])
+    if not p:
+        sys.exit(2)
+    print(json.dumps(p))
+elif cmd == "ids":
+    print("\n".join(p["id"] for p in profiles))
+else:
+    sys.exit(1)
+PY
+}
+
+cmd_list() {
+  require_models_toml
+  python3 - "$MODELS_TOML" "$ACTIVE_FILE" <<'PY'
+import sys, tomllib
+from pathlib import Path
+
+models = Path(sys.argv[1])
+active_path = Path(sys.argv[2])
+active = active_path.read_text().strip() if active_path.exists() else ""
+
+data = tomllib.loads(models.read_text())
+for p in data.get("profiles") or []:
+    pid = p["id"]
+    mark = "*" if pid == active else " "
+    on_disk = Path(p["vllm_path"]).joinpath("config.json").is_file()
+    flag = "ready" if on_disk else "MISSING weights"
+    print(f"{mark} {pid:28} {p['display_name']:40} [{flag}]")
+    print(f"    omtae_model_id: {p['omtae_model_id']}")
+PY
+}
+
+patch_config_model() {
+  local model_id="$1"
+  if [[ ! -f "$CONFIG_TOML" ]]; then
+    die "missing $CONFIG_TOML"
+  fi
+  python3 - "$CONFIG_TOML" "$model_id" <<'PY'
+import sys, re
+from pathlib import Path
+
+cfg, model = Path(sys.argv[1]), sys.argv[2]
+text = cfg.read_text()
+if "[default_model]" not in text:
+    text += "\n[default_model]\nprovider = \"vllm\"\n"
+block = re.search(r"(\[default_model\][^\[]*)", text, re.S)
+if block:
+    section = block.group(1)
+    if re.search(r"^\s*model\s*=", section, re.M):
+        section = re.sub(r'^\s*model\s*=.*$', f'model = "{model}"', section, count=1, flags=re.M)
+    else:
+        section = section.rstrip() + f'\nmodel = "{model}"\n'
+    text = text[: block.start(1)] + section + text[block.end(1) :]
+else:
+    text += f'\n[default_model]\nprovider = "vllm"\nmodel = "{model}"\n'
+cfg.write_text(text)
+PY
+}
+
+api_reload() {
+  local pin="${OMTAE_PIN:-}"
+  local args=(-sf -X POST "${API_BASE}/api/config/reload" -H "Content-Type: application/json")
+  [[ -n "$pin" ]] && args+=(-H "X-OMTAE-Pin: $pin")
+  if curl "${args[@]}" -d '{}' >/dev/null 2>&1; then
+    echo "OMTAE config reloaded via API"
+  else
+    echo "Tip: reload daemon if needed — systemctl --user restart omtae-daemon.service"
+  fi
+}
+
+vllm_status() {
+  local key="${VLLM_API_KEY:-sk-1234567890abcdef}"
+  curl -sf -H "Authorization: Bearer $key" "http://127.0.0.1:8000/v1/models" 2>/dev/null \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(', '.join(m['id'] for m in d.get('data',[])))" \
+    || echo "(vLLM not reachable on :8000)"
+}
+
+cmd_status() {
+  require_models_toml
+  local active=""
+  [[ -f "$ACTIVE_FILE" ]] && active=$(tr -d '\n' <"$ACTIVE_FILE")
+  echo "Active profile: ${active:-<unset>}"
+  if [[ -f "$CONFIG_TOML" ]]; then
+    grep -A5 '^\[default_model\]' "$CONFIG_TOML" | sed 's/^/  /' || true
+  fi
+  echo "vLLM models on :8000: $(vllm_status)"
+  systemctl --user is-active "$VLLM_UNIT" 2>/dev/null && echo "systemd: $VLLM_UNIT is active" \
+    || echo "systemd: $VLLM_UNIT not active"
+}
+
+cmd_use() {
+  local profile_id="${1:-}"
+  [[ -n "$profile_id" ]] || die "usage: omtae-model use <profile-id>"
+  local profile_json
+  profile_json=$(py_profiles get "$profile_id") || die "unknown profile: $profile_id (omtae-model list)"
+  local model_id start_script vllm_path
+  model_id=$(echo "$profile_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['omtae_model_id'])")
+  start_script=$(echo "$profile_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['start_script'])")
+  vllm_path=$(echo "$profile_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['vllm_path'])")
+  [[ -f "$vllm_path/config.json" ]] || die "weights missing at $vllm_path"
+
+  echo "$profile_id" >"$ACTIVE_FILE"
+  patch_config_model "$model_id"
+  echo "Wrote active profile → $ACTIVE_FILE"
+  echo "Updated [default_model].model → $model_id"
+
+  mkdir -p "$DROPIN_DIR"
+  cat >"$DROPIN_FILE" <<EOF
+# Generated by omtae-model use $profile_id
+[Service]
+ExecStart=
+ExecStart=/usr/bin/bash $start_script
+EOF
+  systemctl --user daemon-reload
+  echo "Restarting $VLLM_UNIT (this stops the other vLLM weights)..."
+  systemctl --user restart "$VLLM_UNIT"
+  api_reload
+  echo ""
+  echo "Done. OMTAE agents should use model = \"$model_id\" in agent.toml (or rely on default)."
+  echo "Check: omtae-model status"
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    list) cmd_list ;;
+    status) cmd_status ;;
+    use) cmd_use "${1:-}" ;;
+    -h|--help|help|"") usage ;;
+    *) die "unknown command: $cmd (try: omtae-model help)" ;;
+  esac
+}
+
+main "$@"

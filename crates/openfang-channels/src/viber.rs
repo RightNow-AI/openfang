@@ -31,7 +31,7 @@ const VIBER_ACCOUNT_INFO_URL: &str = "https://chatapi.viber.com/pa/get_account_i
 const MAX_MESSAGE_LEN: usize = 7000;
 
 /// Sender name shown in Viber messages from the bot.
-const DEFAULT_SENDER_NAME: &str = "OpenFang";
+const DEFAULT_SENDER_NAME: &str = "OMTAE";
 
 /// Viber Bot API adapter.
 ///
@@ -183,7 +183,7 @@ impl ViberAdapter {
                 "receiver": receiver,
                 "min_api_version": 1,
                 "sender": sender,
-                "tracking_data": "openfang",
+                "tracking_data": "omtae",
                 "type": "text",
                 "text": chunk,
             });
@@ -286,7 +286,7 @@ fn parse_viber_event(event: &serde_json::Value) -> Option<ChannelMessage> {
         sender: ChannelUser {
             platform_id: sender_id,
             display_name: sender_name,
-            openfang_user: None,
+            omtae_user: None,
         },
         content,
         target_agent: None,

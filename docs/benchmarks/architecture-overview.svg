@@ -30,7 +30,7 @@
   <rect width="900" height="640" rx="12" fill="#0f172a"/>
 
   <!-- Title -->
-  <text x="450" y="32" text-anchor="middle" fill="#f1f5f9" font-size="18" font-weight="700">OpenFang — Agent Operating System Architecture</text>
+  <text x="450" y="32" text-anchor="middle" fill="#f1f5f9" font-size="18" font-weight="700">OMTAE — Agent Operating System Architecture</text>
   <text x="450" y="50" text-anchor="middle" fill="#64748b" font-size="11">14 crates | 137K lines of Rust | single binary</text>
 
   <!-- === User Layer === -->
@@ -56,7 +56,7 @@
 
   <!-- === API Layer === -->
   <rect x="30" y="135" width="840" height="70" rx="8" fill="url(#api)" opacity="0.15" stroke="#8b5cf6" stroke-width="1"/>
-  <text x="50" y="153" fill="#a78bfa" font-size="9" font-weight="600" letter-spacing="1">API GATEWAY — openfang-api</text>
+  <text x="50" y="153" fill="#a78bfa" font-size="9" font-weight="600" letter-spacing="1">API GATEWAY — omtae-api</text>
   <text x="50" y="172" fill="#c4b5fd" font-size="10">140 REST endpoints | WebSocket streaming | SSE events | GCRA rate limiter</text>
   <text x="50" y="189" fill="#c4b5fd" font-size="10">Security headers (CSP/HSTS) | CORS | Health redaction | File uploads | Approval queue</text>
 
@@ -65,7 +65,7 @@
 
   <!-- === Kernel Layer === -->
   <rect x="30" y="218" width="840" height="85" rx="8" fill="url(#kern)" opacity="0.15" stroke="#10b981" stroke-width="1.5"/>
-  <text x="50" y="237" fill="#34d399" font-size="9" font-weight="600" letter-spacing="1">KERNEL — openfang-kernel</text>
+  <text x="50" y="237" fill="#34d399" font-size="9" font-weight="600" letter-spacing="1">KERNEL — omtae-kernel</text>
   <rect x="50" y="245" width="95" height="20" rx="3" fill="#10b98133"/>
   <text x="97" y="259" text-anchor="middle" fill="#a7f3d0" font-size="9">Agent Registry</text>
   <rect x="152" y="245" width="75" height="20" rx="3" fill="#10b98133"/>
@@ -104,7 +104,7 @@
 
   <!-- === Runtime (left) === -->
   <rect x="30" y="318" width="420" height="110" rx="8" fill="url(#rt)" opacity="0.12" stroke="#3b82f6" stroke-width="1"/>
-  <text x="50" y="337" fill="#60a5fa" font-size="9" font-weight="600" letter-spacing="1">RUNTIME — openfang-runtime</text>
+  <text x="50" y="337" fill="#60a5fa" font-size="9" font-weight="600" letter-spacing="1">RUNTIME — omtae-runtime</text>
   <text x="50" y="354" fill="#93c5fd" font-size="10">Agent loop (streaming) | 3 LLM drivers | 53 tools</text>
   <text x="50" y="369" fill="#93c5fd" font-size="10">WASM sandbox (dual metering) | MCP client/server</text>
   <text x="50" y="384" fill="#93c5fd" font-size="10">Loop guard | Session repair | Auth cooldown</text>
@@ -133,7 +133,7 @@
 
   <!-- === Memory Layer === -->
   <rect x="30" y="443" width="540" height="60" rx="8" fill="url(#mem)" opacity="0.12" stroke="#ec4899" stroke-width="1"/>
-  <text x="50" y="462" fill="#f472b6" font-size="9" font-weight="600" letter-spacing="1">MEMORY — openfang-memory</text>
+  <text x="50" y="462" fill="#f472b6" font-size="9" font-weight="600" letter-spacing="1">MEMORY — omtae-memory</text>
   <text x="50" y="479" fill="#fbcfe8" font-size="10">SQLite (KV + relational) | Vector embeddings | Usage tracking | Canonical sessions | JSONL mirror</text>
   <text x="50" y="494" fill="#fbcfe8" font-size="10">Schema v7 | Session compaction | Knowledge graphs</text>
 
@@ -147,15 +147,15 @@
   <rect x="30" y="515" width="840" height="55" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1"/>
   <text x="50" y="534" fill="#94a3b8" font-size="9" font-weight="600" letter-spacing="1">FOUNDATION</text>
   <rect x="50" y="541" width="110" height="22" rx="3" fill="#334155"/>
-  <text x="105" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">openfang-types</text>
+  <text x="105" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">omtae-types</text>
   <rect x="170" y="541" width="100" height="22" rx="3" fill="#334155"/>
-  <text x="220" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">openfang-wire</text>
+  <text x="220" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">omtae-wire</text>
   <rect x="280" y="541" width="120" height="22" rx="3" fill="#334155"/>
-  <text x="340" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">openfang-migrate</text>
+  <text x="340" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">omtae-migrate</text>
   <rect x="410" y="541" width="110" height="22" rx="3" fill="#334155"/>
-  <text x="465" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">openfang-hands</text>
+  <text x="465" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">omtae-hands</text>
   <rect x="530" y="541" width="130" height="22" rx="3" fill="#334155"/>
-  <text x="595" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">openfang-extensions</text>
+  <text x="595" y="556" text-anchor="middle" fill="#e2e8f0" font-size="9">omtae-extensions</text>
 
   <!-- Footer -->
   <text x="450" y="598" text-anchor="middle" fill="#475569" font-size="10">Taint tracking | Ed25519 manifests | Merkle audit | SSRF protection | Zeroizing secrets</text>

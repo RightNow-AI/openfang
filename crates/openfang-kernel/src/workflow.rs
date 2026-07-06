@@ -11,7 +11,7 @@
 //! Workflows are defined as Rust structs or loaded from JSON.
 
 use chrono::{DateTime, Utc};
-use openfang_types::agent::AgentId;
+use omtae_types::agent::AgentId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;

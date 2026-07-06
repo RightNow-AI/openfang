@@ -1,9 +1,9 @@
 {
-  "name": "@openfang/whatsapp-gateway",
+  "name": "@omtae/whatsapp-gateway",
   "version": "0.1.0",
-  "description": "WhatsApp Web gateway for OpenFang — QR code login, bidirectional messaging via Baileys",
+  "description": "WhatsApp Web gateway for OMTAE — QR code login, bidirectional messaging via Baileys",
   "bin": {
-    "openfang-whatsapp-gateway": "./index.js"
+    "omtae-whatsapp-gateway": "./index.js"
   },
   "type": "module",
   "main": "index.js",

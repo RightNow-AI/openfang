@@ -115,7 +115,7 @@ pub fn validate_executable_path(path: &str) -> Result<(), String> {
 // Shell/exec allowlisting
 // ---------------------------------------------------------------------------
 
-use openfang_types::config::{ExecPolicy, ExecSecurityMode};
+use omtae_types::config::{ExecPolicy, ExecSecurityMode};
 
 /// SECURITY: Check for shell metacharacters that enable command injection.
 ///
@@ -553,7 +553,7 @@ async fn kill_tree_windows(pid: u32, grace_ms: u64) -> Result<bool, String> {
 /// Kill a tokio child process with tree kill.
 ///
 /// Extracts the PID from the `Child` handle and performs a tree kill.
-/// This is the preferred way to clean up subprocesses spawned by OpenFang.
+/// This is the preferred way to clean up subprocesses spawned by OMTAE.
 pub async fn kill_child_tree(
     child: &mut tokio::process::Child,
     grace_ms: u64,
@@ -596,7 +596,7 @@ pub async fn wait_or_kill_with_idle(
     absolute_timeout: std::time::Duration,
     no_output_timeout: std::time::Duration,
     grace_ms: u64,
-) -> Result<(openfang_types::config::TerminationReason, String), String> {
+) -> Result<(omtae_types::config::TerminationReason, String), String> {
     use tokio::io::AsyncReadExt;
 
     let idle_enabled = !no_output_timeout.is_zero();
@@ -622,7 +622,7 @@ pub async fn wait_or_kill_with_idle(
             tracing::warn!("Process hit absolute timeout after {:?}", absolute_timeout);
             kill_child_tree(child, grace_ms).await?;
             return Ok((
-                openfang_types::config::TerminationReason::AbsoluteTimeout,
+                omtae_types::config::TerminationReason::AbsoluteTimeout,
                 output,
             ));
         }
@@ -636,7 +636,7 @@ pub async fn wait_or_kill_with_idle(
                 );
                 kill_child_tree(child, grace_ms).await?;
                 return Ok((
-                    openfang_types::config::TerminationReason::NoOutputTimeout,
+                    omtae_types::config::TerminationReason::NoOutputTimeout,
                     output,
                 ));
             }
@@ -668,14 +668,14 @@ pub async fn wait_or_kill_with_idle(
                             ).await {
                                 Ok(Ok(status)) => {
                                     return Ok((
-                                        openfang_types::config::TerminationReason::Exited(status.code().unwrap_or(-1)),
+                                        omtae_types::config::TerminationReason::Exited(status.code().unwrap_or(-1)),
                                         output,
                                     ));
                                 }
                                 Ok(Err(e)) => return Err(format!("Wait error: {e}")),
                                 Err(_) => {
                                     kill_child_tree(child, grace_ms).await?;
-                                    return Ok((openfang_types::config::TerminationReason::AbsoluteTimeout, output));
+                                    return Ok((omtae_types::config::TerminationReason::AbsoluteTimeout, output));
                                 }
                             }
                         }
@@ -726,7 +726,7 @@ pub async fn wait_or_kill_with_idle(
                 match result {
                     Ok(status) => {
                         return Ok((
-                            openfang_types::config::TerminationReason::Exited(status.code().unwrap_or(-1)),
+                            omtae_types::config::TerminationReason::Exited(status.code().unwrap_or(-1)),
                             output,
                         ));
                     }
@@ -771,7 +771,7 @@ mod tests {
 
     #[test]
     fn test_exec_policy_default_has_empty_passthrough() {
-        let policy = openfang_types::config::ExecPolicy::default();
+        let policy = omtae_types::config::ExecPolicy::default();
         assert!(policy.shell_env_passthrough.is_empty());
     }
 

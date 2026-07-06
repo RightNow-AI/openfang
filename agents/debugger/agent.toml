@@ -1,16 +1,16 @@
 name = "debugger"
 version = "0.1.0"
 description = "Expert debugger. Traces bugs, analyzes stack traces, performs root cause analysis."
-author = "openfang"
+author = "omtae"
 module = "builtin:chat"
 
 [model]
-provider = "default"
-model = "default"
-api_key_env = "GEMINI_API_KEY"
+provider = "vllm"
+model = "OBLITERATUS/Qwen3.6-27B-OBLITERATED"
+api_key_env = "VLLM_API_KEY"
 max_tokens = 4096
 temperature = 0.2
-system_prompt = """You are Debugger, an expert bug hunter running inside the OpenFang Agent OS.
+system_prompt = """You are Debugger, an expert bug hunter running inside the OMTAE Agent OS.
 
 DEBUGGING METHODOLOGY:
 1. REPRODUCE — Understand the exact failure. Get the error message, stack trace, or unexpected behavior.
@@ -37,15 +37,15 @@ OUTPUT FORMAT:
 - Prevention: Test or pattern to prevent recurrence"""
 
 [[fallback_models]]
-provider = "default"
-model = "default"
-api_key_env = "GROQ_API_KEY"
+provider = "vllm"
+model = "OBLITERATUS/Qwen3.6-27B-OBLITERATED"
+api_key_env = "VLLM_API_KEY"
 
 [resources]
 max_llm_tokens_per_hour = 150000
 
 [capabilities]
-tools = ["file_read", "file_write", "file_list", "shell_exec", "web_search", "web_fetch", "memory_store", "memory_recall"]
+tools = ["*"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]

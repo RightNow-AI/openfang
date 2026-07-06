@@ -72,7 +72,7 @@ impl MigrationReport {
         let mode = if self.dry_run { " (Dry Run)" } else { "" };
 
         out.push_str(&format!(
-            "# Migration Report: {} -> OpenFang{}\n\n",
+            "# Migration Report: {} -> OMTAE{}\n\n",
             self.source, mode
         ));
 
@@ -121,13 +121,13 @@ impl MigrationReport {
 
         // Next steps
         out.push_str("## Next Steps\n\n");
-        out.push_str("1. Review imported agent manifests in `~/.openfang/agents/`\n");
+        out.push_str("1. Review imported agent manifests in `~/.omtae/agents/`\n");
         out.push_str(
-            "2. Review `~/.openfang/secrets.env` — verify tokens were migrated correctly\n",
+            "2. Review `~/.omtae/secrets.env` — verify tokens were migrated correctly\n",
         );
-        out.push_str("3. Set any remaining API keys referenced in `~/.openfang/config.toml`\n");
-        out.push_str("4. Start the daemon: `openfang start`\n");
-        out.push_str("5. Test your agents: `openfang agent list`\n");
+        out.push_str("3. Set any remaining API keys referenced in `~/.omtae/config.toml`\n");
+        out.push_str("4. Start the daemon: `omtae start`\n");
+        out.push_str("5. Test your agents: `omtae agent list`\n");
 
         out
     }
@@ -163,8 +163,8 @@ impl MigrationReport {
 
         if !self.dry_run {
             println!("\n  Next steps:");
-            println!("    openfang start");
-            println!("    openfang agent list");
+            println!("    omtae start");
+            println!("    omtae agent list");
         }
     }
 }
@@ -192,7 +192,7 @@ mod tests {
             imported: vec![MigrateItem {
                 kind: ItemKind::Agent,
                 name: "coder".to_string(),
-                destination: "~/.openfang/agents/coder/agent.toml".to_string(),
+                destination: "~/.omtae/agents/coder/agent.toml".to_string(),
             }],
             skipped: vec![SkippedItem {
                 kind: ItemKind::Skill,

@@ -1,4 +1,4 @@
-// OpenFang Settings Page — Provider Hub, Model Catalog, Config, Tools + Security, Network, Migration tabs
+// OMTAE Settings Page — Provider Hub, Model Catalog, Config, Tools + Security, Network, Migration tabs
 'use strict';
 
 function settingsPage() {
@@ -122,7 +122,7 @@ function settingsPage() {
       {
         name: 'Bearer Token Authentication', key: 'auth',
         description: 'All non-health endpoints require Authorization: Bearer header. When no API key is configured, all requests are restricted to localhost only.',
-        configHint: 'Set api_key in ~/.openfang/config.toml for remote access. Empty = localhost only.',
+        configHint: 'Set api_key in ~/.omtae/config.toml for remote access. Empty = localhost only.',
         valueKey: 'auth'
       }
     ],
@@ -187,8 +187,8 @@ function settingsPage() {
 
     async loadSysInfo() {
       try {
-        var ver = await OpenFangAPI.get('/api/version');
-        var status = await OpenFangAPI.get('/api/status');
+        var ver = await OMTAEAPI.get('/api/version');
+        var status = await OMTAEAPI.get('/api/status');
         this.sysInfo = {
           version: ver.version || '-',
           platform: ver.platform || '-',
@@ -203,27 +203,27 @@ function settingsPage() {
 
     async loadUsage() {
       try {
-        var data = await OpenFangAPI.get('/api/usage');
+        var data = await OMTAEAPI.get('/api/usage');
         this.usageData = data.agents || [];
       } catch(e) { this.usageData = []; }
     },
 
     async loadTools() {
       try {
-        var data = await OpenFangAPI.get('/api/tools');
+        var data = await OMTAEAPI.get('/api/tools');
         this.tools = data.tools || [];
       } catch(e) { this.tools = []; }
     },
 
     async loadConfig() {
       try {
-        this.config = await OpenFangAPI.get('/api/config');
+        this.config = await OMTAEAPI.get('/api/config');
       } catch(e) { this.config = {}; }
     },
 
     async loadProviders() {
       try {
-        var data = await OpenFangAPI.get('/api/providers');
+        var data = await OMTAEAPI.get('/api/providers');
         this.providers = data.providers || [];
         for (var i = 0; i < this.providers.length; i++) {
           var p = this.providers[i];
@@ -241,7 +241,7 @@ function settingsPage() {
 
     async loadModels() {
       try {
-        var data = await OpenFangAPI.get('/api/models');
+        var data = await OMTAEAPI.get('/api/models');
         this.models = data.models || [];
       } catch(e) { this.models = []; }
     },
@@ -251,7 +251,7 @@ function settingsPage() {
       if (!id) return;
       this.customModelStatus = 'Adding...';
       try {
-        await OpenFangAPI.post('/api/models/custom', {
+        await OMTAEAPI.post('/api/models/custom', {
           id: id,
           provider: this.customModelProvider || 'openrouter',
           context_window: this.customModelContext || 128000,
@@ -269,19 +269,19 @@ function settingsPage() {
     async deleteCustomModel(modelId) {
       if (!confirm('Delete custom model "' + modelId + '"?')) return;
       try {
-        await OpenFangAPI.del('/api/models/custom/' + encodeURIComponent(modelId));
-        OpenFangToast.success('Model deleted');
+        await OMTAEAPI.del('/api/models/custom/' + encodeURIComponent(modelId));
+        OMTAEToast.success('Model deleted');
         await this.loadModels();
       } catch(e) {
-        OpenFangToast.error('Failed to delete: ' + (e.message || 'Unknown error'));
+        OMTAEToast.error('Failed to delete: ' + (e.message || 'Unknown error'));
       }
     },
 
     async loadConfigSchema() {
       try {
         var results = await Promise.all([
-          OpenFangAPI.get('/api/config/schema').catch(function() { return {}; }),
-          OpenFangAPI.get('/api/config')
+          OMTAEAPI.get('/api/config/schema').catch(function() { return {}; }),
+          OMTAEAPI.get('/api/config')
         ]);
         this.configSchema = results[0].sections || null;
         this.configValues = results[1] || {};
@@ -303,11 +303,11 @@ function settingsPage() {
       var path = (sectionMeta && sectionMeta.root_level) ? field : key;
       this.configSaving[key] = true;
       try {
-        await OpenFangAPI.post('/api/config/set', { path: path, value: value });
+        await OMTAEAPI.post('/api/config/set', { path: path, value: value });
         this.configDirty[key] = false;
-        OpenFangToast.success('Saved ' + field);
+        OMTAEToast.success('Saved ' + field);
       } catch(e) {
-        OpenFangToast.error('Failed to save: ' + e.message);
+        OMTAEToast.error('Failed to save: ' + e.message);
       }
       this.configSaving[key] = false;
     },
@@ -490,30 +490,30 @@ function settingsPage() {
 
     async saveProviderKey(provider) {
       var key = this.providerKeyInputs[provider.id];
-      if (!key || !key.trim()) { OpenFangToast.error('Please enter an API key'); return; }
+      if (!key || !key.trim()) { OMTAEToast.error('Please enter an API key'); return; }
       try {
-        var resp = await OpenFangAPI.post('/api/providers/' + encodeURIComponent(provider.id) + '/key', { key: key.trim() });
+        var resp = await OMTAEAPI.post('/api/providers/' + encodeURIComponent(provider.id) + '/key', { key: key.trim() });
         if (resp && resp.switched_default) {
-          OpenFangToast.warning(resp.message || 'Default provider was switched to ' + provider.display_name);
+          OMTAEToast.warning(resp.message || 'Default provider was switched to ' + provider.display_name);
         } else {
-          OpenFangToast.success('API key saved for ' + provider.display_name);
+          OMTAEToast.success('API key saved for ' + provider.display_name);
         }
         this.providerKeyInputs[provider.id] = '';
         await this.loadProviders();
         await this.loadModels();
       } catch(e) {
-        OpenFangToast.error('Failed to save key: ' + e.message);
+        OMTAEToast.error('Failed to save key: ' + e.message);
       }
     },
 
     async removeProviderKey(provider) {
       try {
-        await OpenFangAPI.del('/api/providers/' + encodeURIComponent(provider.id) + '/key');
-        OpenFangToast.success('API key removed for ' + provider.display_name);
+        await OMTAEAPI.del('/api/providers/' + encodeURIComponent(provider.id) + '/key');
+        OMTAEToast.success('API key removed for ' + provider.display_name);
         await this.loadProviders();
         await this.loadModels();
       } catch(e) {
-        OpenFangToast.error('Failed to remove key: ' + e.message);
+        OMTAEToast.error('Failed to remove key: ' + e.message);
       }
     },
 
@@ -521,7 +521,7 @@ function settingsPage() {
       this.copilotOAuth.polling = true;
       this.copilotOAuth.userCode = '';
       try {
-        var resp = await OpenFangAPI.post('/api/providers/github-copilot/oauth/start', {});
+        var resp = await OMTAEAPI.post('/api/providers/github-copilot/oauth/start', {});
         this.copilotOAuth.userCode = resp.user_code;
         this.copilotOAuth.verificationUri = resp.verification_uri;
         this.copilotOAuth.pollId = resp.poll_id;
@@ -529,7 +529,7 @@ function settingsPage() {
         window.open(resp.verification_uri, '_blank');
         this.pollCopilotOAuth();
       } catch(e) {
-        OpenFangToast.error('Failed to start Copilot login: ' + e.message);
+        OMTAEToast.error('Failed to start Copilot login: ' + e.message);
         this.copilotOAuth.polling = false;
       }
     },
@@ -539,9 +539,9 @@ function settingsPage() {
       setTimeout(async function() {
         if (!self.copilotOAuth.pollId) return;
         try {
-          var resp = await OpenFangAPI.get('/api/providers/github-copilot/oauth/poll/' + self.copilotOAuth.pollId);
+          var resp = await OMTAEAPI.get('/api/providers/github-copilot/oauth/poll/' + self.copilotOAuth.pollId);
           if (resp.status === 'complete') {
-            OpenFangToast.success('GitHub Copilot authenticated successfully!');
+            OMTAEToast.success('GitHub Copilot authenticated successfully!');
             self.copilotOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
             await self.loadProviders();
             await self.loadModels();
@@ -549,17 +549,17 @@ function settingsPage() {
             if (resp.interval) self.copilotOAuth.interval = resp.interval;
             self.pollCopilotOAuth();
           } else if (resp.status === 'expired') {
-            OpenFangToast.error('Device code expired. Please try again.');
+            OMTAEToast.error('Device code expired. Please try again.');
             self.copilotOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
           } else if (resp.status === 'denied') {
-            OpenFangToast.error('Access denied by user.');
+            OMTAEToast.error('Access denied by user.');
             self.copilotOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
           } else {
-            OpenFangToast.error('OAuth error: ' + (resp.error || resp.status));
+            OMTAEToast.error('OAuth error: ' + (resp.error || resp.status));
             self.copilotOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
           }
         } catch(e) {
-          OpenFangToast.error('Poll error: ' + e.message);
+          OMTAEToast.error('Poll error: ' + e.message);
           self.copilotOAuth = { polling: false, userCode: '', verificationUri: '', pollId: '', interval: 5 };
         }
       }, self.copilotOAuth.interval * 1000);
@@ -569,66 +569,66 @@ function settingsPage() {
       this.providerTesting[provider.id] = true;
       this.providerTestResults[provider.id] = null;
       try {
-        var result = await OpenFangAPI.post('/api/providers/' + encodeURIComponent(provider.id) + '/test', {});
+        var result = await OMTAEAPI.post('/api/providers/' + encodeURIComponent(provider.id) + '/test', {});
         this.providerTestResults[provider.id] = result;
         if (result.status === 'ok') {
-          OpenFangToast.success(provider.display_name + ' connected (' + (result.latency_ms || '?') + 'ms)');
+          OMTAEToast.success(provider.display_name + ' connected (' + (result.latency_ms || '?') + 'ms)');
         } else {
-          OpenFangToast.error(provider.display_name + ': ' + (result.error || 'Connection failed'));
+          OMTAEToast.error(provider.display_name + ': ' + (result.error || 'Connection failed'));
         }
       } catch(e) {
         this.providerTestResults[provider.id] = { status: 'error', error: e.message };
-        OpenFangToast.error('Test failed: ' + e.message);
+        OMTAEToast.error('Test failed: ' + e.message);
       }
       this.providerTesting[provider.id] = false;
     },
 
     async saveProviderUrl(provider) {
       var url = this.providerUrlInputs[provider.id];
-      if (!url || !url.trim()) { OpenFangToast.error('Please enter a base URL'); return; }
+      if (!url || !url.trim()) { OMTAEToast.error('Please enter a base URL'); return; }
       url = url.trim();
       if (url.indexOf('http://') !== 0 && url.indexOf('https://') !== 0) {
-        OpenFangToast.error('URL must start with http:// or https://'); return;
+        OMTAEToast.error('URL must start with http:// or https://'); return;
       }
       this.providerUrlSaving[provider.id] = true;
       try {
-        var result = await OpenFangAPI.put('/api/providers/' + encodeURIComponent(provider.id) + '/url', { base_url: url });
+        var result = await OMTAEAPI.put('/api/providers/' + encodeURIComponent(provider.id) + '/url', { base_url: url });
         if (result.reachable) {
-          OpenFangToast.success(provider.display_name + ' URL saved &mdash; reachable (' + (result.latency_ms || '?') + 'ms)');
+          OMTAEToast.success(provider.display_name + ' URL saved &mdash; reachable (' + (result.latency_ms || '?') + 'ms)');
         } else {
-          OpenFangToast.warning(provider.display_name + ' URL saved but not reachable');
+          OMTAEToast.warning(provider.display_name + ' URL saved but not reachable');
         }
         await this.loadProviders();
       } catch(e) {
-        OpenFangToast.error('Failed to save URL: ' + e.message);
+        OMTAEToast.error('Failed to save URL: ' + e.message);
       }
       this.providerUrlSaving[provider.id] = false;
     },
 
     async addCustomProvider() {
       var name = this.customProviderName.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
-      if (!name) { OpenFangToast.error('Please enter a provider name'); return; }
+      if (!name) { OMTAEToast.error('Please enter a provider name'); return; }
       var url = this.customProviderUrl.trim();
-      if (!url) { OpenFangToast.error('Please enter a base URL'); return; }
+      if (!url) { OMTAEToast.error('Please enter a base URL'); return; }
       if (url.indexOf('http://') !== 0 && url.indexOf('https://') !== 0) {
-        OpenFangToast.error('URL must start with http:// or https://'); return;
+        OMTAEToast.error('URL must start with http:// or https://'); return;
       }
       this.addingCustomProvider = true;
       this.customProviderStatus = '';
       try {
-        var result = await OpenFangAPI.put('/api/providers/' + encodeURIComponent(name) + '/url', { base_url: url });
+        var result = await OMTAEAPI.put('/api/providers/' + encodeURIComponent(name) + '/url', { base_url: url });
         if (this.customProviderKey.trim()) {
-          await OpenFangAPI.post('/api/providers/' + encodeURIComponent(name) + '/key', { key: this.customProviderKey.trim() });
+          await OMTAEAPI.post('/api/providers/' + encodeURIComponent(name) + '/key', { key: this.customProviderKey.trim() });
         }
         this.customProviderName = '';
         this.customProviderUrl = '';
         this.customProviderKey = '';
         this.customProviderStatus = '';
-        OpenFangToast.success('Provider "' + name + '" added' + (result.reachable ? ' (reachable)' : ' (not reachable yet)'));
+        OMTAEToast.success('Provider "' + name + '" added' + (result.reachable ? ' (reachable)' : ' (not reachable yet)'));
         await this.loadProviders();
       } catch(e) {
         this.customProviderStatus = 'Error: ' + (e.message || 'Failed');
-        OpenFangToast.error('Failed to add provider: ' + e.message);
+        OMTAEToast.error('Failed to add provider: ' + e.message);
       }
       this.addingCustomProvider = false;
     },
@@ -637,7 +637,7 @@ function settingsPage() {
     async loadSecurity() {
       this.secLoading = true;
       try {
-        this.securityData = await OpenFangAPI.get('/api/security');
+        this.securityData = await OMTAEAPI.get('/api/security');
       } catch(e) {
         this.securityData = null;
       }
@@ -700,7 +700,7 @@ function settingsPage() {
       this.verifyingChain = true;
       this.chainResult = null;
       try {
-        var res = await OpenFangAPI.get('/api/audit/verify');
+        var res = await OMTAEAPI.get('/api/audit/verify');
         this.chainResult = res;
       } catch(e) {
         this.chainResult = { valid: false, error: e.message };
@@ -713,7 +713,7 @@ function settingsPage() {
       this.peersLoading = true;
       this.peersLoadError = '';
       try {
-        var data = await OpenFangAPI.get('/api/peers');
+        var data = await OMTAEAPI.get('/api/peers');
         this.peers = (data.peers || []).map(function(p) {
           return {
             node_id: p.node_id,
@@ -737,7 +737,7 @@ function settingsPage() {
       this._peerPollTimer = setInterval(async function() {
         if (self.tab !== 'network') { self.stopPeerPolling(); return; }
         try {
-          var data = await OpenFangAPI.get('/api/peers');
+          var data = await OMTAEAPI.get('/api/peers');
           self.peers = (data.peers || []).map(function(p) {
             return {
               node_id: p.node_id,
@@ -760,7 +760,7 @@ function settingsPage() {
     async autoDetect() {
       this.detecting = true;
       try {
-        var data = await OpenFangAPI.get('/api/migrate/detect');
+        var data = await OMTAEAPI.get('/api/migrate/detect');
         if (data.detected && data.scan) {
           this.sourcePath = data.path;
           this.scanResult = data.scan;
@@ -778,16 +778,16 @@ function settingsPage() {
       if (!this.sourcePath) return;
       this.scanning = true;
       try {
-        var data = await OpenFangAPI.post('/api/migrate/scan', { path: this.sourcePath });
+        var data = await OMTAEAPI.post('/api/migrate/scan', { path: this.sourcePath });
         if (data.error) {
-          OpenFangToast.error('Scan error: ' + data.error);
+          OMTAEToast.error('Scan error: ' + data.error);
           this.scanning = false;
           return;
         }
         this.scanResult = data;
         this.migStep = 'preview';
       } catch(e) {
-        OpenFangToast.error('Scan failed: ' + e.message);
+        OMTAEToast.error('Scan failed: ' + e.message);
       }
       this.scanning = false;
     },
@@ -797,7 +797,7 @@ function settingsPage() {
       try {
         var target = this.targetPath;
         if (!target) target = '';
-        var data = await OpenFangAPI.post('/api/migrate', {
+        var data = await OMTAEAPI.post('/api/migrate', {
           source: 'openclaw',
           source_dir: this.sourcePath || (this.scanResult ? this.scanResult.path : ''),
           target_dir: target,

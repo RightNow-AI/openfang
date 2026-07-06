@@ -1,14 +1,14 @@
 //! Integration Registry — manages bundled + installed integration templates.
 //!
 //! Loads 25 bundled MCP server templates at compile time, merges with user's
-//! installed state from `~/.openfang/integrations.toml`, and converts installed
+//! installed state from `~/.omtae/integrations.toml`, and converts installed
 //! integrations to `McpServerConfigEntry` for kernel consumption.
 
 use crate::{
     ExtensionError, ExtensionResult, InstalledIntegration, IntegrationCategory, IntegrationInfo,
     IntegrationStatus, IntegrationTemplate, IntegrationsFile,
 };
-use openfang_types::config::{McpServerConfigEntry, McpTransportEntry};
+use omtae_types::config::{McpServerConfigEntry, McpTransportEntry};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};

@@ -23,7 +23,7 @@ steps = [
     "Navigate to your App's 'Keys and tokens' page",
     "Generate a Bearer Token under 'Authentication Tokens'",
     "Copy the token and set it as an environment variable",
-    "Restart OpenFang or reload config for the change to take effect",
+    "Restart OMTAE or reload config for the change to take effect",
 ]
 
 # ─── Configurable settings ───────────────────────────────────────────────────
@@ -181,7 +181,7 @@ description = "AI Twitter/X manager — creates content, manages posting schedul
 module = "builtin:chat"
 provider = "default"
 model = "default"
-max_tokens = 16384
+max_tokens = 4096
 temperature = 0.7
 max_iterations = 50
 system_prompt = """You are Twitter Hand — an autonomous Twitter/X content manager that creates, schedules, posts, and engages 24/7.

@@ -1,4 +1,4 @@
-//! IRC channel adapter for the OpenFang channel bridge.
+//! IRC channel adapter for the OMTAE channel bridge.
 //!
 //! Uses raw TCP via `tokio::net::TcpStream` with `tokio::io` buffered I/O for
 //! plaintext IRC connections. Implements the core IRC protocol: NICK, USER, JOIN,
@@ -45,7 +45,7 @@ pub struct IrcAdapter {
     nick: String,
     /// SECURITY: Optional server password, zeroized on drop.
     password: Option<Zeroizing<String>>,
-    /// IRC channels to join (e.g., ["#openfang", "#bots"]).
+    /// IRC channels to join (e.g., ["#omtae", "#bots"]).
     channels: Vec<String>,
     /// Reserved for future TLS support. Currently only plaintext is implemented.
     #[allow(dead_code)]
@@ -206,7 +206,7 @@ fn parse_privmsg(line: &IrcLine, bot_nick: &str) -> Option<ChannelMessage> {
         sender: ChannelUser {
             platform_id,
             display_name: sender_nick.to_string(),
-            openfang_user: None,
+            omtae_user: None,
         },
         content,
         target_agent: None,
@@ -275,7 +275,7 @@ impl ChannelAdapter for IrcAdapter {
                     registration.push_str(&format!("PASS {}\r\n", pass.as_str()));
                 }
                 registration.push_str(&format!("NICK {nick}\r\n"));
-                registration.push_str(&format!("USER {nick} 0 * :OpenFang Bot\r\n"));
+                registration.push_str(&format!("USER {nick} 0 * :OMTAE Bot\r\n"));
 
                 if let Err(e) = writer.write_all(registration.as_bytes()).await {
                     warn!("IRC registration send failed: {e}");
@@ -391,7 +391,7 @@ impl ChannelAdapter for IrcAdapter {
                         _ = shutdown_rx.changed() => {
                             if *shutdown_rx.borrow() {
                                 info!("IRC adapter shutting down");
-                                let _ = writer.write_all(b"QUIT :OpenFang shutting down\r\n").await;
+                                let _ = writer.write_all(b"QUIT :OMTAE shutting down\r\n").await;
                                 return;
                             }
                         }
@@ -459,9 +459,9 @@ mod tests {
         let adapter = IrcAdapter::new(
             "irc.libera.chat".to_string(),
             6667,
-            "openfang".to_string(),
+            "omtae".to_string(),
             None,
-            vec!["#openfang".to_string()],
+            vec!["#omtae".to_string()],
             false,
         );
         assert_eq!(adapter.name(), "irc");
@@ -507,10 +507,10 @@ mod tests {
 
     #[test]
     fn test_parse_irc_line_privmsg() {
-        let line = parse_irc_line(":alice!alice@host PRIVMSG #openfang :Hello everyone!").unwrap();
+        let line = parse_irc_line(":alice!alice@host PRIVMSG #omtae :Hello everyone!").unwrap();
         assert_eq!(line.prefix.as_deref(), Some("alice!alice@host"));
         assert_eq!(line.command, "PRIVMSG");
-        assert_eq!(line.params, vec!["#openfang"]);
+        assert_eq!(line.params, vec!["#omtae"]);
         assert_eq!(line.trailing.as_deref(), Some("Hello everyone!"));
     }
 
@@ -525,9 +525,9 @@ mod tests {
 
     #[test]
     fn test_parse_irc_line_no_trailing() {
-        let line = parse_irc_line(":alice!alice@host JOIN #openfang").unwrap();
+        let line = parse_irc_line(":alice!alice@host JOIN #omtae").unwrap();
         assert_eq!(line.command, "JOIN");
-        assert_eq!(line.params, vec!["#openfang"]);
+        assert_eq!(line.params, vec!["#omtae"]);
         assert!(line.trailing.is_none());
     }
 
@@ -552,14 +552,14 @@ mod tests {
         let line = IrcLine {
             prefix: Some("alice!alice@host".to_string()),
             command: "PRIVMSG".to_string(),
-            params: vec!["#openfang".to_string()],
+            params: vec!["#omtae".to_string()],
             trailing: Some("Hello from IRC!".to_string()),
         };
 
-        let msg = parse_privmsg(&line, "openfang-bot").unwrap();
+        let msg = parse_privmsg(&line, "omtae-bot").unwrap();
         assert_eq!(msg.channel, ChannelType::Custom("irc".to_string()));
         assert_eq!(msg.sender.display_name, "alice");
-        assert_eq!(msg.sender.platform_id, "#openfang");
+        assert_eq!(msg.sender.platform_id, "#omtae");
         assert!(msg.is_group);
         assert!(matches!(msg.content, ChannelContent::Text(ref t) if t == "Hello from IRC!"));
     }
@@ -569,11 +569,11 @@ mod tests {
         let line = IrcLine {
             prefix: Some("bob!bob@host".to_string()),
             command: "PRIVMSG".to_string(),
-            params: vec!["openfang-bot".to_string()],
+            params: vec!["omtae-bot".to_string()],
             trailing: Some("Private message".to_string()),
         };
 
-        let msg = parse_privmsg(&line, "openfang-bot").unwrap();
+        let msg = parse_privmsg(&line, "omtae-bot").unwrap();
         assert!(!msg.is_group);
         assert_eq!(msg.sender.platform_id, "bob"); // DM replies go to sender
     }
@@ -581,13 +581,13 @@ mod tests {
     #[test]
     fn test_parse_privmsg_skips_self() {
         let line = IrcLine {
-            prefix: Some("openfang-bot!bot@host".to_string()),
+            prefix: Some("omtae-bot!bot@host".to_string()),
             command: "PRIVMSG".to_string(),
-            params: vec!["#openfang".to_string()],
+            params: vec!["#omtae".to_string()],
             trailing: Some("My own message".to_string()),
         };
 
-        let msg = parse_privmsg(&line, "openfang-bot");
+        let msg = parse_privmsg(&line, "omtae-bot");
         assert!(msg.is_none());
     }
 
@@ -596,11 +596,11 @@ mod tests {
         let line = IrcLine {
             prefix: Some("alice!alice@host".to_string()),
             command: "PRIVMSG".to_string(),
-            params: vec!["#openfang".to_string()],
+            params: vec!["#omtae".to_string()],
             trailing: Some("/agent hello-world".to_string()),
         };
 
-        let msg = parse_privmsg(&line, "openfang-bot").unwrap();
+        let msg = parse_privmsg(&line, "omtae-bot").unwrap();
         match &msg.content {
             ChannelContent::Command { name, args } => {
                 assert_eq!(name, "agent");
@@ -615,11 +615,11 @@ mod tests {
         let line = IrcLine {
             prefix: Some("alice!alice@host".to_string()),
             command: "PRIVMSG".to_string(),
-            params: vec!["#openfang".to_string()],
+            params: vec!["#omtae".to_string()],
             trailing: Some("".to_string()),
         };
 
-        let msg = parse_privmsg(&line, "openfang-bot");
+        let msg = parse_privmsg(&line, "omtae-bot");
         assert!(msg.is_none());
     }
 
@@ -628,11 +628,11 @@ mod tests {
         let line = IrcLine {
             prefix: Some("alice!alice@host".to_string()),
             command: "PRIVMSG".to_string(),
-            params: vec!["#openfang".to_string()],
+            params: vec!["#omtae".to_string()],
             trailing: None,
         };
 
-        let msg = parse_privmsg(&line, "openfang-bot");
+        let msg = parse_privmsg(&line, "omtae-bot");
         assert!(msg.is_none());
     }
 
@@ -641,11 +641,11 @@ mod tests {
         let line = IrcLine {
             prefix: Some("alice!alice@host".to_string()),
             command: "NOTICE".to_string(),
-            params: vec!["#openfang".to_string()],
+            params: vec!["#omtae".to_string()],
             trailing: Some("Notice text".to_string()),
         };
 
-        let msg = parse_privmsg(&line, "openfang-bot");
+        let msg = parse_privmsg(&line, "omtae-bot");
         assert!(msg.is_none());
     }
 }

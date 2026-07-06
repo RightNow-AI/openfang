@@ -1,10 +1,10 @@
-//! Shared error types for the OpenFang system.
+//! Shared error types for the OMTAE system.
 
 use thiserror::Error;
 
-/// Top-level error type for the OpenFang system.
+/// Top-level error type for the OMTAE system.
 #[derive(Error, Debug)]
-pub enum OpenFangError {
+pub enum OMTAEError {
     /// The requested agent was not found.
     #[error("Agent not found: {0}")]
     AgentNotFound(String),
@@ -100,5 +100,5 @@ pub enum OpenFangError {
     InvalidInput(String),
 }
 
-/// Alias for Result with OpenFangError.
-pub type OpenFangResult<T> = Result<T, OpenFangError>;
+/// Alias for Result with OMTAEError.
+pub type OMTAEResult<T> = Result<T, OMTAEError>;

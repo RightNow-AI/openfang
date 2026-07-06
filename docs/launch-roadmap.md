@@ -1,4 +1,4 @@
-# OpenFang Launch Roadmap
+# OMTAE Launch Roadmap
 
 > Competitive gap analysis vs OpenClaw. Organized into 4 sprints.
 > Each item has: what, why, files to touch, and done criteria.
@@ -17,34 +17,34 @@ These are showstoppers. The app literally crashes or looks broken without them.
 
 **What to do:**
 
-1. **Add token estimation & context guard** (`crates/openfang-runtime/src/compactor.rs`)
+1. **Add token estimation & context guard** (`crates/omtae-runtime/src/compactor.rs`)
    - Add `estimate_token_count(messages, system_prompt, tools)` — chars/4 heuristic
    - Add `needs_compaction_by_tokens(estimated, context_window)` — triggers at 70% capacity
    - Add `token_threshold_ratio: f64` (default 0.7) and `context_window_tokens: usize` (default 200_000) to `CompactionConfig`
    - Lower message threshold from 80 to 30
 
-2. **Add in-loop token guard** (`crates/openfang-runtime/src/agent_loop.rs`)
+2. **Add in-loop token guard** (`crates/omtae-runtime/src/agent_loop.rs`)
    - Before each LLM call: estimate tokens vs context window
    - Over 70%: emergency-trim old messages (keep last 10), log warning
    - Over 90%: aggressive trim to last 4 messages + inject summary
    - Lower `MAX_HISTORY_MESSAGES` from 40 to 20
    - Lower `MAX_TOOL_RESULT_CHARS` from 50,000 to 15,000
 
-3. **Filter tools by profile in kernel** (`crates/openfang-kernel/src/kernel.rs`)
+3. **Filter tools by profile in kernel** (`crates/omtae-kernel/src/kernel.rs`)
    - In `available_tools()`: use manifest's `tool_profile` to filter
    - Call `tool_profile.tools()` for allowed tool names, filter `builtin_tool_definitions()`
    - Only send ALL tools if profile is `Full` AND agent has `ToolAll` capability
    - This alone cuts default chat from 41 tools to ~8 tools (saves ~15-20K tokens)
 
-4. **Raise default token quota** (`crates/openfang-types/src/agent.rs`)
+4. **Raise default token quota** (`crates/omtae-types/src/agent.rs`)
    - Change `max_llm_tokens_per_hour` from 100_000 to 1_000_000
    - 100K is too low — a single system prompt is 30-40K tokens
 
-5. **Token-based compaction trigger** (`crates/openfang-kernel/src/kernel.rs`)
+5. **Token-based compaction trigger** (`crates/omtae-kernel/src/kernel.rs`)
    - In `send_message_streaming()`: replace message-count-only check with token-aware check
    - After compaction, verify token count actually decreased
 
-6. **Compact system prompt injections** (`crates/openfang-kernel/src/kernel.rs`)
+6. **Compact system prompt injections** (`crates/omtae-kernel/src/kernel.rs`)
    - Cap canonical context to 500 chars
    - Cap memory context to 3 items / 200 chars each
    - Cap skill knowledge to 2000 chars total
@@ -59,35 +59,35 @@ These are showstoppers. The app literally crashes or looks broken without them.
 
 ### 1.2 Branding & Icon Assets
 
-**Problem:** Desktop app may show Tauri default icons. Branding assets exist at `~/Downloads/openfang/output/` but aren't installed.
+**Problem:** Desktop app may show Tauri default icons. Branding assets exist at `~/Downloads/omtae/output/` but aren't installed.
 
 **What to do:**
 
-1. Generate all required icon sizes from source PNG (`openfang-logo-transparent.png`, 2000x2000)
-2. Place into `crates/openfang-desktop/icons/`:
+1. Generate all required icon sizes from source PNG (`omtae-logo-transparent.png`, 2000x2000)
+2. Place into `crates/omtae-desktop/icons/`:
    - `icon.png` (1024x1024)
    - `icon.ico` (multi-size: 256, 128, 64, 48, 32, 16)
    - `32x32.png`
    - `128x128.png`
    - `128x128@2x.png` (256x256)
-3. Replace web UI logo at `crates/openfang-api/static/logo.png`
+3. Replace web UI logo at `crates/omtae-api/static/logo.png`
 4. Update favicon if one exists
 
 **Assets available:**
-- `openfang-logo-transparent.png` (328KB, 2000x2000) — primary source
-- `openfang-logo-black-bg.png` (312KB) — for dark contexts
-- `openfang-vector-transparent.svg` (293KB) — scalable vector
-- `openfang-animated.svg` (310KB) — for loading screens
+- `omtae-logo-transparent.png` (328KB, 2000x2000) — primary source
+- `omtae-logo-black-bg.png` (312KB) — for dark contexts
+- `omtae-vector-transparent.svg` (293KB) — scalable vector
+- `omtae-animated.svg` (310KB) — for loading screens
 
 **Done when:**
-- Desktop app shows OpenFang logo in taskbar, title bar, and installer
+- Desktop app shows OMTAE logo in taskbar, title bar, and installer
 - Web UI shows correct logo in sidebar and favicon
 
 ---
 
 ### 1.3 Tauri Signing Keypair -- DONE
 
-**Status: COMPLETE** — Generated Ed25519 signing keypair via `cargo tauri signer generate --ci`. Public key installed in `tauri.conf.json`. Private key at `~/.tauri/openfang.key`. Set `TAURI_SIGNING_PRIVATE_KEY_PATH` in CI secrets.
+**Status: COMPLETE** — Generated Ed25519 signing keypair via `cargo tauri signer generate --ci`. Public key installed in `tauri.conf.json`. Private key at `~/.tauri/omtae.key`. Set `TAURI_SIGNING_PRIVATE_KEY_PATH` in CI secrets.
 
 **Problem (was):** `tauri.conf.json` has `"pubkey": "PLACEHOLDER_REPLACE_WITH_GENERATED_PUBKEY"`. Auto-updater is completely dead without this.
 
@@ -103,7 +103,7 @@ These are showstoppers. The app literally crashes or looks broken without them.
 
 ## Sprint 2 — Competitive Parity (4-5 days)
 
-These close the gaps that would make users pick OpenClaw over OpenFang.
+These close the gaps that would make users pick OpenClaw over OMTAE.
 
 ### 2.1 Browser Screenshot Rendering in Chat -- DONE
 
@@ -117,7 +117,7 @@ These close the gaps that would make users pick OpenClaw over OpenFang.
 3. Store `_imageUrls` on the tool card
 4. UI already renders `tool._imageUrls` — just need to populate it
 
-**Files:** `crates/openfang-api/static/js/pages/chat.js`, `crates/openfang-runtime/src/tool_runner.rs`
+**Files:** `crates/omtae-api/static/js/pages/chat.js`, `crates/omtae-runtime/src/tool_runner.rs`
 
 **Done when:**
 - Browser screenshots appear as inline images in tool cards
@@ -158,7 +158,7 @@ These close the gaps that would make users pick OpenClaw over OpenFang.
 3. Polish UI: skill cards with descriptions, install buttons, installed badge
 4. Add FangHub registry URL if not configured
 
-**Files:** `crates/openfang-api/static/js/pages/skills.js`, `crates/openfang-api/src/routes.rs`
+**Files:** `crates/omtae-api/static/js/pages/skills.js`, `crates/omtae-api/src/routes.rs`
 
 **Done when:**
 - Users can browse, search, and install skills from the web UI
@@ -169,17 +169,17 @@ These close the gaps that would make users pick OpenClaw over OpenFang.
 
 ### 2.4 Install Script Deployment
 
-**Problem:** `openfang.sh` domain isn't set up. Users can't do `curl -sSf https://openfang.sh | sh`.
+**Problem:** `omtae.sh` domain isn't set up. Users can't do `curl -sSf https://omtae.sh | sh`.
 
 **What to do:**
-1. Set up GitHub Pages or Cloudflare Worker for openfang.sh
+1. Set up GitHub Pages or Cloudflare Worker for omtae.sh
 2. Serve `scripts/install.sh` at root
 3. Serve `scripts/install.ps1` at `/install.ps1`
 4. Test on fresh Linux, macOS, and Windows machines
 
 **Done when:**
-- `curl -sSf https://openfang.sh | sh` installs the latest release
-- `irm https://openfang.sh/install.ps1 | iex` works on Windows PowerShell
+- `curl -sSf https://omtae.sh | sh` installs the latest release
+- `irm https://omtae.sh/install.ps1 | iex` works on Windows PowerShell
 
 ---
 
@@ -206,7 +206,7 @@ These close the gaps that would make users pick OpenClaw over OpenFang.
 
 ## Sprint 3 — Differentiation (5-7 days)
 
-These are features where OpenFang can leapfrog OpenClaw.
+These are features where OMTAE can leapfrog OpenClaw.
 
 ### 3.1 Voice Input/Output in Web UI -- DONE
 
@@ -252,43 +252,43 @@ These are features where OpenFang can leapfrog OpenClaw.
 
 ### 3.3 JavaScript/Python SDK -- DONE
 
-**Status: COMPLETE** — Created `sdk/javascript/` (@openfang/sdk) with full REST client: agent CRUD, streaming via SSE, sessions, workflows, skills, channels, memory KV, triggers, schedules + TypeScript declarations. Created `sdk/python/openfang_client.py` (zero-dependency stdlib urllib) with same coverage. Both include basic + streaming examples. Python `setup.py` for pip install.
+**Status: COMPLETE** — Created `sdk/javascript/` (@omtae/sdk) with full REST client: agent CRUD, streaming via SSE, sessions, workflows, skills, channels, memory KV, triggers, schedules + TypeScript declarations. Created `sdk/python/omtae_client.py` (zero-dependency stdlib urllib) with same coverage. Both include basic + streaming examples. Python `setup.py` for pip install.
 
 **Problem (was):** No official client libraries. Developers must raw-fetch the API.
 
 **What to do:**
 1. Create `sdks/javascript/` — thin wrapper around REST API
    - Agent CRUD, message send, streaming via EventSource, file upload
-   - Publish to npm as `@openfang/sdk`
+   - Publish to npm as `@omtae/sdk`
 2. Create `sdks/python/` — thin wrapper with httpx
    - Same operations
-   - Publish to PyPI as `openfang`
+   - Publish to PyPI as `omtae`
 3. Include usage examples in README
 
 **Done when:**
-- `npm install @openfang/sdk` works
-- `pip install openfang` works
+- `npm install @omtae/sdk` works
+- `pip install omtae` works
 - Basic example: create agent, send message, get response
 
 ---
 
 ### 3.4 Observability & Metrics Export -- DONE
 
-**Status: COMPLETE** — Added `GET /api/metrics` endpoint returning Prometheus text format. Metrics: `openfang_uptime_seconds`, `openfang_agents_active`, `openfang_agents_total`, `openfang_tokens_total{agent,provider,model}`, `openfang_tool_calls_total{agent}`, `openfang_panics_total`, `openfang_restarts_total`, `openfang_info{version}`.
+**Status: COMPLETE** — Added `GET /api/metrics` endpoint returning Prometheus text format. Metrics: `omtae_uptime_seconds`, `omtae_agents_active`, `omtae_agents_total`, `omtae_tokens_total{agent,provider,model}`, `omtae_tool_calls_total{agent}`, `omtae_panics_total`, `omtae_restarts_total`, `omtae_info{version}`.
 
-**Problem (was):** No way to monitor OpenFang in production (no Prometheus, no OpenTelemetry).
+**Problem (was):** No way to monitor OMTAE in production (no Prometheus, no OpenTelemetry).
 
 **What to do:**
 1. Add `/api/metrics` endpoint with Prometheus format
-   - `openfang_agents_active` gauge
-   - `openfang_messages_total` counter (by agent, by channel)
-   - `openfang_tokens_total` counter (by provider, by model)
-   - `openfang_request_duration_seconds` histogram
-   - `openfang_tool_calls_total` counter (by tool name)
-   - `openfang_errors_total` counter (by type)
+   - `omtae_agents_active` gauge
+   - `omtae_messages_total` counter (by agent, by channel)
+   - `omtae_tokens_total` counter (by provider, by model)
+   - `omtae_request_duration_seconds` histogram
+   - `omtae_tool_calls_total` counter (by tool name)
+   - `omtae_errors_total` counter (by type)
 2. Optional: OTLP export for tracing spans
 
-**Files:** `crates/openfang-api/src/routes.rs`, new `metrics.rs` module
+**Files:** `crates/omtae-api/src/routes.rs`, new `metrics.rs` module
 
 **Done when:**
 - `/api/metrics` returns valid Prometheus text format
@@ -300,7 +300,7 @@ These are features where OpenFang can leapfrog OpenClaw.
 
 **Status: COMPLETE** — Added `workflow-builder.js` with full SVG canvas-based visual builder. Node palette with 7 types (Agent, Parallel Fan-out, Condition, Loop, Collect, Start, End). Drag-and-drop from palette, node dragging, bezier curve connections between ports, zoom/pan, auto-layout. Node editor panel for configuring agent, condition expression, loop iterations, fan-out count, collect strategy. TOML export, save-to-API, and clipboard copy. CSS styles in components.css. Integrated into workflows page as "Visual Builder" tab.
 
-**Problem (was):** Both OpenFang and OpenClaw define workflows in TOML/config only. No visual builder exists in either. First to ship this wins.
+**Problem (was):** Both OMTAE and OpenClaw define workflows in TOML/config only. No visual builder exists in either. First to ship this wins.
 
 **What to do:**
 1. Add drag-and-drop workflow builder to the Workflows page
@@ -331,7 +331,7 @@ These are features where OpenFang can leapfrog OpenClaw.
 2. UI: session switcher tabs in chat header
 3. API: `/api/agents/{id}/sessions` list, `/api/agents/{id}/sessions/{label}` CRUD
 
-**Files:** `crates/openfang-kernel/src/kernel.rs`, `routes.rs`, `ws.rs`, `index_body.html`
+**Files:** `crates/omtae-kernel/src/kernel.rs`, `routes.rs`, `ws.rs`, `index_body.html`
 
 ---
 
@@ -342,12 +342,12 @@ These are features where OpenFang can leapfrog OpenClaw.
 **Problem (was):** Changing `config.toml` requires daemon restart. OpenClaw reloads live.
 
 **What to do:**
-1. Watch `~/.openfang/config.toml` for changes (notify crate)
+1. Watch `~/.omtae/config.toml` for changes (notify crate)
 2. On change: re-parse, diff, apply only changed sections
 3. Log what was reloaded
 4. UI notification: "Config reloaded"
 
-**Files:** `crates/openfang-api/src/server.rs`, `crates/openfang-types/src/config.rs`
+**Files:** `crates/omtae-api/src/server.rs`, `crates/omtae-types/src/config.rs`
 
 ---
 
@@ -383,7 +383,7 @@ These are features where OpenFang can leapfrog OpenClaw.
 
 ### 4.5 Final Release -- READY
 
-**Status: ALL CODE COMPLETE** — All 18 code items done. 1751 tests passing. Production audit completed: 2 critical bugs fixed (API delete alias, config/set route), CSP hardened (Tauri + middleware), Tauri signing key installed. Remaining for release: tag v0.1.0, build release artifacts, set up openfang.sh domain.
+**Status: ALL CODE COMPLETE** — All 18 code items done. 1751 tests passing. Production audit completed: 2 critical bugs fixed (API delete alias, config/set route), CSP hardened (Tauri + middleware), Tauri signing key installed. Remaining for release: tag v0.1.0, build release artifacts, set up omtae.sh domain.
 
 1. Complete items from `production-checklist.md` (keygen DONE, secrets, icons DONE, domain pending)
 2. Tag `v0.1.0`
@@ -394,29 +394,29 @@ These are features where OpenFang can leapfrog OpenClaw.
 
 ## Feature Comparison Scoreboard
 
-| Feature | OpenClaw | OpenFang | Winner |
+| Feature | OpenClaw | OMTAE | Winner |
 |---------|----------|----------|--------|
-| Language/Performance | Node.js (~200MB) | Rust (~30MB single binary) | **OpenFang** |
-| Channels | ~15 | **40** | **OpenFang** |
-| Built-in Tools | ~19 | **41** | **OpenFang** |
-| Security Systems | Token + sandbox | **16 defense systems** | **OpenFang** |
-| Agent Templates | Manual config | **30 pre-configured** | **OpenFang** |
-| Hands (autonomous) | None | **7 packages** | **OpenFang** |
-| Workflow Engine | Cron + webhooks | **Full DAG with parallel/loops** | **OpenFang** |
-| Knowledge Graph | Flat vector store | **Entity-relation graph** | **OpenFang** |
-| P2P Networking | None | **OFP wire protocol** | **OpenFang** |
-| WASM Sandbox | Docker only | **Dual-metered WASM** | **OpenFang** |
-| Desktop App | Electron (~200MB) | **Tauri (~30MB)** | **OpenFang** |
-| Migration | N/A | **`migrate --from openclaw`** | **OpenFang** |
-| Skills | 54 bundled | **60 bundled** | **OpenFang** |
-| LLM Providers | ~15 | **27 providers, 130+ models** | **OpenFang** |
+| Language/Performance | Node.js (~200MB) | Rust (~30MB single binary) | **OMTAE** |
+| Channels | ~15 | **40** | **OMTAE** |
+| Built-in Tools | ~19 | **41** | **OMTAE** |
+| Security Systems | Token + sandbox | **16 defense systems** | **OMTAE** |
+| Agent Templates | Manual config | **30 pre-configured** | **OMTAE** |
+| Hands (autonomous) | None | **7 packages** | **OMTAE** |
+| Workflow Engine | Cron + webhooks | **Full DAG with parallel/loops** | **OMTAE** |
+| Knowledge Graph | Flat vector store | **Entity-relation graph** | **OMTAE** |
+| P2P Networking | None | **OFP wire protocol** | **OMTAE** |
+| WASM Sandbox | Docker only | **Dual-metered WASM** | **OMTAE** |
+| Desktop App | Electron (~200MB) | **Tauri (~30MB)** | **OMTAE** |
+| Migration | N/A | **`migrate --from openclaw`** | **OMTAE** |
+| Skills | 54 bundled | **60 bundled** | **OMTAE** |
+| LLM Providers | ~15 | **27 providers, 130+ models** | **OMTAE** |
 | Plugin SDK | TypeScript published | JS + Python SDK | **Tie** |
 | Native Mobile | iOS + Android + macOS | Web responsive only | OpenClaw |
 | Voice/Talk Mode | Wake word + TTS + overlay | Mic + TTS playback | OpenClaw (slight) |
 | Browser Automation | Playwright with inline screenshots | Playwright + inline screenshots | **Tie** |
-| Visual Workflow Builder | None | **Drag-and-drop builder** | **OpenFang** |
+| Visual Workflow Builder | None | **Drag-and-drop builder** | **OMTAE** |
 
-**OpenFang wins 15/18 categories.** The remaining gaps are: mobile apps (OpenClaw), voice wake word (OpenClaw slight edge).
+**OMTAE wins 15/18 categories.** The remaining gaps are: mobile apps (OpenClaw), voice wake word (OpenClaw slight edge).
 
 ---
 
@@ -433,7 +433,7 @@ Sprint 2: 4/5 COMPLETE
   2.1 Browser screenshots .......... DONE
   2.2 Chat search .................. DONE
   2.3 Skill marketplace ............ DONE
-  2.4 Install script domain ........ PENDING (infra: set up openfang.sh domain)
+  2.4 Install script domain ........ PENDING (infra: set up omtae.sh domain)
   2.5 Wizard end-to-end ............ DONE
 
 Sprint 3: COMPLETE
@@ -451,7 +451,7 @@ Sprint 4: COMPLETE
   4.5 Final release ................ READY (tag + build)
 
 Production audit:
-  - OpenFangAPI.delete() bug ....... FIXED
+  - OMTAEAPI.delete() bug ....... FIXED
   - /api/config/set missing ........ FIXED
   - Tauri CSP hardened ............. FIXED
   - Middleware CSP narrowed ........ FIXED

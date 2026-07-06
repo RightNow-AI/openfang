@@ -1,4 +1,4 @@
-use openfang_migrate::{openclaw, MigrateOptions, MigrateSource};
+use omtae_migrate::{openclaw, MigrateOptions, MigrateSource};
 use tempfile::TempDir;
 
 fn assert_default_model_mapping(
