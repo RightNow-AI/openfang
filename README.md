@@ -213,6 +213,15 @@ FreEco.ai is the single binary foundation. FRE.ECO defines the product layers, e
 * The local FreEco.ai binary is configured securely for the selected edition and use case.
 * The system follows the 16 security levels and Ethical Ecological guidelines inherited from the OpenFang Agentic OS foundation.
 
+## Planned: Self-Contained Isolation Layer
+
+Today, agent browsing and code execution borrow tools from the host machine: browser automation drives an installed Chrome/Chromium via CDP, and the OS-level sandbox uses the host's Docker. Two roadmap items will remove those dependencies and add a further security layer, giving a Manus-style "everything included" experience:
+
+* **Bundled agent browser** — ship a dedicated Chromium build inside the FRE.ECO Node. Agents browse in a fully separate browser with its own empty profile, so they never touch the user's own browser, saved passwords, cookies, or sessions — and browser automation works even on machines where only Firefox is installed.
+* **Prebuilt sandbox image** — ship a ready-made, minimal Linux execution environment with the Node, so agent code runs in an isolated sandbox out of the box, without requiring the user to install or understand Docker.
+
+Both layers keep the existing WASM, subprocess, and workspace sandboxes underneath — isolation is added, never traded away.
+
 ---
 
 # Long-Term Objective
@@ -260,7 +269,7 @@ Get the latest desktop installer for your platform:
 
 ## What is FreEco.ai?
 
-FreEco.ai is an SUSTAINABLE ETHICAL **open-source Agent Operating System**. Not a chatbot framework. Not a Python wrapper around an LLM. Not a "multi-agent orchestrator." A full operating system for autonomous agents, with ethical and structural enhancements for personal use, buisiness, family and kids.
+FreEco.ai is a SUSTAINABLE ETHICAL **open-source Agent Operating System**. Not a chatbot framework. Not a Python wrapper around an LLM. Not a "multi-agent orchestrator." A full operating system for autonomous agents, with ethical and structural enhancements for personal use, business, family and kids.
 
 Traditional agent frameworks wait for you to type something. FreEco.ai runs **autonomous agents that work for you**: on schedules, 24/7, building knowledge graphs, monitoring targets, generating leads, managing your social media, and reporting results to your dashboard.
 
@@ -322,7 +331,7 @@ You can also **import any agent from [OpenClaw Hub](https://github.com/FreecoDAO
 
 ## Hands: Agents That Actually Do Things
 
-<p align="center"><em>"Traditional agents wait for you to type. Freeco.ai makes AI work for you, your buisiness, Community, Charity. Hands work <strong>for</strong> you."</em></p>
+<p align="center"><em>"Traditional agents wait for you to type. Freeco.ai makes AI work for you, your business, Community, Charity. Hands work <strong>for</strong> you."</em></p>
 
 **Hands** are FreEco.ai's core innovation. Pre-built autonomous capability packages that run independently, on schedules, without you having to prompt them. This is not a chatbot. This is an agent that wakes up at 6 AM, researches your competitors, builds a knowledge graph, scores the findings, and delivers a report to your Telegram before you've had coffee.
 

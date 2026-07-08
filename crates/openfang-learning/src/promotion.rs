@@ -41,3 +41,34 @@ impl PromotionPolicy {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_file_maps_every_learning_type() {
+        let policy = PromotionPolicy::default();
+        assert_eq!(
+            policy.target_file(&LearningType::SecurityObservation),
+            "SECURITY.md"
+        );
+        assert_eq!(policy.target_file(&LearningType::Error), "SOUL.md");
+        assert_eq!(
+            policy.target_file(&LearningType::BestPractice),
+            "TOOLS.md"
+        );
+        assert_eq!(
+            policy.target_file(&LearningType::Correction),
+            "AGENTS.md"
+        );
+        assert_eq!(
+            policy.target_file(&LearningType::KnowledgeGap),
+            "AGENTS.md"
+        );
+        assert_eq!(
+            policy.target_file(&LearningType::FeatureRequest),
+            "FEATURE_REQUESTS.md"
+        );
+    }
+}

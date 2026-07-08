@@ -7,10 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Portable / USB edition: OS-detecting launcher scripts (`scripts/portable/`) that run FreEco.ai from any folder or USB drive with all data kept alongside the binary via `OPENFANG_HOME`, plus `scripts/build-portable.sh` to assemble the bundle from release binaries, and `docs/usb-portable.md`.
+- Landing page (`docs/index.html`) — self-contained green-brand site with edition overview, download links, terminal install commands, and PayPal donation QR; deployable via GitHub Pages or any static host.
+- README roadmap: "Planned: Self-Contained Isolation Layer" (bundled agent browser + prebuilt sandbox image, Manus-style all-included isolation).
+- First unit tests for `openfang-learning` (`PromotionPolicy::target_file` mapping).
+
 ### Changed
 
 - Updated user-facing dashboard branding to display `FreEco.ai` in the sidebar header.
 - Updated documentation to explicitly state that FreEco.ai is built on the OpenFang base with ethical and structural enhancements.
+
+### Fixed
+
+- README typos ("buisiness" → "business", "an SUSTAINABLE" → "a SUSTAINABLE").
 
 ## [0.5.10] - 2026-04-17
 
