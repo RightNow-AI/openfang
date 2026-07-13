@@ -1476,7 +1476,7 @@ fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static st
             "openrouter/google/gemini-2.5-flash",
             "OpenRouter",
         ),
-        ("minimax", "MINIMAX_API_KEY", "MiniMax-M2.7", "MiniMax"),
+        ("minimax", "MINIMAX_API_KEY", "MiniMax-M3", "MiniMax"),
     ]
 }
 
@@ -1495,7 +1495,7 @@ mod provider_list_tests {
         );
         let (_, env_var, model, display) = minimax.unwrap();
         assert_eq!(env_var, "MINIMAX_API_KEY");
-        assert_eq!(model, "MiniMax-M2.7");
+        assert_eq!(model, "MiniMax-M3");
         assert_eq!(display, "MiniMax");
     }
 }

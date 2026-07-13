@@ -200,7 +200,9 @@ impl MeteringEngine {
         input_tokens: u64,
         output_tokens: u64,
     ) -> f64 {
-        let (input_per_m, output_per_m) = catalog.pricing(model).unwrap_or((1.0, 3.0));
+        let (input_per_m, output_per_m) = catalog
+            .pricing_for_usage(model, input_tokens)
+            .unwrap_or((1.0, 3.0));
         let input_cost = (input_tokens as f64 / 1_000_000.0) * input_per_m;
         let output_cost = (output_tokens as f64 / 1_000_000.0) * output_per_m;
         input_cost + output_cost
@@ -790,6 +792,14 @@ mod tests {
             1_000_000,
         );
         assert!((cost - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_estimate_cost_with_catalog_minimax_m3_long_context() {
+        let catalog = openfang_runtime::model_catalog::ModelCatalog::new();
+        let cost =
+            MeteringEngine::estimate_cost_with_catalog(&catalog, "MiniMax-M3", 600_000, 100_000);
+        assert!((cost - 0.60).abs() < 0.01);
     }
 
     #[test]

@@ -88,7 +88,7 @@ const PROVIDERS: &[ProviderInfo] = &[
     ProviderInfo {
         name: "minimax",
         env_var: "MINIMAX_API_KEY",
-        default_model: "MiniMax-M2.7",
+        default_model: "MiniMax-M3",
         needs_key: true,
     },
     ProviderInfo {
@@ -707,6 +707,6 @@ mod tests {
         );
         let minimax = minimax.unwrap();
         assert_eq!(minimax.env_var, "MINIMAX_API_KEY");
-        assert_eq!(minimax.default_model, "MiniMax-M2.7");
+        assert_eq!(minimax.default_model, "MiniMax-M3");
     }
 }
