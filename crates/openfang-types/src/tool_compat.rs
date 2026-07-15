@@ -63,6 +63,7 @@ pub fn is_known_openfang_tool(name: &str) -> bool {
             | "shell_exec"
             | "web_search"
             | "web_fetch"
+            | "secure_fetch"
             | "browser_navigate"
             | "memory_recall"
             | "memory_store"

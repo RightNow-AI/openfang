@@ -149,6 +149,7 @@ default_agent = "social-media"
 
 - `bot_token_env` / `token_env` -- The environment variable holding the bot/access token. OpenFang reads the token from this env var at startup. All secrets are stored as `Zeroizing<String>` and wiped from memory on drop.
 - `default_agent` -- The agent name (or ID) that receives messages when no specific routing applies.
+- `exclusive_agent` -- _(Telegram)_ When `true`, locks the bot to `default_agent` only: every message routes to that single agent regardless of bindings or user selection, and the multi-agent discovery/switching commands (`/agents`, `/agent <name>`) plus the agent-list welcome are disabled. Use this for a dedicated single-purpose bot that should never expose or switch to other agents. Requires `default_agent` to be set.
 - `allowed_users` -- Optional list of platform user IDs allowed to interact. Empty means allow all.
 - `overrides` -- Optional per-channel behavior overrides (see [Channel Overrides](#channel-overrides) below).
 

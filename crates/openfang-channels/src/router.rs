@@ -40,6 +40,11 @@ pub struct AgentRouter {
     channel_defaults: DashMap<String, AgentId>,
     /// Per-channel-type default agent *name* (for re-resolution when UUID becomes stale).
     channel_default_names: DashMap<String, String>,
+    /// Per-channel-type *exclusive* agent (keyed by lowercase channel string,
+    /// e.g. "telegram"). When set, the bot is locked to exactly one agent:
+    /// resolution returns it unconditionally (overriding bindings, direct routes,
+    /// and user/channel defaults) and agent-switching commands are disabled.
+    exclusive_agents: DashMap<String, AgentId>,
     /// Sorted bindings (most specific first). Uses Mutex for runtime updates via Arc.
     bindings: Mutex<Vec<(AgentBinding, String)>>,
     /// Broadcast configuration. Uses Mutex for runtime updates via Arc.
@@ -57,6 +62,7 @@ impl AgentRouter {
             default_agent: None,
             channel_defaults: DashMap::new(),
             channel_default_names: DashMap::new(),
+            exclusive_agents: DashMap::new(),
             bindings: Mutex::new(Vec::new()),
             broadcast: Mutex::new(BroadcastConfig::default()),
             agent_name_cache: DashMap::new(),
@@ -101,6 +107,28 @@ impl AgentRouter {
     /// Set a user's default agent.
     pub fn set_user_default(&self, user_key: String, agent_id: AgentId) {
         self.user_defaults.insert(user_key, agent_id);
+    }
+
+    /// Lock a channel to a single agent (exclusive single-purpose bot). Keyed by
+    /// the lowercase channel string (e.g. "telegram"). Once set, [`resolve`]
+    /// returns this agent for the channel no matter what, and the bridge
+    /// disables agent-discovery/switching commands.
+    pub fn set_exclusive_agent(&self, channel_type: &ChannelType, agent_id: AgentId) {
+        self.exclusive_agents
+            .insert(channel_type_to_str(channel_type).to_string(), agent_id);
+    }
+
+    /// Exclusive agent locked to this channel type, if any.
+    pub fn exclusive_agent(&self, channel_type: &ChannelType) -> Option<AgentId> {
+        self.exclusive_agents
+            .get(channel_type_to_str(channel_type))
+            .map(|r| *r)
+    }
+
+    /// Exclusive agent locked to a channel, looked up by its lowercase string
+    /// key (e.g. "telegram"). Used where only the channel string is available.
+    pub fn exclusive_agent_str(&self, channel_str: &str) -> Option<AgentId> {
+        self.exclusive_agents.get(channel_str).map(|r| *r)
     }
 
     /// Set a direct route for a specific (channel, user) pair.
@@ -163,6 +191,12 @@ impl AgentRouter {
     ) -> Option<AgentId> {
         let channel_key = format!("{channel_type:?}");
 
+        // -1. Exclusive lock: a single-purpose bot is pinned to one agent and
+        // ignores all other routing (bindings, direct routes, user defaults).
+        if let Some(agent_id) = self.exclusive_agent(channel_type) {
+            return Some(agent_id);
+        }
+
         // 0. Check bindings (most specific first)
         let ctx = BindingContext {
             channel: channel_type_to_str(channel_type).to_string(),
@@ -212,6 +246,10 @@ impl AgentRouter {
         user_key: Option<&str>,
         ctx: &BindingContext,
     ) -> Option<AgentId> {
+        // Exclusive lock takes precedence over everything, including bindings.
+        if let Some(agent_id) = self.exclusive_agent(channel_type) {
+            return Some(agent_id);
+        }
         // 0. Check bindings first
         if let Some(agent_id) = self.resolve_binding(ctx) {
             return Some(agent_id);
@@ -421,6 +459,45 @@ mod tests {
         let router = AgentRouter::new();
         let resolved = router.resolve(&ChannelType::CLI, "local", None);
         assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn test_exclusive_agent_overrides_everything() {
+        let mut router = AgentRouter::new();
+        let default_agent = AgentId::new();
+        let user_agent = AgentId::new();
+        let exclusive = AgentId::new();
+
+        router.set_default(default_agent);
+        router.set_user_default("alice".to_string(), user_agent);
+        // A telegram binding would normally win — exclusive must still override it.
+        router.register_agent("bound".to_string(), AgentId::new());
+        router.load_bindings(&[AgentBinding {
+            agent: "bound".to_string(),
+            match_rule: openfang_types::config::BindingMatchRule {
+                channel: Some("telegram".to_string()),
+                ..Default::default()
+            },
+        }]);
+        router.set_exclusive_agent(&ChannelType::Telegram, exclusive);
+
+        // Telegram is locked: binding, user default, and system default are ignored.
+        assert_eq!(
+            router.resolve(&ChannelType::Telegram, "tg_1", Some("alice")),
+            Some(exclusive)
+        );
+        // Other channels are unaffected by the telegram lock.
+        assert_eq!(
+            router.resolve(&ChannelType::Discord, "dc_1", Some("alice")),
+            Some(user_agent)
+        );
+        // Lookup helpers agree.
+        assert_eq!(
+            router.exclusive_agent(&ChannelType::Telegram),
+            Some(exclusive)
+        );
+        assert_eq!(router.exclusive_agent_str("telegram"), Some(exclusive));
+        assert_eq!(router.exclusive_agent(&ChannelType::Discord), None);
     }
 
     #[test]

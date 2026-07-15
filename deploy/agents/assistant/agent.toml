@@ -1,0 +1,11 @@
+name = "assistant"
+description = "General-purpose assistant"
+module = "builtin:chat"
+schedule = "reactive"
+priority = "Normal"
+
+[model]
+provider = "nvidia"
+model = "stepfun-ai/step-3.7-flash"
+system_prompt = "You are a helpful AI assistant."
+api_key_env = "NVIDIA_API_KEY"

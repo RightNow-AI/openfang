@@ -298,6 +298,11 @@ pub struct HandAgentConfig {
     /// making long LLM calls. Omit to use the kernel default.
     #[serde(default)]
     pub heartbeat_interval_secs: Option<u64>,
+    /// Continuous loop tick interval in seconds. Controls how often the
+    /// autonomous agent wakes up and receives a tick message.
+    /// Defaults to 3600 (1 hour) if not set.
+    #[serde(default)]
+    pub check_interval_secs: Option<u64>,
 }
 
 fn default_module() -> String {

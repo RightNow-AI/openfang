@@ -1,0 +1,33 @@
+# OpenFang — baked default configuration.
+#
+# This file is copied into the image at /opt/openfang/config.toml and seeded
+# to $OPENFANG_HOME/config.toml (/data/config.toml) on first container boot,
+# ONLY if no config already exists on the data volume. A config already present
+# on the PVC is never overwritten.
+#
+# Secrets are referenced by environment-variable NAME, never stored here.
+# Required env vars in the deployment:
+#   NVIDIA_API_KEY          — powers the default model + agents
+#   TELEGRAM_BOT_TOKEN_EBAY — Telegram token (@openfang_ebay_1_bot) for the EbayWatcher bot
+
+# Bind on all interfaces so the dashboard/API is reachable inside the cluster.
+# Can be overridden at runtime with OPENFANG_LISTEN.
+api_listen = "0.0.0.0:4200"
+
+[default_model]
+provider = "nvidia"
+model = "stepfun-ai/step-3.7-flash"
+api_key_env = "NVIDIA_API_KEY"
+
+[memory]
+decay_rate = 0.05
+
+# The Telegram bot is dedicated to EbayWatcher: exclusive_agent locks it to that
+# one agent, so the bot never exposes or lets users switch to other agents
+# (Dewansh/assistant remain available via the dashboard/API). To route Telegram
+# to a different agent instead, change default_agent and drop exclusive_agent.
+[channels.telegram]
+bot_token_env = "TELEGRAM_BOT_TOKEN_EBAY"
+default_agent = "EbayWatcher"
+exclusive_agent = true
+poll_interval_secs = 1

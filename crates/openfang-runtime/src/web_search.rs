@@ -67,10 +67,21 @@ impl WebSearchEngine {
         result
     }
 
-    /// Auto-select provider based on available API keys.
-    /// Priority: Tavily → Brave → Perplexity → Searxng → DuckDuckGo
+    /// Auto-select provider based on configuration.
+    /// Priority: SearXNG (self-hosted) → DuckDuckGo (zero-config fallback).
+    /// Third-party API providers (Tavily, Brave, Perplexity) are tried only if
+    /// SearXNG is not configured and their API keys are present.
     async fn search_auto(&self, query: &str, max_results: usize) -> Result<String, String> {
-        // Tavily first (AI-agent-native)
+        // SearXNG first — preferred self-hosted, privacy-respecting engine
+        if !self.config.searxng.url.is_empty() {
+            debug!("Auto: trying SearXNG");
+            match self.search_searxng(query, max_results, None, 1).await {
+                Ok(result) => return Ok(result),
+                Err(e) => warn!("SearXNG failed, falling back: {e}"),
+            }
+        }
+
+        // Tavily fallback (API key required)
         if resolve_api_key(&self.config.tavily.api_key_env).is_some() {
             debug!("Auto: trying Tavily");
             match self.search_tavily(query, max_results).await {
@@ -79,7 +90,7 @@ impl WebSearchEngine {
             }
         }
 
-        // Brave second
+        // Brave fallback (API key required)
         if resolve_api_key(&self.config.brave.api_key_env).is_some() {
             debug!("Auto: trying Brave");
             match self.search_brave(query, max_results).await {
@@ -88,7 +99,7 @@ impl WebSearchEngine {
             }
         }
 
-        // Perplexity third
+        // Perplexity fallback (API key required)
         if resolve_api_key(&self.config.perplexity.api_key_env).is_some() {
             debug!("Auto: trying Perplexity");
             match self.search_perplexity(query).await {
@@ -97,20 +108,10 @@ impl WebSearchEngine {
             }
         }
 
-        // Searxng fourth (self-hosted, no API key needed)
-        if !self.config.searxng.url.is_empty() {
-            debug!("Auto: trying Searxng");
-            match self.search_searxng(query, max_results, None, 1).await {
-                Ok(result) => return Ok(result),
-                Err(e) => warn!("Searxng failed, falling back: {e}"),
-            }
-        }
-
-        // DuckDuckGo always available as zero-config fallback
+        // DuckDuckGo — always available, zero-config last resort
         debug!("Auto: falling back to DuckDuckGo");
         self.search_duckduckgo(query, max_results).await
     }
-
     /// Search via Brave Search API.
     async fn search_brave(&self, query: &str, max_results: usize) -> Result<String, String> {
         let api_key =

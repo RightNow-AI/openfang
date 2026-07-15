@@ -84,6 +84,24 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         Ok(result.response)
     }
 
+    async fn send_message_with_sender(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+    ) -> Result<String, String> {
+        let result = self
+            .kernel
+            .send_message_with_sender(agent_id, message, sender_id, sender_name)
+            .await
+            .map_err(|e| format!("{e}"))?;
+        if result.silent {
+            return Ok(String::new());
+        }
+        Ok(result.response)
+    }
+
     async fn send_message_with_blocks(
         &self,
         agent_id: AgentId,
@@ -151,6 +169,14 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             .map_err(|e| format!("Failed to spawn agent: {e}"))?;
 
         Ok(agent_id)
+    }
+
+    async fn set_delivery_context(&self, agent_id: AgentId, channel: &str, recipient: &str) {
+        let kv_val = serde_json::json!({"channel": channel, "recipient": recipient});
+        let _ = self
+            .kernel
+            .memory
+            .structured_set(agent_id, "delivery.last_channel", kv_val);
     }
 
     async fn uptime_info(&self) -> String {
@@ -1161,6 +1187,10 @@ pub async fn start_channel_bridge_with_config(
 
     // Collect all adapters to start
     let mut adapters: Vec<(Arc<dyn ChannelAdapter>, Option<String>)> = Vec::new();
+    // Channel keys (Debug form, e.g. "Telegram") whose bot is locked to its
+    // single `default_agent`. Applied to the router after agent IDs resolve.
+    let mut exclusive_channels: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     // Telegram
     if let Some(ref tg_config) = config.telegram {
@@ -1173,6 +1203,13 @@ pub async fn start_channel_bridge_with_config(
                 tg_config.api_url.clone(),
                 tg_config.thread_routes.clone(),
             ));
+            if tg_config.exclusive_agent {
+                if tg_config.default_agent.is_some() {
+                    exclusive_channels.insert(format!("{:?}", adapter.channel_type()));
+                } else {
+                    warn!("Telegram exclusive_agent is set but default_agent is empty — ignoring exclusive lock");
+                }
+            }
             adapters.push((adapter, tg_config.default_agent.clone()));
         }
     }
@@ -1779,7 +1816,15 @@ pub async fn start_channel_bridge_with_config(
                     "{} default agent: {name} ({agent_id}) [channel: {channel_key}]",
                     adapter.name()
                 );
-                router.set_channel_default_with_name(channel_key, agent_id, name.clone());
+                router.set_channel_default_with_name(channel_key.clone(), agent_id, name.clone());
+                // Lock this bot to the single agent if exclusive mode is on.
+                if exclusive_channels.contains(&channel_key) {
+                    router.set_exclusive_agent(&adapter.channel_type(), agent_id);
+                    info!(
+                        "{} locked to exclusive agent: {name} ({agent_id}) — agent switching disabled",
+                        adapter.name()
+                    );
+                }
                 // First configured default also becomes system-wide fallback
                 if !system_default_set {
                     router.set_default(agent_id);

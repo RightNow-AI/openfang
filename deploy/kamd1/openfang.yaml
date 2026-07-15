@@ -1,0 +1,189 @@
+# openfang — kamd1, https://openfang.pageapp.net
+#
+# Self-contained: namespace, regcred, config, deployment, service, routing.
+# Substitute placeholders at deploy time (envsubst or the deploy UI):
+#
+#   ${DOMAIN}              e.g. pageapp
+#   ${IMAGE_TAG}           e.g. v0.1.3
+#   ${DOCKER_CONFIG_JSON}  base64 dockerconfigjson for harbor.pageapp.net
+#   ${CLUSTER_NAME}
+#   ${NVIDIA_API_KEY}
+#   ${OLLAMA_API_KEY}
+#   ${TELEGRAM_BOT_TOKEN}
+#   ${SCREENBUDDY_API_KEY} desktop<->backend service key (x-api-key)
+#   ${OPENFANG_API_KEY}    dashboard/API key
+#   ${OPENFANG_WEBHOOK_TOKEN}
+#
+# NOTE: OPENFANG_WEBHOOK_TOKEN must currently equal OPENFANG_API_KEY, and the
+# ScreenBuddy backend's API_KEY must match it too — the same value authenticates
+# the callback at both layers. Rotate all three together, never independently.
+#
+# secret/pageapp-net-tls (TLS for *.pageapp.net) is expected to already exist.
+#
+# Routing: the /hooks/ route is priority 100 and carries no oauth2-proxy
+# middleware, so ScreenBuddy callbacks reach the pod with their Authorization
+# header intact. forwardAuth would redirect them to SSO and break them.
+# Everything else is priority 10 behind auth.pageapp.net. Do not reorder.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openfang
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: regcred${DOMAIN}
+  namespace: openfang
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: ${DOCKER_CONFIG_JSON}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openfang-data
+  namespace: openfang
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: longhorn
+  volumeMode: Filesystem
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openfang
+  namespace: openfang
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: the PVC is RWO and SQLite is single-writer,
+  # so two pods must never hold /data at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: openfang
+  template:
+    metadata:
+      labels:
+        app: openfang
+    spec:
+      containers:
+        - name: openfang
+          # Harbor by HOSTNAME, not IP (the SHARED_CICD pull-failure fix).
+          image: harbor.pageapp.net/docker-registry/openfang:${IMAGE_TAG}
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 4200
+          env:
+            - name: ENVIRONMENT_TYPE
+              value: "PROD"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CLUSTER_NAME
+              value: ${CLUSTER_NAME}
+            - name: DOMAIN
+              value: ${DOMAIN}
+            - name: VERSION
+              value: ${IMAGE_TAG}
+
+            # --- LLM providers ---
+            - name: NVIDIA_API_KEY
+              value: "${NVIDIA_API_KEY}"
+            - name: OLLAMA_API_KEY
+              value: "${OLLAMA_API_KEY}"
+
+            # --- Telegram channel (long-poll; no inbound route needed) ---
+            - name: TELEGRAM_BOT_TOKEN
+              value: "${TELEGRAM_BOT_TOKEN}"
+
+            # --- secure_fetch: value read by NAME in Rust, never seen by the LLM.
+            #     Pinned to ai-screen-buddy-backend.pageapp.net in config.toml.
+            - name: SCREENBUDDY_API_KEY
+              value: "${SCREENBUDDY_API_KEY}"
+
+            # --- inbound: ScreenBuddy calls POST /hooks/agent with this bearer.
+            #     Must equal OPENFANG_API_KEY (see NOTE at top).
+            - name: OPENFANG_WEBHOOK_TOKEN
+              value: "${OPENFANG_WEBHOOK_TOKEN}"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /data/config.toml
+              subPath: config.toml
+      imagePullSecrets:
+        - name: regcred${DOMAIN}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: openfang-data
+        - name: config
+          configMap:
+            name: openfang-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openfang
+  namespace: openfang
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 4200
+      protocol: TCP
+  selector:
+    app: openfang
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: openfang-ingress
+  namespace: openfang
+  annotations:
+    kubernetes.io/ingress.class: traefik-external
+spec:
+  entryPoints:
+    - web
+    - websecure
+  routes:
+    # Priority 100, no middleware: ScreenBuddy webhook callbacks authenticate
+    # in-app via their own bearer token, so they must skip edge SSO.
+    - match: Host(`openfang.pageapp.net`) && PathPrefix(`/hooks/`)
+      kind: Rule
+      priority: 100
+      services:
+        - name: openfang
+          port: 80
+    - match: Host(`openfang.pageapp.net`)
+      kind: Rule
+      priority: 10
+      middlewares:
+        - name: oauth2-proxy-middleware
+      services:
+        - name: openfang
+          port: 80
+  tls:
+    secretName: pageapp-net-tls
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: oauth2-proxy-middleware
+  namespace: openfang
+spec:
+  forwardAuth:
+    address: https://auth.pageapp.net/?rd=https%3A%2F%2Fopenfang.pageapp.net
+    trustForwardHeader: true

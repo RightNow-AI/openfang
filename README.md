@@ -1,3 +1,46 @@
+## 797th Fork
+
+This fork adds the following changes on top of upstream OpenFang:
+
+**`ollama_structured` tool** — Calls Ollama with JSON schema enforcement for guaranteed structured output. Agents use this for precise computed values (timestamps, numbers) instead of relying on LLM math.
+
+**Multi-user sender_id** — Passes the Telegram chat_id through the bridge > kernel > agent loop > tool runner. `cron_create` automatically replaces `last_channel` with the sender's actual chat_id, preventing race conditions where multiple users' reminders deliver to the wrong chat.
+
+**Direct cron delivery** — When a cron job with `Channel` delivery fires, the message is sent directly to Telegram without going through the LLM. Prevents rephrasing of reminder text.
+
+**Action normalization** — `system_event` actions in `cron_create` are automatically converted to `agent_turn` so reminders deliver via Telegram channels.
+
+### Quick Start (this fork)
+
+```bash
+# Build
+git clone https://github.com/797th/openfang.git && cd openfang
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+cargo build --release -p openfang-cli
+
+# Install
+curl -fsSL https://openfang.sh/install | sh
+cp target/release/openfang ~/.openfang/bin/openfang
+
+# Config (from companion repo)
+git clone -b nideesh https://github.com/797th/openfang-ollama-telegram.git
+cp openfang-ollama-telegram/native/config.toml ~/.openfang/config.toml
+cp -r openfang-ollama-telegram/native/agents ~/.openfang/agents
+cp openfang-ollama-telegram/native/.env.example ~/.openfang/.env
+# Edit ~/.openfang/.env with your TELEGRAM_BOT_TOKEN and NVIDIA_API_KEY
+
+# Ollama (for structured output + embeddings)
+ollama pull gpt-oss:20b
+ollama pull nomic-embed-text
+
+# Run
+set -a && source ~/.openfang/.env && set +a
+openfang start --config ~/.openfang/config.toml
+```
+
+---
+
 <p align="center">
   <img src="public/assets/openfang-logo.png" width="160" alt="OpenFang Logo" />
 </p>

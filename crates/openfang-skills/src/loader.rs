@@ -331,10 +331,9 @@ async fn execute_shell(
 
     debug!("Executing Shell skill: {} {}", shell, script_path.display());
 
-    // Use -s to read from stdin, -c to execute command
+    // Run script file directly; JSON payload is piped via stdin (same as Python/Node)
     let mut cmd = tokio::process::Command::new(&shell);
-    cmd.arg("-s")
-        .arg(&script_path)
+    cmd.arg(&script_path)
         .current_dir(skill_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

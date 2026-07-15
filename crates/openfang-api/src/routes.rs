@@ -7093,6 +7093,7 @@ pub async fn mcp_http(
                 None
             },
             Some(&*state.kernel.process_manager),
+            None, // sender_id — not available from MCP HTTP context
         )
         .await;
 

@@ -1,0 +1,191 @@
+# openfang — https://openfang.797th.com
+#
+# Self-contained: namespace, regcred, deployment, service, routing.
+# Substitute placeholders at deploy time (envsubst or the deploy UI):
+#
+#   ${DOMAIN}              e.g. 797th
+#   ${IMAGE_TAG}           e.g. v0.1.3
+#   ${DOCKER_CONFIG_JSON}  base64 dockerconfigjson for the registry
+#   ${CLUSTER_NAME}
+#   ${NVIDIA_API_KEY}
+#   ${OLLAMA_API_KEY}
+#   ${TELEGRAM_BOT_TOKEN}
+#   ${SCREENBUDDY_API_KEY} desktop to backend service key (x-api-key)
+#   ${OPENFANG_API_KEY}    dashboard/API key
+#   ${OPENFANG_WEBHOOK_TOKEN}
+#
+# NOTE: OPENFANG_WEBHOOK_TOKEN must currently equal OPENFANG_API_KEY, and the
+# API_KEY on the ScreenBuddy backend must match it too. The same value
+# authenticates the callback at both layers. Rotate all three together.
+#
+# secret/797th-com-tls (TLS for *.797th.com) is expected to already exist.
+# configmap/openfang-config must be created from config.template.toml before
+# this applies; the pod will not boot without /data/config.toml.
+#
+# Routing: the /hooks/ route is priority 100 and carries no oauth2-proxy
+# middleware, so ScreenBuddy callbacks reach the pod with the Authorization
+# header intact. forwardAuth would redirect them to SSO and break them.
+# Everything else is priority 10 behind auth.797th.com. Do not reorder.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openfang
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: regcred${DOMAIN}
+  namespace: openfang
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: ${DOCKER_CONFIG_JSON}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openfang-data
+  namespace: openfang
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: longhorn
+  volumeMode: Filesystem
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openfang
+  namespace: openfang
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: the PVC is RWO and SQLite is single-writer,
+  # so two pods must never hold /data at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: openfang
+  template:
+    metadata:
+      labels:
+        app: openfang
+    spec:
+      containers:
+        - name: openfang
+          # Harbor by HOSTNAME, not IP (the SHARED_CICD pull-failure fix).
+          image: harbor.797th.com/docker-registry/openfang:${IMAGE_TAG}
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 4200
+          env:
+            - name: ENVIRONMENT_TYPE
+              value: "PROD"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CLUSTER_NAME
+              value: ${CLUSTER_NAME}
+            - name: DOMAIN
+              value: ${DOMAIN}
+            - name: VERSION
+              value: ${IMAGE_TAG}
+
+            # --- LLM providers ---
+            - name: NVIDIA_API_KEY
+              value: "${NVIDIA_API_KEY}"
+            - name: OLLAMA_API_KEY
+              value: "${OLLAMA_API_KEY}"
+
+            # --- Telegram channel (long-poll; no inbound route needed) ---
+            - name: TELEGRAM_BOT_TOKEN
+              value: "${TELEGRAM_BOT_TOKEN}"
+
+            # --- secure_fetch: value read by NAME in Rust, never seen by the
+            #     LLM. Host pinning for this secret is set in config.toml.
+            - name: SCREENBUDDY_API_KEY
+              value: "${SCREENBUDDY_API_KEY}"
+
+            # --- inbound: ScreenBuddy calls POST /hooks/agent with this
+            #     bearer. Must equal OPENFANG_API_KEY (see NOTE at top).
+            - name: OPENFANG_WEBHOOK_TOKEN
+              value: "${OPENFANG_WEBHOOK_TOKEN}"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /data/config.toml
+              subPath: config.toml
+      imagePullSecrets:
+        - name: regcred${DOMAIN}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: openfang-data
+        - name: config
+          configMap:
+            name: openfang-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openfang
+  namespace: openfang
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 4200
+      protocol: TCP
+  selector:
+    app: openfang
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: openfang-ingress
+  namespace: openfang
+  annotations:
+    kubernetes.io/ingress.class: traefik-external
+spec:
+  entryPoints:
+    - web
+    - websecure
+  routes:
+    # Priority 100, no middleware: ScreenBuddy webhook callbacks authenticate
+    # in-app via their own bearer token, so they must skip edge SSO.
+    - match: Host(`openfang.797th.com`) && PathPrefix(`/hooks/`)
+      kind: Rule
+      priority: 100
+      services:
+        - name: openfang
+          port: 80
+    - match: Host(`openfang.797th.com`)
+      kind: Rule
+      priority: 10
+      middlewares:
+        - name: oauth2-proxy-middleware
+      services:
+        - name: openfang
+          port: 80
+  tls:
+    secretName: 797th-com-tls
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: oauth2-proxy-middleware
+  namespace: openfang
+spec:
+  forwardAuth:
+    address: https://auth.797th.com/?rd=https%3A%2F%2Fopenfang.797th.com
+    trustForwardHeader: true

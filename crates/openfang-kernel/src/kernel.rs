@@ -1462,85 +1462,74 @@ impl OpenFangKernel {
             }
         }
 
-        // Issue #1140: auto-spawn agents from `~/.openfang/agents/<name>/agent.toml`
-        // that are present on disk but not yet in the registry. Without this,
-        // user-placed agent dirs never appear in `GET /api/agents` (and thus
-        // the chat tab's dropdown) until they are explicitly spawned via API
-        // or CLI. We scan the agents directory and call `spawn_agent` for any
-        // valid manifest whose name is not already registered (idempotent).
-        {
-            let agents_dir = kernel.config.home_dir.join("agents");
-            if agents_dir.is_dir() {
-                let mut auto_spawned = 0usize;
-                if let Ok(entries) = std::fs::read_dir(&agents_dir) {
-                    for entry in entries.flatten() {
-                        let dir_path = entry.path();
-                        if !dir_path.is_dir() {
-                            continue;
-                        }
-                        let toml_path = dir_path.join("agent.toml");
-                        if !toml_path.exists() {
-                            continue;
-                        }
-                        let dir_name = match dir_path.file_name() {
-                            Some(n) => n.to_string_lossy().to_string(),
-                            None => continue,
-                        };
-                        // Skip if an agent with this name already exists in the
-                        // registry (was restored from DB or already spawned).
-                        if kernel.registry.find_by_name(&dir_name).is_some() {
-                            continue;
-                        }
-                        let toml_str = match std::fs::read_to_string(&toml_path) {
-                            Ok(s) => s,
+        // Seed agents defined on disk into the registry.
+        //
+        // Two needs are served here:
+        //   1. Baked agents (seeded into <home>/agents/<name>/agent.toml by the
+        //      container entrypoint) must register on the FIRST boot of a fresh
+        //      data volume (797th container/PVC deploy). The DB-restore loop
+        //      above only *updates* agents already in the DB from their on-disk
+        //      TOML; it never creates new ones.
+        //   2. User-placed agent dirs should appear in `GET /api/agents` (and
+        //      the chat dropdown) without being explicitly spawned via API/CLI
+        //      (upstream Issue #1140), even on an already-populated install.
+        //
+        // Both are satisfied by a ONE-TIME, marker-gated import of every on-disk
+        // manifest whose name is not already registered (the `existing` set,
+        // seeded from the current registry, makes the import idempotent per
+        // name). "One-time" is enforced by a marker file persisted next to the
+        // data, NOT by an empty registry: gating on emptiness alone — or
+        // re-importing every boot as a naive per-boot auto-spawn would —
+        // resurrects baked agents whenever an operator deletes them via the API
+        // but leaves the on-disk TOML in place. The marker lives on the data
+        // volume, so once seeding has run those deletions stay deleted.
+        let agents_dir = kernel.config.home_dir.join("agents");
+        let seed_marker = kernel.config.home_dir.join(".agents_seeded");
+        if !seed_marker.exists() && agents_dir.is_dir() {
+            if let Ok(dir_entries) = std::fs::read_dir(&agents_dir) {
+                let mut existing: std::collections::HashSet<String> = kernel
+                    .registry
+                    .list()
+                    .iter()
+                    .map(|e| e.name.clone())
+                    .collect();
+                for dir_entry in dir_entries.flatten() {
+                    if !dir_entry.path().is_dir() {
+                        continue;
+                    }
+                    let toml_path = dir_entry.path().join("agent.toml");
+                    if !toml_path.exists() {
+                        continue;
+                    }
+                    let manifest = match std::fs::read_to_string(&toml_path) {
+                        Ok(s) => match toml::from_str::<openfang_types::agent::AgentManifest>(&s) {
+                            Ok(m) => m,
                             Err(e) => {
-                                tracing::warn!(
-                                    agent = %dir_name,
-                                    path = %toml_path.display(),
-                                    "Failed to read agent.toml: {e}"
-                                );
+                                warn!(path = %toml_path.display(), "Invalid agent TOML on disk, skipping import: {e}");
                                 continue;
                             }
-                        };
-                        let mut manifest: openfang_types::agent::AgentManifest =
-                            match toml::from_str(&toml_str) {
-                                Ok(m) => m,
-                                Err(e) => {
-                                    tracing::warn!(
-                                        agent = %dir_name,
-                                        path = %toml_path.display(),
-                                        "Invalid agent.toml, skipping auto-spawn: {e}"
-                                    );
-                                    continue;
-                                }
-                            };
-                        // Prefer the directory name as the canonical agent name
-                        // so the dashboard and CLI stay consistent with the
-                        // on-disk layout, even if the manifest's `name` field
-                        // disagrees.
-                        if manifest.name.is_empty() {
-                            manifest.name = dir_name.clone();
+                        },
+                        Err(e) => {
+                            warn!(path = %toml_path.display(), "Failed to read agent TOML, skipping import: {e}");
+                            continue;
                         }
-                        match kernel.spawn_agent(manifest) {
-                            Ok(id) => {
-                                auto_spawned += 1;
-                                info!(
-                                    agent = %dir_name,
-                                    id = %id,
-                                    "Auto-spawned agent from ~/.openfang/agents"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    agent = %dir_name,
-                                    "Failed to auto-spawn agent from disk: {e}"
-                                );
-                            }
-                        }
+                    };
+                    // insert() returns false if the name was already seen this
+                    // cycle, so two disk manifests sharing a name can't both spawn.
+                    if manifest.name.trim().is_empty() || !existing.insert(manifest.name.clone()) {
+                        continue;
+                    }
+                    info!(agent = %manifest.name, "Importing agent from disk (not present in DB)");
+                    match kernel.spawn_agent(manifest) {
+                        Ok(id) => info!(id = %id, "Imported agent from disk"),
+                        Err(e) => warn!("Failed to import agent from disk: {e}"),
                     }
                 }
-                if auto_spawned > 0 {
-                    info!("Auto-spawned {auto_spawned} agent(s) from ~/.openfang/agents");
+                // Record that the one-time seed has run. Only written once we
+                // successfully scanned the agents dir, so a directory that
+                // appears later can still seed on a subsequent boot.
+                if let Err(e) = std::fs::write(&seed_marker, b"seeded\n") {
+                    warn!(path = %seed_marker.display(), "Failed to write agent seed marker: {e}");
                 }
             }
         }
@@ -1828,6 +1817,23 @@ impl OpenFangKernel {
             .and_then(|w| w.upgrade())
             .map(|arc| arc as Arc<dyn KernelHandle>);
         self.send_message_with_handle(agent_id, message, handle, None, None)
+            .await
+    }
+
+    /// Send a message with sender identity (channel bridges use this for multi-user support).
+    pub async fn send_message_with_sender(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+    ) -> KernelResult<AgentLoopResult> {
+        let handle: Option<Arc<dyn KernelHandle>> = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+        self.send_message_with_handle(agent_id, message, handle, sender_id, sender_name)
             .await
     }
 
@@ -2270,7 +2276,7 @@ impl OpenFangKernel {
                         .format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)")
                         .to_string(),
                 ),
-                sender_id,
+                sender_id: sender_id.clone(),
                 sender_name,
                 // Re-read context.md per turn by default so external writers
                 // (cron jobs, integrations) reach the LLM on the next message.
@@ -2378,6 +2384,7 @@ impl OpenFangKernel {
                 ctx_window,
                 Some(&kernel_clone.process_manager),
                 content_blocks,
+                sender_id,
             )
             .await;
 
@@ -2853,7 +2860,7 @@ impl OpenFangKernel {
                         .format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)")
                         .to_string(),
                 ),
-                sender_id,
+                sender_id: sender_id.clone(),
                 sender_name,
                 // Re-read context.md per turn by default (#843).
                 context_md: manifest.workspace.as_ref().and_then(|w| {
@@ -2969,6 +2976,7 @@ impl OpenFangKernel {
             ctx_window,
             Some(&self.process_manager),
             content_blocks,
+            sender_id,
         )
         .await
         .map_err(KernelError::OpenFang)?;
@@ -3831,10 +3839,10 @@ impl OpenFangKernel {
             }),
             // Autonomous hands must run in Continuous mode so the background loop picks them up.
             // Reactive (default) only fires on incoming messages, so autonomous hands would be inert.
-            // Default to 3600s (1 hour) to avoid wasting credits — see issue #848.
+            // Use HAND.toml check_interval_secs if set, otherwise default to 3600s (1 hour).
             schedule: if def.agent.max_iterations.is_some() {
                 ScheduleMode::Continuous {
-                    check_interval_secs: 3600,
+                    check_interval_secs: def.agent.check_interval_secs.unwrap_or(3600),
                 }
             } else {
                 ScheduleMode::default()
@@ -6602,6 +6610,27 @@ impl OpenFangKernel {
                 timeout_secs,
                 ..
             } => {
+                let delivery = job.delivery.clone();
+
+                // For Channel delivery (specific recipient), deliver the message
+                // directly without going through the LLM.
+                if matches!(
+                    delivery,
+                    openfang_types::scheduler::CronDelivery::Channel { .. }
+                ) {
+                    match cron_deliver_response(self, agent_id, message, &delivery).await {
+                        Ok(()) => {
+                            self.cron_scheduler.record_success(job_id);
+                            return Ok(message.clone());
+                        }
+                        Err(e) => {
+                            self.cron_scheduler.record_failure(job_id, &e);
+                            return Err(e);
+                        }
+                    }
+                }
+
+                // For other delivery types, go through the LLM.
                 let timeout_s = timeout_secs.unwrap_or(120);
                 let timeout = std::time::Duration::from_secs(timeout_s);
                 let delivery = job.delivery.clone();
@@ -7648,6 +7677,20 @@ impl KernelHandle for OpenFangKernel {
                 .default_channel_id
                 .clone(),
             _ => None,
+        }
+    }
+
+    fn get_delivery_context(&self, agent_id: &str, channel: &str) -> Option<String> {
+        let aid: AgentId = agent_id.parse().ok()?;
+        let val = self
+            .memory
+            .structured_get(aid, "delivery.last_channel")
+            .ok()??;
+        let stored_channel = val["channel"].as_str()?;
+        if stored_channel == channel {
+            val["recipient"].as_str().map(|s| s.to_string())
+        } else {
+            None
         }
     }
 

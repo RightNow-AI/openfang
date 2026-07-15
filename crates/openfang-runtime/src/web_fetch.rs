@@ -42,6 +42,19 @@ impl WebFetchEngine {
         self.fetch_with_options(url, "GET", None, None).await
     }
 
+    /// The SSRF allowlist this engine was configured with.
+    ///
+    /// Exposed so sibling tools (e.g. `secure_fetch`) can run the same
+    /// `check_ssrf` pre-flight that `fetch_with_options` performs internally.
+    pub fn ssrf_allowed_hosts(&self) -> &[String] {
+        &self.config.ssrf_allowed_hosts
+    }
+
+    /// The `secure_fetch` allowlist configuration for this engine.
+    pub fn secure_fetch_config(&self) -> &openfang_types::config::SecureFetchConfig {
+        &self.config.secure_fetch
+    }
+
     /// Fetch a URL with configurable HTTP method, headers, and body.
     pub async fn fetch_with_options(
         &self,
@@ -363,6 +376,20 @@ fn is_private_ip(ip: &IpAddr) -> bool {
             (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80
         }
     }
+}
+
+/// Extract just the lowercased hostname (no port) from a URL.
+///
+/// Handles IPv6 bracket notation (`[::1]` stays as `[::1]`). Used by
+/// `secure_fetch` to enforce per-secret host bindings.
+pub(crate) fn url_hostname(url: &str) -> String {
+    let host = extract_host(url);
+    let name = if host.starts_with('[') {
+        host.find(']').map(|i| &host[..=i]).unwrap_or(&host)
+    } else {
+        host.split(':').next().unwrap_or(&host)
+    };
+    name.to_lowercase()
 }
 
 /// Extract host:port from a URL.

@@ -1,0 +1,209 @@
+# OpenFang — CI / Rancher deployment template (envsubst-rendered).
+#
+# Variables substituted by the pipeline before `kubectl apply`:
+#   ENVIRONMENT         e.g. "test"
+#   DOMAIN              e.g. "748th"
+#   IMAGE_TAG           e.g. "v0.0.2"
+#   DOCKER_CONFIG_JSON      raw docker config JSON for the pull secret
+#   NVIDIA_API_KEY          powers the agents
+#   TELEGRAM_BOT_TOKEN_EBAY bot token (@openfang_ebay_1_bot) for the EbayWatcher bot
+#
+# NOTE: the image registry host (employee-harbor.748th.com) is hardcoded on
+# purpose — it matches the verified push target. Do NOT rebuild it from
+# ${DOMAIN}, or a wrong value will break the image pull.
+#
+# Guard before applying (fails if any ${VAR} survived substitution):
+#   rendered=$(envsubst < openfang.ci.yaml)
+#   echo "$rendered" | grep -n '\${' && { echo "unsubstituted vars remain"; exit 1; }
+#   echo "$rendered" | kubectl apply -f -
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openfang
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: regcred${ENVIRONMENT}${DOMAIN}
+  namespace: openfang
+type: kubernetes.io/dockerconfigjson
+stringData:
+  .dockerconfigjson: ${DOCKER_CONFIG_JSON}
+---
+# Secrets for the agents + Telegram bot. Injected by CI (envsubst).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openfang-secrets
+  namespace: openfang
+type: Opaque
+stringData:
+  NVIDIA_API_KEY: ${NVIDIA_API_KEY}
+  TELEGRAM_BOT_TOKEN_EBAY: ${TELEGRAM_BOT_TOKEN_EBAY}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openfang
+  namespace: openfang
+spec:
+  replicas: 1
+  # Single writer to the PVC — recreate instead of overlapping pods on rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: openfang
+  template:
+    metadata:
+      labels:
+        app: openfang
+    spec:
+      # Run unprivileged; fsGroup makes the PVC group-writable so the entrypoint
+      # can seed agents/config into /data as uid 1000 (matches the image user).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: openfang
+        image: employee-harbor.748th.com/docker-registry/openfang:${IMAGE_TAG}
+        args: ["start"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        ports:
+        - containerPort: 4200
+        env:
+        - name: ENVIRONMENT_TYPE
+          value: "TEST"
+        - name: VERSION
+          value: ${IMAGE_TAG}
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: DOMAIN
+          value: ${ENVIRONMENT}.${DOMAIN}.com
+        # Persist to the PVC so the baked Dewansh agent + config (seeded on
+        # first boot by the entrypoint) survive restarts.
+        - name: OPENFANG_HOME
+          value: "/data"
+        - name: OPENFANG_LISTEN
+          value: "0.0.0.0:4200"
+        # Pulls NVIDIA_API_KEY + TELEGRAM_BOT_TOKEN into the container.
+        envFrom:
+        - secretRef:
+            name: openfang-secrets
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+          requests:
+            cpu: "10m"
+            memory: "64Mi"
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        # readOnlyRootFilesystem is on, so give the app a writable /tmp.
+        - name: tmp
+          mountPath: /tmp
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 4200
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 4200
+          initialDelaySeconds: 60
+          periodSeconds: 30
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: openfang-data
+      - name: tmp
+        emptyDir: {}
+      imagePullSecrets:
+      - name: regcred${ENVIRONMENT}${DOMAIN}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openfang
+  namespace: openfang
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: 4200
+      protocol: TCP
+  selector:
+    app: openfang
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: oauth2-proxy-middleware
+  namespace: openfang
+spec:
+  forwardAuth:
+    # TODO: set to your real oauth2-proxy auth endpoint (left as-is per your request).
+    address: https://auth-employee.${DOMAIN}.com/oauth2/auth
+    trustForwardHeader: true
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: openfang-ingress
+  namespace: openfang
+  annotations:
+    kubernetes.io/ingress.class: traefik-external
+spec:
+  entryPoints:
+    - web
+    - websecure
+  routes:
+  - match: Host(`www.openfang.test.${DOMAIN}.com`)
+    kind: Rule
+    services:
+    - name: openfang
+      port: 80
+    middlewares:
+    - name: oauth2-proxy-middleware
+  - match: Host(`openfang.test.${DOMAIN}.com`)
+    kind: Rule
+    services:
+    - name: openfang
+      port: 80
+    middlewares:
+    - name: oauth2-proxy-middleware
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openfang-data
+  namespace: openfang
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi

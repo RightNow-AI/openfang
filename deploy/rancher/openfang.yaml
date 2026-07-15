@@ -1,0 +1,131 @@
+# OpenFang — Rancher / Kubernetes deployment template (test environment).
+#
+# This is a starting point: adjust namespace, image registry, storageClassName,
+# and resource limits to match your cluster, then apply with:
+#
+#   1. Create the secret (do NOT commit real tokens):
+#        kubectl create secret generic openfang-secrets \
+#          --from-literal=NVIDIA_API_KEY='nvapi-...' \
+#          --from-literal=TELEGRAM_BOT_TOKEN='123456:ABC-...'
+#
+#   2. Apply this manifest:
+#        kubectl apply -f deploy/rancher/openfang.yaml
+#
+# The Dewansh agent and a default config.toml are baked into the image and
+# seeded onto the PVC on first boot, so a fresh volume comes up ready to run.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openfang-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  # storageClassName: <your-storage-class>   # uncomment/set for your cluster
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openfang
+  labels:
+    app: openfang
+spec:
+  replicas: 1
+  # Single writer to the PVC — recreate rather than overlap on rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: openfang
+  template:
+    metadata:
+      labels:
+        app: openfang
+    spec:
+      # Run as an unprivileged user; fsGroup makes the PVC group-writable so
+      # the entrypoint can seed agents/config into /data as uid 1000.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: openfang
+          # Replace with your built image (e.g. pushed to the cluster registry).
+          image: ghcr.io/rightnow-ai/openfang:latest
+          imagePullPolicy: Always
+          args: ["start"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - containerPort: 4200
+              name: http
+          env:
+            # OPENFANG_HOME is also baked into the image, but set it explicitly
+            # so the daemon persists to the PVC regardless of the image used.
+            - name: OPENFANG_HOME
+              value: "/data"
+            - name: OPENFANG_LISTEN
+              value: "0.0.0.0:4200"
+          envFrom:
+            - secretRef:
+                name: openfang-secrets   # provides NVIDIA_API_KEY, TELEGRAM_BOT_TOKEN
+          # The API binds 0.0.0.0 and is reachable cluster-wide via the Service.
+          # It is unauthenticated by default. To require a bearer token, set
+          # the top-level `api_key = "<value>"` field in config.toml, and
+          # front the Service with an authenticating ingress for external access.
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            # readOnlyRootFilesystem is on, so give the app a writable /tmp.
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 4200
+            # First boot seeds agents + config from disk before the API is up.
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 4200
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: openfang-data
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openfang
+  labels:
+    app: openfang
+spec:
+  type: ClusterIP
+  selector:
+    app: openfang
+  ports:
+    - name: http
+      port: 4200
+      targetPort: 4200

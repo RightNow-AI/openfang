@@ -1,0 +1,50 @@
+api_key = "${OPENFANG_API_KEY}"
+api_listen = "0.0.0.0:4200"
+usage_footer = "off"
+
+[channels.telegram]
+allowed_users = []
+bot_token_env = "TELEGRAM_BOT_TOKEN"
+default_agent = "nideesh-agent"
+poll_interval_secs = 1
+
+[default_model]
+api_key_env = "NVIDIA_API_KEY"
+base_url = "https://integrate.api.nvidia.com/v1"
+model = "stepfun-ai/step-3.5-flash"
+provider = "nvidia"
+
+[memory]
+decay_rate = 0.05
+embedding_model = "nomic-embed-text:latest"
+embedding_provider = "ollama"
+
+[provider_urls]
+nvidia = "https://integrate.api.nvidia.com/v1"
+ollama = "http://ollama-external.ollama.svc.cluster.local:11434/v1"
+
+[web]
+cache_ttl_minutes = 15
+search_provider = "auto"
+
+[web.fetch]
+ssrf_allowed_hosts = ["127.0.0.1", "localhost", "192.168.0.0/16", "ai-screen-buddy-backend.pageapp.net"]
+
+# secure_fetch: lets an agent attach secret HTTP headers whose values are read
+# from environment variables BY NAME in Rust — the LLM never sees the secret.
+# Fail-closed: an env var must be listed in allowed_secrets to be usable.
+# secret_hosts pins each secret so its value is only ever sent to those hosts.
+[web.fetch.secure_fetch]
+allowed_secrets = ["SCREENBUDDY_API_KEY"]
+
+[web.fetch.secure_fetch.secret_hosts]
+SCREENBUDDY_API_KEY = ["ai-screen-buddy-backend.pageapp.net"]
+
+# webhook_triggers: enables POST /hooks/agent (and /hooks/wake) so an external
+# service (ScreenBuddy) can wake an agent on job completion. Bearer token is
+# read from the env var named by token_env (value lives in openfang-secrets).
+[webhook_triggers]
+enabled = true
+token_env = "OPENFANG_WEBHOOK_TOKEN"
+max_payload_bytes = 65536
+rate_limit_per_minute = 30

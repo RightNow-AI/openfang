@@ -102,6 +102,18 @@ pub trait ChannelBridgeHandle: Send + Sync {
     /// Send a message to an agent and get the text response.
     async fn send_message(&self, agent_id: AgentId, message: &str) -> Result<String, String>;
 
+    /// Send a message with sender identity so the agent knows who is talking.
+    async fn send_message_with_sender(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        _sender_id: Option<String>,
+        _sender_name: Option<String>,
+    ) -> Result<String, String> {
+        // Default: fall back to send_message (backwards compatible)
+        self.send_message(agent_id, message).await
+    }
+
     /// Send a message with structured content blocks (text + images) to an agent.
     ///
     /// Default implementation extracts text from blocks and falls back to `send_message()`.
@@ -130,6 +142,13 @@ pub trait ChannelBridgeHandle: Send + Sync {
 
     /// Spawn an agent by manifest name, returning its ID.
     async fn spawn_agent_by_name(&self, manifest_name: &str) -> Result<AgentId, String>;
+
+    /// Set the delivery channel context for an agent so it knows where to
+    /// send proactive messages via `channel_send`. Called when a user
+    /// switches to a different agent via `/agent <name>`.
+    async fn set_delivery_context(&self, _agent_id: AgentId, _channel: &str, _recipient: &str) {
+        // Default no-op — real impl persists delivery.last_channel.
+    }
 
     /// Transcribe raw audio bytes to text.
     async fn transcribe_audio(
@@ -891,6 +910,7 @@ async fn dispatch_message(
             handle,
             router,
             &message.sender,
+            ct_str,
             sender_user_id(message),
         )
         .await;
@@ -1102,6 +1122,7 @@ async fn dispatch_message(
                 handle,
                 router,
                 &message.sender,
+                ct_str,
                 sender_user_id(message),
             )
             .await;
@@ -1150,8 +1171,10 @@ async fn dispatch_message(
                             let t = text.clone();
                             let aid = *aid;
                             let name = name.clone();
+                            let sid = Some(message.sender.platform_id.clone());
+                            let sname = Some(message.sender.display_name.clone());
                             handles_vec.push(tokio::spawn(async move {
-                                let result = h.send_message(aid, &t).await;
+                                let result = h.send_message_with_sender(aid, &t, sid, sname).await;
                                 (name, aid, result)
                             }));
                         }
@@ -1168,7 +1191,15 @@ async fn dispatch_message(
                 openfang_types::config::BroadcastStrategy::Sequential => {
                     for (name, maybe_id) in &targets {
                         if let Some(aid) = maybe_id {
-                            match handle.send_message(*aid, &text).await {
+                            match handle
+                                .send_message_with_sender(
+                                    *aid,
+                                    &text,
+                                    Some(message.sender.platform_id.clone()),
+                                    Some(message.sender.display_name.clone()),
+                                )
+                                .await
+                            {
                                 Ok(r) => responses.push(format!("[{name}]: {r}")),
                                 Err(e) => responses.push(format!("[{name}]: Error: {e}")),
                             }
@@ -1330,8 +1361,15 @@ async fn dispatch_message(
         text.clone()
     };
 
-    // Send to agent and relay response
-    let result = handle.send_message(agent_id, &prefixed_text).await;
+    // Send to agent with sender identity so the agent knows who is talking.
+    let result = handle
+        .send_message_with_sender(
+            agent_id,
+            &prefixed_text,
+            Some(message.sender.platform_id.clone()),
+            Some(message.sender.display_name.clone()),
+        )
+        .await;
 
     // Stop the typing refresh now that we have a response
     typing_task.abort();
@@ -1937,6 +1975,7 @@ async fn handle_command(
     handle: &Arc<dyn ChannelBridgeHandle>,
     router: &Arc<AgentRouter>,
     sender: &ChannelUser,
+    channel_name: &str,
     user_id: &str,
 ) -> String {
     // Canonicalise through the unified command registry: aliases resolve to
@@ -1947,6 +1986,32 @@ async fn handle_command(
         .filter(|def| def.surfaces.contains(Surfaces::CHANNEL))
         .map(|def| def.name)
         .unwrap_or(name);
+
+    // Exclusive single-purpose bots are locked to one agent: never expose the
+    // agent roster or allow switching. Other session commands (/new, /compact,
+    // /model, …) still apply and resolve to that one agent via the router.
+    if let Some(ex_id) = router.exclusive_agent_str(channel_name) {
+        match canonical {
+            "start" | "help" => {
+                let agent = resolve_agent_name(handle, ex_id)
+                    .await
+                    .unwrap_or_else(|| "your assistant".to_string());
+                return format!(
+                    "Hi! You're talking to {agent}. Just send your request and I'll respond — no agent selection needed."
+                );
+            }
+            "agents" | "agent" => {
+                let agent = resolve_agent_name(handle, ex_id)
+                    .await
+                    .unwrap_or_else(|| "a single dedicated agent".to_string());
+                return format!(
+                    "This bot is dedicated to {agent}. Agent switching is disabled here."
+                );
+            }
+            _ => {}
+        }
+    }
+
     match canonical {
         "start" => {
             let agents = handle.list_agents().await.unwrap_or_default();
@@ -1991,10 +2056,13 @@ async fn handle_command(
             let agent_name = &args[0];
             match handle.find_agent_by_name(agent_name).await {
                 Ok(Some(agent_id)) => {
-                    // Key on user_id (the param wired in by the Discord/Slack call sites
-                    // via sender_user_id(message)) — not sender.platform_id, which is the
-                    // channel ID on those adapters. Matches the read-path resolution.
+                    // Key the default on user_id (the per-user routing key wired in by
+                    // the Discord/Slack call sites via sender_user_id(message)) — not
+                    // sender.platform_id, which is the channel ID on those adapters.
                     router.set_user_default(user_id.to_string(), agent_id);
+                    handle
+                        .set_delivery_context(agent_id, channel_name, &sender.platform_id)
+                        .await;
                     format!("Now talking to agent: {agent_name}")
                 }
                 Ok(None) => {
@@ -2002,6 +2070,9 @@ async fn handle_command(
                     match handle.spawn_agent_by_name(agent_name).await {
                         Ok(agent_id) => {
                             router.set_user_default(user_id.to_string(), agent_id);
+                            handle
+                                .set_delivery_context(agent_id, channel_name, &sender.platform_id)
+                                .await;
                             format!("Spawned and connected to agent: {agent_name}")
                         }
                         Err(e) => {
@@ -2265,10 +2336,11 @@ mod tests {
             openfang_user: None,
         };
 
-        let result = handle_command("agents", &[], &handle, &router, &sender, "user1").await;
+        let result =
+            handle_command("agents", &[], &handle, &router, &sender, "test", "user1").await;
         assert!(result.contains("coder"));
 
-        let result = handle_command("help", &[], &handle, &router, &sender, "user1").await;
+        let result = handle_command("help", &[], &handle, &router, &sender, "test", "user1").await;
         assert!(result.contains("/agents"));
     }
 
@@ -2285,13 +2357,15 @@ mod tests {
             openfang_user: None,
         };
 
-        // Select existing agent
+        // Select existing agent. Telegram-shape: platform_id IS the user, so the
+        // user_id routing key equals the platform_id here.
         let result = handle_command(
             "agent",
             &["coder".to_string()],
             &handle,
             &router,
             &sender,
+            "test",
             "user1",
         )
         .await;
@@ -2327,6 +2401,7 @@ mod tests {
             &handle,
             &router,
             &sender,
+            "discord",
             user_id,
         )
         .await;
@@ -2357,7 +2432,7 @@ mod tests {
             openfang_user: None,
         };
 
-        let result = handle_command("agent", &[], &handle, &router, &sender, "user1").await;
+        let result = handle_command("agent", &[], &handle, &router, &sender, "test", "user1").await;
         assert!(result.contains("Usage: /agent <name>"));
         assert!(result.contains("coder"));
     }

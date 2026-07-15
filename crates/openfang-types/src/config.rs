@@ -346,6 +346,9 @@ pub struct WebFetchConfig {
     /// cloud metadata endpoint blocking (169.254.169.254, metadata.google.internal, etc.).
     #[serde(default)]
     pub ssrf_allowed_hosts: Vec<String>,
+    /// Configuration for the `secure_fetch` tool (env-resolved secret headers).
+    #[serde(default)]
+    pub secure_fetch: SecureFetchConfig,
 }
 
 impl Default for WebFetchConfig {
@@ -356,8 +359,30 @@ impl Default for WebFetchConfig {
             timeout_secs: 30,
             readability: true,
             ssrf_allowed_hosts: Vec::new(),
+            secure_fetch: SecureFetchConfig::default(),
         }
     }
+}
+
+/// Configuration for the `secure_fetch` built-in tool.
+///
+/// `secure_fetch` lets an agent attach secret HTTP headers whose values are
+/// read from environment variables **by name** in Rust, so the LLM never sees
+/// the secret. This config is the allowlist that keeps an agent from reading
+/// arbitrary env vars (e.g. exfiltrating `OPENAI_API_KEY`).
+///
+/// Fail-closed: with an empty `allowed_secrets` (the default), any attempt to
+/// use `secret_headers` is rejected.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SecureFetchConfig {
+    /// Env-var names this tool is permitted to read. Empty = fail-closed:
+    /// every `secret_headers` use is rejected.
+    pub allowed_secrets: Vec<String>,
+    /// Optional host binding: env-var name -> the only host(s) its value may be
+    /// sent to. When an env var is absent from this map, no host restriction is
+    /// applied beyond the allowlist and the SSRF check. Empty map = no bindings.
+    pub secret_hosts: HashMap<String, Vec<String>>,
 }
 
 /// Browser automation configuration.
@@ -1933,6 +1958,14 @@ pub struct TelegramConfig {
     /// Allows channel_send(channel="telegram", message="...") without a recipient.
     #[serde(default)]
     pub default_chat_id: Option<String>,
+    /// Lock this bot to `default_agent` only. When true, every message routes to
+    /// that single agent regardless of bindings/user selection, and the
+    /// multi-agent discovery/switching commands (`/agents`, `/agent <name>`) and
+    /// the agent-list welcome are disabled — so a dedicated single-purpose bot
+    /// never exposes or lets users switch to other agents. Requires
+    /// `default_agent` to be set.
+    #[serde(default)]
+    pub exclusive_agent: bool,
     /// Forum topic routing: maps `message_thread_id` to an agent name.
     /// When a message arrives inside a Telegram forum topic whose thread id is
     /// listed here, the bridge dispatches it to the named agent instead of the
@@ -1954,6 +1987,7 @@ impl Default for TelegramConfig {
             poll_interval_secs: 1,
             api_url: None,
             default_chat_id: None,
+            exclusive_agent: false,
             thread_routes: HashMap::new(),
             overrides: ChannelOverrides::default(),
         }

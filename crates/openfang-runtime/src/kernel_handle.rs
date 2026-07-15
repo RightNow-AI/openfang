@@ -201,6 +201,13 @@ pub trait KernelHandle: Send + Sync {
         None
     }
 
+    /// Get the delivery channel recipient from an agent's structured memory.
+    /// Returns the recipient ID if `delivery.last_channel` is set and matches
+    /// the requested channel.
+    fn get_delivery_context(&self, _agent_id: &str, _channel: &str) -> Option<String> {
+        None
+    }
+
     async fn send_channel_message(
         &self,
         channel: &str,

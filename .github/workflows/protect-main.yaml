@@ -1,0 +1,51 @@
+name: Protect Main Branch
+
+on:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+jobs:
+  protect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Backup main to backup/main
+        run: |
+          git push origin HEAD:refs/heads/backup/main --force
+          echo "✅ Backed up main → backup/main"
+
+      - name: Detect and revert force push
+        run: |
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.event.after }}"
+          PUSHER="${{ github.actor }}"
+
+          echo "Push by: $PUSHER"
+          echo "Before: $BEFORE"
+          echo "After:  $AFTER"
+
+          if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            echo "✅ Initial push — nothing to protect"
+            exit 0
+          fi
+
+          if [[ "$PUSHER" == "trading-bl" || "$PUSHER" == "Nideesh1" ]]; then
+            echo "✅ Push by org owner ($PUSHER) — allowed"
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor "$BEFORE" "$AFTER" 2>/dev/null; then
+            echo "✅ Normal push (fast-forward) — allowed"
+          else
+            echo "🚨 FORCE PUSH DETECTED by $PUSHER!"
+            echo "🚨 Reverting to previous state: $BEFORE"
+            git push origin "$BEFORE":refs/heads/main --force
+            echo "✅ Force push reverted. Main restored to $BEFORE"
+          fi

@@ -1,0 +1,3 @@
+# Shell scripts must use LF so they run inside Linux containers regardless of
+# the host that checked them out (a CRLF entrypoint.sh fails under /bin/sh).
+*.sh text eol=lf
