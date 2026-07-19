@@ -10,6 +10,7 @@ use std::fmt;
 
 pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 pub const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+pub const ATLAS_CLOUD_BASE_URL: &str = "https://api.atlascloud.ai/v1";
 pub const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 pub const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";

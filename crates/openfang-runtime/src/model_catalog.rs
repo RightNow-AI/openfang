@@ -5,14 +5,15 @@
 
 use openfang_types::model_catalog::{
     AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
-    AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
-    DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL,
-    VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    ATLAS_CLOUD_BASE_URL, AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL, CEREBRAS_BASE_URL,
+    CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL,
+    GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL,
+    LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL,
+    NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
+    PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL,
+    SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -590,6 +591,15 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             model_count: 0,
         },
         ProviderInfo {
+            id: "atlascloud".into(),
+            display_name: "Atlas Cloud".into(),
+            api_key_env: "ATLASCLOUD_API_KEY".into(),
+            base_url: ATLAS_CLOUD_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
             id: "gemini".into(),
             display_name: "Google Gemini".into(),
             api_key_env: "GEMINI_API_KEY".into(),
@@ -977,6 +987,9 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("gpt4-mini", "gpt-4o-mini"),
         ("gpt5", "gpt-5.2"),
         ("gpt5-mini", "gpt-5-mini"),
+        ("atlas", "qwen/qwen3.5-flash"),
+        ("atlas-cloud", "qwen/qwen3.5-flash"),
+        ("atlascloud", "qwen/qwen3.5-flash"),
         ("flash", "gemini-2.5-flash"),
         ("gemini-pro", "gemini-3.1-pro-preview"),
         ("gemini-flash", "gemini-3-flash-preview"),
@@ -1393,6 +1406,37 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_vision: true,
             supports_streaming: true,
             aliases: vec![],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // Atlas Cloud (2) - OpenAI-compatible
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "qwen/qwen3.5-flash".into(),
+            display_name: "Qwen3.5 Flash (Atlas Cloud)".into(),
+            provider: "atlascloud".into(),
+            tier: ModelTier::Fast,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["atlas".into(), "atlas-cloud".into(), "atlascloud".into()],
+        },
+        ModelCatalogEntry {
+            id: "deepseek-ai/deepseek-v4-pro".into(),
+            display_name: "DeepSeek V4 Pro (Atlas Cloud)".into(),
+            provider: "atlascloud".into(),
+            tier: ModelTier::Frontier,
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec!["atlas-deepseek".into()],
         },
         // ══════════════════════════════════════════════════════════════
         // Google Gemini (10)
@@ -4083,7 +4127,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 42);
+        assert_eq!(catalog.list_providers().len(), 43);
     }
 
     #[test]
@@ -4231,6 +4275,37 @@ mod tests {
         assert!(catalog.get_provider("huggingface").is_some());
         assert!(catalog.get_provider("xai").is_some());
         assert!(catalog.get_provider("replicate").is_some());
+        assert!(catalog.get_provider("atlascloud").is_some());
+    }
+
+    #[test]
+    fn test_atlascloud_provider_and_models_present() {
+        let catalog = ModelCatalog::new();
+        let provider = catalog.get_provider("atlascloud").unwrap();
+        assert_eq!(provider.display_name, "Atlas Cloud");
+        assert_eq!(provider.api_key_env, "ATLASCLOUD_API_KEY");
+        assert_eq!(provider.base_url, ATLAS_CLOUD_BASE_URL);
+        assert!(provider.key_required);
+        assert_eq!(provider.model_count, 2);
+
+        assert_eq!(
+            catalog.default_model_for_provider("atlascloud").as_deref(),
+            Some("qwen/qwen3.5-flash")
+        );
+        assert_eq!(
+            catalog
+                .find_model_for_provider("atlas", "atlascloud")
+                .unwrap()
+                .id,
+            "qwen/qwen3.5-flash"
+        );
+        assert_eq!(
+            catalog
+                .find_model_for_provider("deepseek-ai/deepseek-v4-pro", "atlascloud")
+                .unwrap()
+                .id,
+            "deepseek-ai/deepseek-v4-pro"
+        );
     }
 
     #[test]

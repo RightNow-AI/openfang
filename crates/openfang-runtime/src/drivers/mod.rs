@@ -16,14 +16,15 @@ pub mod vertex;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
-    AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL,
-    COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NOVITA_BASE_URL, NVIDIA_NIM_BASE_URL,
-    OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL,
-    QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL,
-    VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL,
-    ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    AI21_BASE_URL, ANTHROPIC_BASE_URL, ATLAS_CLOUD_BASE_URL, AZURE_OPENAI_BASE_URL,
+    CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL,
+    GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL,
+    LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NOVITA_BASE_URL,
+    NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
+    PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL,
+    SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -134,6 +135,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         "openai" => Some(ProviderDefaults {
             base_url: OPENAI_BASE_URL,
             api_key_env: "OPENAI_API_KEY",
+            key_required: true,
+        }),
+        "atlascloud" | "atlas-cloud" | "atlas" => Some(ProviderDefaults {
+            base_url: ATLAS_CLOUD_BASE_URL,
+            api_key_env: "ATLASCLOUD_API_KEY",
             key_required: true,
         }),
         "gemini" | "google" => Some(ProviderDefaults {
@@ -659,6 +665,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "anthropic",
         "gemini",
         "openai",
+        "atlascloud",
         "groq",
         "openrouter",
         "deepseek",
@@ -761,6 +768,22 @@ mod tests {
     }
 
     #[test]
+    fn test_provider_defaults_atlascloud() {
+        let d = provider_defaults("atlascloud").unwrap();
+        assert_eq!(d.base_url, ATLAS_CLOUD_BASE_URL);
+        assert_eq!(d.api_key_env, "ATLASCLOUD_API_KEY");
+        assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_atlas_alias() {
+        let d = provider_defaults("atlas").unwrap();
+        assert_eq!(d.base_url, ATLAS_CLOUD_BASE_URL);
+        assert_eq!(d.api_key_env, "ATLASCLOUD_API_KEY");
+        assert!(d.key_required);
+    }
+
+    #[test]
     fn test_provider_defaults_ollama() {
         let d = provider_defaults("ollama").unwrap();
         assert!(!d.key_required);
@@ -819,6 +842,7 @@ mod tests {
         assert!(providers.contains(&"openrouter"));
         assert!(providers.contains(&"anthropic"));
         assert!(providers.contains(&"gemini"));
+        assert!(providers.contains(&"atlascloud"));
         // New providers
         assert!(providers.contains(&"perplexity"));
         assert!(providers.contains(&"cohere"));
@@ -845,7 +869,7 @@ mod tests {
         assert!(providers.contains(&"claude-code"));
         assert!(providers.contains(&"qwen-code"));
         assert!(providers.contains(&"azure"));
-        assert_eq!(providers.len(), 38);
+        assert_eq!(providers.len(), 39);
     }
 
     #[test]
