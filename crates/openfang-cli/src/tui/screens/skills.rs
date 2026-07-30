@@ -39,6 +39,7 @@ pub struct SkillConfigVarDetail {
 pub struct ClawHubResult {
     pub name: String,
     pub slug: String,
+    pub owner_handle: Option<String>,
     pub description: String,
     pub downloads: u64,
     pub runtime: String,
@@ -109,7 +110,10 @@ pub enum SkillsAction {
     RefreshInstalled,
     SearchClawHub(String),
     BrowseClawHub(String),
-    InstallSkill(String),
+    InstallSkill {
+        slug: String,
+        owner_handle: Option<String>,
+    },
     UninstallSkill(String),
     RefreshMcp,
     /// Fetch declared + resolved config for the named skill and display it
@@ -262,7 +266,11 @@ impl SkillsState {
             KeyCode::Char('i') => {
                 if let Some(sel) = self.clawhub_list.selected() {
                     if sel < self.clawhub_results.len() {
-                        return SkillsAction::InstallSkill(self.clawhub_results[sel].slug.clone());
+                        let result = &self.clawhub_results[sel];
+                        return SkillsAction::InstallSkill {
+                            slug: result.slug.clone(),
+                            owner_handle: result.owner_handle.clone(),
+                        };
                     }
                 }
             }

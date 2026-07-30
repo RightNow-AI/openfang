@@ -3957,6 +3957,13 @@ pub async fn clawhub_search(
                         "name": e.display_name,
                         "description": e.summary,
                         "version": e.version,
+                        "ownerHandle": e.owner_handle.as_deref()
+                            .or_else(|| e.owner.as_ref().map(|owner| owner.handle.as_str())),
+                        "owner": e.owner.as_ref().map(|owner| serde_json::json!({
+                            "handle": owner.handle.as_str(),
+                            "displayName": owner.display_name.as_str(),
+                            "image": owner.image.as_str(),
+                        })),
                         "score": e.score,
                         "updated_at": e.updated_at,
                         "installed": installed,
@@ -4189,7 +4196,10 @@ pub async fn clawhub_install(
         );
     }
 
-    match client.install(&req.slug, &skills_dir).await {
+    match client
+        .install_with_owner_handle(&req.slug, req.owner_handle.as_deref(), &skills_dir)
+        .await
+    {
         Ok(result) => {
             // Hot-reload so agents see the new skill immediately (#752)
             state.kernel.reload_skills();

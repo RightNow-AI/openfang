@@ -8,7 +8,7 @@
 //! - Search: `GET /api/v1/search?q=...&limit=20`
 //! - Browse: `GET /api/v1/skills?limit=20&sort=trending`
 //! - Detail: `GET /api/v1/skills/{slug}`
-//! - Download: `GET /api/v1/download?slug=...`
+//! - Download: `GET /api/v1/download?slug=...&ownerHandle=...`
 //! - File: `GET /api/v1/skills/{slug}/file?path=SKILL.md`
 
 use crate::installer::{enforce_require_signed, InstallOptions};
@@ -138,6 +138,10 @@ pub struct ClawHubSearchEntry {
     pub summary: String,
     #[serde(default)]
     pub version: Option<String>,
+    #[serde(default)]
+    pub owner_handle: Option<String>,
+    #[serde(default)]
+    pub owner: Option<ClawHubOwner>,
     /// Unix ms timestamp.
     #[serde(default)]
     pub updated_at: i64,
@@ -504,6 +508,25 @@ impl ClawHubClient {
             .await
     }
 
+    /// Install a skill from a specific ClawHub owner.
+    ///
+    /// ClawHub allows multiple publishers to use the same slug. Passing the
+    /// selected `ownerHandle` disambiguates installs such as `weather`.
+    pub async fn install_with_owner_handle(
+        &self,
+        slug: &str,
+        owner_handle: Option<&str>,
+        target_dir: &Path,
+    ) -> Result<ClawHubInstallResult, SkillError> {
+        self.install_with_owner_and_options(
+            slug,
+            owner_handle,
+            target_dir,
+            &InstallOptions::default(),
+        )
+        .await
+    }
+
     /// Install a skill from ClawHub with explicit enforcement options.
     ///
     /// When `opts.require_signed` is true, the skill must ship with a valid
@@ -526,10 +549,22 @@ impl ClawHubClient {
         target_dir: &Path,
         opts: &InstallOptions,
     ) -> Result<ClawHubInstallResult, SkillError> {
-        // Use /api/v1/download?slug=... endpoint
-        let url = format!("{}/download?slug={}", self.base_url, urlencoded(slug));
+        self.install_with_owner_and_options(slug, None, target_dir, opts)
+            .await
+    }
 
-        info!(slug, "Downloading skill from ClawHub");
+    async fn install_with_owner_and_options(
+        &self,
+        slug: &str,
+        owner_handle: Option<&str>,
+        target_dir: &Path,
+        opts: &InstallOptions,
+    ) -> Result<ClawHubInstallResult, SkillError> {
+        // Use /api/v1/download?slug=... endpoint; include ownerHandle when the
+        // UI selected a specific publisher for an otherwise ambiguous slug.
+        let url = clawhub_download_url(&self.base_url, slug, owner_handle);
+
+        info!(slug, owner_handle, "Downloading skill from ClawHub");
 
         // Use get_with_retry for the download — same 429/5xx handling as all
         // other endpoints, with 5 attempts and exponential backoff.
@@ -736,6 +771,18 @@ impl ClawHubClient {
 
 /// RFC 3986 percent-encoding for query parameters.
 /// Unreserved characters pass through, space becomes `+`, everything else is `%XX`.
+fn clawhub_download_url(base_url: &str, slug: &str, owner_handle: Option<&str>) -> String {
+    let mut url = format!("{}/download?slug={}", base_url, urlencoded(slug));
+    if let Some(owner) = owner_handle
+        .map(str::trim)
+        .filter(|owner| !owner.is_empty())
+    {
+        url.push_str("&ownerHandle=");
+        url.push_str(&urlencoded(owner));
+    }
+    url
+}
+
 fn urlencoded(s: &str) -> String {
     const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
     let mut result = String::with_capacity(s.len() * 3);
@@ -843,6 +890,8 @@ mod tests {
             "displayName": "Github",
             "summary": "Interact with GitHub using the gh CLI.",
             "version": "1.0.0",
+            "ownerHandle": "steipete",
+            "owner": {"handle": "steipete", "displayName": "Peter Steinberger", "image": "avatar.png"},
             "updatedAt": 1771777539580
         }"#;
 
@@ -851,6 +900,11 @@ mod tests {
         assert_eq!(entry.display_name, "Github");
         assert!(entry.score > 3.0);
         assert_eq!(entry.version.as_deref(), Some("1.0.0"));
+        assert_eq!(entry.owner_handle.as_deref(), Some("steipete"));
+        assert_eq!(
+            entry.owner.as_ref().unwrap().display_name,
+            "Peter Steinberger"
+        );
         assert_eq!(entry.updated_at, 1771777539580);
     }
 
@@ -943,6 +997,22 @@ mod tests {
         assert_eq!(urlencoded("a+b"), "a%2Bb");
         // Unreserved chars pass through
         assert_eq!(urlencoded("hello-world_2.0~test"), "hello-world_2.0~test");
+    }
+
+    #[test]
+    fn test_clawhub_download_url_includes_owner_handle_when_present() {
+        assert_eq!(
+            clawhub_download_url("https://clawhub.ai/api/v1", "weather", Some("steipete")),
+            "https://clawhub.ai/api/v1/download?slug=weather&ownerHandle=steipete"
+        );
+        assert_eq!(
+            clawhub_download_url("https://clawhub.ai/api/v1", "weather", Some("team user")),
+            "https://clawhub.ai/api/v1/download?slug=weather&ownerHandle=team+user"
+        );
+        assert_eq!(
+            clawhub_download_url("https://clawhub.ai/api/v1", "weather", Some("  ")),
+            "https://clawhub.ai/api/v1/download?slug=weather"
+        );
     }
 
     #[test]

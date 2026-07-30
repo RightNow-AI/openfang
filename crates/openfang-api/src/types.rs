@@ -115,6 +115,9 @@ pub struct MigrateScanRequest {
 pub struct ClawHubInstallRequest {
     /// ClawHub skill slug (e.g., "github-helper").
     pub slug: String,
+    /// Optional ClawHub owner handle to disambiguate duplicate slugs.
+    #[serde(default, rename = "ownerHandle", alias = "owner_handle")]
+    pub owner_handle: Option<String>,
 }
 
 /// Query parameters for `GET /api/commands`.
@@ -181,6 +184,18 @@ mod tests {
         .unwrap();
         assert!(req.require_signed);
         assert_eq!(req.allowed_signer_keys, vec!["abc123".to_string()]);
+    }
+
+    #[test]
+    fn clawhub_install_request_parses_owner_handle_aliases() {
+        let req: ClawHubInstallRequest =
+            serde_json::from_str(r#"{"slug":"weather","ownerHandle":"steipete"}"#).unwrap();
+        assert_eq!(req.slug, "weather");
+        assert_eq!(req.owner_handle.as_deref(), Some("steipete"));
+
+        let req: ClawHubInstallRequest =
+            serde_json::from_str(r#"{"slug":"weather","owner_handle":"tongguanghai"}"#).unwrap();
+        assert_eq!(req.owner_handle.as_deref(), Some("tongguanghai"));
     }
 
     #[test]

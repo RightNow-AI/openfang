@@ -1527,6 +1527,15 @@ fn parse_clawhub_results(body: &serde_json::Value) -> Vec<ClawHubResult> {
                 .map(|r| ClawHubResult {
                     name: r["name"].as_str().unwrap_or("").to_string(),
                     slug: r["slug"].as_str().unwrap_or("").to_string(),
+                    owner_handle: r
+                        .get("ownerHandle")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| {
+                            r.get("owner")
+                                .and_then(|owner| owner.get("handle"))
+                                .and_then(|v| v.as_str())
+                        })
+                        .map(str::to_string),
                     description: r["description"].as_str().unwrap_or("").to_string(),
                     downloads: r["downloads"].as_u64().unwrap_or(0),
                     runtime: r["runtime"].as_str().unwrap_or("").to_string(),
@@ -1537,13 +1546,18 @@ fn parse_clawhub_results(body: &serde_json::Value) -> Vec<ClawHubResult> {
 }
 
 /// Install a skill from ClawHub.
-pub fn spawn_install_skill(backend: BackendRef, slug: String, tx: mpsc::Sender<AppEvent>) {
+pub fn spawn_install_skill(
+    backend: BackendRef,
+    slug: String,
+    owner_handle: Option<String>,
+    tx: mpsc::Sender<AppEvent>,
+) {
     std::thread::spawn(move || match backend {
         BackendRef::Daemon(base_url) => {
             let client = daemon_client();
             match client
                 .post(format!("{base_url}/api/clawhub/install"))
-                .json(&serde_json::json!({"slug": slug}))
+                .json(&serde_json::json!({"slug": slug, "ownerHandle": owner_handle}))
                 .send()
             {
                 Ok(resp) if resp.status().is_success() => {
@@ -2896,4 +2910,34 @@ pub fn spawn_comms_task(
             ));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_clawhub_results_preserves_owner_handle() {
+        let body = serde_json::json!({
+            "items": [
+                {
+                    "name": "Weather",
+                    "slug": "weather",
+                    "ownerHandle": "steipete",
+                    "description": "Forecasts",
+                    "downloads": 42,
+                    "runtime": "prompt"
+                },
+                {
+                    "name": "weather",
+                    "slug": "weather",
+                    "owner": {"handle": "tongguanghai"}
+                }
+            ]
+        });
+
+        let results = parse_clawhub_results(&body);
+        assert_eq!(results[0].owner_handle.as_deref(), Some("steipete"));
+        assert_eq!(results[1].owner_handle.as_deref(), Some("tongguanghai"));
+    }
 }

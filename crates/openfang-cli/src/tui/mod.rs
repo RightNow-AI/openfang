@@ -1551,9 +1551,9 @@ impl App {
                     event::spawn_browse_clawhub(backend, sort, self.event_tx.clone());
                 }
             }
-            skills::SkillsAction::InstallSkill(slug) => {
+            skills::SkillsAction::InstallSkill { slug, owner_handle } => {
                 if let Some(backend) = self.backend.to_ref() {
-                    event::spawn_install_skill(backend, slug, self.event_tx.clone());
+                    event::spawn_install_skill(backend, slug, owner_handle, self.event_tx.clone());
                 }
             }
             skills::SkillsAction::UninstallSkill(name) => {
