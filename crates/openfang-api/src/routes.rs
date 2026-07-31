@@ -878,6 +878,7 @@ pub async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "uptime_seconds": uptime,
         "api_listen": state.kernel.config.api_listen,
         "home_dir": state.kernel.config.home_dir.display().to_string(),
+        "data_dir": state.kernel.config.data_dir.display().to_string(),
         "log_level": state.kernel.config.log_level,
         "network_enabled": state.kernel.config.network_enabled,
         "agents": agents,

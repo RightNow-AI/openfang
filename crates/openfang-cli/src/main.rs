@@ -1205,6 +1205,32 @@ pub(crate) fn daemon_client() -> reqwest::blocking::Client {
     builder.build().expect("Failed to build HTTP client")
 }
 
+/// Helper: resolve an agent reference (name or UUID) to an agent ID via the
+/// daemon's /api/agents endpoint. Accepts a UUID verbatim; otherwise matches
+/// by exact name (case-insensitive fallback). Returns None if no match.
+pub(crate) fn resolve_agent_ref(
+    base: &str,
+    client: &reqwest::blocking::Client,
+    agent: &str,
+) -> Option<String> {
+    // Already a UUID? Use it as-is.
+    if uuid::Uuid::parse_str(agent).is_ok() {
+        return Some(agent.to_string());
+    }
+    let body = daemon_json(client.get(format!("{base}/api/agents")).send());
+    let agents = body.as_array()?;
+    // Exact match first, then case-insensitive.
+    let exact = agents
+        .iter()
+        .find(|a| a["name"].as_str() == Some(agent))
+        .or_else(|| {
+            agents
+                .iter()
+                .find(|a| a["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(agent)))
+        });
+    exact.and_then(|a| a["id"].as_str().map(str::to_string))
+}
+
 /// Helper: send a request to the daemon and parse the JSON body.
 /// Exits with error on connection failure.
 pub(crate) fn daemon_json(
@@ -2059,7 +2085,13 @@ fn cmd_status(config: Option<PathBuf>, json: bool) {
         ui::kv("Model", body["default_model"].as_str().unwrap_or("?"));
         ui::kv("API", &base);
         ui::kv("Dashboard", &format!("{base}/"));
-        ui::kv("Data dir", body["data_dir"].as_str().unwrap_or("?"));
+        ui::kv(
+            "Data dir",
+            body["data_dir"]
+                .as_str()
+                .or_else(|| body["home_dir"].as_str())
+                .unwrap_or("?"),
+        );
         ui::kv(
             "Uptime",
             &format!("{}s", body["uptime_seconds"].as_u64().unwrap_or(0)),
@@ -6042,33 +6074,57 @@ fn cmd_cron_list(json: bool) {
         );
         return;
     }
-    if let Some(arr) = body.as_array() {
+    // The API returns {"jobs": [...], "total": n}; accept a bare array too.
+    let jobs = body["jobs"].as_array().or_else(|| body.as_array());
+    if let Some(arr) = jobs {
         if arr.is_empty() {
             println!("No scheduled jobs.");
             return;
         }
+        // Map agent IDs -> names for readable output.
+        let agents = daemon_json(client.get(format!("{base}/api/agents")).send());
+        let name_of = |id: &str| -> String {
+            agents
+                .as_array()
+                .and_then(|list| {
+                    list.iter()
+                        .find(|a| a["id"].as_str() == Some(id))
+                        .and_then(|a| a["name"].as_str())
+                })
+                .unwrap_or(id)
+                .to_string()
+        };
         println!(
             "{:<38} {:<16} {:<20} {:<8} PROMPT",
             "ID", "AGENT", "SCHEDULE", "ENABLED"
         );
         println!("{}", "-".repeat(100));
         for j in arr {
+            let schedule = j["schedule"]["expr"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| {
+                    j["schedule"]["secs"]
+                        .as_u64()
+                        .map(|s| format!("every {s}s"))
+                })
+                .or_else(|| j["cron_expr"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "?".to_string());
+            let prompt = j["action"]["message"]
+                .as_str()
+                .or(j["prompt"].as_str())
+                .unwrap_or("");
             println!(
                 "{:<38} {:<16} {:<20} {:<8} {}",
                 j["id"].as_str().unwrap_or("?"),
-                j["agent_id"].as_str().unwrap_or("?"),
-                j["cron_expr"].as_str().unwrap_or("?"),
+                name_of(j["agent_id"].as_str().unwrap_or("?")),
+                schedule,
                 if j["enabled"].as_bool().unwrap_or(false) {
                     "yes"
                 } else {
                     "no"
                 },
-                j["prompt"]
-                    .as_str()
-                    .unwrap_or("")
-                    .chars()
-                    .take(40)
-                    .collect::<String>(),
+                prompt.chars().take(40).collect::<String>(),
             );
         }
     } else {
@@ -6082,6 +6138,15 @@ fn cmd_cron_list(json: bool) {
 fn cmd_cron_create(agent: &str, spec: &str, prompt: &str, explicit_name: Option<&str>) {
     let base = require_daemon("cron create");
     let client = daemon_client();
+
+    // Resolve agent name -> UUID (the API requires an agent ID).
+    let Some(agent_id) = resolve_agent_ref(&base, &client, agent) else {
+        ui::error_with_fix(
+            &format!("Unknown agent: '{agent}'"),
+            "List agents with: openfang agent list",
+        );
+        return;
+    };
 
     // Use explicit name if provided, otherwise derive from agent + prompt
     let name = if let Some(n) = explicit_name {
@@ -6111,7 +6176,7 @@ fn cmd_cron_create(agent: &str, spec: &str, prompt: &str, explicit_name: Option<
         client
             .post(format!("{base}/api/cron/jobs"))
             .json(&serde_json::json!({
-                "agent_id": agent,
+                "agent_id": agent_id,
                 "name": name,
                 "schedule": {
                     "kind": "cron",
@@ -6124,13 +6189,25 @@ fn cmd_cron_create(agent: &str, spec: &str, prompt: &str, explicit_name: Option<
             }))
             .send(),
     );
-    if let Some(id) = body["id"].as_str() {
-        ui::success(&format!("Cron job created: {id}"));
+    // The API returns {"result": "<json-string>"} where the inner JSON is
+    // {"job_id": "...", "status": "created"}. Older shapes used a bare "id".
+    let job_id = body["id"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| {
+            body["result"].as_str().and_then(|s| {
+                serde_json::from_str::<serde_json::Value>(s)
+                    .ok()
+                    .and_then(|v| v["job_id"].as_str().map(str::to_string))
+            })
+        })
+        .or_else(|| body["result"]["job_id"].as_str().map(str::to_string));
+    if let Some(id) = job_id {
+        ui::success(&format!("Cron job created: {id} ({name})"));
+    } else if let Some(err) = body["error"].as_str() {
+        ui::error(&format!("Failed: {err}"));
     } else {
-        ui::error(&format!(
-            "Failed: {}",
-            body["error"].as_str().unwrap_or("?")
-        ));
+        ui::error(&format!("Unexpected response: {body}"));
     }
 }
 
@@ -6723,7 +6800,13 @@ fn cmd_system_info(json: bool) {
         ui::kv("Provider", body["default_provider"].as_str().unwrap_or("?"));
         ui::kv("Model", body["default_model"].as_str().unwrap_or("?"));
         ui::kv("API", &base);
-        ui::kv("Data dir", body["data_dir"].as_str().unwrap_or("?"));
+        ui::kv(
+            "Data dir",
+            body["data_dir"]
+                .as_str()
+                .or_else(|| body["home_dir"].as_str())
+                .unwrap_or("?"),
+        );
         ui::kv(
             "Uptime",
             &format!("{}s", body["uptime_seconds"].as_u64().unwrap_or(0)),
