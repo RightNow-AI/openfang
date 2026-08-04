@@ -467,6 +467,9 @@ impl WorkflowEngine {
 
         let mut current_input = input;
         let mut all_outputs: Vec<String> = Vec::new();
+        // Index into `all_outputs` where the current fan-out group's outputs
+        // start, so a following `collect` step can join only those outputs.
+        let mut fan_out_start: usize = 0;
         let mut variables: HashMap<String, String> = HashMap::new();
         let mut i = 0;
 
@@ -534,6 +537,9 @@ impl WorkflowEngine {
                 StepMode::FanOut => {
                     // Collect consecutive FanOut steps and run them in parallel
                     let mut fan_out_steps = vec![(i, step)];
+                    // Outputs produced by this fan-out group start here; the
+                    // next `collect` step joins only these.
+                    fan_out_start = all_outputs.len();
                     let mut j = i + 1;
                     while j < workflow.steps.len() {
                         if matches!(workflow.steps[j].mode, StepMode::FanOut) {
@@ -633,7 +639,7 @@ impl WorkflowEngine {
                 }
 
                 StepMode::Collect => {
-                    current_input = all_outputs.join("\n\n---\n\n");
+                    current_input = all_outputs[fan_out_start..].join("\n\n---\n\n");
                     all_outputs.clear();
                     all_outputs.push(current_input.clone());
                     if let Some(ref var) = step.output_var {
@@ -1333,6 +1339,93 @@ mod tests {
         assert!(output.contains("Done: Task A"));
         assert!(output.contains("Done: Task B"));
         assert!(output.contains("---"));
+    }
+
+    #[tokio::test]
+    async fn test_collect_joins_only_preceding_fan_out_outputs() {
+        let engine = WorkflowEngine::new();
+        let wf = Workflow {
+            id: WorkflowId::new(),
+            name: "collect-scope".to_string(),
+            description: "".to_string(),
+            steps: vec![
+                WorkflowStep {
+                    name: "preprocess".to_string(),
+                    agent: StepAgent::ByName {
+                        name: "prep".to_string(),
+                    },
+                    prompt_template: "PRE {{input}}".to_string(),
+                    mode: StepMode::Sequential,
+                    timeout_secs: 10,
+                    error_mode: ErrorMode::Fail,
+                    output_var: None,
+                },
+                WorkflowStep {
+                    name: "branch-a".to_string(),
+                    agent: StepAgent::ByName {
+                        name: "fan-a".to_string(),
+                    },
+                    prompt_template: "Task A: {{input}}".to_string(),
+                    mode: StepMode::FanOut,
+                    timeout_secs: 10,
+                    error_mode: ErrorMode::Fail,
+                    output_var: None,
+                },
+                WorkflowStep {
+                    name: "branch-b".to_string(),
+                    agent: StepAgent::ByName {
+                        name: "fan-b".to_string(),
+                    },
+                    prompt_template: "Task B: {{input}}".to_string(),
+                    mode: StepMode::FanOut,
+                    timeout_secs: 10,
+                    error_mode: ErrorMode::Fail,
+                    output_var: None,
+                },
+                WorkflowStep {
+                    name: "collect".to_string(),
+                    agent: StepAgent::ByName {
+                        name: "unused".to_string(),
+                    },
+                    prompt_template: "unused".to_string(),
+                    mode: StepMode::Collect,
+                    timeout_secs: 10,
+                    error_mode: ErrorMode::Fail,
+                    output_var: None,
+                },
+            ],
+            created_at: Utc::now(),
+        };
+        let wf_id = engine.register(wf).await;
+        let run_id = engine.create_run(wf_id, "seed".to_string()).await.unwrap();
+
+        // Deterministic outputs: the first call (sequential) yields "PRE seed",
+        // the two fan-out branches yield "A seed" and "B seed".
+        let call_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let cc = call_count.clone();
+        let sender = move |_id: AgentId, _msg: String| {
+            let cc = cc.clone();
+            async move {
+                let n = cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let output = match n {
+                    0 => "PRE seed",
+                    1 => "A seed",
+                    _ => "B seed",
+                };
+                Ok((output.to_string(), 10u64, 5u64))
+            }
+        };
+
+        let result = engine.execute_run(run_id, mock_resolver, sender).await;
+        assert!(result.is_ok());
+
+        let output = result.unwrap();
+        // Collect joins only the preceding fan-out group's outputs...
+        assert!(output.contains("A seed"));
+        assert!(output.contains("B seed"));
+        assert!(output.contains("---"));
+        // ...not the earlier sequential step's output.
+        assert!(!output.contains("PRE seed"));
     }
 
     #[tokio::test]
