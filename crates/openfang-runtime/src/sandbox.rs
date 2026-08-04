@@ -26,6 +26,7 @@
 use crate::host_functions;
 use crate::kernel_handle::KernelHandle;
 use openfang_types::capability::Capability;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::debug;
 use wasmtime::*;
@@ -95,6 +96,17 @@ pub enum SandboxError {
     FuelExhausted,
     #[error("Guest ABI violation: {0}")]
     AbiError(String),
+}
+
+/// Cancellation flag for the epoch watchdog thread: when dropped it asks the
+/// thread to exit instead of bumping the shared engine epoch after an early
+/// execution finish.
+struct WatchdogCancel(Arc<AtomicBool>);
+
+impl Drop for WatchdogCancel {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 /// The WASM sandbox engine.
@@ -183,10 +195,23 @@ impl WasmSandbox {
 
         // Set epoch deadline (wall-clock metering)
         store.set_epoch_deadline(1);
-        let engine_clone = engine.clone();
         let timeout = config.timeout_secs.unwrap_or(30);
+        // Spawn a watchdog thread that bumps the shared engine epoch after
+        // `timeout` seconds. The thread is cancelled when execution finishes
+        // early, so a stale bump cannot interrupt a concurrent execution.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        let engine_clone = engine.clone();
+        let _watchdog_guard = WatchdogCancel(cancel);
         let _watchdog = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(timeout));
+            let step = std::time::Duration::from_millis(50);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+            while std::time::Instant::now() < deadline {
+                if cancel_clone.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(step);
+            }
             engine_clone.increment_epoch();
         });
 
@@ -525,6 +550,53 @@ mod tests {
         assert!(
             matches!(err, SandboxError::FuelExhausted),
             "Expected FuelExhausted, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_watchdog_cancelled_on_early_exit() {
+        let sandbox = WasmSandbox::new().unwrap();
+
+        // A long-running loop that must only be interrupted by its own watchdog.
+        let long_future = sandbox.execute(
+            INFINITE_LOOP_WAT.as_bytes(),
+            serde_json::json!({}),
+            SandboxConfig {
+                fuel_limit: u64::MAX,
+                timeout_secs: Some(4),
+                ..Default::default()
+            },
+            None,
+            "long-agent",
+        );
+
+        // A fast execution on the same engine whose watchdog (1s) must be
+        // cancelled as soon as the execution finishes.
+        let short_future = sandbox.execute(
+            ECHO_WAT.as_bytes(),
+            serde_json::json!({}),
+            SandboxConfig {
+                timeout_secs: Some(1),
+                ..Default::default()
+            },
+            None,
+            "short-agent",
+        );
+
+        let start = std::time::Instant::now();
+        let (long_result, short_result) = tokio::join!(long_future, short_future);
+        let long_elapsed = start.elapsed();
+
+        assert!(short_result.is_ok(), "short execution should succeed");
+        assert!(
+            matches!(long_result, Err(SandboxError::Execution(ref msg)) if msg.contains("timed out")),
+            "long execution should be interrupted by its own watchdog: {long_result:?}"
+        );
+        // Without cancellation, the short execution's stale watchdog bumps the
+        // shared engine epoch at t=1s and cuts the long execution short.
+        assert!(
+            long_elapsed.as_secs() >= 2,
+            "long execution was interrupted after {long_elapsed:?} — stale watchdog was not cancelled"
         );
     }
 
