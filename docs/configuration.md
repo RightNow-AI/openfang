@@ -369,14 +369,7 @@ base_url = "https://api.minimax.io/anthropic"
 
 The Anthropic driver appends `/v1/messages`, so keep its configured base URL ending in `/anthropic`; do not append `/v1`.
 
-M3 pay-as-you-go prices are tiered by service tier and input length. The catalog and cost meter use the standard tier and select the long-context rate when input exceeds 512,000 tokens.
-
-| Service tier | Input length | Input $/M | Output $/M | Cache read $/M |
-|--------------|--------------|-----------|------------|---------------|
-| Standard | Up to 512,000 tokens | $0.30 | $1.20 | $0.06 |
-| Standard | More than 512,000 tokens | $0.60 | $2.40 | $0.12 |
-| Priority | Up to 512,000 tokens | $0.45 | $1.80 | $0.09 |
-| Priority | More than 512,000 tokens | $0.90 | $3.60 | $0.18 |
+M3 pay-as-you-go prices are $0.60/M input tokens, $2.40/M output tokens, and $0.12/M cache-read tokens. Cache-write pricing is not listed for M3 in the provider metadata.
 
 `MiniMax-M2.7` uses flat rates of $0.30/M input tokens, $1.20/M output tokens, $0.06/M cache-read tokens, and $0.375/M cache-write tokens.
 

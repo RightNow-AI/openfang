@@ -309,19 +309,6 @@ impl ModelCatalog {
             .map(|m| (m.input_cost_per_m, m.output_cost_per_m))
     }
 
-    /// Get standard-tier pricing for a concrete input size.
-    ///
-    /// Most catalog entries use a flat rate. Models with input-length pricing
-    /// select the applicable standard tier here so metering does not collapse
-    /// tiered pricing into a single incorrect rate.
-    pub fn pricing_for_usage(&self, model_id: &str, input_tokens: u64) -> Option<(f64, f64)> {
-        let model = self.find_model(model_id)?;
-        if model.id == "MiniMax-M3" && input_tokens > 512_000 {
-            return Some((0.60, 2.40));
-        }
-        Some((model.input_cost_per_m, model.output_cost_per_m))
-    }
-
     /// List all alias mappings.
     pub fn list_aliases(&self) -> &HashMap<String, String> {
         &self.aliases
@@ -3293,9 +3280,8 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             tier: ModelTier::Frontier,
             context_window: 1_000_000,
             max_output_tokens: 524_288,
-            // The catalog stores the default standard tier for inputs up to 512K.
-            input_cost_per_m: 0.30,
-            output_cost_per_m: 1.20,
+            input_cost_per_m: 0.60,
+            output_cost_per_m: 2.40,
             supports_tools: true,
             supports_vision: true,
             supports_streaming: true,
@@ -4194,19 +4180,6 @@ mod tests {
     }
 
     #[test]
-    fn test_minimax_m3_standard_pricing_tiers() {
-        let catalog = ModelCatalog::new();
-        assert_eq!(
-            catalog.pricing_for_usage("MiniMax-M3", 512_000),
-            Some((0.30, 1.20))
-        );
-        assert_eq!(
-            catalog.pricing_for_usage("minimax-m3", 512_001),
-            Some((0.60, 2.40))
-        );
-    }
-
-    #[test]
     fn test_detect_auth_local_providers() {
         let mut catalog = ModelCatalog::new();
         catalog.detect_auth();
@@ -4373,8 +4346,8 @@ mod tests {
         assert_eq!(m3.tier, ModelTier::Frontier);
         assert_eq!(m3.context_window, 1_000_000);
         assert_eq!(m3.max_output_tokens, 524_288);
-        assert_eq!(m3.input_cost_per_m, 0.30);
-        assert_eq!(m3.output_cost_per_m, 1.20);
+        assert_eq!(m3.input_cost_per_m, 0.60);
+        assert_eq!(m3.output_cost_per_m, 2.40);
         assert!(m3.supports_vision);
         assert!(m3.supports_tools);
         assert!(catalog.find_model("minimax-m3").is_some());
