@@ -826,12 +826,74 @@ fn convert_response(api: ApiResponse) -> CompletionResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn test_convert_message_text() {
         let msg = Message::user("Hello");
         let api_msg = convert_message(&msg);
         assert_eq!(api_msg.role, "user");
+    }
+
+    #[tokio::test]
+    async fn test_compatible_base_url_appends_v1_messages() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (path_tx, path_rx) = tokio::sync::oneshot::channel();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = socket.read(&mut buffer).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let request_text = String::from_utf8(request).unwrap();
+            let path = request_text
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap()
+                .to_string();
+            path_tx.send(path).unwrap();
+
+            let body = r#"{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let driver = AnthropicDriver::new(
+            "test-key".to_string(),
+            format!("http://{address}/anthropic"),
+        );
+        let response = driver
+            .complete(CompletionRequest {
+                model: "MiniMax-M3".to_string(),
+                messages: vec![Message::user("Hello")],
+                tools: vec![],
+                max_tokens: 16,
+                temperature: 1.0,
+                system: None,
+                thinking: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.text(), "ok");
+        assert_eq!(path_rx.await.unwrap(), "/anthropic/v1/messages");
+        server.await.unwrap();
     }
 
     #[test]

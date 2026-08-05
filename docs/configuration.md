@@ -334,6 +334,45 @@ api_key_env = "ANTHROPIC_API_KEY"
 | `api_key_env` | string | `"ANTHROPIC_API_KEY"` | Name of the environment variable holding the API key. The actual key is read from this env var at runtime, never stored in config. |
 | `base_url` | string or null | `null` | Override the API base URL. Useful for proxies or self-hosted endpoints. When `null`, the provider's default URL from the model catalog is used. |
 
+#### MiniMax M3
+
+`MiniMax-M3` is the default MiniMax model. It has a 1,000,000-token context window, accepts text, image, and video input, supports tool use, and supports adaptive or disabled thinking. The model catalog's `supports_vision` flag represents its image capability; the catalog does not expose a separate video flag. `MiniMax-M2.7` remains available with a 204,800-token context window, text input, and always-on thinking.
+
+OpenFang can use both supported wire protocols in either region:
+
+| Region | OpenAI-compatible base URL | Anthropic-compatible base URL |
+|--------|----------------------------|-------------------------------|
+| Global | `https://api.minimax.io/v1` | `https://api.minimax.io/anthropic` |
+| China mainland | `https://api.minimaxi.com/v1` | `https://api.minimaxi.com/anthropic` |
+
+Use the built-in MiniMax provider for the OpenAI-compatible API:
+
+```toml
+[default_model]
+provider = "minimax"
+model = "MiniMax-M3"
+api_key_env = "MINIMAX_API_KEY"
+base_url = "https://api.minimax.io/v1"
+# For China mainland, use https://api.minimaxi.com/v1 instead.
+```
+
+Use the existing Anthropic driver for the Anthropic-compatible API:
+
+```toml
+[default_model]
+provider = "anthropic"
+model = "MiniMax-M3"
+api_key_env = "MINIMAX_API_KEY"
+base_url = "https://api.minimax.io/anthropic"
+# For China mainland, use https://api.minimaxi.com/anthropic instead.
+```
+
+The Anthropic driver appends `/v1/messages`, so keep its configured base URL ending in `/anthropic`; do not append `/v1`.
+
+M3 pay-as-you-go prices are $0.60/M input tokens, $2.40/M output tokens, and $0.12/M cache-read tokens. Cache-write pricing is not listed for M3 in the provider metadata.
+
+`MiniMax-M2.7` uses flat rates of $0.30/M input tokens, $1.20/M output tokens, $0.06/M cache-read tokens, and $0.375/M cache-write tokens.
+
 ---
 
 ### `[memory]`
