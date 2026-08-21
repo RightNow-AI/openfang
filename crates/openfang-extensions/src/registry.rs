@@ -1,6 +1,6 @@
 //! Integration Registry — manages bundled + installed integration templates.
 //!
-//! Loads 25 bundled MCP server templates at compile time, merges with user's
+//! Loads 26 bundled MCP server templates at compile time, merges with user's
 //! installed state from `~/.openfang/integrations.toml`, and converts installed
 //! integrations to `McpServerConfigEntry` for kernel consumption.
 
@@ -175,7 +175,10 @@ impl IntegrationRegistry {
 
     /// Convert all enabled installed integrations to MCP server config entries.
     /// These can be merged into the kernel's MCP server list.
-    pub fn to_mcp_configs(&self) -> Vec<McpServerConfigEntry> {
+    pub fn to_mcp_configs(
+        &self,
+        resolve_credential: impl Fn(&str) -> Option<String>,
+    ) -> Vec<McpServerConfigEntry> {
         self.installed
             .values()
             .filter(|inst| inst.enabled)
@@ -200,12 +203,21 @@ impl IntegrationRegistry {
                     .iter()
                     .map(|e| e.name.clone())
                     .collect();
+                let headers = template
+                    .headers
+                    .iter()
+                    .filter_map(|header| {
+                        resolve_credential(&header.value_env).map(|value| {
+                            format!("{}: {}{}", header.name, header.value_prefix, value)
+                        })
+                    })
+                    .collect();
                 Some(McpServerConfigEntry {
                     name: inst.id.clone(),
                     transport,
                     timeout_secs: 30,
                     env,
-                    headers: Vec::new(),
+                    headers,
                 })
             })
             .collect()
@@ -236,8 +248,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut reg = IntegrationRegistry::new(dir.path());
         let count = reg.load_bundled();
-        assert_eq!(count, 25);
-        assert_eq!(reg.template_count(), 25);
+        assert_eq!(count, 26);
+        assert_eq!(reg.template_count(), 26);
     }
 
     #[test]
@@ -305,9 +317,38 @@ mod tests {
         };
         reg.install(entry).unwrap();
 
-        let configs = reg.to_mcp_configs();
+        let configs = reg.to_mcp_configs(|_| None);
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "github");
+    }
+
+    #[test]
+    fn registry_resolves_remote_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = IntegrationRegistry::new(dir.path());
+        reg.load_bundled();
+        reg.install(InstalledIntegration {
+            id: "xquik".to_string(),
+            installed_at: chrono::Utc::now(),
+            enabled: true,
+            oauth_provider: None,
+            config: HashMap::new(),
+        })
+        .unwrap();
+
+        let configs =
+            reg.to_mcp_configs(|key| (key == "XQUIK_API_KEY").then(|| "xq_test_key".to_string()));
+
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].name, "xquik");
+        assert_eq!(
+            configs[0].headers,
+            vec!["Authorization: Bearer xq_test_key"]
+        );
+        assert!(matches!(
+            configs[0].transport,
+            McpTransportEntry::Http { ref url } if url == "https://xquik.com/mcp"
+        ));
     }
 
     #[test]
@@ -358,7 +399,7 @@ mod tests {
         reg.install(entry).unwrap();
 
         reg.set_enabled("github", false).unwrap();
-        let configs = reg.to_mcp_configs();
+        let configs = reg.to_mcp_configs(|_| None);
         assert!(configs.is_empty()); // disabled = not in MCP configs
     }
 }

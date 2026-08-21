@@ -364,7 +364,7 @@ mod tests {
         let resolver = CredentialResolver::new(None, None);
 
         let list = list_integrations(&registry, &resolver);
-        assert_eq!(list.len(), 25);
+        assert_eq!(list.len(), 26);
         assert!(list
             .iter()
             .all(|e| e.status == IntegrationStatus::Available));

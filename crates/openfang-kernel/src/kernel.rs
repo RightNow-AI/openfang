@@ -937,7 +937,15 @@ impl OpenFangKernel {
         );
 
         // Merge installed integrations into MCP server list
-        let ext_mcp_configs = extension_registry.to_mcp_configs();
+        let ext_mcp_configs = extension_registry.to_mcp_configs(|key| {
+            credential_resolver
+                .resolve(key)
+                .map(|value| value.to_string())
+        });
+        let ext_mcp_names: Vec<String> = ext_mcp_configs
+            .iter()
+            .map(|config| config.name.clone())
+            .collect();
         let mut all_mcp_servers = config.mcp_servers.clone();
         for ext_cfg in ext_mcp_configs {
             // Avoid duplicates — don't add if a manual config already exists with same name
@@ -955,8 +963,8 @@ impl OpenFangKernel {
         };
         let extension_health = openfang_extensions::health::HealthMonitor::new(health_config);
         // Register all installed integrations for health monitoring
-        for inst in extension_registry.to_mcp_configs() {
-            extension_health.register(&inst.name);
+        for name in ext_mcp_names {
+            extension_health.register(&name);
         }
 
         // Initialize web tools (multi-provider search + SSRF-protected fetch + caching)
@@ -5897,7 +5905,7 @@ impl OpenFangKernel {
                 .extension_registry
                 .read()
                 .unwrap_or_else(|e| e.into_inner());
-            let ext_mcp_configs = registry.to_mcp_configs();
+            let ext_mcp_configs = registry.to_mcp_configs(|key| self.resolve_credential(key));
             let mut all = self.config.mcp_servers.clone();
             for ext_cfg in ext_mcp_configs {
                 if !all.iter().any(|s| s.name == ext_cfg.name) {

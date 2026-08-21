@@ -1,0 +1,37 @@
+id = "xquik"
+name = "Xquik"
+description = "Search public X posts through Xquik's remote MCP server"
+category = "ai"
+icon = "𝕏"
+tags = ["x", "twitter", "social", "search", "mcp"]
+
+[transport]
+type = "http"
+url = "https://xquik.com/mcp"
+
+[[required_env]]
+name = "XQUIK_API_KEY"
+label = "Xquik API Key"
+help = "Create a scoped API key in the Xquik dashboard"
+is_secret = true
+get_url = "https://xquik.com/dashboard/api-keys"
+
+[[headers]]
+name = "Authorization"
+value_prefix = "Bearer "
+value_env = "XQUIK_API_KEY"
+
+[health_check]
+interval_secs = 60
+unhealthy_threshold = 3
+
+setup_instructions = """
+1. Create a scoped API key at https://xquik.com/dashboard/api-keys.
+2. Initialize the encrypted vault if needed: openfang vault init
+3. Store the key through the hidden prompt: openfang vault set XQUIK_API_KEY
+4. Restart a running daemon so it reloads the vault.
+5. Run: openfang add xquik
+6. Read the MCP guide at https://docs.xquik.com/mcp/overview.
+
+Xquik is an independent third-party service. Not affiliated with X Corp. "Twitter" and "X" are trademarks of X Corp.
+"""

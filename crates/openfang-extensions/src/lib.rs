@@ -1,7 +1,7 @@
 //! OpenFang Extensions — one-click integration system.
 //!
 //! This crate provides:
-//! - **Integration Registry**: 25 bundled MCP server templates (GitHub, Slack, etc.)
+//! - **Integration Registry**: 26 bundled MCP server templates (GitHub, Slack, etc.)
 //! - **Credential Vault**: AES-256-GCM encrypted storage with OS keyring support
 //! - **OAuth2 PKCE**: Localhost callback flows for Google/GitHub/Microsoft/Slack
 //! - **Health Monitor**: Auto-reconnect with exponential backoff
@@ -114,6 +114,18 @@ fn default_true() -> bool {
     true
 }
 
+/// HTTP header assembled from a resolved credential.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpHeaderTemplate {
+    /// HTTP header name (for example, "Authorization").
+    pub name: String,
+    /// Static text prepended to the resolved value.
+    #[serde(default)]
+    pub value_prefix: String,
+    /// Credential key resolved through the vault, dotenv file, or environment.
+    pub value_env: String,
+}
+
 /// OAuth provider configuration template.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthTemplate {
@@ -165,6 +177,9 @@ pub struct IntegrationTemplate {
     /// Required credentials.
     #[serde(default)]
     pub required_env: Vec<RequiredEnvVar>,
+    /// Credential-backed headers for remote HTTP transports.
+    #[serde(default)]
+    pub headers: Vec<McpHeaderTemplate>,
     /// OAuth configuration (None = API key only).
     #[serde(default)]
     pub oauth: Option<OAuthTemplate>,
