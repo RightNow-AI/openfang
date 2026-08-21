@@ -1,6 +1,6 @@
 //! Compile-time embedded integration templates.
 //!
-//! All 25 integration TOML files are baked into the binary via `include_str!()`,
+//! All 26 integration TOML files are baked into the binary via `include_str!()`,
 //! ensuring they ship with every OpenFang build with zero filesystem dependencies.
 
 /// Returns all bundled integration templates as `(id, TOML content)` pairs.
@@ -52,7 +52,7 @@ pub fn bundled_integrations() -> Vec<(&'static str, &'static str)> {
         ("aws", include_str!("../integrations/aws.toml")),
         ("gcp-mcp", include_str!("../integrations/gcp-mcp.toml")),
         ("azure-mcp", include_str!("../integrations/azure-mcp.toml")),
-        // ── AI & Search (2) ─────────────────────────────────────────────────
+        // ── AI & Search (3) ─────────────────────────────────────────────────
         (
             "brave-search",
             include_str!("../integrations/brave-search.toml"),
@@ -61,6 +61,7 @@ pub fn bundled_integrations() -> Vec<(&'static str, &'static str)> {
             "exa-search",
             include_str!("../integrations/exa-search.toml"),
         ),
+        ("xquik", include_str!("../integrations/xquik.toml")),
     ]
 }
 
@@ -71,7 +72,7 @@ mod tests {
 
     #[test]
     fn bundled_count() {
-        assert_eq!(bundled_integrations().len(), 25);
+        assert_eq!(bundled_integrations().len(), 26);
     }
 
     #[test]
@@ -82,6 +83,16 @@ mod tests {
             assert_eq!(t.id, id);
             assert!(!t.name.is_empty());
             assert!(!t.description.is_empty());
+            for header in &t.headers {
+                assert!(
+                    t.required_env
+                        .iter()
+                        .any(|required| required.name == header.value_env),
+                    "{} header references undeclared credential {}",
+                    id,
+                    header.value_env
+                );
+            }
         }
     }
 
@@ -120,7 +131,7 @@ mod tests {
         assert_eq!(communication, 3);
         assert_eq!(data, 5);
         assert_eq!(cloud, 3);
-        assert_eq!(ai, 2);
+        assert_eq!(ai, 3);
     }
 
     #[test]
@@ -137,17 +148,19 @@ mod tests {
         for (id, content) in bundled_integrations() {
             let t: IntegrationTemplate = toml::from_str(content)
                 .unwrap_or_else(|e| panic!("Failed to parse '{}': {}", id, e));
-            // All bundled integrations use stdio transport via npx
             match &t.transport {
                 crate::McpTransportTemplate::Stdio { command, args } => {
                     assert_eq!(command, "npx", "{} should use npx", id);
                     assert!(!args.is_empty(), "{} should have args", id);
+                    assert!(t.headers.is_empty(), "{} should not send HTTP headers", id);
                 }
                 crate::McpTransportTemplate::Sse { .. } => {
                     panic!("{} unexpectedly uses SSE transport", id);
                 }
-                crate::McpTransportTemplate::Http { .. } => {
-                    panic!("{} unexpectedly uses HTTP transport", id);
+                crate::McpTransportTemplate::Http { url } => {
+                    assert_eq!(id, "xquik");
+                    assert_eq!(url, "https://xquik.com/mcp");
+                    assert_eq!(t.headers.len(), 1);
                 }
             }
         }
