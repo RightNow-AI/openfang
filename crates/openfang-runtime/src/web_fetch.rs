@@ -102,16 +102,6 @@ impl WebFetchEngine {
 
         let status = resp.status();
 
-        // Check response size
-        if let Some(len) = resp.content_length() {
-            if len > self.config.max_response_bytes as u64 {
-                return Err(format!(
-                    "Response too large: {} bytes (max {})",
-                    len, self.config.max_response_bytes
-                ));
-            }
-        }
-
         let content_type = resp
             .headers()
             .get("content-type")
@@ -119,25 +109,37 @@ impl WebFetchEngine {
             .unwrap_or("")
             .to_string();
 
-        let resp_body = resp
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response body: {e}"))?;
+        // Read response body with streaming size limit (protects against chunked memory exhaustion)
+        let bytes = read_bounded_body(resp, self.config.max_response_bytes).await?;
 
-        // Step 4: For GET requests, detect HTML and convert to Markdown.
-        // For non-GET (API calls), return raw body — don't mangle JSON/XML responses.
-        let processed = if method_upper == "GET"
-            && self.config.readability
-            && is_html(&content_type, &resp_body)
-        {
-            let markdown = html_to_markdown(&resp_body);
-            if markdown.trim().is_empty() {
-                resp_body
+        // Step 4: Content processing by Content-Type & magic bytes
+        let processed = if is_pdf(&content_type, &bytes) {
+            extract_pdf_content(&bytes)
+        } else if is_binary_content(&content_type, &bytes) {
+            let type_label = if content_type.is_empty() {
+                "binary data"
             } else {
-                markdown
-            }
+                content_type.as_str()
+            };
+            format!(
+                "[Binary content: {type_label}, {} bytes — binary data is omitted from context]",
+                bytes.len()
+            )
         } else {
-            resp_body
+            let body_text = String::from_utf8_lossy(&bytes);
+            if method_upper == "GET"
+                && self.config.readability
+                && is_html(&content_type, &body_text)
+            {
+                let markdown = html_to_markdown(&body_text);
+                if markdown.trim().is_empty() {
+                    body_text.into_owned()
+                } else {
+                    markdown
+                }
+            } else {
+                body_text.into_owned()
+            }
         };
 
         // Step 5: Truncate (char-boundary-safe to avoid panics on multi-byte UTF-8)
@@ -166,6 +168,81 @@ impl WebFetchEngine {
     }
 }
 
+/// Read response body up to `max_bytes`, supporting both fixed-length and chunked responses.
+pub(crate) async fn read_bounded_body(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    if let Some(len) = resp.content_length() {
+        if len > max_bytes as u64 {
+            return Err(format!(
+                "Response too large: {len} bytes (max {max_bytes})"
+            ));
+        }
+    }
+
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("Failed to read response chunk: {e}"))?
+    {
+        if bytes.len() + chunk.len() > max_bytes {
+            return Err(format!(
+                "Response exceeded maximum allowed size of {max_bytes} bytes"
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    Ok(bytes)
+}
+
+/// Detect if content is a PDF based on Content-Type header or %PDF magic bytes.
+pub(crate) fn is_pdf(content_type: &str, bytes: &[u8]) -> bool {
+    let ct = content_type.to_lowercase();
+    if ct.contains("application/pdf") || ct.contains("application/x-pdf") {
+        return true;
+    }
+    bytes.starts_with(b"%PDF")
+}
+
+/// Extract text from a PDF in memory.
+pub(crate) fn extract_pdf_content(bytes: &[u8]) -> String {
+    match pdf_extract::extract_text_from_mem(bytes) {
+        Ok(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                "[PDF document: no selectable text found (document may be empty or contain only scanned images)]".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+        Err(err) => {
+            format!("[PDF document: failed to extract text ({err}) — document may be encrypted, corrupted, or scanned without an OCR layer]")
+        }
+    }
+}
+
+/// Detect if content is non-text binary (e.g. images, audio, zip) based on Content-Type or byte inspection.
+pub(crate) fn is_binary_content(content_type: &str, bytes: &[u8]) -> bool {
+    let ct = content_type.to_lowercase();
+    if ct.starts_with("image/")
+        || ct.starts_with("audio/")
+        || ct.starts_with("video/")
+        || ct.contains("application/octet-stream")
+        || ct.contains("application/zip")
+        || ct.contains("application/gzip")
+        || ct.contains("application/x-tar")
+        || ct.contains("application/wasm")
+    {
+        return true;
+    }
+    // Sniff first 1024 bytes for null bytes (typical indicator of binary formats)
+    let sample_len = bytes.len().min(1024);
+    bytes[..sample_len].contains(&0)
+}
+
 /// Detect if content is HTML based on Content-Type header or body sniffing.
 fn is_html(content_type: &str, body: &str) -> bool {
     if content_type.contains("text/html") || content_type.contains("application/xhtml") {
@@ -177,6 +254,7 @@ fn is_html(content_type: &str, body: &str) -> bool {
         || trimmed.starts_with("<!doctype")
         || trimmed.starts_with("<html")
 }
+
 
 // ---------------------------------------------------------------------------
 // SSRF Protection (replicates host_functions.rs logic for builtin tools)
@@ -538,4 +616,110 @@ mod tests {
         assert!(ip_in_cidr(&ip_in, &base, 8));
         assert!(!ip_in_cidr(&ip_out, &base, 8));
     }
+
+    // ── PDF & Binary Content tests (#1271) ──────────────────────────────
+
+    #[test]
+    fn test_is_pdf_detection() {
+        assert!(is_pdf("application/pdf", b""));
+        assert!(is_pdf("application/pdf; charset=binary", b""));
+        assert!(is_pdf("application/x-pdf", b""));
+        assert!(is_pdf("text/plain", b"%PDF-1.4 header"));
+        assert!(!is_pdf("text/html", b"<html>Hello</html>"));
+    }
+
+    #[test]
+    fn test_is_binary_content_detection() {
+        assert!(is_binary_content("image/png", b"\x89PNG\r\n\x1a\n"));
+        assert!(is_binary_content("application/zip", b"PK\x03\x04"));
+        assert!(is_binary_content("application/octet-stream", b"arbitrary bytes"));
+        // Null byte in content sniff
+        assert!(is_binary_content("unknown/type", b"some text \x00 with null byte"));
+        // Standard text is not binary
+        assert!(!is_binary_content("text/plain", b"Hello world 123"));
+        assert!(!is_binary_content("application/json", b"{\"key\": \"val\"}"));
+    }
+
+    #[test]
+    fn test_extract_pdf_content_valid() {
+        use lopdf::{Document, Object, Stream, StringFormat};
+
+        let mut doc = Document::with_version("1.4");
+        let pages_id = doc.new_object_id();
+
+        let mut font_dict = lopdf::Dictionary::new();
+        font_dict.set("Type", "Font");
+        font_dict.set("Subtype", "Type1");
+        font_dict.set("BaseFont", "Helvetica");
+        let font_id = doc.add_object(font_dict);
+
+        let mut fonts_dict = lopdf::Dictionary::new();
+        fonts_dict.set("F1", font_id);
+
+        let mut resources_dict = lopdf::Dictionary::new();
+        resources_dict.set("Font", fonts_dict);
+        let resources_id = doc.add_object(resources_dict);
+
+        let content = lopdf::content::Content {
+            operations: vec![
+                lopdf::content::Operation::new("BT", vec![]),
+                lopdf::content::Operation::new("Tf", vec!["F1".into(), 24.into()]),
+                lopdf::content::Operation::new("Td", vec![100.into(), 700.into()]),
+                lopdf::content::Operation::new(
+                    "Tj",
+                    vec![Object::String(
+                        b"Hello OpenFang PDF".to_vec(),
+                        StringFormat::Literal,
+                    )],
+                ),
+                lopdf::content::Operation::new("ET", vec![]),
+            ],
+        };
+        let content_id = doc.add_object(Stream::new(
+            lopdf::Dictionary::new(),
+            content.encode().unwrap(),
+        ));
+
+        let mut page_dict = lopdf::Dictionary::new();
+        page_dict.set("Type", "Page");
+        page_dict.set("Parent", pages_id);
+        page_dict.set("Contents", content_id);
+        page_dict.set("Resources", resources_id);
+        page_dict.set("MediaBox", vec![0.into(), 0.into(), 612.into(), 792.into()]);
+        let page_id = doc.add_object(page_dict);
+
+        let mut pages_dict = lopdf::Dictionary::new();
+        pages_dict.set("Type", "Pages");
+        pages_dict.set("Kids", vec![page_id.into()]);
+        pages_dict.set("Count", 1);
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+
+        let mut catalog_dict = lopdf::Dictionary::new();
+        catalog_dict.set("Type", "Catalog");
+        catalog_dict.set("Pages", pages_id);
+        let catalog_id = doc.add_object(catalog_dict);
+        doc.trailer.set("Root", catalog_id);
+
+        let mut pdf_bytes = Vec::new();
+        doc.save_to(&mut pdf_bytes).unwrap();
+
+        let extracted = extract_pdf_content(&pdf_bytes);
+        assert!(
+            extracted.contains("Hello OpenFang PDF"),
+            "Expected 'Hello OpenFang PDF', got: {extracted}"
+        );
+    }
+
+
+
+    #[test]
+    fn test_extract_pdf_content_corrupted_fallback() {
+        let corrupted_pdf = b"%PDF-1.4 corrupted incomplete stream byte garbage \x9c\x01\x00";
+        let fallback = extract_pdf_content(corrupted_pdf);
+        assert!(
+            fallback.starts_with("[PDF document: failed to extract text"),
+            "Expected failure explanation, got: {fallback}"
+        );
+    }
 }
+
