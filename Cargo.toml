@@ -140,6 +140,11 @@ socket2 = "0.5"
 # Zip archive extraction
 zip = { version = "4", default-features = false, features = ["deflate"] }
 
+# PDF text extraction
+pdf-extract = "0.8"
+lopdf = "0.34"
+
+
 # Email (SMTP + IMAP)
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
 imap = "2"

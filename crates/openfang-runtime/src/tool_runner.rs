@@ -1554,20 +1554,36 @@ async fn tool_web_fetch_legacy(input: &serde_json::Value) -> Result<String, Stri
         .await
         .map_err(|e| format!("HTTP request failed: {e}"))?;
     let status = resp.status();
-    // Reject responses larger than 10MB to prevent memory exhaustion
-    if let Some(len) = resp.content_length() {
-        if len > 10 * 1024 * 1024 {
-            return Err(format!("Response too large: {len} bytes (max 10MB)"));
-        }
-    }
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read response body: {e}"))?;
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let max_response_bytes = 10 * 1024 * 1024;
+    let bytes = crate::web_fetch::read_bounded_body(resp, max_response_bytes).await?;
+
+    let body = if crate::web_fetch::is_pdf(&content_type, &bytes) {
+        crate::web_fetch::extract_pdf_content(&bytes)
+    } else if crate::web_fetch::is_binary_content(&content_type, &bytes) {
+        let type_label = if content_type.is_empty() {
+            "binary data"
+        } else {
+            content_type.as_str()
+        };
+        format!(
+            "[Binary content: {type_label}, {} bytes — binary data is omitted from context]",
+            bytes.len()
+        )
+    } else {
+        String::from_utf8_lossy(&bytes).to_string()
+    };
+
     let max_len = 50_000;
     let truncated = if body.len() > max_len {
         format!(
-            "{}... [truncated, {} total bytes]",
+            "{}... [truncated, {} total chars]",
             crate::str_utils::safe_truncate_str(&body, max_len),
             body.len()
         )
@@ -1576,6 +1592,7 @@ async fn tool_web_fetch_legacy(input: &serde_json::Value) -> Result<String, Stri
     };
     Ok(format!("HTTP {status}\n\n{truncated}"))
 }
+
 
 /// Legacy web search via DuckDuckGo HTML only. Used when WebToolsContext is unavailable.
 async fn tool_web_search_legacy(input: &serde_json::Value) -> Result<String, String> {
