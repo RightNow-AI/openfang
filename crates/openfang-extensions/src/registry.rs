@@ -1,6 +1,6 @@
 //! Integration Registry — manages bundled + installed integration templates.
 //!
-//! Loads 25 bundled MCP server templates at compile time, merges with user's
+//! Loads bundled MCP server templates at compile time, merges with user's
 //! installed state from `~/.openfang/integrations.toml`, and converts installed
 //! integrations to `McpServerConfigEntry` for kernel consumption.
 
@@ -236,8 +236,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut reg = IntegrationRegistry::new(dir.path());
         let count = reg.load_bundled();
-        assert_eq!(count, 25);
-        assert_eq!(reg.template_count(), 25);
+        assert_eq!(count, 26);
+        assert_eq!(reg.template_count(), 26);
     }
 
     #[test]

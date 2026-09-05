@@ -47,6 +47,26 @@ OpenFang implements MCP protocol version `2024-11-05`.
 
 The MCP client (`McpConnection` in `openfang-runtime`) allows OpenFang to connect to any MCP-compatible server and use its tools as if they were built-in.
 
+#### Parallel Search integration
+
+Enable the bundled Parallel Search preset with `openfang add parallel`. It uses
+`https://search.parallel.ai/mcp` over Streamable HTTP and needs no Parallel
+account, API key, or local MCP server. Free access is rate limited.
+
+Once connected, agents with access can call `mcp_parallel_web_search` and
+`mcp_parallel_web_fetch`. For agents with explicit `capabilities.tools`, add the
+tool names there. If an agent restricts `mcp_servers`, include `parallel`. Other
+tool restrictions still apply. These are optional MCP tools; the built-in web
+search provider stays unchanged.
+
+Enabled agents may invoke these tools during their work. Queries, requested URLs,
+and any supplied objectives, context, or metadata go to Parallel. To remove the
+integration, stop a running daemon with `openfang stop`, run
+`openfang remove parallel`, then start it again with `openfang start`. Stopping
+first clears the active connection and cached tools. See the
+[Parallel Search MCP documentation](https://docs.parallel.ai/integrations/mcp/search-mcp)
+for service details.
+
 #### Configuration
 
 MCP servers are configured in `config.toml` using the `[[mcp_servers]]` array:
