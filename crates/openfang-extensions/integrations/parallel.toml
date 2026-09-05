@@ -14,7 +14,9 @@ setup_instructions = """
    an MCP server allowlist, include parallel in mcp_servers. Other tool restrictions still apply.
 4. Tool calls send queries, requested URLs, and any supplied objectives, context,
    or metadata to Parallel. Only enable access for agents whose requests you want to send.
-5. Run `openfang remove parallel` to remove the integration.
+5. To remove the integration, stop a running daemon with `openfang stop`, run
+   `openfang remove parallel`, then start it again with `openfang start`.
+   Stopping first clears the active connection and cached tools.
 
 This adds optional MCP tools; it does not replace OpenFang's built-in web search.
 Documentation: https://docs.parallel.ai/integrations/mcp/search-mcp

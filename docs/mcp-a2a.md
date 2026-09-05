@@ -60,8 +60,10 @@ tool restrictions still apply. These are optional MCP tools; the built-in web
 search provider stays unchanged.
 
 Enabled agents may invoke these tools during their work. Queries, requested URLs,
-and any supplied objectives, context, or metadata go to Parallel. Run
-`openfang remove parallel` to remove the integration. See the
+and any supplied objectives, context, or metadata go to Parallel. To remove the
+integration, stop a running daemon with `openfang stop`, run
+`openfang remove parallel`, then start it again with `openfang start`. Stopping
+first clears the active connection and cached tools. See the
 [Parallel Search MCP documentation](https://docs.parallel.ai/integrations/mcp/search-mcp)
 for service details.
 
