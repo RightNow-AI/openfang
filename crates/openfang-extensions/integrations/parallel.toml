@@ -1,0 +1,29 @@
+id = "parallel"
+name = "Parallel Search"
+description = "Search the web and fetch page content with Parallel Search MCP, without an account or API key"
+category = "ai"
+icon = "🔎"
+tags = ["search", "web", "fetch", "parallel", "information-retrieval"]
+
+setup_instructions = """
+1. Run `openfang add parallel` or add Parallel Search from the integrations picker.
+2. No Parallel account, API key, or local MCP server is needed. Free access is rate limited.
+3. Start OpenFang if it is not running. Adding the integration enables its connection;
+   agents with access may then call mcp_parallel_web_search and mcp_parallel_web_fetch.
+   For restricted agents, include these names in capabilities.tools and, if using
+   an MCP server allowlist, include parallel in mcp_servers. Other tool restrictions still apply.
+4. Tool calls send queries, requested URLs, and any supplied objectives, context,
+   or metadata to Parallel. Only enable access for agents whose requests you want to send.
+5. Run `openfang remove parallel` to remove the integration.
+
+This adds optional MCP tools; it does not replace OpenFang's built-in web search.
+Documentation: https://docs.parallel.ai/integrations/mcp/search-mcp
+"""
+
+[transport]
+type = "http"
+url = "https://search.parallel.ai/mcp"
+
+[health_check]
+interval_secs = 60
+unhealthy_threshold = 3
