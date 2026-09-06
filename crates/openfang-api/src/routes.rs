@@ -4189,7 +4189,10 @@ pub async fn clawhub_install(
         );
     }
 
-    match client.install(&req.slug, &skills_dir).await {
+    match client
+        .install_with_owner_handle(&req.slug, req.owner_handle.as_deref(), &skills_dir)
+        .await
+    {
         Ok(result) => {
             // Hot-reload so agents see the new skill immediately (#752)
             state.kernel.reload_skills();

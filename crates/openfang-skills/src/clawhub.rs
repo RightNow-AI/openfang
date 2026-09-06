@@ -500,7 +500,24 @@ impl ClawHubClient {
         slug: &str,
         target_dir: &Path,
     ) -> Result<ClawHubInstallResult, SkillError> {
-        self.install_with_options(slug, target_dir, &InstallOptions::default())
+        self.install_with_options(slug, None, target_dir, &InstallOptions::default())
+            .await
+    }
+
+    /// Install a skill from ClawHub, targeting a specific publisher for an
+    /// ambiguous slug.
+    ///
+    /// ClawHub lets multiple publishers share one slug (e.g. `weather`). When
+    /// the slug is ambiguous the download endpoint rejects it with 409 unless
+    /// an `ownerHandle` is supplied; pass the selected handle here so the
+    /// unique publisher is installed.
+    pub async fn install_with_owner_handle(
+        &self,
+        slug: &str,
+        owner_handle: Option<&str>,
+        target_dir: &Path,
+    ) -> Result<ClawHubInstallResult, SkillError> {
+        self.install_with_options(slug, owner_handle, target_dir, &InstallOptions::default())
             .await
     }
 
@@ -520,16 +537,22 @@ impl ClawHubClient {
     /// 6. Check binary dependencies
     /// 7. Write skill.toml with `verified: false`
     /// 8. Enforce `require_signed` if requested.
+    ///
+    /// `owner_handle` optionally disambiguates a slug shared by multiple
+    /// ClawHub publishers (e.g. `weather`); when `None`, the download URL
+    /// matches pre-ambiguity behavior exactly.
     pub async fn install_with_options(
         &self,
         slug: &str,
+        owner_handle: Option<&str>,
         target_dir: &Path,
         opts: &InstallOptions,
     ) -> Result<ClawHubInstallResult, SkillError> {
-        // Use /api/v1/download?slug=... endpoint
-        let url = format!("{}/download?slug={}", self.base_url, urlencoded(slug));
+        // Use /api/v1/download?slug=... endpoint; append ownerHandle when the
+        // caller selected a specific publisher for an ambiguous slug.
+        let url = clawhub_download_url(&self.base_url, slug, owner_handle);
 
-        info!(slug, "Downloading skill from ClawHub");
+        info!(slug, owner_handle, "Downloading skill from ClawHub");
 
         // Use get_with_retry for the download — same 429/5xx handling as all
         // other endpoints, with 5 attempts and exponential backoff.
@@ -755,6 +778,21 @@ fn urlencoded(s: &str) -> String {
     result
 }
 
+/// Build the ClawHub download URL for a skill.
+///
+/// ClawHub allows several publishers to share one slug; when `owner_handle`
+/// is present it is appended as `ownerHandle` so an ambiguous slug resolves
+/// to the selected publisher instead of a 409 conflict.
+fn clawhub_download_url(base_url: &str, slug: &str, owner_handle: Option<&str>) -> String {
+    let mut url = format!("{}/download?slug={}", base_url, urlencoded(slug));
+    if let Some(owner) = owner_handle.filter(|s| !s.is_empty()) {
+        url.push('&');
+        url.push_str("ownerHandle=");
+        url.push_str(&urlencoded(owner));
+    }
+    url
+}
+
 /// Check if a binary is available on PATH.
 fn which_check(name: &str) -> Option<PathBuf> {
     let result = if cfg!(target_os = "windows") {
@@ -956,6 +994,26 @@ mod tests {
     fn test_clawhub_client_url() {
         let client = ClawHubClient::new(PathBuf::from("/tmp/cache"));
         assert_eq!(client.base_url, "https://clawhub.ai/api/v1");
+    }
+
+    #[test]
+    fn test_clawhub_download_url() {
+        let base = "https://clawhub.ai/api/v1";
+        // No owner → same URL as before the ambiguity fix.
+        assert_eq!(
+            clawhub_download_url(base, "github-helper", None),
+            "https://clawhub.ai/api/v1/download?slug=github-helper"
+        );
+        // Owner present → appended as ownerHandle, URL-encoded.
+        assert_eq!(
+            clawhub_download_url(base, "weather", Some("steipete")),
+            "https://clawhub.ai/api/v1/download?slug=weather&ownerHandle=steipete"
+        );
+        // Empty owner string behaves like None (no query param).
+        assert_eq!(
+            clawhub_download_url(base, "weather", Some("")),
+            "https://clawhub.ai/api/v1/download?slug=weather"
+        );
     }
 
     #[test]

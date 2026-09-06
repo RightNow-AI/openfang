@@ -115,6 +115,13 @@ pub struct MigrateScanRequest {
 pub struct ClawHubInstallRequest {
     /// ClawHub skill slug (e.g., "github-helper").
     pub slug: String,
+    /// Optional ClawHub owner handle to disambiguate duplicate slugs.
+    ///
+    /// ClawHub allows several publishers to share one slug (e.g. `weather`).
+    /// When the slug is ambiguous the API returns 409 unless `ownerHandle`
+    /// narrows the choice, so the install flow needs a way to forward it.
+    #[serde(default, rename = "ownerHandle", alias = "owner_handle")]
+    pub owner_handle: Option<String>,
 }
 
 /// Query parameters for `GET /api/commands`.
@@ -181,6 +188,29 @@ mod tests {
         .unwrap();
         assert!(req.require_signed);
         assert_eq!(req.allowed_signer_keys, vec!["abc123".to_string()]);
+    }
+
+    #[test]
+    fn clawhub_install_request_parses_owner_handle_aliases() {
+        // The API surfaces the ClawHub param as `ownerHandle` (camelCase);
+        // the internal Rust field uses `owner_handle`, so both must parse.
+        let req: ClawHubInstallRequest =
+            serde_json::from_str(r#"{"slug":"weather","ownerHandle":"steipete"}"#).unwrap();
+        assert_eq!(req.slug, "weather");
+        assert_eq!(req.owner_handle.as_deref(), Some("steipete"));
+
+        let req: ClawHubInstallRequest =
+            serde_json::from_str(r#"{"slug":"weather","owner_handle":"tongguanghai"}"#).unwrap();
+        assert_eq!(req.owner_handle.as_deref(), Some("tongguanghai"));
+    }
+
+    #[test]
+    fn clawhub_install_request_owner_handle_optional() {
+        // Legacy slug-only request still parses (owner_handle defaults to None).
+        let req: ClawHubInstallRequest =
+            serde_json::from_str(r#"{"slug":"github-helper"}"#).unwrap();
+        assert_eq!(req.slug, "github-helper");
+        assert_eq!(req.owner_handle, None);
     }
 
     #[test]
