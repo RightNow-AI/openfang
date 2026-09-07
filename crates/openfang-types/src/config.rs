@@ -206,7 +206,9 @@ pub enum SearchProvider {
     DuckDuckGo,
     /// SearXNG self-hosted search (no API key needed).
     Searxng,
-    /// Auto-select based on available API keys (Tavily → Brave → Perplexity → Searxng → DuckDuckGo).
+    /// Keenable web search (works without an API key; a key only lifts rate limits).
+    Keenable,
+    /// Auto-select based on available API keys (Tavily → Brave → Perplexity → Searxng → Keenable → DuckDuckGo).
     #[default]
     Auto,
 }
@@ -227,6 +229,8 @@ pub struct WebConfig {
     pub perplexity: PerplexitySearchConfig,
     /// SearXNG Search configuration.
     pub searxng: SearxngSearchConfig,
+    /// Keenable Search configuration.
+    pub keenable: KeenableSearchConfig,
     /// Web fetch configuration.
     pub fetch: WebFetchConfig,
 }
@@ -240,6 +244,7 @@ impl Default for WebConfig {
             tavily: TavilySearchConfig::default(),
             perplexity: PerplexitySearchConfig::default(),
             searxng: SearxngSearchConfig::default(),
+            keenable: KeenableSearchConfig::default(),
             fetch: WebFetchConfig::default(),
         }
     }
@@ -323,6 +328,31 @@ impl Default for PerplexitySearchConfig {
 pub struct SearxngSearchConfig {
     /// Base URL of the SearXNG instance (e.g., "https://search.example.com").
     pub url: String,
+}
+
+/// Keenable Search API configuration.
+///
+/// Works without an API key: the public endpoint is used and only per-IP
+/// rate limits apply. Setting the key lifts those limits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeenableSearchConfig {
+    /// Env var name holding the (optional) API key.
+    pub api_key_env: String,
+    /// Maximum results to return.
+    pub max_results: usize,
+    /// Snippet length (characters) requested from the API; a hint, not a hard cap.
+    pub snippet_max_length: usize,
+}
+
+impl Default for KeenableSearchConfig {
+    fn default() -> Self {
+        Self {
+            api_key_env: "KEENABLE_API_KEY".to_string(),
+            max_results: 5,
+            snippet_max_length: 500,
+        }
+    }
 }
 
 /// Web fetch configuration.
@@ -3835,7 +3865,8 @@ impl KernelConfig {
                     );
                 }
             }
-            SearchProvider::DuckDuckGo | SearchProvider::Auto => {}
+            // Keenable works without a key, so nothing to check.
+            SearchProvider::DuckDuckGo | SearchProvider::Keenable | SearchProvider::Auto => {}
         }
 
         // --- Binding validation (channel_id) ---

@@ -386,6 +386,31 @@ type = "sse"
 url = "https://tools.example.com/mcp"
 ```
 
+#### Keenable Search (bundled, no API key)
+
+`openfang add keenable` enables the bundled preset for the hosted
+[Keenable](https://keenable.ai) MCP server at `https://api.keenable.ai/mcp`
+(Streamable HTTP). It needs no account, API key, or local process; keyless
+traffic is rate limited per IP. Once connected, agents can call
+`mcp_keenable_search_web_pages` and `mcp_keenable_fetch_page_content`. For
+agents with explicit `capabilities.tools`, add those names; if an agent
+restricts `mcp_servers`, include `keenable`. Queries and requested URLs go to
+Keenable. The same backend is also available to the built-in `web_search`
+tool as the native `keenable` provider (see `[web.keenable]` in
+[configuration.md](configuration.md)).
+
+The equivalent manual entry is:
+
+```toml
+[[mcp_servers]]
+name = "keenable"
+timeout_secs = 30
+
+[mcp_servers.transport]
+type = "http"
+url = "https://api.keenable.ai/mcp"
+```
+
 #### Multiple Servers
 
 ```toml

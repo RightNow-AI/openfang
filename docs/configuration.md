@@ -134,7 +134,7 @@ shared_secret = ""                   # Required when network_enabled = true
 
 # --- Web Tools ---
 [web]
-search_provider = "auto"             # auto | brave | tavily | perplexity | duck_duck_go
+search_provider = "auto"             # auto | brave | tavily | perplexity | searxng | keenable | duck_duck_go
 cache_ttl_minutes = 15
 
 [web.brave]
@@ -153,6 +153,11 @@ include_answer = true
 [web.perplexity]
 api_key_env = "PERPLEXITY_API_KEY"
 model = "sonar"
+
+[web.keenable]
+api_key_env = "KEENABLE_API_KEY"     # optional: works without a key, a key lifts rate limits
+max_results = 5
+snippet_max_length = 500
 
 [web.fetch]
 max_chars = 50000
@@ -430,11 +435,12 @@ cache_ttl_minutes = 15
 
 | Value | Description |
 |-------|-------------|
-| `auto` | Cascading fallback: tries Tavily, then Brave, then Perplexity, then SearXNG, then DuckDuckGo, based on which API keys/configs are available. |
+| `auto` | Cascading fallback: tries Tavily, then Brave, then Perplexity, then SearXNG, then Keenable, then DuckDuckGo, based on which API keys/configs are available. |
 | `brave` | Brave Search API. Requires `BRAVE_API_KEY`. |
 | `tavily` | Tavily AI-native search. Requires `TAVILY_API_KEY`. |
 | `perplexity` | Perplexity AI search. Requires `PERPLEXITY_API_KEY`. |
 | `searxng` | Self-hosted search engine aggregator. No API key required, just point to your SearXNG instance. |
+| `keenable` | [Keenable](https://keenable.ai) search API. Works without an API key; `KEENABLE_API_KEY` is optional and only lifts the per-IP rate limit. |
 | `duck_duck_go` | DuckDuckGo HTML scraping. No API key needed. |
 
 #### `[web.brave]`
@@ -498,6 +504,23 @@ url = "https://searxng.example.com"    # SearXNG instance URL (required)
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `url` | string | (required) | Full URL of your SearXNG instance (e.g., `https://searxng.example.com`). Must be accessible. |
+
+#### `[web.keenable]`
+
+Keenable works without an API key. With no key set, requests go to the public endpoint (`/v1/search/public`), which is rate limited per IP. Setting `KEENABLE_API_KEY` switches to the keyed endpoint and lifts that limit; nothing else changes.
+
+```toml
+[web.keenable]
+api_key_env = "KEENABLE_API_KEY"
+max_results = 5
+snippet_max_length = 500
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `api_key_env` | string | `"KEENABLE_API_KEY"` | Environment variable name holding the optional Keenable API key. Unset = public endpoint. |
+| `max_results` | usize | `5` | Maximum number of search results to return. |
+| `snippet_max_length` | usize | `500` | Snippet length in characters requested from the API. A hint; the API may return slightly more. |
 
 #### `[web.fetch]`
 
@@ -1417,6 +1440,7 @@ Complete table of all environment variables referenced by the configuration. Non
 | `BRAVE_API_KEY` | `[web.brave]` | Brave Search API key. |
 | `TAVILY_API_KEY` | `[web.tavily]` | Tavily Search API key. |
 | `PERPLEXITY_API_KEY` | `[web.perplexity]` | Perplexity Search API key (shared with LLM provider). |
+| `KEENABLE_API_KEY` | `[web.keenable]` | Keenable Search API key. Optional; the provider works without it. |
 
 ### Channel Tokens
 
@@ -1526,6 +1550,7 @@ For **web search providers**, the validator checks:
 | `brave` | `web.brave.api_key_env` |
 | `tavily` | `web.tavily.api_key_env` |
 | `perplexity` | `web.perplexity.api_key_env` |
+| `keenable` | (no check -- API key optional) |
 | `duck_duck_go` | (no check -- no API key needed) |
 | `auto` | (no check -- cascading fallback handles missing keys) |
 

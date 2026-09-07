@@ -1385,6 +1385,7 @@ max_memory_bytes = 16777216 # 16 MB max WASM memory
 | `GROQ_API_KEY` | Groq provider |
 | `BRAVE_API_KEY` | Brave web search |
 | `TAVILY_API_KEY` | Tavily web search |
+| `KEENABLE_API_KEY` | Keenable web search (optional) |
 | `PERPLEXITY_API_KEY` | Perplexity web search |
 
 All environment variable API keys are wrapped in `Zeroizing<String>` when

@@ -1,0 +1,33 @@
+id = "keenable"
+name = "Keenable Search"
+description = "Search the web and fetch page content through the hosted Keenable MCP server, no account or API key needed"
+category = "ai"
+icon = "🔎"
+tags = ["search", "web", "fetch", "keenable", "keyless", "information-retrieval"]
+
+setup_instructions = """
+1. Run `openfang add keenable` or add Keenable Search from the integrations picker.
+2. No account, API key, or local MCP server is needed. The hosted server at
+   https://api.keenable.ai/mcp accepts anonymous connections; keyless traffic is
+   rate limited per IP.
+3. Start OpenFang if it is not running. Agents with access can then call
+   mcp_keenable_search_web_pages and mcp_keenable_fetch_page_content. For
+   restricted agents, add those names to capabilities.tools and, if you use an
+   MCP server allowlist, include keenable in mcp_servers.
+4. Tool calls send the search query or the requested URL to Keenable. Only
+   enable access for agents whose requests you want to send.
+5. To remove the integration, stop a running daemon with `openfang stop`, run
+   `openfang remove keenable`, then start it again with `openfang start`.
+
+This adds optional MCP tools next to OpenFang's built-in web_search tool, which
+also has a native `keenable` provider ([web] search_provider = "keenable").
+Documentation: https://keenable.ai
+"""
+
+[transport]
+type = "http"
+url = "https://api.keenable.ai/mcp"
+
+[health_check]
+interval_secs = 60
+unhealthy_threshold = 3

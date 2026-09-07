@@ -1351,4 +1351,4 @@ The following providers are recognized by `openfang config set-key` and `openfan
 | Cohere | `COHERE_API_KEY` | -- |
 | xAI | `XAI_API_KEY` | -- |
 
-Additional search/fetch provider keys: `BRAVE_API_KEY`, `TAVILY_API_KEY`.
+Additional search/fetch provider keys: `BRAVE_API_KEY`, `TAVILY_API_KEY`, `KEENABLE_API_KEY` (optional).
