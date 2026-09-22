@@ -7074,6 +7074,7 @@ pub async fn mcp_http(
             Some(&kernel_handle),
             None,
             None,
+            None,
             Some(&skill_snapshot),
             Some(&state.kernel.mcp_connections),
             Some(&state.kernel.web_ctx),

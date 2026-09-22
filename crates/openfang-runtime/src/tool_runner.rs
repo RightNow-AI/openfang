@@ -113,6 +113,7 @@ pub async fn execute_tool(
     kernel: Option<&Arc<dyn KernelHandle>>,
     allowed_tools: Option<&[String]>,
     caller_agent_id: Option<&str>,
+    caller_sender_id: Option<&str>,
     skill_registry: Option<&SkillRegistry>,
     mcp_connections: Option<&tokio::sync::Mutex<Vec<mcp::McpConnection>>>,
     web_ctx: Option<&WebToolsContext>,
@@ -303,8 +304,8 @@ pub async fn execute_tool(
         "agent_activate" => tool_agent_activate(input, kernel),
 
         // Shared memory tools
-        "memory_store" => tool_memory_store(input, kernel),
-        "memory_recall" => tool_memory_recall(input, kernel),
+        "memory_store" => tool_memory_store(input, kernel, caller_sender_id),
+        "memory_recall" => tool_memory_recall(input, kernel, caller_sender_id),
 
         // Collaboration tools
         "agent_find" => tool_agent_find(input, kernel),
@@ -1873,24 +1874,40 @@ fn tool_agent_activate(
 // Shared memory tools
 // ---------------------------------------------------------------------------
 
+/// Namespace a memory key by the caller's channel identity, so different
+/// end users (e.g. distinct Nextcloud Talk / Telegram / Discord senders)
+/// never read or write each other's memory entries. Falls back to the
+/// unprefixed key when no sender identity is available (dashboard/API/cron
+/// callers, which are already owner-trusted).
+fn scoped_memory_key(key: &str, caller_sender_id: Option<&str>) -> String {
+    match caller_sender_id {
+        Some(sender) if !sender.is_empty() => format!("user:{sender}:{key}"),
+        _ => key.to_string(),
+    }
+}
+
 fn tool_memory_store(
     input: &serde_json::Value,
     kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_sender_id: Option<&str>,
 ) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
     let key = input["key"].as_str().ok_or("Missing 'key' parameter")?;
     let value = input.get("value").ok_or("Missing 'value' parameter")?;
-    kh.memory_store(key, value.clone())?;
+    let scoped_key = scoped_memory_key(key, caller_sender_id);
+    kh.memory_store(&scoped_key, value.clone())?;
     Ok(format!("Stored value under key '{key}'."))
 }
 
 fn tool_memory_recall(
     input: &serde_json::Value,
     kernel: Option<&Arc<dyn KernelHandle>>,
+    caller_sender_id: Option<&str>,
 ) -> Result<String, String> {
     let kh = require_kernel(kernel)?;
     let key = input["key"].as_str().ok_or("Missing 'key' parameter")?;
-    match kh.memory_recall(key)? {
+    let scoped_key = scoped_memory_key(key, caller_sender_id);
+    match kh.memory_recall(&scoped_key)? {
         Some(val) => Ok(serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string())),
         None => Ok(format!("No value found for key '{key}'.")),
     }

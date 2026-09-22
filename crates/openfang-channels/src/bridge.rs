@@ -102,6 +102,21 @@ pub trait ChannelBridgeHandle: Send + Sync {
     /// Send a message to an agent and get the text response.
     async fn send_message(&self, agent_id: AgentId, message: &str) -> Result<String, String>;
 
+    /// Send a message on behalf of a specific end-user identity (e.g. the
+    /// Nextcloud Talk / Telegram / Discord actor who sent it), so tools like
+    /// memory_store/memory_recall can scope data per real person instead of
+    /// sharing one namespace across every channel user. Default falls back
+    /// to `send_message()` (no per-user scoping) for handles that don't
+    /// implement this.
+    async fn send_message_from(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        _sender_id: Option<&str>,
+    ) -> Result<String, String> {
+        self.send_message(agent_id, message).await
+    }
+
     /// Send a message with structured content blocks (text + images) to an agent.
     ///
     /// Default implementation extracts text from blocks and falls back to `send_message()`.
@@ -1330,8 +1345,19 @@ async fn dispatch_message(
         text.clone()
     };
 
-    // Send to agent and relay response
-    let result = handle.send_message(agent_id, &prefixed_text).await;
+    // Send to agent and relay response. Scope by the channel actor's own
+    // identity (falls back to platform_id, e.g. the room/chat id, for
+    // adapters that don't set a distinct actor_id) so per-user tools like
+    // memory_store/memory_recall don't leak across different real people.
+    let sender_scope = message
+        .metadata
+        .get("actor_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(message.sender.platform_id.as_str());
+    let result = handle
+        .send_message_from(agent_id, &prefixed_text, Some(sender_scope))
+        .await;
 
     // Stop the typing refresh now that we have a response
     typing_task.abort();
@@ -1359,7 +1385,9 @@ async fn dispatch_message(
             // Try re-resolution before reporting error
             if let Some(new_id) = try_reresolution(&e, &channel_key, handle, router).await {
                 let typing_task2 = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
-                let retry = handle.send_message(new_id, &text).await;
+                let retry = handle
+                    .send_message_from(new_id, &text, Some(sender_scope))
+                    .await;
                 typing_task2.abort();
                 match retry {
                     Ok(response) => {

@@ -1831,6 +1831,28 @@ impl OpenFangKernel {
             .await
     }
 
+    /// Like `send_message`, but on behalf of a specific end-user identity
+    /// (e.g. the real person behind a Nextcloud Talk / Telegram / Discord
+    /// message), so per-user tools such as memory_store/memory_recall can
+    /// scope data correctly instead of sharing one namespace across every
+    /// channel user. Resolves the kernel handle the same way `send_message`
+    /// does.
+    pub async fn send_message_from(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+    ) -> KernelResult<AgentLoopResult> {
+        let handle: Option<Arc<dyn KernelHandle>> = self
+            .self_handle
+            .get()
+            .and_then(|w| w.upgrade())
+            .map(|arc| arc as Arc<dyn KernelHandle>);
+        self.send_message_with_handle(agent_id, message, handle, sender_id, sender_name)
+            .await
+    }
+
     /// Send a multimodal message (text + images) to an agent and get a response.
     ///
     /// Used by channel bridges when a user sends a photo — the image is downloaded,
@@ -1997,6 +2019,11 @@ impl OpenFangKernel {
         self.scheduler
             .check_quota(agent_id)
             .map_err(KernelError::OpenFang)?;
+
+        // Captured before `sender_id` is moved into the prompt context below,
+        // so tool calls (e.g. memory_store/memory_recall) can scope data
+        // per end-user identity instead of sharing one global namespace.
+        let sender_id_for_tools = sender_id.clone();
 
         let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::OpenFang(OpenFangError::AgentNotFound(agent_id.to_string()))
@@ -2355,6 +2382,7 @@ impl OpenFangKernel {
                 driver,
                 &tools,
                 kernel_handle,
+                sender_id_for_tools.as_deref(),
                 tx,
                 Some(&skill_snapshot),
                 Some(&kernel_clone.mcp_connections),
@@ -2642,6 +2670,11 @@ impl OpenFangKernel {
         self.metering
             .check_quota(agent_id, &entry.manifest.resources)
             .map_err(KernelError::OpenFang)?;
+
+        // Captured before `sender_id` is moved into the prompt context below,
+        // so tool calls (e.g. memory_store/memory_recall) can scope data
+        // per end-user identity instead of sharing one global namespace.
+        let sender_id_for_tools = sender_id.clone();
 
         let mut session = self
             .memory
@@ -2947,6 +2980,7 @@ impl OpenFangKernel {
             driver,
             &tools,
             kernel_handle,
+            sender_id_for_tools.as_deref(),
             Some(&skill_snapshot),
             Some(&self.mcp_connections),
             Some(&self.web_ctx),
