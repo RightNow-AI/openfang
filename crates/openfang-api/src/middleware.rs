@@ -95,6 +95,17 @@ pub async fn auth(
     // POST/PUT/DELETE to any endpoint ALWAYS requires auth to prevent
     // unauthenticated writes (cron job creation, skill install, etc.).
     let is_get = method == axum::http::Method::GET;
+    // SECURITY: this used to also exempt a long list of GET data endpoints
+    // (agents, sessions, config, channels, hands, skills, integrations,
+    // workflows, approvals, budget, providers, models, network status...)
+    // on the theory that "the SPA needs to render before the user enters
+    // their key". In practice that means anyone who reaches the instance
+    // can browse real operational data (session lists, config, installed
+    // integrations, agent details) without ever proving they hold the key.
+    // Only truly static/anonymous surfaces — the page shell, health/version
+    // checks, the A2A discovery card, and the auth mechanism itself
+    // (login/check/logout, needed to validate a freshly-typed key) — are
+    // exempt. Everything else must present a valid Bearer/X-API-Key token.
     let is_public = path == "/"
         || path == "/logo.png"
         || path == "/favicon.ico"
@@ -104,36 +115,6 @@ pub async fn auth(
         || path == "/api/health/detail"
         || path == "/api/status"
         || path == "/api/version"
-        || (path == "/api/agents" && is_get)
-        || (path == "/api/profiles" && is_get)
-        || (path == "/api/config" && is_get)
-        || (path == "/api/config/schema" && is_get)
-        || (path.starts_with("/api/uploads/") && is_get)
-        // Dashboard read endpoints — allow unauthenticated so the SPA can
-        // render before the user enters their API key.
-        || (path == "/api/models" && is_get)
-        || (path == "/api/models/aliases" && is_get)
-        || (path == "/api/providers" && is_get)
-        || (path == "/api/budget" && is_get)
-        || (path == "/api/budget/agents" && is_get)
-        || (path.starts_with("/api/budget/agents/") && is_get)
-        || (path == "/api/network/status" && is_get)
-        || (path == "/api/a2a/agents" && is_get)
-        || (path == "/api/approvals" && is_get)
-        || (path.starts_with("/api/approvals/") && is_get)
-        || (path == "/api/channels" && is_get)
-        || (path == "/api/hands" && is_get)
-        || (path == "/api/hands/active" && is_get)
-        || (path.starts_with("/api/hands/") && is_get)
-        || (path == "/api/skills" && is_get)
-        || (path.starts_with("/api/skills/") && path.ends_with("/config") && is_get)
-        || (path == "/api/sessions" && is_get)
-        || (path == "/api/integrations" && is_get)
-        || (path == "/api/integrations/available" && is_get)
-        || (path == "/api/integrations/health" && is_get)
-        || (path == "/api/workflows" && is_get)
-        || path == "/api/logs/stream"  // SSE stream, read-only
-        || (path.starts_with("/api/cron/") && is_get)
         || path.starts_with("/api/providers/github-copilot/oauth/")
         || path == "/api/auth/login"
         || path == "/api/auth/logout"
