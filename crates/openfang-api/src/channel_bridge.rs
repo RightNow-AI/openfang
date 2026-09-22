@@ -84,6 +84,23 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
         Ok(result.response)
     }
 
+    async fn send_message_from(
+        &self,
+        agent_id: AgentId,
+        message: &str,
+        sender_id: Option<&str>,
+    ) -> Result<String, String> {
+        let result = self
+            .kernel
+            .send_message_from(agent_id, message, sender_id.map(String::from), None)
+            .await
+            .map_err(|e| format!("{e}"))?;
+        if result.silent {
+            return Ok(String::new());
+        }
+        Ok(result.response)
+    }
+
     async fn send_message_with_blocks(
         &self,
         agent_id: AgentId,
