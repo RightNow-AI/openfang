@@ -269,7 +269,7 @@ impl ChannelAdapter for NextcloudAdapter {
                         .header("Authorization", format!("Bearer {}", token.as_str()))
                         .header("OCS-APIRequest", "true")
                         .header("Accept", "application/json")
-                        .timeout(Duration::from_secs(30))
+                        .timeout(Duration::from_secs(45))
                         .send()
                         .await
                     {
@@ -368,7 +368,7 @@ impl ChannelAdapter for NextcloudAdapter {
                             content: msg_content,
                             target_agent: None,
                             timestamp: Utc::now(),
-                            is_group: true,
+                            is_group: false,
                             thread_id: reference_id,
                             metadata: {
                                 let mut m = HashMap::new();
