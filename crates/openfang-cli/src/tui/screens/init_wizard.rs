@@ -77,6 +77,14 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
+        name: "aimlapi",
+        display: "aimlapi.com",
+        env_var: "AIMLAPI_API_KEY",
+        default_model: "aimlapi/google/gemini-2.5-flash",
+        needs_key: true,
+        hint: "",
+    },
+    ProviderInfo {
         name: "together",
         display: "Together",
         env_var: "TOGETHER_API_KEY",

@@ -16,14 +16,15 @@ pub mod vertex;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
-    AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL,
-    COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NOVITA_BASE_URL, NVIDIA_NIM_BASE_URL,
-    OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL,
-    QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL,
-    VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL,
-    ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    AI21_BASE_URL, AIMLAPI_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, CEREBRAS_BASE_URL,
+    CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL,
+    GROQ_BASE_URL, HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL,
+    LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NOVITA_BASE_URL,
+    NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
+    PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL,
+    SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -109,6 +110,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         "requesty" => Some(ProviderDefaults {
             base_url: REQUESTY_BASE_URL,
             api_key_env: "REQUESTY_API_KEY",
+            key_required: true,
+        }),
+        "aimlapi" => Some(ProviderDefaults {
+            base_url: AIMLAPI_BASE_URL,
+            api_key_env: "AIMLAPI_API_KEY",
             key_required: true,
         }),
         "deepseek" => Some(ProviderDefaults {
@@ -306,6 +312,53 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
     }
 }
 
+/// Partner identifier sent with AI/ML API traffic originating from OpenFang.
+///
+/// The gateway accepts `^part_[A-Za-z0-9]{1,64}$` and silently ignores anything
+/// else — a typo costs attribution without producing any runtime error, which is
+/// why the shape is asserted in a unit test rather than only reviewed by eye.
+pub const AIMLAPI_PARTNER_ID: &str = "part_Z6HbToJ3l2ht1dFSzHC98vk6";
+
+/// The one host that owns the AI/ML API attribution headers.
+const AIMLAPI_HOST: &str = "api.aimlapi.com";
+
+/// True when `base_url` resolves to AI/ML API's own origin.
+///
+/// Matching the *origin* rather than the configured provider name is deliberate:
+/// a user may reach any OpenAI-compatible endpoint through `base_url`, and the
+/// attribution headers must not ride a request to a different vendor, nor to a
+/// third-party proxy that merely fronts the same API.
+fn is_aimlapi_origin(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.eq_ignore_ascii_case(AIMLAPI_HOST)))
+        .unwrap_or(false)
+}
+
+/// Attribution headers identifying OpenFang as the calling application to
+/// AI/ML API. Empty for every other origin.
+///
+/// `HTTP-Referer` and `X-Title` follow the OpenRouter convention and name the
+/// *host* project, not the gateway. A fresh `Vec` is built per driver, so no
+/// shared constant is ever mutated.
+fn aimlapi_attribution_headers(base_url: &str) -> Vec<(String, String)> {
+    if !is_aimlapi_origin(base_url) {
+        return Vec::new();
+    }
+    vec![
+        (
+            "HTTP-Referer".to_string(),
+            "https://github.com/RightNow-AI/openfang".to_string(),
+        ),
+        ("X-Title".to_string(), "OpenFang".to_string()),
+        (
+            "X-AIMLAPI-Partner-ID".to_string(),
+            AIMLAPI_PARTNER_ID.to_string(),
+        ),
+        ("X-AIMLAPI-Source".to_string(), "agent/openfang".to_string()),
+    ]
+}
+
 /// Create an LLM driver based on provider name and configuration.
 ///
 /// Supported providers:
@@ -313,6 +366,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
 /// - `openai` — OpenAI GPT models
 /// - `groq` — Groq (ultra-fast inference)
 /// - `openrouter` — OpenRouter (multi-model gateway)
+/// - `aimlapi` — aimlapi.com (multi-model gateway)
 /// - `deepseek` — DeepSeek
 /// - `together` — Together AI
 /// - `mistral` — Mistral AI
@@ -546,7 +600,9 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .or_else(|| local_provider_url_from_env(provider))
             .unwrap_or_else(|| defaults.base_url.to_string());
 
-        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
+        let attribution = aimlapi_attribution_headers(&base_url);
+        let driver = openai::OpenAIDriver::new(api_key, base_url);
+        return Ok(Arc::new(driver.with_extra_headers(attribution)));
     }
 
     // Unknown provider — if base_url is set, treat as custom OpenAI-compatible.
@@ -558,10 +614,9 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
             std::env::var(&env_var).unwrap_or_default()
         });
-        return Ok(Arc::new(openai::OpenAIDriver::new(
-            api_key,
-            base_url.clone(),
-        )));
+        let attribution = aimlapi_attribution_headers(base_url);
+        let driver = openai::OpenAIDriver::new(api_key, base_url.clone());
+        return Ok(Arc::new(driver.with_extra_headers(attribution)));
     }
 
     // No base_url either — last resort: check if the user set an API key env var
@@ -587,8 +642,8 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         status: 0,
         message: format!(
             "Unknown provider '{}'. Supported: anthropic, gemini, openai, azure, bedrock, groq, \
-             openrouter, deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, \
-             perplexity, cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, \
+             openrouter, aimlapi, deepseek, together, mistral, fireworks, ollama, vllm, \
+             lmstudio, perplexity, cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, \
              github-copilot, chutes, venice, nvidia, codex, claude-code. \
              Or set base_url for a custom OpenAI-compatible endpoint.",
             provider
@@ -1306,5 +1361,107 @@ mod tests {
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok(), "lmstudio default should construct");
+    }
+
+    // ── aimlapi.com ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_provider_defaults_aimlapi() {
+        let d = provider_defaults("aimlapi").unwrap();
+        assert_eq!(d.base_url, "https://api.aimlapi.com/v1");
+        assert_eq!(d.api_key_env, "AIMLAPI_API_KEY");
+        assert!(d.key_required);
+    }
+
+    /// The gateway credits usage only when the partner id matches its pattern.
+    /// A malformed id is accepted and then ignored — no error, no traffic
+    /// attributed — so this assertion is the only thing that catches a typo.
+    #[test]
+    fn test_aimlapi_partner_id_shape() {
+        let re = regex_lite::Regex::new(r"^part_[A-Za-z0-9]{1,64}$")
+            .expect("partner id pattern must compile");
+        assert!(
+            re.is_match(AIMLAPI_PARTNER_ID),
+            "partner id {AIMLAPI_PARTNER_ID:?} must match ^part_[A-Za-z0-9]{{1,64}}$"
+        );
+    }
+
+    #[test]
+    fn test_aimlapi_attribution_headers_for_our_origin() {
+        let headers = aimlapi_attribution_headers(AIMLAPI_BASE_URL);
+        let names: Vec<&str> = headers.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "HTTP-Referer",
+                "X-Title",
+                "X-AIMLAPI-Partner-ID",
+                "X-AIMLAPI-Source",
+            ]
+        );
+        let get = |k: &str| {
+            headers
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(get("X-AIMLAPI-Partner-ID"), AIMLAPI_PARTNER_ID);
+        assert_eq!(get("X-AIMLAPI-Source"), "agent/openfang");
+        // HTTP-Referer / X-Title identify the calling app, not the gateway.
+        assert_eq!(get("X-Title"), "OpenFang");
+        assert!(get("HTTP-Referer").contains("RightNow-AI/openfang"));
+    }
+
+    /// Attribution is keyed on the request origin, so it cannot ride a request
+    /// to another vendor, to a look-alike host, or to a proxy fronting the API.
+    #[test]
+    fn test_aimlapi_attribution_headers_scoped_to_origin() {
+        for url in [
+            OPENROUTER_BASE_URL,
+            OPENAI_BASE_URL,
+            "https://gateway.example.com/aimlapi/v1",
+            "https://api.aimlapi.com.example.net/v1",
+            "http://localhost:8000/v1",
+            "not a url",
+            "",
+        ] {
+            assert!(
+                aimlapi_attribution_headers(url).is_empty(),
+                "attribution must not leak to {url:?}"
+            );
+        }
+    }
+
+    /// A user pointing a custom provider at our origin still gets attribution,
+    /// because the check is on the URL rather than on the provider name.
+    #[test]
+    fn test_aimlapi_attribution_follows_custom_base_url() {
+        assert!(!aimlapi_attribution_headers("https://api.aimlapi.com/v1").is_empty());
+        assert!(!aimlapi_attribution_headers("https://API.AIMLAPI.COM/v1").is_empty());
+    }
+
+    #[test]
+    fn test_create_driver_aimlapi_requires_key() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = EnvVarGuard::remove("AIMLAPI_API_KEY");
+
+        let config = DriverConfig {
+            provider: "aimlapi".to_string(),
+            api_key: None,
+            base_url: None,
+            skip_permissions: true,
+            subprocess_timeout_secs: None,
+        };
+        assert!(
+            matches!(create_driver(&config), Err(LlmError::MissingApiKey(_))),
+            "aimlapi must report a missing key rather than silently sending none"
+        );
+
+        let with_key = DriverConfig {
+            api_key: Some("test-key".to_string()),
+            ..config
+        };
+        assert!(create_driver(&with_key).is_ok());
     }
 }

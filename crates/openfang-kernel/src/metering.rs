@@ -234,6 +234,28 @@ pub struct BudgetStatus {
 /// Order matters: more specific patterns must come before generic ones
 /// (e.g. "gpt-4o-mini" before "gpt-4o", "gpt-4.1-mini" before "gpt-4.1").
 fn estimate_cost_rates(model: &str) -> (f64, f64) {
+    // ── aimlapi.com ────────────────────────────────────────────
+    // Router-style gateway. Catalog IDs are `aimlapi/<vendor>/<model>` and the
+    // gateway charges its own rates, which are not the upstream vendor's — a
+    // bare `contains("sonnet")` fallthrough would bill Anthropic's direct rate
+    // and understate the real cost, so the shipped models are priced here.
+    // Matching is restricted to the `aimlapi/` prefix so the bare
+    // `<vendor>/<model>` spelling, which other gateways also resolve to, cannot
+    // pick up these rates. `estimate_cost` lowercases before dispatching, hence
+    // the lowercase arms even though the catalog IDs are mixed case.
+    // Any other aimlapi model falls through to the substring patterns below,
+    // which is an approximation, exactly as Requesty does.
+    if let Some(upstream) = model.strip_prefix("aimlapi/") {
+        match upstream {
+            "anthropic/claude-sonnet-4.6" => return (4.13, 20.63),
+            "openai/gpt-5-5" => return (6.50, 39.00),
+            "google/gemini-2.5-flash" => return (0.39, 3.25),
+            "alibaba/qwen-max" => return (2.08, 8.32),
+            "meta-llama/llama-3.3-70b-instruct-turbo" => return (1.144, 1.144),
+            _ => {}
+        }
+    }
+
     // ── Requesty (issue #995) ──────────────────────────────────
     // Router-style gateway. IDs are `requesty/<upstream>/<model>` and
     // resolve via substring match on the upstream model name below
@@ -811,5 +833,50 @@ mod tests {
         let summary = engine.get_summary(Some(agent_id)).unwrap();
         assert_eq!(summary.call_count, 1);
         assert_eq!(summary.total_input_tokens, 500);
+    }
+
+    // ── aimlapi.com ───────────────────────────────────────────────────
+
+    /// The gateway's rates live in two places: the model catalog (used in
+    /// production via `estimate_cost_with_catalog`) and the substring table
+    /// above (the fallback path). They must not drift apart, so every aimlapi
+    /// catalog row is checked against the fallback here rather than trusting
+    /// two hand-maintained lists to stay in sync.
+    #[test]
+    fn test_aimlapi_fallback_rates_match_catalog() {
+        let catalog = openfang_runtime::model_catalog::ModelCatalog::new();
+        let rows: Vec<_> = catalog
+            .list_models()
+            .iter()
+            .filter(|m| m.provider == "aimlapi")
+            .map(|m| (m.id.clone(), m.input_cost_per_m, m.output_cost_per_m))
+            .collect();
+        assert!(!rows.is_empty(), "aimlapi must ship catalog rows");
+        for (id, cat_in, cat_out) in rows {
+            let cost = MeteringEngine::estimate_cost(&id, 1_000_000, 0);
+            assert!(
+                (cost - cat_in).abs() < 1e-6,
+                "input rate for {id} drifted: fallback {cost} vs catalog {cat_in}"
+            );
+            let cost = MeteringEngine::estimate_cost(&id, 0, 1_000_000);
+            assert!(
+                (cost - cat_out).abs() < 1e-6,
+                "output rate for {id} drifted: fallback {cost} vs catalog {cat_out}"
+            );
+        }
+    }
+
+    /// The aimlapi rates must stay scoped to the `aimlapi/` prefix: the bare
+    /// upstream spelling belongs to whatever provider actually serves it.
+    #[test]
+    fn test_aimlapi_rates_do_not_leak_to_bare_ids() {
+        let gateway =
+            MeteringEngine::estimate_cost("aimlapi/anthropic/claude-sonnet-4.6", 0, 1_000_000);
+        let direct = MeteringEngine::estimate_cost("anthropic/claude-sonnet-4.6", 0, 1_000_000);
+        assert!((gateway - 20.63).abs() < 1e-6);
+        assert!(
+            (direct - 15.0).abs() < 1e-6,
+            "bare id must keep Anthropic's own rate, got {direct}"
+        );
     }
 }

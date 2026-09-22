@@ -4,15 +4,16 @@
 //! with alias resolution, auth status detection, and pricing lookups.
 
 use openfang_types::model_catalog::{
-    AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
-    AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
-    DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL,
-    VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, AIMLAPI_BASE_URL,
+    ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL, CEREBRAS_BASE_URL,
+    CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL,
+    GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL,
+    LEMONADE_BASE_URL, LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL,
+    NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL,
+    PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL,
+    SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -630,6 +631,15 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             display_name: "Requesty".into(),
             api_key_env: "REQUESTY_API_KEY".into(),
             base_url: REQUESTY_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
+            id: "aimlapi".into(),
+            display_name: "aimlapi.com".into(),
+            api_key_env: "AIMLAPI_API_KEY".into(),
+            base_url: AIMLAPI_BASE_URL.into(),
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
@@ -2148,6 +2158,88 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             max_output_tokens: 32_768,
             input_cost_per_m: 0.39,
             output_cost_per_m: 0.39,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // aimlapi.com (5) — router-style OpenAI-compatible gateway
+        // 350+ chat models behind https://api.aimlapi.com/v1. IDs below are
+        // `aimlapi/<upstream-id>`; `strip_provider_prefix` removes the
+        // `aimlapi/` segment so the wire model is the gateway's canonical id.
+        // Every id here was checked against GET /v1/models (id-or-alias).
+        // Rates and context windows come from that same catalog
+        // (`pricing.units[]`, `info.contextLength`); the gateway's rates are its
+        // own and are not the upstream vendors' direct rates.
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "aimlapi/anthropic/claude-sonnet-4.6".into(),
+            display_name: "Claude Sonnet 4.6 (aimlapi.com)".into(),
+            provider: "aimlapi".into(),
+            tier: ModelTier::Smart,
+            context_window: 200_000,
+            max_output_tokens: 64_000,
+            input_cost_per_m: 4.13,
+            output_cost_per_m: 20.63,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "aimlapi/openai/gpt-5-5".into(),
+            display_name: "GPT-5.5 (aimlapi.com)".into(),
+            provider: "aimlapi".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_050_000,
+            max_output_tokens: 128_000,
+            input_cost_per_m: 6.50,
+            output_cost_per_m: 39.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "aimlapi/google/gemini-2.5-flash".into(),
+            display_name: "Gemini 2.5 Flash (aimlapi.com)".into(),
+            provider: "aimlapi".into(),
+            tier: ModelTier::Smart,
+            context_window: 1_000_000,
+            max_output_tokens: 65_536,
+            input_cost_per_m: 0.39,
+            output_cost_per_m: 3.25,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "aimlapi/alibaba/qwen-max".into(),
+            display_name: "Qwen Max (aimlapi.com)".into(),
+            provider: "aimlapi".into(),
+            tier: ModelTier::Smart,
+            context_window: 32_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 2.08,
+            output_cost_per_m: 8.32,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "aimlapi/meta-llama/Llama-3.3-70B-Instruct-Turbo".into(),
+            display_name: "Llama 3.3 70B Turbo (aimlapi.com)".into(),
+            provider: "aimlapi".into(),
+            tier: ModelTier::Balanced,
+            context_window: 128_000,
+            // The catalog reports outputMax 127_000 here, which is all but the
+            // whole context window; capped at a realistic value for this model.
+            max_output_tokens: 32_768,
+            input_cost_per_m: 1.144,
+            output_cost_per_m: 1.144,
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
@@ -4083,7 +4175,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 42);
+        assert_eq!(catalog.list_providers().len(), 43);
     }
 
     #[test]
@@ -4829,6 +4921,61 @@ mod tests {
             .expect("requesty/anthropic/claude-sonnet-4 must resolve");
         assert_eq!(entry.provider, "requesty");
         assert!(entry.supports_tools);
+    }
+
+    // ── aimlapi.com provider ──────────────────────────────────────────────
+
+    /// aimlapi.com must be registered with the correct base URL and env var,
+    /// and its catalog models must resolve.
+    #[test]
+    fn test_aimlapi_provider_and_models_present() {
+        let catalog = ModelCatalog::new();
+
+        let provider = catalog
+            .list_providers()
+            .iter()
+            .find(|p| p.id == "aimlapi")
+            .expect("aimlapi provider must be registered");
+        assert_eq!(provider.display_name, "aimlapi.com");
+        assert_eq!(provider.api_key_env, "AIMLAPI_API_KEY");
+        assert_eq!(provider.base_url, "https://api.aimlapi.com/v1");
+        assert!(provider.key_required);
+        assert!(
+            provider.model_count >= 1,
+            "aimlapi must have at least one model in catalog"
+        );
+
+        let entry = catalog
+            .find_model("aimlapi/anthropic/claude-sonnet-4.6")
+            .expect("aimlapi/anthropic/claude-sonnet-4.6 must resolve");
+        assert_eq!(entry.provider, "aimlapi");
+        assert!(entry.supports_tools);
+    }
+
+    /// Every aimlapi catalog id must carry the `aimlapi/` prefix, because
+    /// `strip_provider_prefix` is what turns it into the gateway's own model id
+    /// on the wire. A row without the prefix would be sent verbatim and 400.
+    #[test]
+    fn test_aimlapi_model_ids_are_prefixed() {
+        let catalog = ModelCatalog::new();
+        let rows: Vec<_> = catalog
+            .list_models()
+            .iter()
+            .filter(|m| m.provider == "aimlapi")
+            .collect();
+        assert!(!rows.is_empty(), "aimlapi must ship catalog rows");
+        for m in rows {
+            assert!(
+                m.id.starts_with("aimlapi/"),
+                "aimlapi model id must be prefixed: {}",
+                m.id
+            );
+            assert!(
+                m.display_name.ends_with("(aimlapi.com)"),
+                "aimlapi model label must name the provider: {}",
+                m.display_name
+            );
+        }
     }
 
     // ── Issue #1154: env-var overrides for local provider URLs ──

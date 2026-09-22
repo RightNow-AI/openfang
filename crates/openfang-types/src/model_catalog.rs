@@ -15,6 +15,9 @@ pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 pub const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const REQUESTY_BASE_URL: &str = "https://router.requesty.ai/v1";
+/// AI/ML API — OpenAI-compatible aggregator. Chat is `{base}/chat/completions`.
+/// There is no `{base}/completions` endpoint (it 404s), so never derive one.
+pub const AIMLAPI_BASE_URL: &str = "https://api.aimlapi.com/v1";
 pub const MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
 pub const TOGETHER_BASE_URL: &str = "https://api.together.xyz/v1";
 pub const FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";

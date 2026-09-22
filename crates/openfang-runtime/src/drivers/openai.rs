@@ -66,9 +66,13 @@ impl OpenAIDriver {
             || model.to_lowercase().contains("reasoner")
     }
 
-    /// Create a driver with additional HTTP headers (e.g. for Copilot IDE auth).
+    /// Create a driver with additional HTTP headers (e.g. for Copilot IDE auth,
+    /// or gateway attribution headers).
+    ///
+    /// Headers are *appended*, so a second call merges rather than silently
+    /// discarding whatever an earlier caller configured.
     pub fn with_extra_headers(mut self, headers: Vec<(String, String)>) -> Self {
-        self.extra_headers = headers;
+        self.extra_headers.extend(headers);
         self
     }
 
@@ -1704,6 +1708,62 @@ fn parse_groq_failed_tool_call(body: &str) -> Option<CompletionResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unset optional parameters must be *omitted* from the request body, not
+    /// serialised as `null`. Several OpenAI-compatible gateways reject an
+    /// explicit `null` on these fields with a 400 while accepting the key being
+    /// absent; `"tools": null` is the worst of them, because a host that clears
+    /// tools between turns succeeds on turn 1 and fails on turn 2 of an agent
+    /// loop. `skip_serializing_if` is what keeps that from happening here.
+    #[test]
+    fn test_unset_request_fields_are_omitted_not_null() {
+        let req = OaiRequest {
+            model: "gpt-4o-mini".to_string(),
+            messages: vec![],
+            max_tokens: None,
+            max_completion_tokens: None,
+            temperature: None,
+            tools: vec![],
+            tool_choice: None,
+            stream: false,
+            stream_options: None,
+            thinking: None,
+        };
+        let body = serde_json::to_value(&req).expect("request must serialise");
+        let obj = body.as_object().expect("request must be a JSON object");
+        for key in [
+            "max_tokens",
+            "max_completion_tokens",
+            "temperature",
+            "tools",
+            "tool_choice",
+            "stream",
+            "stream_options",
+            "thinking",
+        ] {
+            assert!(
+                !obj.contains_key(key),
+                "unset `{key}` must be omitted, not sent as null: {body}"
+            );
+        }
+        assert!(obj.contains_key("model"));
+        assert!(obj.contains_key("messages"));
+    }
+
+    /// Extra headers merge rather than overwrite, so one caller's attribution
+    /// cannot silently drop another caller's headers.
+    #[test]
+    fn test_with_extra_headers_merges() {
+        let driver = OpenAIDriver::new("k".to_string(), "https://example.com/v1".to_string())
+            .with_extra_headers(vec![("A".to_string(), "1".to_string())])
+            .with_extra_headers(vec![("B".to_string(), "2".to_string())]);
+        let names: Vec<&str> = driver
+            .extra_headers
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(names, vec!["A", "B"]);
+    }
 
     #[test]
     fn test_openai_driver_creation() {
