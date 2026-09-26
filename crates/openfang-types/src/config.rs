@@ -2064,6 +2064,8 @@ pub struct WhatsAppConfig {
     pub access_token_env: String,
     /// Env var name holding the webhook verify token (Cloud API mode).
     pub verify_token_env: String,
+    /// Env var name holding the Meta app secret for webhook signature validation.
+    pub app_secret_env: String,
     /// WhatsApp Business phone number ID (Cloud API mode).
     pub phone_number_id: String,
     /// Port to listen for webhook callbacks (Cloud API mode).
@@ -2086,6 +2088,7 @@ impl Default for WhatsAppConfig {
         Self {
             access_token_env: "WHATSAPP_ACCESS_TOKEN".to_string(),
             verify_token_env: "WHATSAPP_VERIFY_TOKEN".to_string(),
+            app_secret_env: "WHATSAPP_APP_SECRET".to_string(),
             phone_number_id: String::new(),
             webhook_port: 8443,
             gateway_url_env: "WHATSAPP_WEB_GATEWAY_URL".to_string(),
@@ -3425,13 +3428,40 @@ impl KernelConfig {
             }
         }
         if let Some(ref wa) = self.channels.whatsapp {
-            if std::env::var(&wa.access_token_env)
+            let gateway_mode = !std::env::var(&wa.gateway_url_env)
                 .unwrap_or_default()
-                .is_empty()
-            {
+                .is_empty();
+            let access_token_missing = std::env::var(&wa.access_token_env)
+                .unwrap_or_default()
+                .is_empty();
+            if !gateway_mode && access_token_missing {
                 warnings.push(format!(
                     "WhatsApp configured but {} is not set",
                     wa.access_token_env
+                ));
+            }
+            if !gateway_mode && wa.phone_number_id.is_empty() {
+                warnings.push("WhatsApp Cloud API configured but phone_number_id is empty".into());
+            }
+            if !gateway_mode
+                && std::env::var(&wa.verify_token_env)
+                    .unwrap_or_default()
+                    .is_empty()
+            {
+                warnings.push(format!(
+                    "WhatsApp Cloud API configured but {} is not set",
+                    wa.verify_token_env
+                ));
+            }
+            if !gateway_mode
+                && !access_token_missing
+                && std::env::var(&wa.app_secret_env)
+                    .unwrap_or_default()
+                    .is_empty()
+            {
+                warnings.push(format!(
+                    "WhatsApp Cloud API configured but {} is not set",
+                    wa.app_secret_env
                 ));
             }
         }

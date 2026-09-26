@@ -42,3 +42,4 @@ rumqttc = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+tower = { workspace = true }

@@ -1747,11 +1747,12 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
             ChannelField { key: "access_token_env", label: "Access Token", field_type: FieldType::Secret, env_var: Some("WHATSAPP_ACCESS_TOKEN"), required: false, placeholder: "EAAx...", advanced: true },
             ChannelField { key: "phone_number_id", label: "Phone Number ID", field_type: FieldType::Text, env_var: None, required: false, placeholder: "1234567890", advanced: true },
             ChannelField { key: "verify_token_env", label: "Verify Token", field_type: FieldType::Secret, env_var: Some("WHATSAPP_VERIFY_TOKEN"), required: false, placeholder: "my-verify-token", advanced: true },
+            ChannelField { key: "app_secret_env", label: "Meta App Secret", field_type: FieldType::Secret, env_var: Some("WHATSAPP_APP_SECRET"), required: false, placeholder: "Meta app secret", advanced: true },
             ChannelField { key: "webhook_port", label: "Webhook Port", field_type: FieldType::Number, env_var: None, required: false, placeholder: "8443", advanced: true },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
         ],
         setup_steps: &["Open WhatsApp on your phone", "Go to Linked Devices", "Tap Link a Device and scan the QR code"],
-        config_template: "[channels.whatsapp]\naccess_token_env = \"WHATSAPP_ACCESS_TOKEN\"\nphone_number_id = \"\"",
+        config_template: "[channels.whatsapp]\naccess_token_env = \"WHATSAPP_ACCESS_TOKEN\"\nverify_token_env = \"WHATSAPP_VERIFY_TOKEN\"\napp_secret_env = \"WHATSAPP_APP_SECRET\"\nphone_number_id = \"\"",
     },
     ChannelMeta {
         name: "signal", display_name: "Signal", icon: "SG",

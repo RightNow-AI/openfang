@@ -33,7 +33,7 @@ All adapters share a common foundation: graceful shutdown via `watch::channel`, 
 | Telegram | Bot API long-polling | `TELEGRAM_BOT_TOKEN` | `Telegram` |
 | Discord | Gateway WebSocket v10 | `DISCORD_BOT_TOKEN` | `Discord` |
 | Slack | Socket Mode WebSocket | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | `Slack` |
-| WhatsApp | Cloud API webhook | `WA_ACCESS_TOKEN`, `WA_PHONE_ID`, `WA_VERIFY_TOKEN` | `WhatsApp` |
+| WhatsApp | Cloud API webhook | `WA_ACCESS_TOKEN`, `WA_VERIFY_TOKEN`, `WA_APP_SECRET` | `WhatsApp` |
 | Signal | signal-cli REST/JSON-RPC | _(system service)_ | `Signal` |
 | Matrix | Client-Server API `/sync` | `MATRIX_TOKEN` | `Matrix` |
 | Email | IMAP + SMTP | `EMAIL_PASSWORD` | `Email` |
@@ -159,7 +159,7 @@ default_agent = "social-media"
 | Telegram | `TELEGRAM_BOT_TOKEN` |
 | Discord | `DISCORD_BOT_TOKEN` |
 | Slack | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` |
-| WhatsApp | `WA_ACCESS_TOKEN`, `WA_PHONE_ID`, `WA_VERIFY_TOKEN` |
+| WhatsApp | `WA_ACCESS_TOKEN`, `WA_VERIFY_TOKEN`, `WA_APP_SECRET` |
 | Matrix | `MATRIX_TOKEN` |
 | Email | `EMAIL_PASSWORD` |
 
@@ -418,9 +418,9 @@ The Slack adapter uses Socket Mode, which establishes a WebSocket connection to 
 6. Set environment variables:
 
 ```bash
-export WA_PHONE_ID=123456789012345
 export WA_ACCESS_TOKEN=EAABs...
 export WA_VERIFY_TOKEN=my-secret-verify-token
+export WA_APP_SECRET=my-meta-app-secret
 ```
 
 7. Add to config:
@@ -428,17 +428,22 @@ export WA_VERIFY_TOKEN=my-secret-verify-token
 ```toml
 [channels.whatsapp]
 mode = "cloud_api"
-phone_number_id_env = "WA_PHONE_ID"
+phone_number_id = "123456789012345"
 access_token_env = "WA_ACCESS_TOKEN"
 verify_token_env = "WA_VERIFY_TOKEN"
+app_secret_env = "WA_APP_SECRET"
 webhook_port = 8443
 default_agent = "assistant"
 ```
 
 8. Set up a webhook in the Meta dashboard pointing to your server's public URL:
-   - URL: `https://your-domain.com:8443/webhook/whatsapp`
+    - URL: `https://your-domain.com:8443/webhook`
    - Verify Token: the value you chose above
    - Subscribe to: `messages`
+
+The built-in listener serves plain HTTP. WhatsApp requires a public HTTPS URL, so
+terminate TLS with a reverse proxy such as Nginx or Caddy and proxy `/webhook` to
+the OpenFang listener (for example, `http://127.0.0.1:8443/webhook`).
 
 9. Restart the daemon.
 

@@ -4091,19 +4091,23 @@ fn cmd_channel_setup(channel: Option<&str>) {
             println!("  3. Add WhatsApp product");
             println!("  4. Set up a test phone number");
             println!("  5. Copy Phone Number ID and Access Token");
+            println!("  6. Copy the app secret from App Settings > Basic");
             ui::blank();
 
             let phone_id = prompt_input("  Phone Number ID: ");
             let access_token = prompt_input("  Access Token: ");
             let verify_token = prompt_input("  Verify Token: ");
+            let app_secret = prompt_input("  Meta App Secret: ");
 
-            let config_block = "\n[channels.whatsapp]\nmode = \"cloud_api\"\nphone_number_id_env = \"WA_PHONE_ID\"\naccess_token_env = \"WA_ACCESS_TOKEN\"\nverify_token_env = \"WA_VERIFY_TOKEN\"\nwebhook_port = 8443\ndefault_agent = \"assistant\"\n";
-            maybe_write_channel_config("whatsapp", config_block);
+            let config_block = format!(
+                "\n[channels.whatsapp]\nphone_number_id = \"{phone_id}\"\naccess_token_env = \"WA_ACCESS_TOKEN\"\nverify_token_env = \"WA_VERIFY_TOKEN\"\napp_secret_env = \"WA_APP_SECRET\"\nwebhook_port = 8443\ndefault_agent = \"assistant\"\n"
+            );
+            maybe_write_channel_config("whatsapp", &config_block);
 
             for (key, val) in [
-                ("WA_PHONE_ID", &phone_id),
                 ("WA_ACCESS_TOKEN", &access_token),
                 ("WA_VERIFY_TOKEN", &verify_token),
+                ("WA_APP_SECRET", &app_secret),
             ] {
                 if !val.is_empty() {
                     match dotenv::save_env_key(key, val) {
