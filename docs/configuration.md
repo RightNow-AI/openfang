@@ -580,6 +580,7 @@ allowed_channels = []
 [channels.whatsapp]
 access_token_env = "WHATSAPP_ACCESS_TOKEN"
 verify_token_env = "WHATSAPP_VERIFY_TOKEN"
+app_secret_env = "WHATSAPP_APP_SECRET"
 phone_number_id = ""
 webhook_port = 8443
 allowed_users = []
@@ -589,6 +590,7 @@ allowed_users = []
 |-------|------|---------|-------------|
 | `access_token_env` | string | `"WHATSAPP_ACCESS_TOKEN"` | Env var holding the WhatsApp Cloud API access token. |
 | `verify_token_env` | string | `"WHATSAPP_VERIFY_TOKEN"` | Env var holding the webhook verification token. |
+| `app_secret_env` | string | `"WHATSAPP_APP_SECRET"` | Env var holding the Meta app secret used to verify webhook POST signatures. |
 | `phone_number_id` | string | `""` | WhatsApp Business phone number ID. |
 | `webhook_port` | u16 | `8443` | Port to listen for incoming webhook callbacks. |
 | `allowed_users` | list of strings | `[]` | Phone numbers allowed. Empty = allow all. |
@@ -1428,6 +1430,7 @@ Complete table of all environment variables referenced by the configuration. Non
 | `SLACK_BOT_TOKEN` | Slack | Slack bot token (`xoxb-`) for REST API. |
 | `WHATSAPP_ACCESS_TOKEN` | WhatsApp | WhatsApp Cloud API access token. |
 | `WHATSAPP_VERIFY_TOKEN` | WhatsApp | Webhook verification token. |
+| `WHATSAPP_APP_SECRET` | WhatsApp | Meta app secret used to verify webhook POST signatures. |
 | `MATRIX_ACCESS_TOKEN` | Matrix | Matrix homeserver access token. |
 | `EMAIL_PASSWORD` | Email | Email account password or app password. |
 | `TEAMS_APP_PASSWORD` | Teams | Azure Bot Framework app password. |

@@ -1220,11 +1220,17 @@ pub async fn start_channel_bridge_with_config(
             let token = cloud_token.unwrap_or_default();
             let verify_token =
                 read_token(&wa_config.verify_token_env, "WhatsApp (verify)").unwrap_or_default();
+            let app_secret = if token.is_empty() {
+                String::new()
+            } else {
+                read_token(&wa_config.app_secret_env, "WhatsApp (app secret)").unwrap_or_default()
+            };
             let adapter = Arc::new(
                 WhatsAppAdapter::new(
                     wa_config.phone_number_id.clone(),
                     token,
                     verify_token,
+                    app_secret,
                     wa_config.webhook_port,
                     wa_config.allowed_users.clone(),
                 )

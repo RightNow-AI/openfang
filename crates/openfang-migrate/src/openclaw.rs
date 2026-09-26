@@ -1587,7 +1587,23 @@ fn migrate_channels_from_json(
             let mut fields: Vec<(&str, toml::Value)> = vec![(
                 "access_token_env",
                 toml::Value::String("WHATSAPP_ACCESS_TOKEN".into()),
+            ),
+            (
+                "phone_number_id",
+                toml::Value::String(String::new()),
+            ),
+            (
+                "verify_token_env",
+                toml::Value::String("WHATSAPP_VERIFY_TOKEN".into()),
+            ),
+            (
+                "app_secret_env",
+                toml::Value::String("WHATSAPP_APP_SECRET".into()),
             )];
+            report.warnings.push(
+                "WhatsApp migration requires phone_number_id, verify token, and Meta app secret for Cloud API webhooks"
+                    .to_string(),
+            );
             if let Some(ref users_val) = wa.allow_from {
                 let users = extract_string_list(users_val);
                 if !users.is_empty() {
@@ -2764,8 +2780,22 @@ fn parse_legacy_channels(
                     .access_token_env
                     .clone()
                     .unwrap_or_else(|| "WHATSAPP_ACCESS_TOKEN".to_string());
-                let fields: Vec<(&str, toml::Value)> =
-                    vec![("access_token_env", toml::Value::String(token_env))];
+                let fields: Vec<(&str, toml::Value)> = vec![
+                    ("access_token_env", toml::Value::String(token_env)),
+                    ("phone_number_id", toml::Value::String(String::new())),
+                    (
+                        "verify_token_env",
+                        toml::Value::String("WHATSAPP_VERIFY_TOKEN".into()),
+                    ),
+                    (
+                        "app_secret_env",
+                        toml::Value::String("WHATSAPP_APP_SECRET".into()),
+                    ),
+                ];
+                report.warnings.push(
+                    "WhatsApp migration requires phone_number_id, verify token, and Meta app secret for Cloud API webhooks"
+                        .to_string(),
+                );
                 channels_table.insert(
                     "whatsapp".to_string(),
                     build_channel_table(fields, None, None, None),
