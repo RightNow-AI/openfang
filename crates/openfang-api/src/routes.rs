@@ -7780,6 +7780,9 @@ pub async fn set_provider_key(
                     api_key_env: env_var.clone(),
                     base_url: None,
                     subprocess_timeout_secs: None,
+                    // Headers are provider-specific — the old provider's
+                    // headers must not leak onto the new one.
+                    headers: None,
                 };
                 let mut guard = state
                     .kernel
@@ -7938,6 +7941,21 @@ pub async fn test_provider(
 
     // Attempt a lightweight connectivity test
     let start = std::time::Instant::now();
+    // Attach provider-configured extra headers ([default_model].headers or
+    // [[fallback_providers]].headers) so the connectivity test exercises the
+    // same request shape as real traffic (e.g. x-opencode-session for
+    // OpenCode Go).
+    let headers = if state.kernel.config.default_model.provider == name {
+        state.kernel.config.default_model.headers.clone()
+    } else {
+        state
+            .kernel
+            .config
+            .fallback_providers
+            .iter()
+            .find(|fb| fb.provider == name)
+            .and_then(|fb| fb.headers.clone())
+    };
     let driver_config = openfang_runtime::llm_driver::DriverConfig {
         provider: name.clone(),
         api_key,
@@ -7948,6 +7966,7 @@ pub async fn test_provider(
         },
         skip_permissions: true,
         subprocess_timeout_secs: None,
+        headers,
     };
 
     match openfang_runtime::drivers::create_driver(&driver_config) {

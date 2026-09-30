@@ -1712,6 +1712,20 @@ mod tests {
     }
 
     #[test]
+    fn test_with_extra_headers_stores_headers() {
+        // Extra headers (e.g. `x-opencode-session` for the OpenCode Go
+        // endpoint) must survive construction and be sent verbatim.
+        let driver = OpenAIDriver::new("test-key".to_string(), "http://localhost".to_string())
+            .with_extra_headers(vec![(
+                "x-opencode-session".to_string(),
+                "oc-123".to_string(),
+            )]);
+        assert_eq!(driver.extra_headers.len(), 1);
+        assert_eq!(driver.extra_headers[0].0, "x-opencode-session");
+        assert_eq!(driver.extra_headers[0].1, "oc-123");
+    }
+
+    #[test]
     fn test_parse_groq_failed_tool_call() {
         let body = r#"{"error":{"message":"Failed to call a function.","type":"invalid_request_error","code":"tool_use_failed","failed_generation":"<function=web_fetch{\"url\": \"https://example.com\"}></function>\n"}}"#;
         let result = parse_groq_failed_tool_call(body);

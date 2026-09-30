@@ -491,6 +491,16 @@ pub struct FallbackProviderConfig {
     /// over this field at driver-construction time.
     #[serde(default)]
     pub subprocess_timeout_secs: Option<u64>,
+    /// Extra HTTP headers sent with every request to this provider.
+    ///
+    /// Forwarded to `DriverConfig.headers` and applied by OpenAI-compatible
+    /// drivers via `with_extra_headers` (e.g. the `x-opencode-session` header
+    /// required by the OpenCode Go endpoint). Ignored by providers that don't
+    /// support custom headers. Values are stored verbatim in `config.toml`,
+    /// so prefer non-secret session ids; API keys should stay in env vars
+    /// via `api_key_env`.
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
 }
 
 /// Text-to-speech configuration.
@@ -1696,6 +1706,22 @@ pub struct DefaultModelConfig {
     /// `OPENFANG_SUBPROCESS_TIMEOUT_SECS` env var, if set, wins over this
     /// field at driver-construction time.
     pub subprocess_timeout_secs: Option<u64>,
+    /// Extra HTTP headers sent with every request to this provider.
+    ///
+    /// Forwarded to `DriverConfig.headers` and applied by OpenAI-compatible
+    /// drivers via `with_extra_headers` (e.g. the `x-opencode-session` header
+    /// required by the OpenCode Go endpoint). Ignored by providers that don't
+    /// support custom headers. Values are stored verbatim in `config.toml`,
+    /// so prefer non-secret session ids; API keys should stay in env vars
+    /// via `api_key_env`.
+    ///
+    /// ```toml
+    /// [default_model]
+    /// provider = "openai"
+    /// headers = { "x-opencode-session" = "oc-..." }
+    /// ```
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
 }
 
 impl Default for DefaultModelConfig {
@@ -1706,6 +1732,7 @@ impl Default for DefaultModelConfig {
             api_key_env: "ANTHROPIC_API_KEY".to_string(),
             base_url: None,
             subprocess_timeout_secs: None,
+            headers: None,
         }
     }
 }
@@ -4334,6 +4361,7 @@ mod tests {
             api_key_env: String::new(),
             base_url: None,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let json = serde_json::to_string(&fb).unwrap();
         let back: FallbackProviderConfig = serde_json::from_str(&json).unwrap();
@@ -4417,6 +4445,71 @@ mod tests {
         let config: KernelConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.default_model.subprocess_timeout_secs, None);
         assert_eq!(config.fallback_providers[0].subprocess_timeout_secs, None);
+    }
+
+    /// `headers` round-trips through TOML on both `[default_model]` and
+    /// `[[fallback_providers]]`. This is the contract the kernel relies on to
+    /// forward provider-specific HTTP headers (e.g. `x-opencode-session` for
+    /// the OpenCode Go endpoint) to OpenAI-compatible drivers at construction
+    /// time.
+    #[test]
+    fn test_headers_in_toml() {
+        let toml_str = r#"
+            [default_model]
+            provider = "openai"
+            model = "gpt-4o"
+            api_key_env = "OPENAI_API_KEY"
+            headers = { "x-opencode-session" = "oc-123" }
+
+            [[fallback_providers]]
+            provider = "opencode-go"
+            model = "grok-code-fast-1"
+            base_url = "https://opencode.ai/zen/go/v1"
+            headers.x-opencode-session = "oc-456"
+
+            [[fallback_providers]]
+            provider = "ollama"
+            model = "llama3.2:latest"
+        "#;
+        let config: KernelConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config
+                .default_model
+                .headers
+                .as_ref()
+                .unwrap()
+                .get("x-opencode-session"),
+            Some(&"oc-123".to_string())
+        );
+        assert_eq!(
+            config.fallback_providers[0]
+                .headers
+                .as_ref()
+                .unwrap()
+                .get("x-opencode-session"),
+            Some(&"oc-456".to_string())
+        );
+        // Omitted on the second fallback → None (backward compat).
+        assert_eq!(config.fallback_providers[1].headers, None);
+    }
+
+    /// Configs that predate this field must still parse cleanly — ensures
+    /// the rollout doesn't break anyone with an existing config.toml.
+    #[test]
+    fn test_headers_omitted_defaults_to_none() {
+        let toml_str = r#"
+            [default_model]
+            provider = "anthropic"
+            model = "claude-sonnet-4-20250514"
+            api_key_env = "ANTHROPIC_API_KEY"
+
+            [[fallback_providers]]
+            provider = "ollama"
+            model = "llama3.2:latest"
+        "#;
+        let config: KernelConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.default_model.headers, None);
+        assert_eq!(config.fallback_providers[0].headers, None);
     }
 
     #[test]

@@ -333,6 +333,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 | `model` | string | `"claude-sonnet-4-20250514"` | Model identifier. Aliases like `sonnet`, `haiku`, `gpt-4o`, `gemini-flash` are resolved by the model catalog. |
 | `api_key_env` | string | `"ANTHROPIC_API_KEY"` | Name of the environment variable holding the API key. The actual key is read from this env var at runtime, never stored in config. |
 | `base_url` | string or null | `null` | Override the API base URL. Useful for proxies or self-hosted endpoints. When `null`, the provider's default URL from the model catalog is used. |
+| `headers` | table or null | `null` | Extra HTTP headers sent with every request to this provider (applied by OpenAI-compatible drivers). Example: `headers = { "x-opencode-session" = "oc-123" }` for the OpenCode Go endpoint. Values are stored verbatim in `config.toml`; use `api_key_env` for secrets, not headers. |
 
 ---
 
@@ -1292,6 +1293,7 @@ api_key_env = "GROQ_API_KEY"
 | `model` | string | `""` | Model identifier for this provider. |
 | `api_key_env` | string | `""` | Env var name for the API key. Empty for local providers (ollama, vllm, lmstudio). |
 | `base_url` | string or null | `null` | Base URL override. Uses catalog default if null. |
+| `headers` | table or null | `null` | Extra HTTP headers sent with every request to this provider (applied by OpenAI-compatible drivers), e.g. `headers = { "x-opencode-session" = "oc-123" }`. Values are stored verbatim in `config.toml`; use `api_key_env` for secrets, not headers. |
 
 ---
 
