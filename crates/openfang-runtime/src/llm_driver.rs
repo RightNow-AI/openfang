@@ -210,6 +210,16 @@ pub struct DriverConfig {
     /// opt in to this field individually.
     #[serde(default)]
     pub subprocess_timeout_secs: Option<u64>,
+
+    /// Extra HTTP headers attached to every request by OpenAI-compatible
+    /// drivers (e.g. `x-opencode-session` for the OpenCode Go endpoint).
+    ///
+    /// Forwarded from `[default_model].headers` and
+    /// `[[fallback_providers]].headers` in `config.toml`. Applied via
+    /// `OpenAIDriver::with_extra_headers`; ignored by drivers that don't
+    /// support custom headers.
+    #[serde(default)]
+    pub headers: Option<std::collections::HashMap<String, String>>,
 }
 
 fn default_skip_permissions() -> bool {
@@ -225,6 +235,9 @@ impl std::fmt::Debug for DriverConfig {
             .field("base_url", &self.base_url)
             .field("skip_permissions", &self.skip_permissions)
             .field("subprocess_timeout_secs", &self.subprocess_timeout_secs)
+            // Header values may carry secrets (session tokens, etc.) — only
+            // the count is shown.
+            .field("headers", &self.headers.as_ref().map(|m| m.len()))
             .finish()
     }
 }

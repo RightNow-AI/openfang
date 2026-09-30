@@ -14,6 +14,9 @@ provider = "anthropic"                    # "anthropic", "gemini", "openai", "gr
 model = "claude-sonnet-4-20250514"        # Model identifier
 api_key_env = "ANTHROPIC_API_KEY"         # Environment variable holding API key
 # base_url = "https://api.anthropic.com"  # Optional: override API endpoint
+# headers = { "x-opencode-session" = "oc-..." }  # Optional: extra HTTP headers for
+                                             # OpenAI-compatible providers (e.g. OpenCode
+                                             # Go requires x-opencode-session)
 
 [memory]
 decay_rate = 0.05                         # Memory confidence decay rate

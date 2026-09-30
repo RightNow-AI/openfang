@@ -696,6 +696,7 @@ impl OpenFangKernel {
             }),
             skip_permissions: true,
             subprocess_timeout_secs: config.default_model.subprocess_timeout_secs,
+            headers: config.default_model.headers.clone(),
         };
         // Primary driver failure is non-fatal: the dashboard should remain accessible
         // even if the LLM provider is misconfigured. Users can fix config via dashboard.
@@ -722,6 +723,10 @@ impl OpenFangKernel {
                         // Inherit operator's default-model timeout intent: auto-detect
                         // is replacing the *provider*, not the timeout policy.
                         subprocess_timeout_secs: config.default_model.subprocess_timeout_secs,
+                        // Headers are provider-specific (e.g. x-opencode-session
+                        // is bound to the OpenCode Go endpoint) — do NOT carry
+                        // default_model.headers onto a different provider.
+                        headers: None,
                     };
                     match drivers::create_driver(&auto_config) {
                         Ok(d) => {
@@ -771,6 +776,7 @@ impl OpenFangKernel {
                     .or_else(|| config.provider_urls.get(&fb.provider).cloned()),
                 skip_permissions: true,
                 subprocess_timeout_secs: fb.subprocess_timeout_secs,
+                headers: fb.headers.clone(),
             };
             match drivers::create_driver(&fb_config) {
                 Ok(d) => {
@@ -5647,12 +5653,24 @@ impl OpenFangKernel {
                     .and_then(|fb| fb.subprocess_timeout_secs)
             };
 
+            // Same per-provider resolution for extra HTTP headers
+            // ([default_model].headers / [[fallback_providers]].headers).
+            let primary_headers = if agent_provider == default_provider {
+                effective_default.headers.clone()
+            } else {
+                effective_fallbacks
+                    .iter()
+                    .find(|fb| &fb.provider == agent_provider)
+                    .and_then(|fb| fb.headers.clone())
+            };
+
             let driver_config = DriverConfig {
                 provider: agent_provider.clone(),
                 api_key,
                 base_url,
                 skip_permissions: true,
                 subprocess_timeout_secs: primary_timeout,
+                headers: primary_headers,
             };
 
             match drivers::create_driver(&driver_config) {
@@ -5738,6 +5756,11 @@ impl OpenFangKernel {
                 } else {
                     None
                 },
+                headers: if resolved_to_default {
+                    dm.headers.clone()
+                } else {
+                    None
+                },
             };
             match drivers::create_driver(&config) {
                 Ok(d) => chain.push((d, strip_provider_prefix(&fb_model_name, &fb_provider))),
@@ -5773,6 +5796,7 @@ impl OpenFangKernel {
                     .or_else(|| self.lookup_provider_url(&fb.provider)),
                 skip_permissions: true,
                 subprocess_timeout_secs: fb.subprocess_timeout_secs,
+                headers: fb.headers.clone(),
             };
             match drivers::create_driver(&fb_config) {
                 Ok(d) => {

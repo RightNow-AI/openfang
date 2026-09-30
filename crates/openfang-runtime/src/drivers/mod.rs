@@ -306,6 +306,27 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
     }
 }
 
+/// Attach user-configured extra HTTP headers (`config.headers`) to an
+/// OpenAI-compatible driver. No-op when none are set.
+///
+/// Headers come from `[default_model].headers` / `[[fallback_providers]].headers`
+/// in `config.toml` (e.g. the `x-opencode-session` header required by the
+/// OpenCode Go endpoint).
+fn apply_extra_headers(
+    driver: openai::OpenAIDriver,
+    config: &DriverConfig,
+) -> openai::OpenAIDriver {
+    match &config.headers {
+        Some(headers) if !headers.is_empty() => driver.with_extra_headers(
+            headers
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+        ),
+        _ => driver,
+    }
+}
+
 /// Create an LLM driver based on provider name and configuration.
 ///
 /// Supported providers:
@@ -382,7 +403,10 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .base_url
             .clone()
             .unwrap_or_else(|| OPENAI_BASE_URL.to_string());
-        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
+        return Ok(Arc::new(apply_extra_headers(
+            openai::OpenAIDriver::new(api_key, base_url),
+            config,
+        )));
     }
 
     // Claude Code CLI — subprocess-based, no API key needed
@@ -457,7 +481,10 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
                       https://{resource}.openai.azure.com/openai/deployments"
                 .to_string(),
         })?;
-        return Ok(Arc::new(openai::OpenAIDriver::new_azure(api_key, base_url)));
+        return Ok(Arc::new(apply_extra_headers(
+            openai::OpenAIDriver::new_azure(api_key, base_url),
+            config,
+        )));
     }
 
     // Vertex AI — uses Google Cloud OAuth with service account credentials.
@@ -546,7 +573,10 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .or_else(|| local_provider_url_from_env(provider))
             .unwrap_or_else(|| defaults.base_url.to_string());
 
-        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
+        return Ok(Arc::new(apply_extra_headers(
+            openai::OpenAIDriver::new(api_key, base_url),
+            config,
+        )));
     }
 
     // Unknown provider — if base_url is set, treat as custom OpenAI-compatible.
@@ -558,9 +588,9 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
             std::env::var(&env_var).unwrap_or_default()
         });
-        return Ok(Arc::new(openai::OpenAIDriver::new(
-            api_key,
-            base_url.clone(),
+        return Ok(Arc::new(apply_extra_headers(
+            openai::OpenAIDriver::new(api_key, base_url.clone()),
+            config,
         )));
     }
 
@@ -779,9 +809,36 @@ mod tests {
             base_url: Some("http://localhost:9999/v1".to_string()),
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok());
+    }
+
+    #[test]
+    fn test_custom_provider_with_extra_headers() {
+        // Configured extra headers (e.g. `x-opencode-session` for the OpenCode
+        // Go endpoint) must flow into the OpenAI-compatible driver. We can't
+        // introspect the driver's headers from here, but the construction path
+        // through apply_extra_headers must succeed; the field itself is
+        // covered by openai.rs's test_with_extra_headers_stores_headers.
+        let config = DriverConfig {
+            provider: "my-custom-llm".to_string(),
+            api_key: Some("test".to_string()),
+            base_url: Some("http://localhost:9999/v1".to_string()),
+            skip_permissions: true,
+            subprocess_timeout_secs: None,
+            headers: Some(
+                [("x-opencode-session".to_string(), "oc-123".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+        };
+        let driver = create_driver(&config);
+        assert!(
+            driver.is_ok(),
+            "custom provider with headers should construct"
+        );
     }
 
     #[test]
@@ -792,6 +849,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_err());
@@ -913,6 +971,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(
@@ -931,6 +990,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_err());
@@ -948,6 +1008,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(
@@ -967,6 +1028,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_err());
@@ -984,6 +1046,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let result = create_driver(&config);
         assert!(result.is_err());
@@ -1012,6 +1075,7 @@ mod tests {
             base_url: Some("https://api.example.com/v1".to_string()),
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok());
@@ -1040,6 +1104,7 @@ mod tests {
             base_url: Some("https://myresource.openai.azure.com/openai/deployments".to_string()),
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok(), "Azure driver with key + URL should succeed");
@@ -1053,6 +1118,7 @@ mod tests {
             base_url: Some("https://myresource.openai.azure.com/openai/deployments".to_string()),
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let result = create_driver(&config);
         assert!(result.is_err(), "Azure driver without key should error");
@@ -1072,6 +1138,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let result = create_driver(&config);
         assert!(result.is_err(), "Azure driver without URL should error");
@@ -1091,6 +1158,7 @@ mod tests {
             base_url: Some("https://myresource.openai.azure.com/openai/deployments".to_string()),
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(
@@ -1116,6 +1184,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         // Should succeed because api_key is provided
         let driver = create_driver(&config);
@@ -1135,6 +1204,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok(), "claude-code driver should construct");
@@ -1150,6 +1220,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: Some(480),
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(
@@ -1170,6 +1241,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: Some(120),
+            headers: None,
         };
         let driver = create_driver(&config);
         std::env::remove_var("OPENFANG_SUBPROCESS_TIMEOUT_SECS");
@@ -1189,6 +1261,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: Some(420),
+            headers: None,
         };
         let driver = create_driver(&config);
         std::env::remove_var("OPENFANG_SUBPROCESS_TIMEOUT_SECS");
@@ -1279,6 +1352,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(
@@ -1303,6 +1377,7 @@ mod tests {
             base_url: None,
             skip_permissions: true,
             subprocess_timeout_secs: None,
+            headers: None,
         };
         let driver = create_driver(&config);
         assert!(driver.is_ok(), "lmstudio default should construct");
