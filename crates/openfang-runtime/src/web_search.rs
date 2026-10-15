@@ -1,8 +1,10 @@
 //! Multi-provider web search engine with auto-fallback.
 //!
 //! Supports Tavily (AI-agent-native), Brave, Perplexity, SearXNG (self-hosted),
-//! Keenable (works without an API key) and DuckDuckGo (HTML scrape fallback).
-//! Auto mode cascades through available providers based on configured API keys.
+//! Keenable (opt-in, works without an API key) and DuckDuckGo (HTML scrape
+//! fallback). Auto mode cascades through available providers based on
+//! configured API keys; it never selects Keenable, which is used only when
+//! `search_provider = "keenable"` is set explicitly.
 //!
 //! All API keys use `Zeroizing<String>` via `resolve_api_key()` to auto-wipe
 //! secrets from memory on drop.
@@ -78,7 +80,7 @@ impl WebSearchEngine {
     }
 
     /// Auto-select provider based on available API keys.
-    /// Priority: Tavily → Brave → Perplexity → Searxng → Keenable → DuckDuckGo
+    /// Priority: Tavily → Brave → Perplexity → Searxng → DuckDuckGo
     async fn search_auto(&self, query: &str, max_results: usize) -> Result<String, String> {
         // Tavily first (AI-agent-native)
         if resolve_api_key(&self.config.tavily.api_key_env).is_some() {
@@ -114,13 +116,6 @@ impl WebSearchEngine {
                 Ok(result) => return Ok(result),
                 Err(e) => warn!("Searxng failed, falling back: {e}"),
             }
-        }
-
-        // Keenable fifth (works without an API key; a key only lifts rate limits)
-        debug!("Auto: trying Keenable");
-        match self.search_keenable(query, max_results).await {
-            Ok(result) => return Ok(result),
-            Err(e) => warn!("Keenable failed, falling back: {e}"),
         }
 
         // DuckDuckGo always available as zero-config fallback
@@ -304,6 +299,9 @@ impl WebSearchEngine {
     }
 
     /// Search via Keenable (works without an API key).
+    ///
+    /// Opt-in: only reached when `search_provider = "keenable"`; the auto
+    /// cascade never calls it.
     ///
     /// Without a key the request goes to the public endpoint, which requires
     /// the `X-Keenable-Title` header and applies per-IP rate limits. With a

@@ -435,12 +435,12 @@ cache_ttl_minutes = 15
 
 | Value | Description |
 |-------|-------------|
-| `auto` | Cascading fallback: tries Tavily, then Brave, then Perplexity, then SearXNG, then Keenable, then DuckDuckGo, based on which API keys/configs are available. |
+| `auto` | Cascading fallback: tries Tavily, then Brave, then Perplexity, then SearXNG, then DuckDuckGo, based on which API keys/configs are available. |
 | `brave` | Brave Search API. Requires `BRAVE_API_KEY`. |
 | `tavily` | Tavily AI-native search. Requires `TAVILY_API_KEY`. |
 | `perplexity` | Perplexity AI search. Requires `PERPLEXITY_API_KEY`. |
 | `searxng` | Self-hosted search engine aggregator. No API key required, just point to your SearXNG instance. |
-| `keenable` | [Keenable](https://keenable.ai) search API. Works without an API key; `KEENABLE_API_KEY` is optional and only lifts the per-IP rate limit. |
+| `keenable` | [Keenable](https://keenable.ai) search API. Opt-in: used only when selected here, never by `auto`. Works without an API key; `KEENABLE_API_KEY` is optional and only lifts the per-IP rate limit. |
 | `duck_duck_go` | DuckDuckGo HTML scraping. No API key needed. |
 
 #### `[web.brave]`
@@ -507,7 +507,7 @@ url = "https://searxng.example.com"    # SearXNG instance URL (required)
 
 #### `[web.keenable]`
 
-Keenable works without an API key. With no key set, requests go to the public endpoint (`/v1/search/public`), which is rate limited per IP. Setting `KEENABLE_API_KEY` switches to the keyed endpoint and lifts that limit; nothing else changes.
+Used only when `search_provider = "keenable"`; `auto` never selects it. Keenable works without an API key. With no key set, requests go to the public endpoint (`/v1/search/public`), which is rate limited per IP. Setting `KEENABLE_API_KEY` switches to the keyed endpoint and lifts that limit; nothing else changes.
 
 ```toml
 [web.keenable]

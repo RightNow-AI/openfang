@@ -206,9 +206,10 @@ pub enum SearchProvider {
     DuckDuckGo,
     /// SearXNG self-hosted search (no API key needed).
     Searxng,
-    /// Keenable web search (works without an API key; a key only lifts rate limits).
+    /// Keenable web search (opt-in: never chosen by `Auto`; works without an
+    /// API key, a key only lifts rate limits).
     Keenable,
-    /// Auto-select based on available API keys (Tavily → Brave → Perplexity → Searxng → Keenable → DuckDuckGo).
+    /// Auto-select based on available API keys (Tavily → Brave → Perplexity → Searxng → DuckDuckGo).
     #[default]
     Auto,
 }
@@ -4557,6 +4558,26 @@ mod tests {
         let config: KernelConfig = toml::from_str(toml_str).unwrap();
         let feishu = config.channels.feishu.unwrap();
         assert_eq!(feishu.mode, FeishuMode::Websocket);
+    }
+
+    #[test]
+    fn test_web_search_keenable_is_opt_in() {
+        // The default stays `auto`, which never selects Keenable.
+        let config = KernelConfig::default();
+        assert_eq!(config.web.search_provider, SearchProvider::Auto);
+
+        // Selecting it explicitly parses and needs no API key.
+        let toml_str = r#"
+            [web]
+            search_provider = "keenable"
+        "#;
+        let config: KernelConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.web.search_provider, SearchProvider::Keenable);
+        assert_eq!(config.web.keenable.api_key_env, "KEENABLE_API_KEY");
+        assert!(!config
+            .validate()
+            .iter()
+            .any(|w| w.to_lowercase().contains("keenable")));
     }
 
     #[test]
