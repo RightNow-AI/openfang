@@ -318,6 +318,42 @@ mod tests {
     }
 
     #[test]
+    fn install_keenable_without_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = IntegrationRegistry::new(dir.path());
+        registry.load_bundled();
+        let template = registry.get_template("keenable").unwrap();
+        assert!(template.required_env.is_empty());
+        assert!(template.oauth.is_none());
+        assert!(!template.setup_instructions.is_empty());
+        assert!(registry.to_mcp_configs().is_empty());
+
+        // No key provided and none required: install is Ready straight away.
+        let mut resolver = CredentialResolver::new(None, None);
+        let result =
+            install_integration(&mut registry, &mut resolver, "keenable", &HashMap::new()).unwrap();
+        assert_eq!(result.status, IntegrationStatus::Ready);
+
+        // The saved install must come back keyless and enabled after a restart.
+        let mut reloaded = IntegrationRegistry::new(dir.path());
+        reloaded.load_bundled();
+        reloaded.load_installed().unwrap();
+        let configs = reloaded.to_mcp_configs();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].name, "keenable");
+        assert!(configs[0].env.is_empty());
+        assert!(configs[0].headers.is_empty());
+        assert!(matches!(
+            &configs[0].transport,
+            openfang_types::config::McpTransportEntry::Http { url }
+                if url == "https://api.keenable.ai/mcp"
+        ));
+
+        remove_integration(&mut reloaded, "keenable").unwrap();
+        assert!(!reloaded.is_installed("keenable"));
+    }
+
+    #[test]
     fn install_with_key() {
         let dir = tempfile::tempdir().unwrap();
         let mut registry = IntegrationRegistry::new(dir.path());
@@ -364,7 +400,7 @@ mod tests {
         let resolver = CredentialResolver::new(None, None);
 
         let list = list_integrations(&registry, &resolver);
-        assert_eq!(list.len(), 25);
+        assert_eq!(list.len(), 26);
         assert!(list
             .iter()
             .all(|e| e.status == IntegrationStatus::Available));

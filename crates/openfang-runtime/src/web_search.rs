@@ -1,8 +1,10 @@
 //! Multi-provider web search engine with auto-fallback.
 //!
-//! Supports 4 providers: Tavily (AI-agent-native), Brave, Perplexity, and
-//! DuckDuckGo (zero-config fallback). Auto mode cascades through available
-//! providers based on configured API keys.
+//! Supports Tavily (AI-agent-native), Brave, Perplexity, SearXNG (self-hosted),
+//! Keenable (opt-in, works without an API key) and DuckDuckGo (HTML scrape
+//! fallback). Auto mode cascades through available providers based on
+//! configured API keys; it never selects Keenable, which is used only when
+//! `search_provider = "keenable"` is set explicitly.
 //!
 //! All API keys use `Zeroizing<String>` via `resolve_api_key()` to auto-wipe
 //! secrets from memory on drop.
@@ -13,6 +15,15 @@ use openfang_types::config::{SearchProvider, WebConfig};
 use std::sync::Arc;
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
+
+/// Keenable API base URL.
+const KEENABLE_API_BASE: &str = "https://api.keenable.ai";
+/// Keenable keyed search path (used when the API key is set).
+const KEENABLE_SEARCH_PATH: &str = "/v1/search";
+/// Keenable public search path (no API key; per-IP rate limits apply).
+const KEENABLE_PUBLIC_SEARCH_PATH: &str = "/v1/search/public";
+/// Application title the public endpoint requires for attribution.
+const KEENABLE_APP_TITLE: &str = "openfang";
 
 /// Multi-provider web search engine.
 pub struct WebSearchEngine {
@@ -56,6 +67,7 @@ impl WebSearchEngine {
             SearchProvider::Perplexity => self.search_perplexity(query).await,
             SearchProvider::DuckDuckGo => self.search_duckduckgo(query, max_results).await,
             SearchProvider::Searxng => self.search_searxng(query, max_results, None, 1).await,
+            SearchProvider::Keenable => self.search_keenable(query, max_results).await,
             SearchProvider::Auto => self.search_auto(query, max_results).await,
         };
 
@@ -286,6 +298,90 @@ impl WebSearchEngine {
         Ok(wrap_external_content("perplexity-search", &output))
     }
 
+    /// Search via Keenable (works without an API key).
+    ///
+    /// Opt-in: only reached when `search_provider = "keenable"`; the auto
+    /// cascade never calls it.
+    ///
+    /// Without a key the request goes to the public endpoint, which requires
+    /// the `X-Keenable-Title` header and applies per-IP rate limits. With a
+    /// key it goes to the keyed endpoint with `X-API-Key`.
+    async fn search_keenable(&self, query: &str, max_results: usize) -> Result<String, String> {
+        self.search_keenable_at(KEENABLE_API_BASE, query, max_results)
+            .await
+    }
+
+    /// Search via Keenable against a specific API base URL (tests point this at a local server).
+    async fn search_keenable_at(
+        &self,
+        base_url: &str,
+        query: &str,
+        max_results: usize,
+    ) -> Result<String, String> {
+        let api_key = resolve_api_key(&self.config.keenable.api_key_env);
+
+        let path = if api_key.is_some() {
+            KEENABLE_SEARCH_PATH
+        } else {
+            KEENABLE_PUBLIC_SEARCH_PATH
+        };
+
+        let body = serde_json::json!({
+            "query": query,
+            "max_results": max_results.clamp(1, 50),
+            "snippet_max_length": self.config.keenable.snippet_max_length,
+        });
+
+        let mut request = self
+            .client
+            .post(format!("{}{}", base_url.trim_end_matches('/'), path))
+            .header("Accept", "application/json")
+            .header("X-Keenable-Title", KEENABLE_APP_TITLE)
+            .json(&body);
+        if let Some(ref key) = api_key {
+            request = request.header("X-API-Key", key.as_str());
+        }
+
+        let resp = request
+            .send()
+            .await
+            .map_err(|e| format!("Keenable request failed: {e}"))?;
+
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && api_key.is_none() {
+            return Err(format!(
+                "Keenable API returned 429 Too Many Requests (public rate limit; set {} to lift it)",
+                self.config.keenable.api_key_env
+            ));
+        }
+        if !resp.status().is_success() {
+            return Err(format!("Keenable API returned {}", resp.status()));
+        }
+
+        let data: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Keenable JSON parse failed: {e}"))?;
+
+        let results = parse_keenable_results(&data, max_results);
+
+        if results.is_empty() {
+            return Err(format!("No results found for '{query}' (Keenable)."));
+        }
+
+        let mut output = format!("Search results for '{query}' (Keenable):\n\n");
+        for (i, (title, url, snippet)) in results.iter().enumerate() {
+            output.push_str(&format!(
+                "{}. {}\n   URL: {}\n   {}\n\n",
+                i + 1,
+                title,
+                url,
+                snippet
+            ));
+        }
+
+        Ok(wrap_external_content("keenable-search", &output))
+    }
+
     /// Search via DuckDuckGo HTML (no API key needed).
     async fn search_duckduckgo(&self, query: &str, max_results: usize) -> Result<String, String> {
         debug!(query, "Searching via DuckDuckGo HTML");
@@ -483,8 +579,43 @@ impl WebSearchEngine {
             SearchProvider::Perplexity,
             SearchProvider::DuckDuckGo,
             SearchProvider::Searxng,
+            SearchProvider::Keenable,
         ]
     }
+}
+
+// ---------------------------------------------------------------------------
+// Keenable JSON parser
+// ---------------------------------------------------------------------------
+
+/// Parse a Keenable search response into (title, url, snippet) tuples.
+///
+/// Reads `snippet` first and falls back to `description`, which the API
+/// usually leaves empty. Results without a URL are skipped.
+pub fn parse_keenable_results(
+    data: &serde_json::Value,
+    max: usize,
+) -> Vec<(String, String, String)> {
+    let Some(results) = data["results"].as_array() else {
+        return Vec::new();
+    };
+
+    results
+        .iter()
+        .filter_map(|r| {
+            let url = r["url"].as_str().unwrap_or("").trim();
+            if url.is_empty() {
+                return None;
+            }
+            let title = r["title"].as_str().unwrap_or("").trim();
+            let snippet = match r["snippet"].as_str().map(str::trim) {
+                Some(s) if !s.is_empty() => s,
+                _ => r["description"].as_str().unwrap_or("").trim(),
+            };
+            Some((title.to_string(), url.to_string(), snippet.to_string()))
+        })
+        .take(max)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -635,5 +766,244 @@ mod tests {
         let results = parse_ddg_results(html, 5);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].1, "https://example.com");
+    }
+
+    // -----------------------------------------------------------------------
+    // Keenable
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_keenable_parser_reads_snippet_first() {
+        let data = serde_json::json!({
+            "results": [
+                {
+                    "url": "https://www.rust-lang.org/",
+                    "title": "Rust Programming Language",
+                    "snippet": "A language empowering everyone to build reliable software.",
+                    "description": "ignored when snippet is present"
+                },
+                {
+                    "url": "https://doc.rust-lang.org/book/",
+                    "title": "The Rust Book",
+                    "snippet": "",
+                    "description": "Falls back to description when snippet is empty"
+                },
+                {
+                    "url": "https://example.com/no-text",
+                    "title": "No text at all"
+                },
+                {
+                    "title": "Dropped: no url",
+                    "snippet": "irrelevant"
+                }
+            ]
+        });
+        let results = parse_keenable_results(&data, 10);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].0, "Rust Programming Language");
+        assert_eq!(results[0].1, "https://www.rust-lang.org/");
+        assert_eq!(
+            results[0].2,
+            "A language empowering everyone to build reliable software."
+        );
+        assert_eq!(
+            results[1].2,
+            "Falls back to description when snippet is empty"
+        );
+        assert_eq!(results[2].2, "");
+    }
+
+    #[test]
+    fn test_keenable_parser_respects_max_and_empty() {
+        let data = serde_json::json!({
+            "results": [
+                {"url": "https://a.example", "title": "A", "snippet": "a"},
+                {"url": "https://b.example", "title": "B", "snippet": "b"},
+                {"url": "https://c.example", "title": "C", "snippet": "c"}
+            ]
+        });
+        assert_eq!(parse_keenable_results(&data, 2).len(), 2);
+        assert!(parse_keenable_results(&serde_json::json!({"results": []}), 5).is_empty());
+        assert!(parse_keenable_results(&serde_json::json!({"error": "nope"}), 5).is_empty());
+        assert!(parse_keenable_results(&serde_json::json!("not an object"), 5).is_empty());
+    }
+
+    /// Minimal one-shot HTTP server: accepts a single request, returns the
+    /// canned status + JSON body, and hands back the raw request text so the
+    /// test can assert on method, path, headers, and body.
+    async fn one_shot_server(
+        status_line: &'static str,
+        body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf);
+                if let Some(header_end) = text.find("\r\n\r\n") {
+                    let headers = &text[..header_end];
+                    let content_length = headers
+                        .lines()
+                        .find_map(|l| {
+                            let (name, value) = l.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= header_end + 4 + content_length {
+                        break;
+                    }
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.shutdown().await.ok();
+            String::from_utf8_lossy(&buf).into_owned()
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    fn engine_with_key_env(env_var: &str) -> WebSearchEngine {
+        let mut config = WebConfig::default();
+        config.keenable.api_key_env = env_var.to_string();
+        WebSearchEngine::new(
+            config,
+            Arc::new(WebCache::new(std::time::Duration::from_secs(60))),
+        )
+    }
+
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|l| {
+            let (n, v) = l.split_once(':')?;
+            n.eq_ignore_ascii_case(name).then_some(v.trim())
+        })
+    }
+
+    const KEENABLE_OK_BODY: &str = r#"{"results":[
+        {"url":"https://www.rust-lang.org/","title":"Rust","snippet":"A language empowering everyone.","description":""},
+        {"url":"https://doc.rust-lang.org/book/","title":"The Book","snippet":"","description":"Only a description here."}
+    ]}"#;
+
+    #[tokio::test]
+    async fn test_keenable_keyless_uses_public_endpoint_and_title_header() {
+        let env_var = "OPENFANG_TEST_KEENABLE_KEY_UNSET";
+        std::env::remove_var(env_var);
+        let (base_url, server) = one_shot_server("200 OK", KEENABLE_OK_BODY).await;
+
+        let engine = engine_with_key_env(env_var);
+        let output = engine
+            .search_keenable_at(&base_url, "rust programming language", 5)
+            .await
+            .unwrap();
+
+        let request = server.await.unwrap();
+        assert!(
+            request.starts_with("POST /v1/search/public HTTP/1.1"),
+            "keyless request must hit the public endpoint: {request}"
+        );
+        assert_eq!(header_value(&request, "X-Keenable-Title"), Some("openfang"));
+        assert!(header_value(&request, "X-API-Key").is_none());
+        let body_start = request.find("\r\n\r\n").unwrap() + 4;
+        let body: serde_json::Value = serde_json::from_str(&request[body_start..]).unwrap();
+        assert_eq!(body["query"], "rust programming language");
+        assert_eq!(body["max_results"], 5);
+        assert_eq!(body["snippet_max_length"], 500);
+
+        assert!(output.contains("Search results for 'rust programming language' (Keenable):"));
+        assert!(output.contains(
+            "1. Rust\n   URL: https://www.rust-lang.org/\n   A language empowering everyone."
+        ));
+        assert!(output.contains(
+            "2. The Book\n   URL: https://doc.rust-lang.org/book/\n   Only a description here."
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_keenable_keyed_uses_search_endpoint_and_api_key_header() {
+        let env_var = "OPENFANG_TEST_KEENABLE_KEY_SET";
+        std::env::set_var(env_var, "kn-test-key-123");
+        let (base_url, server) = one_shot_server("200 OK", KEENABLE_OK_BODY).await;
+
+        let engine = engine_with_key_env(env_var);
+        let output = engine
+            .search_keenable_at(&base_url, "rust", 60)
+            .await
+            .unwrap();
+        std::env::remove_var(env_var);
+
+        let request = server.await.unwrap();
+        assert!(
+            request.starts_with("POST /v1/search HTTP/1.1"),
+            "keyed request must hit the keyed endpoint: {request}"
+        );
+        assert_eq!(header_value(&request, "X-API-Key"), Some("kn-test-key-123"));
+        assert_eq!(header_value(&request, "X-Keenable-Title"), Some("openfang"));
+        let body_start = request.find("\r\n\r\n").unwrap() + 4;
+        let body = &request[body_start..];
+        assert!(
+            !body.contains("kn-test-key-123"),
+            "key must travel in a header, not the body"
+        );
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            body["max_results"], 50,
+            "max_results is clamped to the API ceiling"
+        );
+        assert!(output.contains("(Keenable)"));
+    }
+
+    #[tokio::test]
+    async fn test_keenable_rate_limit_is_an_error_not_empty_success() {
+        let env_var = "OPENFANG_TEST_KEENABLE_KEY_UNSET_429";
+        std::env::remove_var(env_var);
+        let (base_url, server) =
+            one_shot_server("429 Too Many Requests", r#"{"error":"rate limited"}"#).await;
+
+        let engine = engine_with_key_env(env_var);
+        let err = engine
+            .search_keenable_at(&base_url, "rust", 5)
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+
+        assert!(err.contains("429"), "{err}");
+        assert!(
+            err.contains(env_var),
+            "the error should name the env var that lifts the limit: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_keenable_no_results_is_an_error() {
+        let env_var = "OPENFANG_TEST_KEENABLE_KEY_UNSET_EMPTY";
+        std::env::remove_var(env_var);
+        let (base_url, server) = one_shot_server("200 OK", r#"{"results":[]}"#).await;
+
+        let engine = engine_with_key_env(env_var);
+        let err = engine
+            .search_keenable_at(&base_url, "zzqx", 5)
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        assert_eq!(err, "No results found for 'zzqx' (Keenable).");
+    }
+
+    #[test]
+    fn test_all_providers_lists_keenable() {
+        assert!(WebSearchEngine::all_providers().contains(&SearchProvider::Keenable));
     }
 }
