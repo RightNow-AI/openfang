@@ -92,16 +92,9 @@ class OpenFang:
             body_text = e.read().decode() if e.fp else ""
             raise OpenFangError(f"HTTP {e.code}: {body_text}", e.code, body_text) from e
 
-        buffer = ""
-        while True:
-            chunk = resp.read(4096)
-            if not chunk:
-                break
-            buffer += chunk.decode()
-            lines = buffer.split("\n")
-            buffer = lines.pop()
-            for line in lines:
-                line = line.strip()
+        with resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8").strip()
                 if line.startswith("data: "):
                     data_str = line[6:]
                     if data_str == "[DONE]":
@@ -110,7 +103,6 @@ class OpenFang:
                         yield json.loads(data_str)
                     except json.JSONDecodeError:
                         yield {"raw": data_str}
-        resp.close()
 
     def health(self) -> Any:
         return self._request("GET", "/api/health")
