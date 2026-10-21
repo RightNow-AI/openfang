@@ -93,6 +93,9 @@ enum ApiContentBlock {
     /// one (e.g. legacy sessions saved before this field was tracked).
     #[serde(rename = "thinking")]
     Thinking { thinking: String, signature: String },
+    /// MiniMax also returns thinking blocks without a signature.
+    #[serde(rename = "thinking")]
+    UnsignedThinking { thinking: String },
     /// Redacted (encrypted) thinking block echoed back to the API.
     ///
     /// Anthropic returns these when the model decides to hide reasoning;
@@ -216,7 +219,7 @@ impl LlmDriver for AnthropicDriver {
             .messages
             .iter()
             .filter(|m| m.role != Role::System)
-            .map(convert_message)
+            .map(|message| convert_message_for_model(message, &request.model))
             .collect();
 
         // Build tools
@@ -324,7 +327,7 @@ impl LlmDriver for AnthropicDriver {
             .messages
             .iter()
             .filter(|m| m.role != Role::System)
-            .map(convert_message)
+            .map(|message| convert_message_for_model(message, &request.model))
             .collect();
 
         let api_tools: Vec<ApiTool> = request
@@ -678,8 +681,13 @@ fn ensure_object(v: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-/// Convert an OpenFang Message to an Anthropic API message.
+#[cfg(test)]
 fn convert_message(msg: &Message) -> ApiMessage {
+    convert_message_for_model(msg, "")
+}
+
+/// Convert a message, retaining MiniMax thinking even without a signature.
+fn convert_message_for_model(msg: &Message, model: &str) -> ApiMessage {
     let role = match msg.role {
         Role::User => "user",
         Role::Assistant => "assistant",
@@ -724,6 +732,13 @@ fn convert_message(msg: &Message) -> ApiMessage {
                         signature,
                         ..
                     } => {
+                        if signature.is_none()
+                            && matches!(model, "MiniMax-M3.1-Flash" | "MiniMax-M3")
+                        {
+                            return Some(ApiContentBlock::UnsignedThinking {
+                                thinking: thinking.clone(),
+                            });
+                        }
                         // Anthropic's extended-thinking spec requires the
                         // verbatim `signature` to accompany any thinking block
                         // resubmitted in conversation history. Without one,
@@ -826,12 +841,74 @@ fn convert_response(api: ApiResponse) -> CompletionResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn test_convert_message_text() {
         let msg = Message::user("Hello");
         let api_msg = convert_message(&msg);
         assert_eq!(api_msg.role, "user");
+    }
+
+    #[tokio::test]
+    async fn test_compatible_base_url_appends_v1_messages() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (path_tx, path_rx) = tokio::sync::oneshot::channel();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = socket.read(&mut buffer).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let request_text = String::from_utf8(request).unwrap();
+            let path = request_text
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap()
+                .to_string();
+            path_tx.send(path).unwrap();
+
+            let body = r#"{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let driver = AnthropicDriver::new(
+            "test-key".to_string(),
+            format!("http://{address}/anthropic"),
+        );
+        let response = driver
+            .complete(CompletionRequest {
+                model: "MiniMax-M3".to_string(),
+                messages: vec![Message::user("Hello")],
+                tools: vec![],
+                max_tokens: 16,
+                temperature: 1.0,
+                system: None,
+                thinking: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.text(), "ok");
+        assert_eq!(path_rx.await.unwrap(), "/anthropic/v1/messages");
+        server.await.unwrap();
     }
 
     #[test]

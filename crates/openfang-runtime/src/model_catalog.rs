@@ -19,6 +19,8 @@ use std::collections::HashMap;
 /// The model catalog — registry of all known models and providers.
 pub struct ModelCatalog {
     models: Vec<ModelCatalogEntry>,
+    // Retain metadata and aliases for explicit saved IDs without advertising them.
+    legacy_models: Vec<ModelCatalogEntry>,
     aliases: HashMap<String, String>,
     providers: Vec<ProviderInfo>,
 }
@@ -38,6 +40,11 @@ impl ModelCatalog {
             }
         }
 
+        let (models, legacy_models): (Vec<_>, Vec<_>) = models.into_iter().partition(|model| {
+            model.provider != "minimax"
+                || matches!(model.id.as_str(), "MiniMax-M3.1-Flash" | "MiniMax-M3")
+        });
+
         // Set model counts on providers
         for provider in &mut providers {
             provider.model_count = models.iter().filter(|m| m.provider == provider.id).count();
@@ -45,6 +52,7 @@ impl ModelCatalog {
 
         Self {
             models,
+            legacy_models,
             aliases,
             providers,
         }
@@ -146,7 +154,7 @@ impl ModelCatalog {
         let mut builtin_exact: Option<&ModelCatalogEntry> = None;
         let mut builtin_ci: Option<&ModelCatalogEntry> = None;
 
-        for m in &self.models {
+        for m in self.models.iter().chain(&self.legacy_models) {
             if m.id.to_lowercase() != lower {
                 continue;
             }
@@ -176,13 +184,18 @@ impl ModelCatalog {
         if let Some(entry) = self
             .models
             .iter()
+            .chain(&self.legacy_models)
             .find(|m| m.display_name.to_lowercase() == lower)
         {
             return Some(entry);
         }
         // 4. Alias resolution
         if let Some(canonical) = self.aliases.get(&lower) {
-            return self.models.iter().find(|m| m.id == *canonical);
+            return self
+                .models
+                .iter()
+                .chain(&self.legacy_models)
+                .find(|m| m.id == *canonical);
         }
         None
     }
@@ -207,7 +220,7 @@ impl ModelCatalog {
         // Priority: exact-case ID > case-insensitive ID > display-name.
         let mut provider_ci: Option<&ModelCatalogEntry> = None;
 
-        for m in &self.models {
+        for m in self.models.iter().chain(&self.legacy_models) {
             if m.provider != provider {
                 continue;
             }
@@ -230,6 +243,7 @@ impl ModelCatalog {
         if let Some(entry) = self
             .models
             .iter()
+            .chain(&self.legacy_models)
             .find(|m| m.provider == provider && m.display_name.to_lowercase() == lower)
         {
             return Some(entry);
@@ -241,6 +255,7 @@ impl ModelCatalog {
             if let Some(entry) = self
                 .models
                 .iter()
+                .chain(&self.legacy_models)
                 .find(|m| m.id == *canonical && m.provider == provider)
             {
                 return Some(entry);
@@ -278,7 +293,7 @@ impl ModelCatalog {
 
     /// Return the default model ID for a provider (first model in catalog order).
     pub fn default_model_for_provider(&self, provider: &str) -> Option<String> {
-        // Check aliases first — e.g. "minimax" alias resolves to "MiniMax-M2.5"
+        // Check aliases first; for example, "minimax" resolves to "MiniMax-M3.1-Flash".
         if let Some(model_id) = self.aliases.get(provider) {
             return Some(model_id.clone());
         }
@@ -1016,7 +1031,9 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("ernie", "ernie-4.5-8k"),
         ("kimi", "kimi-k2"),
         ("moonshot", "moonshot-v1-128k"),
-        ("minimax", "MiniMax-M2.7"),
+        ("minimax", "MiniMax-M3.1-Flash"),
+        ("minimax-m3.1-flash", "MiniMax-M3.1-Flash"),
+        ("minimax-m3", "MiniMax-M3"),
         ("minimax-m2.7", "MiniMax-M2.7"),
         ("minimax-m2.5", "MiniMax-M2.5"),
         ("minimax-m2.5-highspeed", "MiniMax-M2.5-highspeed"),
@@ -3270,15 +3287,44 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
-        // MiniMax (7)
+        // MiniMax (2 current, 7 legacy lookup-only entries)
         // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "MiniMax-M3.1-Flash".into(),
+            display_name: "MiniMax M3.1 Flash".into(),
+            provider: "minimax".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_000_000,
+            max_output_tokens: 524_288,
+            input_cost_per_m: 0.15,
+            output_cost_per_m: 0.60,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["minimax-m3.1-flash".into()],
+        },
+        ModelCatalogEntry {
+            id: "MiniMax-M3".into(),
+            display_name: "MiniMax M3".into(),
+            provider: "minimax".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_000_000,
+            max_output_tokens: 524_288,
+            // Standard short-context rates; see configuration docs for longer inputs.
+            input_cost_per_m: 0.30,
+            output_cost_per_m: 1.20,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["minimax-m3".into()],
+        },
         ModelCatalogEntry {
             id: "MiniMax-M2.7".into(),
             display_name: "MiniMax M2.7".into(),
             provider: "minimax".into(),
             tier: ModelTier::Frontier,
             context_window: 204_800,
-            max_output_tokens: 131_072,
+            max_output_tokens: 204_800,
             input_cost_per_m: 0.30,
             output_cost_per_m: 1.20,
             supports_tools: true,
@@ -4318,6 +4364,29 @@ mod tests {
     }
 
     #[test]
+    fn test_minimax_available_choices() {
+        let mut catalog = ModelCatalog::new();
+        catalog
+            .providers
+            .iter_mut()
+            .find(|p| p.id == "minimax")
+            .unwrap()
+            .auth_status = AuthStatus::Configured;
+        let ids: Vec<_> = catalog
+            .available_models()
+            .into_iter()
+            .filter(|m| m.provider == "minimax")
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(ids, ["MiniMax-M3.1-Flash", "MiniMax-M3"]);
+        assert!(catalog
+            .models_by_tier(ModelTier::Frontier)
+            .iter()
+            .filter(|m| m.provider == "minimax")
+            .all(|m| ids.contains(&m.id.as_str())));
+    }
+
+    #[test]
     fn test_chinese_model_aliases() {
         let catalog = ModelCatalog::new();
         assert!(catalog.find_model("kimi").is_some());
@@ -4325,16 +4394,35 @@ mod tests {
         assert!(catalog.find_model("codegeex").is_some());
         assert!(catalog.find_model("ernie").is_some());
         assert!(catalog.find_model("minimax").is_some());
-        // MiniMax M2.7 — new flagship model
+        // MiniMax M3 remains an ordinary choice alongside Flash.
+        let m3 = catalog.find_model("MiniMax-M3").unwrap();
+        assert_eq!(m3.provider, "minimax");
+        assert_eq!(m3.tier, ModelTier::Frontier);
+        assert_eq!(m3.context_window, 1_000_000);
+        assert_eq!(m3.max_output_tokens, 524_288);
+        assert_eq!(m3.input_cost_per_m, 0.30);
+        assert_eq!(m3.output_cost_per_m, 1.20);
+        assert!(m3.supports_vision);
+        assert!(m3.supports_tools);
+        assert!(catalog.find_model("minimax-m3").is_some());
+        // Default "minimax" alias points to Flash.
+        let default = catalog.find_model("minimax").unwrap();
+        assert_eq!(default.id, "MiniMax-M3.1-Flash");
+        assert_eq!(default.context_window, 1_000_000);
+        assert_eq!(default.max_output_tokens, 524_288);
+        assert_eq!(default.input_cost_per_m, 0.15);
+        assert_eq!(default.output_cost_per_m, 0.60);
+        // MiniMax M2.7 remains available
         let m27 = catalog.find_model("MiniMax-M2.7").unwrap();
         assert_eq!(m27.provider, "minimax");
         assert_eq!(m27.tier, ModelTier::Frontier);
+        assert_eq!(m27.context_window, 204_800);
+        assert_eq!(m27.max_output_tokens, 204_800);
+        assert_eq!(m27.input_cost_per_m, 0.30);
+        assert_eq!(m27.output_cost_per_m, 1.20);
         assert!(!m27.supports_vision);
         assert!(m27.supports_tools);
         assert!(catalog.find_model("minimax-m2.7").is_some());
-        // Default "minimax" alias now points to M2.7
-        let default = catalog.find_model("minimax").unwrap();
-        assert_eq!(default.id, "MiniMax-M2.7");
         // MiniMax M2.5 — by exact ID, alias, and case-insensitive
         let m25 = catalog.find_model("MiniMax-M2.5").unwrap();
         assert_eq!(m25.provider, "minimax");

@@ -334,6 +334,49 @@ api_key_env = "ANTHROPIC_API_KEY"
 | `api_key_env` | string | `"ANTHROPIC_API_KEY"` | Name of the environment variable holding the API key. The actual key is read from this env var at runtime, never stored in config. |
 | `base_url` | string or null | `null` | Override the API base URL. Useful for proxies or self-hosted endpoints. When `null`, the provider's default URL from the model catalog is used. |
 
+#### MiniMax
+
+`MiniMax-M3.1-Flash` is the default MiniMax model, followed by `MiniMax-M3` in the built-in catalog. Both have a 1,000,000-token context window and a 524,288-token maximum output, with tool use and image input. Older built-in models remain resolvable for explicit saved IDs and aliases, but are not advertised in ordinary model lists. Custom model entries remain available.
+
+The existing drivers omit thinking and effort controls for MiniMax. Flash therefore uses its required adaptive thinking and default `max` effort. M3 defaults to adaptive thinking through the OpenAI-compatible API and disabled thinking through the Anthropic-compatible API. This integration does not expose an effort selector. The catalog's `supports_vision` flag describes image capability; it does not promise a video input path in OpenFang.
+
+OpenFang can use both supported wire protocols in either region:
+
+| Region | OpenAI-compatible base URL | Anthropic-compatible base URL |
+|--------|----------------------------|-------------------------------|
+| Global | `https://api.minimax.io/v1` | `https://api.minimax.io/anthropic` |
+| China mainland | `https://api.minimaxi.com/v1` | `https://api.minimaxi.com/anthropic` |
+
+Use the built-in MiniMax provider for the OpenAI-compatible API:
+
+```toml
+[default_model]
+provider = "minimax"
+model = "MiniMax-M3.1-Flash"
+api_key_env = "MINIMAX_API_KEY"
+base_url = "https://api.minimax.io/v1"
+# For China mainland, use https://api.minimaxi.com/v1 instead.
+```
+
+Use the existing Anthropic driver for the Anthropic-compatible API:
+
+```toml
+[default_model]
+provider = "anthropic"
+model = "MiniMax-M3.1-Flash"
+api_key_env = "MINIMAX_API_KEY"
+base_url = "https://api.minimax.io/anthropic"
+# For China mainland, use https://api.minimaxi.com/anthropic instead.
+```
+
+The Anthropic driver appends `/v1/messages`, so keep its configured base URL ending in `/anthropic`; do not append `/v1`.
+
+Flash pay-as-you-go prices are $0.15/M input tokens, $0.60/M output tokens, and $0.015/M cache-read tokens. M3 standard prices are $0.30/M input, $1.20/M output, and $0.06/M cache-read for inputs up to the documented 512k tier; above that tier they are $0.60/M, $2.40/M, and $0.12/M respectively. M3 priority prices are 1.5 times standard prices. Flash does not support `service_tier`. Cache-write pricing is not specified here.
+
+The catalog stores one input/output rate per model, using M3's short-context standard rate. Its cost estimates do not account for M3's long-context tier, priority admission, or cache pricing.
+
+See the official [model overview](https://platform.minimax.io/docs/guides/models-intro.md), [pricing](https://platform.minimax.io/docs/pricing/overview.md), and [Messages compatibility](https://platform.minimax.io/docs/api-reference/text-anthropic-api.md) for the current service contract.
+
 ---
 
 ### `[memory]`
