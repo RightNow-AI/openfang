@@ -37,6 +37,10 @@ pub const NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 /// Novita AI OpenAI-compatible endpoint.
 pub const NOVITA_BASE_URL: &str = "https://api.novita.ai/openai/v1";
 
+// ── Runcrate ────────────────────────────────────────────────────
+/// Runcrate OpenAI-compatible endpoint (open models).
+pub const RUNCRATE_BASE_URL: &str = "https://api.runcrate.ai/v1";
+
 // ── GitHub Copilot ──────────────────────────────────────────────
 pub const GITHUB_COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 

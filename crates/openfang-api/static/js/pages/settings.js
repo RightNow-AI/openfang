@@ -348,7 +348,7 @@ function settingsPage() {
       if (p.is_local || p.key_required === false) return 'local';
       var id = (p.id || '').toLowerCase();
       var FRONTIER = ['anthropic','openai','gemini','google','xai','bedrock','azure','vertex'];
-      var OSS = ['groq','together','fireworks','cerebras','sambanova','deepseek','mistral','perplexity','cohere','ai21','huggingface','replicate','nvidia','venice','novita','chutes'];
+      var OSS = ['groq','together','fireworks','cerebras','sambanova','deepseek','mistral','perplexity','cohere','ai21','huggingface','replicate','nvidia','venice','novita','chutes','runcrate'];
       var AGG = ['openrouter','litellm','github-copilot','claude-code'];
       var REGIONAL = ['qwen','minimax','zhipu','zai','moonshot','qianfan','volcengine','kimi'];
       if (FRONTIER.indexOf(id) !== -1) return 'frontier';

@@ -10,9 +10,10 @@ use openfang_types::model_catalog::{
     HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
     MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
     OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL,
-    VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    REPLICATE_BASE_URL, REQUESTY_BASE_URL, RUNCRATE_BASE_URL, SAMBANOVA_BASE_URL,
+    TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -630,6 +631,15 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             display_name: "Requesty".into(),
             api_key_env: "REQUESTY_API_KEY".into(),
             base_url: REQUESTY_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
+            id: "runcrate".into(),
+            display_name: "Runcrate".into(),
+            api_key_env: "RUNCRATE_API_KEY".into(),
+            base_url: RUNCRATE_BASE_URL.into(),
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
@@ -2148,6 +2158,93 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             max_output_tokens: 32_768,
             input_cost_per_m: 0.39,
             output_cost_per_m: 0.39,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // Runcrate (6): open models on an OpenAI-compatible API
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "runcrate/deepseek-ai/DeepSeek-V4.1-Flash".into(),
+            display_name: "DeepSeek V4.1 Flash (Runcrate)".into(),
+            provider: "runcrate".into(),
+            tier: ModelTier::Fast,
+            context_window: 1_048_576,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.147,
+            output_cost_per_m: 0.441,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "runcrate/deepseek-ai/DeepSeek-V4.1-Flash-1017".into(),
+            display_name: "DeepSeek V4.1 Flash 1017 (Runcrate)".into(),
+            provider: "runcrate".into(),
+            tier: ModelTier::Fast,
+            context_window: 1_048_576,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.1029,
+            output_cost_per_m: 0.3087,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "runcrate/zai-org/GLM-5.3".into(),
+            display_name: "GLM-5.3 (Runcrate)".into(),
+            provider: "runcrate".into(),
+            tier: ModelTier::Smart,
+            context_window: 1_048_576,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.590625,
+            output_cost_per_m: 2.625,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "runcrate/zai-org/GLM-5.3-Flash".into(),
+            display_name: "GLM-5.3 Flash (Runcrate)".into(),
+            provider: "runcrate".into(),
+            tier: ModelTier::Fast,
+            context_window: 1_048_576,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.1575,
+            output_cost_per_m: 0.525,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "runcrate/Qwen/Qwen3.8-Flash".into(),
+            display_name: "Qwen3.8 Flash (Runcrate)".into(),
+            provider: "runcrate".into(),
+            tier: ModelTier::Fast,
+            context_window: 1_000_000,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.11865,
+            output_cost_per_m: 0.4011,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "runcrate/openai/gpt-oss-120b".into(),
+            display_name: "gpt-oss 120B (Runcrate)".into(),
+            provider: "runcrate".into(),
+            tier: ModelTier::Balanced,
+            context_window: 131_072,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 0.03885,
+            output_cost_per_m: 0.1785,
             supports_tools: true,
             supports_vision: false,
             supports_streaming: true,
@@ -4083,7 +4180,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 42);
+        assert_eq!(catalog.list_providers().len(), 43);
     }
 
     #[test]
@@ -4828,6 +4925,26 @@ mod tests {
             .find_model("requesty/anthropic/claude-sonnet-4")
             .expect("requesty/anthropic/claude-sonnet-4 must resolve");
         assert_eq!(entry.provider, "requesty");
+        assert!(entry.supports_tools);
+    }
+
+    #[test]
+    fn test_runcrate_provider_and_models_present() {
+        let catalog = ModelCatalog::new();
+
+        let provider = catalog
+            .list_providers()
+            .iter()
+            .find(|p| p.id == "runcrate")
+            .expect("runcrate provider must be registered");
+        assert_eq!(provider.api_key_env, "RUNCRATE_API_KEY");
+        assert_eq!(provider.base_url, "https://api.runcrate.ai/v1");
+        assert_eq!(provider.model_count, 6);
+
+        let entry = catalog
+            .find_model("runcrate/deepseek-ai/DeepSeek-V4.1-Flash")
+            .expect("runcrate/deepseek-ai/DeepSeek-V4.1-Flash must resolve");
+        assert_eq!(entry.provider, "runcrate");
         assert!(entry.supports_tools);
     }
 
