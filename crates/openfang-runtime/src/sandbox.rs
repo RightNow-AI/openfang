@@ -73,6 +73,14 @@ pub struct GuestState {
     pub ssrf_allowed_hosts: Vec<String>,
 }
 
+/// Wasmtime store data combines the host-facing guest context with the
+/// resource limiter, without exposing limiter implementation details in the
+/// public `GuestState` type.
+struct StoreState {
+    guest: GuestState,
+    limits: StoreLimits,
+}
+
 /// Result of executing a WASM module.
 #[derive(Debug)]
 pub struct ExecutionResult {
@@ -165,14 +173,20 @@ impl WasmSandbox {
         // Create store with guest state
         let mut store = Store::new(
             engine,
-            GuestState {
-                capabilities: config.capabilities.clone(),
-                kernel,
-                agent_id: agent_id.to_string(),
-                tokio_handle,
-                ssrf_allowed_hosts: config.ssrf_allowed_hosts.clone(),
+            StoreState {
+                guest: GuestState {
+                    capabilities: config.capabilities.clone(),
+                    kernel,
+                    agent_id: agent_id.to_string(),
+                    tokio_handle,
+                    ssrf_allowed_hosts: config.ssrf_allowed_hosts.clone(),
+                },
+                limits: StoreLimitsBuilder::new()
+                    .memory_size(config.max_memory_bytes)
+                    .build(),
             },
         );
+        store.limiter(|state| &mut state.limits);
 
         // Set fuel budget (deterministic metering)
         if config.fuel_limit > 0 {
@@ -282,7 +296,7 @@ impl WasmSandbox {
     }
 
     /// Register host function imports in the linker ("openfang" module).
-    fn register_host_functions(linker: &mut Linker<GuestState>) -> Result<(), SandboxError> {
+    fn register_host_functions(linker: &mut Linker<StoreState>) -> Result<(), SandboxError> {
         // host_call: single dispatch for all capability-checked operations.
         // Request: JSON bytes in guest memory → {"method": "...", "params": {...}}
         // Response: packed (ptr, len) pointing to JSON in guest memory.
@@ -290,7 +304,7 @@ impl WasmSandbox {
             .func_wrap(
                 "openfang",
                 "host_call",
-                |mut caller: Caller<'_, GuestState>,
+                |mut caller: Caller<'_, StoreState>,
                  request_ptr: i32,
                  request_len: i32|
                  -> Result<i64, Error> {
@@ -321,7 +335,7 @@ impl WasmSandbox {
                         .unwrap_or(serde_json::Value::Null);
 
                     // Dispatch to capability-checked handler
-                    let response = host_functions::dispatch(caller.data(), &method, &params);
+                    let response = host_functions::dispatch(&caller.data().guest, &method, &params);
 
                     // Serialize response JSON
                     let response_bytes = serde_json::to_vec(&response)?;
@@ -359,7 +373,7 @@ impl WasmSandbox {
             .func_wrap(
                 "openfang",
                 "host_log",
-                |mut caller: Caller<'_, GuestState>,
+                |mut caller: Caller<'_, StoreState>,
                  level: i32,
                  msg_ptr: i32,
                  msg_len: i32|
@@ -376,7 +390,7 @@ impl WasmSandbox {
                         bail!("host_log: pointer out of bounds");
                     }
                     let msg = std::str::from_utf8(&data[start..end]).unwrap_or("<invalid utf8>");
-                    let agent_id = &caller.data().agent_id;
+                    let agent_id = &caller.data().guest.agent_id;
 
                     match level {
                         0 => tracing::trace!(agent = %agent_id, "[wasm] {msg}"),
@@ -442,6 +456,34 @@ mod tests {
                     (br $inf)
                 )
                 (i64.const 0)
+            )
+        )
+    "#;
+
+    /// Grows memory once and returns whether the configured store limit blocked it.
+    const MEMORY_GROWTH_WAT: &str = r#"
+        (module
+            (memory (export "memory") 1 2)
+            (data (i32.const 0) "{\"limited\":true}")
+            (data (i32.const 16) "{\"limited\":false}")
+            (global $bump (mut i32) (i32.const 1024))
+
+            (func (export "alloc") (param $size i32) (result i32)
+                (local $ptr i32)
+                (local.set $ptr (global.get $bump))
+                (global.set $bump (i32.add (global.get $bump) (local.get $size)))
+                (local.get $ptr)
+            )
+
+            (func (export "execute") (param $ptr i32) (param $len i32) (result i64)
+                (if (result i64)
+                    (i32.eq
+                        (memory.grow (i32.const 1))
+                        (i32.const -1)
+                    )
+                    (then (i64.const 16))
+                    (else (i64.const 68719476753))
+                )
             )
         )
     "#;
@@ -526,6 +568,28 @@ mod tests {
             matches!(err, SandboxError::FuelExhausted),
             "Expected FuelExhausted, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_memory_limit_blocks_guest_growth() {
+        let sandbox = WasmSandbox::new().unwrap();
+        let config = SandboxConfig {
+            max_memory_bytes: 64 * 1024,
+            ..Default::default()
+        };
+
+        let result = sandbox
+            .execute(
+                MEMORY_GROWTH_WAT.as_bytes(),
+                serde_json::json!({}),
+                config,
+                None,
+                "test-agent",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.output, serde_json::json!({"limited": true}));
     }
 
     #[tokio::test]
