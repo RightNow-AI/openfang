@@ -382,7 +382,7 @@ Three native driver implementations cover all 20 providers with 51 models:
 | `ai21` | OpenAI-compat | `https://api.ai21.com` | Yes |
 | `cerebras` | OpenAI-compat | `https://api.cerebras.ai` | Yes |
 | `sambanova` | OpenAI-compat | `https://api.sambanova.ai` | Yes |
-| `huggingface` | OpenAI-compat | `https://api-inference.huggingface.co` | Yes |
+| `huggingface` | OpenAI-compat | `https://router.huggingface.co` | Yes |
 | `xai` | OpenAI-compat | `https://api.x.ai` | Yes |
 | `replicate` | OpenAI-compat | `https://api.replicate.com` | Yes |
 | `ollama` | OpenAI-compat | `http://localhost:11434` | No |

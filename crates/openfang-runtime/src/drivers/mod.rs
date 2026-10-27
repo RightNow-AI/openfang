@@ -881,7 +881,7 @@ mod tests {
     #[test]
     fn test_provider_defaults_huggingface() {
         let d = provider_defaults("huggingface").unwrap();
-        assert_eq!(d.base_url, "https://api-inference.huggingface.co/v1");
+        assert_eq!(d.base_url, "https://router.huggingface.co/v1");
         assert_eq!(d.api_key_env, "HF_API_KEY");
         assert!(d.key_required);
     }

@@ -486,7 +486,7 @@ For Gemini specifically, either `GEMINI_API_KEY` or `GOOGLE_API_KEY` will work.
 | **Display Name** | Hugging Face |
 | **Driver** | OpenAI-compatible |
 | **Env Var** | `HF_API_KEY` |
-| **Base URL** | `https://api-inference.huggingface.co/v1` |
+| **Base URL** | `https://router.huggingface.co/v1` |
 | **Key Required** | Yes |
 | **Free Tier** | Yes (rate-limited) |
 | **Auth** | `Authorization: Bearer` header |

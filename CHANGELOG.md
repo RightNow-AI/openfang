@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Hugging Face provider now defaults to `https://router.huggingface.co/v1`. The old serverless Inference API at `api-inference.huggingface.co` no longer resolves.
+
 ## [0.5.10] - 2026-04-17
 
 ### Fixed
