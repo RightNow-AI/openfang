@@ -7,12 +7,12 @@ use openfang_types::model_catalog::{
     AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
     AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
     DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
-    OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL,
-    VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LLMBUZZ_BASE_URL,
+    LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL,
+    OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL,
+    QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL,
+    VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL,
+    ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -630,6 +630,15 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             display_name: "Requesty".into(),
             api_key_env: "REQUESTY_API_KEY".into(),
             base_url: REQUESTY_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
+            id: "llmbuzz".into(),
+            display_name: "llm.buzz".into(),
+            api_key_env: "LLM_BUZZ_API_KEY".into(),
+            base_url: LLMBUZZ_BASE_URL.into(),
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
@@ -2150,6 +2159,38 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             output_cost_per_m: 0.39,
             supports_tools: true,
             supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // llm.buzz (2) — OpenAI-compatible gateway
+        // Model list: https://api.llm.buzz/api/v1/models
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "llmbuzz/anthropic/claude-sonnet-5".into(),
+            display_name: "Claude Sonnet 5 (llm.buzz)".into(),
+            provider: "llmbuzz".into(),
+            tier: ModelTier::Smart,
+            context_window: 1_000_000,
+            max_output_tokens: 128_000,
+            input_cost_per_m: 1.6,
+            output_cost_per_m: 8.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "llmbuzz/openai/gpt-5-mini".into(),
+            display_name: "GPT-5 Mini (llm.buzz)".into(),
+            provider: "llmbuzz".into(),
+            tier: ModelTier::Balanced,
+            context_window: 400_000,
+            max_output_tokens: 128_000,
+            input_cost_per_m: 0.2,
+            output_cost_per_m: 1.6,
+            supports_tools: true,
+            supports_vision: true,
             supports_streaming: true,
             aliases: vec![],
         },
@@ -4083,7 +4124,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 42);
+        assert_eq!(catalog.list_providers().len(), 43);
     }
 
     #[test]
@@ -4828,6 +4869,35 @@ mod tests {
             .find_model("requesty/anthropic/claude-sonnet-4")
             .expect("requesty/anthropic/claude-sonnet-4 must resolve");
         assert_eq!(entry.provider, "requesty");
+        assert!(entry.supports_tools);
+    }
+
+    // ── llm.buzz provider ─────────────────────────────────────────────────
+
+    /// llm.buzz must be registered as a provider with the correct base URL
+    /// and env var, and at least one of its catalog models must resolve.
+    #[test]
+    fn test_llmbuzz_provider_and_models_present() {
+        let catalog = ModelCatalog::new();
+
+        let provider = catalog
+            .list_providers()
+            .iter()
+            .find(|p| p.id == "llmbuzz")
+            .expect("llmbuzz provider must be registered");
+        assert_eq!(provider.display_name, "llm.buzz");
+        assert_eq!(provider.api_key_env, "LLM_BUZZ_API_KEY");
+        assert_eq!(provider.base_url, "https://api.llm.buzz/api/v1");
+        assert!(provider.key_required);
+        assert!(
+            provider.model_count >= 1,
+            "llmbuzz must have at least one model in catalog"
+        );
+
+        let entry = catalog
+            .find_model("llmbuzz/anthropic/claude-sonnet-5")
+            .expect("llmbuzz/anthropic/claude-sonnet-5 must resolve");
+        assert_eq!(entry.provider, "llmbuzz");
         assert!(entry.supports_tools);
     }
 
