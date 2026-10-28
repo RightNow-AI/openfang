@@ -18,12 +18,13 @@ use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
     AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL,
     COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NOVITA_BASE_URL, NVIDIA_NIM_BASE_URL,
-    OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL,
-    QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL,
-    VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL,
-    ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LLMBUZZ_BASE_URL,
+    LMSTUDIO_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NOVITA_BASE_URL,
+    NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL,
+    QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, REQUESTY_BASE_URL, SAMBANOVA_BASE_URL,
+    TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL, VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL, ZHIPU_BASE_URL,
+    ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -109,6 +110,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         "requesty" => Some(ProviderDefaults {
             base_url: REQUESTY_BASE_URL,
             api_key_env: "REQUESTY_API_KEY",
+            key_required: true,
+        }),
+        "llmbuzz" => Some(ProviderDefaults {
+            base_url: LLMBUZZ_BASE_URL,
+            api_key_env: "LLM_BUZZ_API_KEY",
             key_required: true,
         }),
         "deepseek" => Some(ProviderDefaults {
@@ -661,6 +667,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "openai",
         "groq",
         "openrouter",
+        "llmbuzz",
         "deepseek",
         "together",
         "mistral",
