@@ -2760,6 +2760,38 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
             </div>
           </template>
 
+          <!-- ClawHub publisher selection for an ambiguous skill slug. -->
+          <template x-if="ambiguousInstallSlug">
+            <div class="modal-overlay" @click.self="ambiguousInstallSlug = null" @keydown.escape.window="ambiguousInstallSlug = null">
+              <div class="modal" style="max-width:460px">
+                <div class="modal-header">
+                  <h3>Choose a ClawHub publisher</h3>
+                  <button class="modal-close" aria-label="Close" @click="ambiguousInstallSlug = null">&times;</button>
+                </div>
+                <p class="text-sm text-dim mb-3">
+                  Several publishers offer <strong x-text="ambiguousInstallSlug"></strong>.
+                  Enter the publisher's exact ClawHub handle to install the intended skill.
+                </p>
+                <div class="form-group mb-3">
+                  <label for="clawhub-install-owner">Publisher handle</label>
+                  <input id="clawhub-install-owner" class="form-input" type="text"
+                    placeholder="e.g. steipete" autocomplete="off" x-model.trim="installOwnerHandle"
+                    @keydown.enter.prevent="if (installOwnerHandle && installingSlug !== ambiguousInstallSlug) installFromClawHub(ambiguousInstallSlug, installOwnerHandle)">
+                  <div class="text-xs text-dim mt-2">
+                    Find the publisher on <a href="https://clawhub.ai/" target="_blank" rel="noopener noreferrer">ClawHub</a>.
+                  </div>
+                </div>
+                <div class="flex gap-2">
+                  <button class="btn btn-primary" style="flex:1"
+                    :disabled="!installOwnerHandle.trim() || installingSlug === ambiguousInstallSlug"
+                    @click="installFromClawHub(ambiguousInstallSlug, installOwnerHandle)"
+                    x-text="installingSlug === ambiguousInstallSlug ? 'Installing...' : 'Retry install'"></button>
+                  <button class="btn btn-ghost" @click="ambiguousInstallSlug = null">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </template>
+
           <!-- Skill Config Modal (SKILL.md frontmatter `config:` variables) -->
           <template x-if="configSkill">
             <div class="modal-overlay" @click.self="closeSkillConfig()" @keydown.escape.window="closeSkillConfig()">
