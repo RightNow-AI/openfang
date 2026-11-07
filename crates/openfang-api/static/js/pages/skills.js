@@ -18,6 +18,8 @@ function skillsPage() {
     clawhubNextCursor: null,
     installingSlug: null,
     installResult: null,
+    ambiguousInstallSlug: null,
+    installOwnerHandle: '',
     _searchTimer: null,
     _browseCache: {},    // { key: { ts, data } } client-side 60s cache
     _searchCache: {},
@@ -401,12 +403,16 @@ function skillsPage() {
     },
 
     // Install from ClawHub
-    async installFromClawHub(slug) {
+    async installFromClawHub(slug, ownerHandle) {
       this.installingSlug = slug;
       this.installResult = null;
       try {
-        var data = await OpenFangAPI.post('/api/clawhub/install', { slug: slug });
+        var payload = { slug: slug };
+        if (ownerHandle && ownerHandle.trim()) payload.ownerHandle = ownerHandle.trim();
+        var data = await OpenFangAPI.post('/api/clawhub/install', payload);
         this.installResult = data;
+        this.ambiguousInstallSlug = null;
+        this.installOwnerHandle = '';
         if (data.warnings && data.warnings.length > 0) {
           OpenFangToast.success('Skill "' + data.name + '" installed with ' + data.warnings.length + ' warning(s)');
         } else {
@@ -419,7 +425,11 @@ function skillsPage() {
         await this.loadSkills();
       } catch(e) {
         var msg = e.message || 'Install failed';
-        if (msg.includes('already_installed')) {
+        if (msg.includes('Ambiguous skill slug')) {
+          this.ambiguousInstallSlug = slug;
+          this.installOwnerHandle = '';
+          OpenFangToast.warn('Multiple publishers use this skill name. Choose the publisher and retry.');
+        } else if (msg.includes('already_installed')) {
           OpenFangToast.error('Skill is already installed');
         } else if (msg.includes('SecurityBlocked')) {
           OpenFangToast.error('Skill blocked by security scan');
