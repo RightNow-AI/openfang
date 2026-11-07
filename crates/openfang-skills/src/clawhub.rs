@@ -504,6 +504,23 @@ impl ClawHubClient {
             .await
     }
 
+    /// Install a skill from a specific ClawHub publisher when slugs collide.
+    /// Existing callers of install() and install_with_options() stay compatible.
+    pub async fn install_with_owner_handle(
+        &self,
+        slug: &str,
+        owner_handle: Option<&str>,
+        target_dir: &Path,
+    ) -> Result<ClawHubInstallResult, SkillError> {
+        self.install_with_options_and_owner(
+            slug,
+            owner_handle,
+            target_dir,
+            &InstallOptions::default(),
+        )
+        .await
+    }
+
     /// Install a skill from ClawHub with explicit enforcement options.
     ///
     /// When `opts.require_signed` is true, the skill must ship with a valid
@@ -526,10 +543,20 @@ impl ClawHubClient {
         target_dir: &Path,
         opts: &InstallOptions,
     ) -> Result<ClawHubInstallResult, SkillError> {
-        // Use /api/v1/download?slug=... endpoint
-        let url = format!("{}/download?slug={}", self.base_url, urlencoded(slug));
+        self.install_with_options_and_owner(slug, None, target_dir, opts)
+            .await
+    }
 
-        info!(slug, "Downloading skill from ClawHub");
+    async fn install_with_options_and_owner(
+        &self,
+        slug: &str,
+        owner_handle: Option<&str>,
+        target_dir: &Path,
+        opts: &InstallOptions,
+    ) -> Result<ClawHubInstallResult, SkillError> {
+        let url = clawhub_download_url(&self.base_url, slug, owner_handle);
+
+        info!(slug, owner_handle, "Downloading skill from ClawHub");
 
         // Use get_with_retry for the download — same 429/5xx handling as all
         // other endpoints, with 5 attempts and exponential backoff.
@@ -755,6 +782,16 @@ fn urlencoded(s: &str) -> String {
     result
 }
 
+/// Construct a publisher-aware ClawHub URL, preserving the legacy default.
+fn clawhub_download_url(base_url: &str, slug: &str, owner_handle: Option<&str>) -> String {
+    let mut url = format!("{}/download?slug={}", base_url, urlencoded(slug));
+    if let Some(owner) = owner_handle.map(str::trim).filter(|s| !s.is_empty()) {
+        url.push_str("&ownerHandle=");
+        url.push_str(&urlencoded(owner));
+    }
+    url
+}
+
 /// Check if a binary is available on PATH.
 fn which_check(name: &str) -> Option<PathBuf> {
     let result = if cfg!(target_os = "windows") {
@@ -956,6 +993,27 @@ mod tests {
     fn test_clawhub_client_url() {
         let client = ClawHubClient::new(PathBuf::from("/tmp/cache"));
         assert_eq!(client.base_url, "https://clawhub.ai/api/v1");
+    }
+
+    #[test]
+    fn test_clawhub_download_url_with_owner_and_legacy_behavior() {
+        let base = "https://clawhub.ai/api/v1";
+        assert_eq!(
+            clawhub_download_url(base, "github-helper", None),
+            "https://clawhub.ai/api/v1/download?slug=github-helper"
+        );
+        assert_eq!(
+            clawhub_download_url(base, "weather", Some("steipete")),
+            "https://clawhub.ai/api/v1/download?slug=weather&ownerHandle=steipete"
+        );
+        assert_eq!(
+            clawhub_download_url(base, "weather", Some(" team/a b ")),
+            "https://clawhub.ai/api/v1/download?slug=weather&ownerHandle=team%2Fa+b"
+        );
+        assert_eq!(
+            clawhub_download_url(base, "weather", Some("   ")),
+            "https://clawhub.ai/api/v1/download?slug=weather"
+        );
     }
 
     #[test]
