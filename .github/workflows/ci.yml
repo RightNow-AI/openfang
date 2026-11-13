@@ -138,3 +138,33 @@ jobs:
         run: |
           curl -fsSL https://openfang.sh/install.ps1 -o /tmp/install.ps1
           pwsh -NoProfile -Command "Get-Content /tmp/install.ps1 | Out-Null" 2>&1 || true
+
+  # Temporary verification of the live ClawHub API contract for issue #1284.
+  clawhub-live-contract:
+    name: ClawHub Live Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Check ambiguous slug and publisher-specific download
+        shell: bash
+        run: |
+          set -euo pipefail
+          ambiguous=$(curl --silent --show-error --location --retry 2 --max-time 35 \
+            --output /tmp/clawhub-ambiguous.txt --write-out "%{http_code}" \
+            "https://clawhub.ai/api/v1/download?slug=weather")
+          echo "Unqualified weather download: HTTP $ambiguous"
+          if [[ "$ambiguous" != "409" ]]; then
+            echo "Expected HTTP 409 for shared skill slug; got $ambiguous" >&2
+            head -c 500 /tmp/clawhub-ambiguous.txt || true
+            exit 1
+          fi
+          resolved=$(curl --silent --show-error --location --retry 2 --max-time 35 \
+            --output /tmp/clawhub-selected.bin --write-out "%{http_code}" \
+            "https://clawhub.ai/api/v1/download?slug=weather&ownerHandle=steipete")
+          echo "Publisher-qualified weather download: HTTP $resolved"
+          if [[ "$resolved" != "200" ]]; then
+            echo "Expected HTTP 200 for publisher steipete; got $resolved" >&2
+            exit 1
+          fi
+          test -s /tmp/clawhub-selected.bin
+          echo "Live ClawHub contract confirmed."
