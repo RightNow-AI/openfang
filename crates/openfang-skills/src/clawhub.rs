@@ -1043,9 +1043,7 @@ mod tests {
     async fn test_clawhub_ambiguous_slug_owner_recovery_integration() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let expected = [
@@ -1084,10 +1082,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let skills_dir = temp.path().join("skills");
         std::fs::create_dir_all(&skills_dir).unwrap();
-        let client = ClawHubClient::with_url(
-            &format!("http://{addr}/api/v1"),
-            temp.path().join("cache"),
-        );
+        let client =
+            ClawHubClient::with_url(&format!("http://{addr}/api/v1"), temp.path().join("cache"));
 
         let ambiguous = client
             .install_with_owner_handle("weather", None, &skills_dir)
