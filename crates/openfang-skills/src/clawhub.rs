@@ -1113,4 +1113,33 @@ mod tests {
             .expect("mock ClawHub server timed out")
             .expect("mock ClawHub server failed");
     }
+
+    /// Explicit network smoke test: run with --ignored against the live ClawHub API.
+    /// Not part of the normal deterministic unit-test suite.
+    #[tokio::test]
+    #[ignore = "requires ClawHub network access"]
+    async fn test_live_clawhub_owner_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        let client = ClawHubClient::new(temp.path().join("cache"));
+
+        let ambiguous = client
+            .install_with_owner_handle("weather", None, &skills_dir)
+            .await
+            .unwrap_err();
+        assert!(
+            ambiguous.to_string().contains("409 Conflict"),
+            "expected ambiguous weather slug: {ambiguous}"
+        );
+        assert!(!client.is_installed("weather", &skills_dir));
+
+        let installed = client
+            .install_with_owner_handle("weather", Some("steipete"), &skills_dir)
+            .await
+            .expect("live ClawHub publisher-qualified installation should succeed");
+        assert_eq!(installed.slug, "weather");
+        assert!(client.is_installed("weather", &skills_dir));
+        assert!(skills_dir.join("weather").join("SKILL.md").exists());
+    }
 }
