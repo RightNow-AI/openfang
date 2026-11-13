@@ -504,6 +504,23 @@ impl ClawHubClient {
             .await
     }
 
+    /// Install a skill from a specific ClawHub publisher when slugs collide.
+    /// Existing callers of install() and install_with_options() stay compatible.
+    pub async fn install_with_owner_handle(
+        &self,
+        slug: &str,
+        owner_handle: Option<&str>,
+        target_dir: &Path,
+    ) -> Result<ClawHubInstallResult, SkillError> {
+        self.install_with_options_and_owner(
+            slug,
+            owner_handle,
+            target_dir,
+            &InstallOptions::default(),
+        )
+        .await
+    }
+
     /// Install a skill from ClawHub with explicit enforcement options.
     ///
     /// When `opts.require_signed` is true, the skill must ship with a valid
@@ -526,10 +543,20 @@ impl ClawHubClient {
         target_dir: &Path,
         opts: &InstallOptions,
     ) -> Result<ClawHubInstallResult, SkillError> {
-        // Use /api/v1/download?slug=... endpoint
-        let url = format!("{}/download?slug={}", self.base_url, urlencoded(slug));
+        self.install_with_options_and_owner(slug, None, target_dir, opts)
+            .await
+    }
 
-        info!(slug, "Downloading skill from ClawHub");
+    async fn install_with_options_and_owner(
+        &self,
+        slug: &str,
+        owner_handle: Option<&str>,
+        target_dir: &Path,
+        opts: &InstallOptions,
+    ) -> Result<ClawHubInstallResult, SkillError> {
+        let url = clawhub_download_url(&self.base_url, slug, owner_handle);
+
+        info!(slug, owner_handle, "Downloading skill from ClawHub");
 
         // Use get_with_retry for the download — same 429/5xx handling as all
         // other endpoints, with 5 attempts and exponential backoff.
@@ -755,6 +782,16 @@ fn urlencoded(s: &str) -> String {
     result
 }
 
+/// Construct a publisher-aware ClawHub URL, preserving the legacy default.
+fn clawhub_download_url(base_url: &str, slug: &str, owner_handle: Option<&str>) -> String {
+    let mut url = format!("{}/download?slug={}", base_url, urlencoded(slug));
+    if let Some(owner) = owner_handle.map(str::trim).filter(|s| !s.is_empty()) {
+        url.push_str("&ownerHandle=");
+        url.push_str(&urlencoded(owner));
+    }
+    url
+}
+
 /// Check if a binary is available on PATH.
 fn which_check(name: &str) -> Option<PathBuf> {
     let result = if cfg!(target_os = "windows") {
@@ -959,6 +996,27 @@ mod tests {
     }
 
     #[test]
+    fn test_clawhub_download_url_with_owner_and_legacy_behavior() {
+        let base = "https://clawhub.ai/api/v1";
+        assert_eq!(
+            clawhub_download_url(base, "github-helper", None),
+            "https://clawhub.ai/api/v1/download?slug=github-helper"
+        );
+        assert_eq!(
+            clawhub_download_url(base, "weather", Some("steipete")),
+            "https://clawhub.ai/api/v1/download?slug=weather&ownerHandle=steipete"
+        );
+        assert_eq!(
+            clawhub_download_url(base, "weather", Some(" team/a b ")),
+            "https://clawhub.ai/api/v1/download?slug=weather&ownerHandle=team%2Fa+b"
+        );
+        assert_eq!(
+            clawhub_download_url(base, "weather", Some("   ")),
+            "https://clawhub.ai/api/v1/download?slug=weather"
+        );
+    }
+
+    #[test]
     fn test_entry_version_helper() {
         let entry = ClawHubBrowseEntry {
             slug: "test".to_string(),
@@ -977,5 +1035,111 @@ mod tests {
             }),
         };
         assert_eq!(ClawHubClient::entry_version(&entry), "2.0.0");
+    }
+
+    /// Exercises the actual HTTP client, archive conversion, installation, and
+    /// recovery path against a local ClawHub-compatible HTTP server.
+    #[tokio::test]
+    async fn test_clawhub_ambiguous_slug_owner_recovery_integration() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let expected = [
+                ("GET /api/v1/download?slug=weather ", "409 Conflict"),
+                (
+                    "GET /api/v1/download?slug=weather&ownerHandle=bad ",
+                    "404 Not Found",
+                ),
+                (
+                    "GET /api/v1/download?slug=weather&ownerHandle=steipete ",
+                    "200 OK",
+                ),
+            ];
+            let fixture = b"---\nname: weather-integration-test\ndescription: A harmless test skill\n---\nA harmless weather test description.\n";
+
+            for (request_line, status) in expected {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0_u8; 4096];
+                let n = stream.read(&mut buf).await.unwrap();
+                let request = String::from_utf8_lossy(&buf[..n]);
+                assert!(
+                    request.starts_with(request_line),
+                    "unexpected request: {request}"
+                );
+
+                let body: &[u8] = if status == "200 OK" { fixture } else { b"" };
+                let header = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(header.as_bytes()).await.unwrap();
+                stream.write_all(body).await.unwrap();
+            }
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        let client =
+            ClawHubClient::with_url(&format!("http://{addr}/api/v1"), temp.path().join("cache"));
+
+        let ambiguous = client
+            .install_with_owner_handle("weather", None, &skills_dir)
+            .await
+            .unwrap_err();
+        assert!(ambiguous.to_string().contains("409 Conflict"));
+        assert!(!client.is_installed("weather", &skills_dir));
+
+        let bad_owner = client
+            .install_with_owner_handle("weather", Some("bad"), &skills_dir)
+            .await
+            .unwrap_err();
+        assert!(bad_owner.to_string().contains("404 Not Found"));
+        assert!(!client.is_installed("weather", &skills_dir));
+
+        let installed = client
+            .install_with_owner_handle("weather", Some("steipete"), &skills_dir)
+            .await
+            .unwrap();
+        assert_eq!(installed.slug, "weather");
+        assert_eq!(installed.skill_name, "weather-integration-test");
+        assert!(client.is_installed("weather", &skills_dir));
+        assert!(skills_dir.join("weather").join("SKILL.md").exists());
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("mock ClawHub server timed out")
+            .expect("mock ClawHub server failed");
+    }
+
+    /// Explicit network smoke test: run with --ignored against the live ClawHub API.
+    /// Not part of the normal deterministic unit-test suite.
+    #[tokio::test]
+    #[ignore = "requires ClawHub network access"]
+    async fn test_live_clawhub_owner_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        let client = ClawHubClient::new(temp.path().join("cache"));
+
+        let ambiguous = client
+            .install_with_owner_handle("weather", None, &skills_dir)
+            .await
+            .unwrap_err();
+        assert!(
+            ambiguous.to_string().contains("409 Conflict"),
+            "expected ambiguous weather slug: {ambiguous}"
+        );
+        assert!(!client.is_installed("weather", &skills_dir));
+
+        let installed = client
+            .install_with_owner_handle("weather", Some("steipete"), &skills_dir)
+            .await
+            .expect("live ClawHub publisher-qualified installation should succeed");
+        assert_eq!(installed.slug, "weather");
+        assert!(client.is_installed("weather", &skills_dir));
+        assert!(skills_dir.join("weather").join("SKILL.md").exists());
     }
 }

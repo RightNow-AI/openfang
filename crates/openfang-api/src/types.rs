@@ -115,6 +115,9 @@ pub struct MigrateScanRequest {
 pub struct ClawHubInstallRequest {
     /// ClawHub skill slug (e.g., "github-helper").
     pub slug: String,
+    /// Optional publisher handle for slugs shared by multiple accounts.
+    #[serde(default, rename = "ownerHandle", alias = "owner_handle")]
+    pub owner_handle: Option<String>,
 }
 
 /// Query parameters for `GET /api/commands`.
@@ -181,6 +184,26 @@ mod tests {
         .unwrap();
         assert!(req.require_signed);
         assert_eq!(req.allowed_signer_keys, vec!["abc123".to_string()]);
+    }
+
+    #[test]
+    fn clawhub_install_request_publisher_aliases() {
+        let camel: ClawHubInstallRequest =
+            serde_json::from_str(r#"{"slug":"weather","ownerHandle":"steipete"}"#).unwrap();
+        assert_eq!(camel.owner_handle.as_deref(), Some("steipete"));
+
+        let snake: ClawHubInstallRequest =
+            serde_json::from_str(r#"{"slug":"weather","owner_handle":"another-publisher"}"#)
+                .unwrap();
+        assert_eq!(snake.owner_handle.as_deref(), Some("another-publisher"));
+    }
+
+    #[test]
+    fn clawhub_install_request_preserves_legacy_slug_only() {
+        let req: ClawHubInstallRequest =
+            serde_json::from_str(r#"{"slug":"github-helper"}"#).unwrap();
+        assert_eq!(req.slug, "github-helper");
+        assert!(req.owner_handle.is_none());
     }
 
     #[test]

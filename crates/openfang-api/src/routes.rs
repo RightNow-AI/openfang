@@ -4189,7 +4189,10 @@ pub async fn clawhub_install(
         );
     }
 
-    match client.install(&req.slug, &skills_dir).await {
+    match client
+        .install_with_owner_handle(&req.slug, req.owner_handle.as_deref(), &skills_dir)
+        .await
+    {
         Ok(result) => {
             // Hot-reload so agents see the new skill immediately (#752)
             state.kernel.reload_skills();
@@ -4226,17 +4229,31 @@ pub async fn clawhub_install(
         }
         Err(e) => {
             let msg = format!("{e}");
+            // Turn ambiguous slug downloads into actionable errors, rather
+            // than reporting a generic upstream network outage.
+            let ambiguous_slug = req.owner_handle.as_deref().unwrap_or("").trim().is_empty()
+                && msg.contains("ClawHub download returned 409 Conflict");
             let status = if matches!(e, openfang_skills::SkillError::SecurityBlocked(_)) {
                 StatusCode::FORBIDDEN
             } else if is_clawhub_rate_limit(&e) {
                 StatusCode::TOO_MANY_REQUESTS
+            } else if ambiguous_slug {
+                StatusCode::CONFLICT
             } else if matches!(e, openfang_skills::SkillError::Network(_)) {
                 StatusCode::BAD_GATEWAY
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
             tracing::warn!("ClawHub install failed: {msg}");
-            (status, Json(serde_json::json!({"error": msg})))
+            let error = if ambiguous_slug {
+                format!(
+                    "Ambiguous skill slug '{}': multiple publishers use this name. Enter a ClawHub publisher handle and retry.",
+                    req.slug
+                )
+            } else {
+                msg
+            };
+            (status, Json(serde_json::json!({"error": error})))
         }
     }
 }
