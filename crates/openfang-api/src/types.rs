@@ -188,14 +188,13 @@ mod tests {
 
     #[test]
     fn clawhub_install_request_publisher_aliases() {
-        let camel: ClawHubInstallRequest = serde_json::from_str(
-            r#"{"slug":"weather","ownerHandle":"steipete"}"#,
-        ).unwrap();
+        let camel: ClawHubInstallRequest =
+            serde_json::from_str(r#"{"slug":"weather","ownerHandle":"steipete"}"#).unwrap();
         assert_eq!(camel.owner_handle.as_deref(), Some("steipete"));
 
-        let snake: ClawHubInstallRequest = serde_json::from_str(
-            r#"{"slug":"weather","owner_handle":"another-publisher"}"#,
-        ).unwrap();
+        let snake: ClawHubInstallRequest =
+            serde_json::from_str(r#"{"slug":"weather","owner_handle":"another-publisher"}"#)
+                .unwrap();
         assert_eq!(snake.owner_handle.as_deref(), Some("another-publisher"));
     }
 
