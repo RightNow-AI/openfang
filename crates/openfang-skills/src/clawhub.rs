@@ -1036,4 +1036,85 @@ mod tests {
         };
         assert_eq!(ClawHubClient::entry_version(&entry), "2.0.0");
     }
+
+    /// Exercises the actual HTTP client, archive conversion, installation, and
+    /// recovery path against a local ClawHub-compatible HTTP server.
+    #[tokio::test]
+    async fn test_clawhub_ambiguous_slug_owner_recovery_integration() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let expected = [
+                ("GET /api/v1/download?slug=weather ", "409 Conflict"),
+                (
+                    "GET /api/v1/download?slug=weather&ownerHandle=bad ",
+                    "404 Not Found",
+                ),
+                (
+                    "GET /api/v1/download?slug=weather&ownerHandle=steipete ",
+                    "200 OK",
+                ),
+            ];
+            let fixture = b"---\nname: weather-integration-test\ndescription: A harmless test skill\n---\nA harmless weather test description.\n";
+
+            for (request_line, status) in expected {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0_u8; 4096];
+                let n = stream.read(&mut buf).await.unwrap();
+                let request = String::from_utf8_lossy(&buf[..n]);
+                assert!(
+                    request.starts_with(request_line),
+                    "unexpected request: {request}"
+                );
+
+                let body: &[u8] = if status == "200 OK" { fixture } else { b"" };
+                let header = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(header.as_bytes()).await.unwrap();
+                stream.write_all(body).await.unwrap();
+            }
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        let client = ClawHubClient::with_url(
+            &format!("http://{addr}/api/v1"),
+            temp.path().join("cache"),
+        );
+
+        let ambiguous = client
+            .install_with_owner_handle("weather", None, &skills_dir)
+            .await
+            .unwrap_err();
+        assert!(ambiguous.to_string().contains("409 Conflict"));
+        assert!(!client.is_installed("weather", &skills_dir));
+
+        let bad_owner = client
+            .install_with_owner_handle("weather", Some("bad"), &skills_dir)
+            .await
+            .unwrap_err();
+        assert!(bad_owner.to_string().contains("404 Not Found"));
+        assert!(!client.is_installed("weather", &skills_dir));
+
+        let installed = client
+            .install_with_owner_handle("weather", Some("steipete"), &skills_dir)
+            .await
+            .unwrap();
+        assert_eq!(installed.slug, "weather");
+        assert_eq!(installed.skill_name, "weather-integration-test");
+        assert!(client.is_installed("weather", &skills_dir));
+        assert!(skills_dir.join("weather").join("SKILL.md").exists());
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("mock ClawHub server timed out")
+            .expect("mock ClawHub server failed");
+    }
 }
