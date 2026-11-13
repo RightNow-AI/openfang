@@ -143,7 +143,7 @@ jobs:
   clawhub-live-contract:
     name: ClawHub Live Contract
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 15
     steps:
       - name: Check ambiguous slug and publisher-specific download
         shell: bash
@@ -168,3 +168,8 @@ jobs:
           fi
           test -s /tmp/clawhub-selected.bin
           echo "Live ClawHub contract confirmed."
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install the publisher-qualified skill with the real Rust client
+        run: cargo test -p openfang-skills --lib test_live_clawhub_owner_install -- --ignored --nocapture
