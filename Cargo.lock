@@ -3382,6 +3382,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
 
 [[package]]
+name = "llm-prices"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05b3c34e1da0701ea90961e75e9f1b14671bcdc6fa59fc1c356459ba257a2c17"
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4232,6 +4238,7 @@ dependencies = [
  "futures",
  "hex",
  "http",
+ "llm-prices",
  "openfang-memory",
  "openfang-skills",
  "openfang-types",

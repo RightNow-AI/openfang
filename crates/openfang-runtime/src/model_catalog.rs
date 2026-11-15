@@ -26,7 +26,8 @@ pub struct ModelCatalog {
 impl ModelCatalog {
     /// Create a new catalog populated with builtin models and providers.
     pub fn new() -> Self {
-        let models = builtin_models();
+        let mut models = builtin_models();
+        apply_published_prices(&mut models);
         let mut aliases = builtin_aliases();
         let mut providers = builtin_providers();
 
@@ -1062,6 +1063,27 @@ fn builtin_aliases() -> HashMap<String, String> {
         .into_iter()
         .map(|(k, v)| (k.to_lowercase(), v.to_string()))
         .collect()
+}
+
+/// Providers whose list prices are tracked by the `llm-prices` crate.
+const PUBLISHED_PRICE_PROVIDERS: &[&str] = &["anthropic", "openai", "gemini", "deepseek"];
+
+/// Replace builtin input/output prices with the dated, source-cited list prices
+/// from `llm-prices` for first-party models it knows. Models it does not cover
+/// (and every reseller or self-hosted provider) keep the hand-written values in
+/// [`builtin_models`].
+fn apply_published_prices(models: &mut [ModelCatalogEntry]) {
+    for model in models
+        .iter_mut()
+        .filter(|m| PUBLISHED_PRICE_PROVIDERS.contains(&m.provider.as_str()))
+    {
+        if let Some(price) = llm_prices::lookup(&model.id) {
+            if let (Some(input), Some(output)) = (price.input, price.output) {
+                model.input_cost_per_m = input;
+                model.output_cost_per_m = output;
+            }
+        }
+    }
 }
 
 fn builtin_models() -> Vec<ModelCatalogEntry> {
@@ -4156,6 +4178,22 @@ mod tests {
         let (input, output) = catalog.pricing("sonnet").unwrap();
         assert!((input - 3.0).abs() < 0.001);
         assert!((output - 15.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_pricing_uses_published_prices() {
+        let catalog = ModelCatalog::new();
+        // Hand-written rows had Haiku 4.5 at $0.25/$1.25; list price is $1/$5.
+        let (input, output) = catalog.pricing("haiku").unwrap();
+        assert!((input - 1.0).abs() < 0.001);
+        assert!((output - 5.0).abs() < 0.001);
+        let (input, output) = catalog.pricing("gpt-5.2-pro").unwrap();
+        assert!((input - 21.0).abs() < 0.001);
+        assert!((output - 168.0).abs() < 0.001);
+        // Models llm-prices does not cover keep the builtin values.
+        let (input, output) = catalog.pricing("deepseek-chat").unwrap();
+        assert!((input - 0.27).abs() < 0.001);
+        assert!((output - 1.10).abs() < 0.001);
     }
 
     #[test]
