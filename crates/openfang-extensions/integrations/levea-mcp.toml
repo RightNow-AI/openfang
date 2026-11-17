@@ -1,0 +1,28 @@
+id = "levea-mcp"
+name = "Levea"
+description = "Autonomous AI video editor for viral clips, 280+ animated caption templates, 9:16 speaker reframing, B-roll, and cloud MP4 exports through the Levea MCP server"
+category = "ai"
+icon = "🎬"
+tags = ["video", "video-editing", "ai", "captions", "reels", "shorts", "tiktok", "mp4"]
+
+[transport]
+type = "stdio"
+command = "npx"
+args = ["-y", "levea-mcp-server"]
+
+[[required_env]]
+name = "LEVEA_API_KEY"
+label = "Levea API Key"
+help = "An API key from your Levea account at livecore.ai"
+is_secret = true
+get_url = "https://www.livecore.ai"
+
+[health_check]
+interval_secs = 60
+unhealthy_threshold = 3
+
+setup_instructions = """
+1. Go to https://www.livecore.ai/ and create an account or sign in.
+2. Generate a Levea API key from your account settings.
+3. Paste the API key into the LEVEA_API_KEY field above.
+"""
