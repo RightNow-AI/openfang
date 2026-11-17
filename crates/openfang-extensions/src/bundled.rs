@@ -1,6 +1,6 @@
 //! Compile-time embedded integration templates.
 //!
-//! All 25 integration TOML files are baked into the binary via `include_str!()`,
+//! All 26 integration TOML files are baked into the binary via `include_str!()`,
 //! ensuring they ship with every OpenFang build with zero filesystem dependencies.
 
 /// Returns all bundled integration templates as `(id, TOML content)` pairs.
@@ -52,7 +52,7 @@ pub fn bundled_integrations() -> Vec<(&'static str, &'static str)> {
         ("aws", include_str!("../integrations/aws.toml")),
         ("gcp-mcp", include_str!("../integrations/gcp-mcp.toml")),
         ("azure-mcp", include_str!("../integrations/azure-mcp.toml")),
-        // ── AI & Search (2) ─────────────────────────────────────────────────
+        // ── AI & Search (3) ─────────────────────────────────────────────────
         (
             "brave-search",
             include_str!("../integrations/brave-search.toml"),
@@ -60,6 +60,10 @@ pub fn bundled_integrations() -> Vec<(&'static str, &'static str)> {
         (
             "exa-search",
             include_str!("../integrations/exa-search.toml"),
+        ),
+        (
+            "levea-mcp",
+            include_str!("../integrations/levea-mcp.toml"),
         ),
     ]
 }
@@ -71,7 +75,7 @@ mod tests {
 
     #[test]
     fn bundled_count() {
-        assert_eq!(bundled_integrations().len(), 25);
+        assert_eq!(bundled_integrations().len(), 26);
     }
 
     #[test]
@@ -120,7 +124,7 @@ mod tests {
         assert_eq!(communication, 3);
         assert_eq!(data, 5);
         assert_eq!(cloud, 3);
-        assert_eq!(ai, 2);
+        assert_eq!(ai, 3);
     }
 
     #[test]
