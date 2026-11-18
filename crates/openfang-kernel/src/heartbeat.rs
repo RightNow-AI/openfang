@@ -49,7 +49,7 @@ pub struct HeartbeatConfig {
     /// How often to run the heartbeat check (seconds).
     pub check_interval_secs: u64,
     /// Default threshold for unresponsiveness (seconds).
-    /// Overridden per-agent by AutonomousConfig.heartbeat_interval_secs.
+    /// Overridden per-agent when `AutonomousConfig.heartbeat_interval_secs` is `Some`.
     pub default_timeout_secs: u64,
     /// Maximum recovery attempts before marking agent as Terminated.
     pub max_recovery_attempts: u32,
@@ -157,13 +157,16 @@ pub fn check_agents(registry: &AgentRegistry, config: &HeartbeatConfig) -> Vec<H
 
         let inactive_secs = (now - entry_ref.last_active).num_seconds();
 
-        // Determine timeout: use agent's autonomous config if set, else default
-        let timeout_secs = entry_ref
+        // Determine timeout: use per-agent heartbeat_interval_secs when explicitly
+        // configured in [autonomous], otherwise fall back to [heartbeat] default_timeout_secs.
+        let timeout_secs_u64 = entry_ref
             .manifest
             .autonomous
             .as_ref()
-            .map(|a| a.heartbeat_interval_secs * UNRESPONSIVE_MULTIPLIER)
-            .unwrap_or(config.default_timeout_secs) as i64;
+            .and_then(|a| a.heartbeat_interval_secs)
+            .map(|interval| interval.saturating_mul(UNRESPONSIVE_MULTIPLIER))
+            .unwrap_or(config.default_timeout_secs);
+        let timeout_secs = i64::try_from(timeout_secs_u64).unwrap_or(i64::MAX);
 
         // --- Skip idle agents that have never genuinely processed a message ---
         //
@@ -558,6 +561,106 @@ mod tests {
         assert_eq!(config.default_timeout_secs, 600);
         assert_eq!(config.check_interval_secs, DEFAULT_CHECK_INTERVAL_SECS);
         assert_eq!(config.max_recovery_attempts, DEFAULT_MAX_RECOVERY_ATTEMPTS);
+    }
+
+    #[test]
+    fn test_autonomous_agent_without_interval_uses_default_timeout() {
+        // Regression test for #1252: an agent with [autonomous] (e.g. max_iterations)
+        // that omits heartbeat_interval_secs must use [heartbeat] default_timeout_secs
+        // instead of a hardcoded 60s timeout.
+        let registry = crate::registry::AgentRegistry::new();
+        let created = Utc::now() - Duration::seconds(2400);
+        let last_active = Utc::now() - Duration::seconds(1200);
+        let mut agent = make_entry("auto-default", AgentState::Running, created, last_active);
+        agent.manifest.autonomous = Some(AutonomousConfig {
+            max_iterations: 100,
+            ..Default::default()
+        });
+        registry.register(agent).unwrap();
+
+        let config = HeartbeatConfig {
+            default_timeout_secs: 86400,
+            ..HeartbeatConfig::default()
+        };
+        let statuses = check_agents(&registry, &config);
+
+        assert_eq!(statuses.len(), 1);
+        assert!(
+            !statuses[0].unresponsive,
+            "autonomous agent without heartbeat_interval_secs should use default_timeout_secs (86400s)"
+        );
+    }
+
+    #[test]
+    fn test_autonomous_agent_without_interval_exceeds_default_timeout() {
+        let registry = crate::registry::AgentRegistry::new();
+        let created = Utc::now() - Duration::seconds(1200);
+        let last_active = Utc::now() - Duration::seconds(700);
+        let mut agent = make_entry("auto-expired", AgentState::Running, created, last_active);
+        agent.manifest.autonomous = Some(AutonomousConfig::default());
+        registry.register(agent).unwrap();
+
+        let config = HeartbeatConfig {
+            default_timeout_secs: 600,
+            ..HeartbeatConfig::default()
+        };
+        let statuses = check_agents(&registry, &config);
+
+        assert_eq!(statuses.len(), 1);
+        assert!(
+            statuses[0].unresponsive,
+            "autonomous agent past default_timeout_secs should be marked unresponsive"
+        );
+    }
+
+    #[test]
+    fn test_autonomous_agent_explicit_interval_overrides_default_timeout() {
+        // Explicit per-agent heartbeat_interval_secs takes precedence over default_timeout_secs
+        // (both when shorter and when longer than default_timeout_secs).
+        let registry = crate::registry::AgentRegistry::new();
+        let created = Utc::now() - Duration::seconds(1200);
+
+        let mut short_agent = make_entry(
+            "auto-short",
+            AgentState::Running,
+            created,
+            Utc::now() - Duration::seconds(120),
+        );
+        short_agent.manifest.autonomous = Some(AutonomousConfig {
+            heartbeat_interval_secs: Some(30), // timeout = 60s < 120s
+            ..Default::default()
+        });
+        registry.register(short_agent).unwrap();
+
+        let mut long_agent = make_entry(
+            "auto-long",
+            AgentState::Running,
+            created,
+            Utc::now() - Duration::seconds(400),
+        );
+        long_agent.manifest.autonomous = Some(AutonomousConfig {
+            heartbeat_interval_secs: Some(300), // timeout = 600s > 400s
+            ..Default::default()
+        });
+        registry.register(long_agent).unwrap();
+
+        let config = HeartbeatConfig {
+            default_timeout_secs: 180,
+            ..HeartbeatConfig::default()
+        };
+        let statuses = check_agents(&registry, &config);
+        assert_eq!(statuses.len(), 2);
+
+        let short_status = statuses.iter().find(|s| s.name == "auto-short").unwrap();
+        let long_status = statuses.iter().find(|s| s.name == "auto-long").unwrap();
+        assert!(
+            short_status.unresponsive,
+            "explicit 30s interval (60s timeout) should mark 120s-inactive agent unresponsive"
+        );
+        assert!(
+            !long_status.unresponsive,
+            "explicit 300s interval (600s timeout) should keep 400s-inactive agent responsive"
+        );
     }
 
     #[test]

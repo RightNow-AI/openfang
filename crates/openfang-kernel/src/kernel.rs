@@ -3823,10 +3823,9 @@ impl OpenFangKernel {
             ],
             autonomous: def.agent.max_iterations.map(|max_iter| AutonomousConfig {
                 max_iterations: max_iter,
-                // Use the hand-declared heartbeat interval if provided.
-                // The kernel default (30s) is too aggressive for hands making long LLM calls;
-                // HAND.toml authors should set this to reflect expected call latency.
-                heartbeat_interval_secs: def.agent.heartbeat_interval_secs.unwrap_or(30),
+                // Preserve the hand-declared heartbeat interval if provided; when None,
+                // the heartbeat monitor falls back to [heartbeat] default_timeout_secs.
+                heartbeat_interval_secs: def.agent.heartbeat_interval_secs,
                 ..Default::default()
             }),
             // Autonomous hands must run in Continuous mode so the background loop picks them up.
@@ -4841,6 +4840,7 @@ impl OpenFangKernel {
             ..HeartbeatConfig::default()
         };
         let interval_secs = config.check_interval_secs;
+        let default_timeout_secs = config.default_timeout_secs;
         let recovery_tracker = RecoveryTracker::new();
 
         tokio::spawn(async move {
@@ -4995,7 +4995,10 @@ impl OpenFangKernel {
             }
         });
 
-        info!("Heartbeat monitor started (interval: {}s)", interval_secs);
+        info!(
+            "Heartbeat monitor started (interval: {}s, default_timeout: {}s)",
+            interval_secs, default_timeout_secs
+        );
     }
 
     /// Start the background loop / register triggers for a single agent.
