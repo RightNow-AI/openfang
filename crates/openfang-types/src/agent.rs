@@ -76,8 +76,12 @@ pub struct AutonomousConfig {
     pub max_iterations: u32,
     /// Maximum restarts before the agent is permanently stopped.
     pub max_restarts: u32,
-    /// Heartbeat interval in seconds.
-    pub heartbeat_interval_secs: u64,
+    /// Optional per-agent heartbeat interval in seconds.
+    ///
+    /// When `Some(secs)`, the agent is considered unresponsive after `secs * 2`
+    /// seconds of inactivity. When `None` (the default), the kernel falls back
+    /// to `[heartbeat] default_timeout_secs` from `config.toml`.
+    pub heartbeat_interval_secs: Option<u64>,
     /// Channel to send heartbeat status to (e.g., "telegram", "discord").
     pub heartbeat_channel: Option<String>,
 }
@@ -88,7 +92,7 @@ impl Default for AutonomousConfig {
             quiet_hours: None,
             max_iterations: 50,
             max_restarts: 10,
-            heartbeat_interval_secs: 30,
+            heartbeat_interval_secs: None,
             heartbeat_channel: None,
         }
     }
@@ -765,7 +769,7 @@ mod tests {
         let cfg = AutonomousConfig::default();
         assert_eq!(cfg.max_iterations, 50);
         assert_eq!(cfg.max_restarts, 10);
-        assert_eq!(cfg.heartbeat_interval_secs, 30);
+        assert!(cfg.heartbeat_interval_secs.is_none());
         assert!(cfg.quiet_hours.is_none());
     }
 
@@ -778,6 +782,23 @@ mod tests {
         let json = serde_json::to_string(&cfg).unwrap();
         let back: AutonomousConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.quiet_hours, Some("0 22 * * *".to_string()));
+        assert!(back.heartbeat_interval_secs.is_none());
+
+        // Partial TOML omitting heartbeat_interval_secs leaves it None so
+        // [heartbeat] default_timeout_secs takes effect (#1252).
+        let omitted: AutonomousConfig = toml::from_str("max_iterations = 100\n").unwrap();
+        assert_eq!(omitted.max_iterations, 100);
+        assert!(omitted.heartbeat_interval_secs.is_none());
+
+        // Explicit per-agent heartbeat_interval_secs deserializes to Some.
+        let explicit: AutonomousConfig =
+            toml::from_str("max_iterations = 100\nheartbeat_interval_secs = 120\n").unwrap();
+        assert_eq!(explicit.heartbeat_interval_secs, Some(120));
+
+        // MessagePack roundtrip preserves both None and Some.
+        let bytes = rmp_serde::to_vec_named(&explicit).unwrap();
+        let decoded: AutonomousConfig = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.heartbeat_interval_secs, Some(120));
     }
 
     #[test]

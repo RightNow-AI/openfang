@@ -1599,5 +1599,5 @@ Configured in agent manifests via `AutonomousConfig`:
 | `quiet_hours` | `null` | Cron expression for quiet hours (agent pauses during this window). |
 | `max_iterations` | `50` | Maximum tool-use iterations per invocation. |
 | `max_restarts` | `10` | Maximum automatic restarts before permanent stop. |
-| `heartbeat_interval_secs` | `30` | Seconds between heartbeat health checks. |
+| `heartbeat_interval_secs` | `null` | Optional per-agent heartbeat interval in seconds (timeout = `2 * heartbeat_interval_secs`). When omitted, falls back to `[heartbeat] default_timeout_secs`. |
 | `heartbeat_channel` | `null` | Channel to send heartbeat status to (e.g., `"telegram"`). |

@@ -293,9 +293,9 @@ pub struct HandAgentConfig {
     pub system_prompt: String,
     #[serde(default)]
     pub max_iterations: Option<u32>,
-    /// Heartbeat interval in seconds for autonomous agents. Overrides the
-    /// AutonomousConfig default (30s), which is too aggressive for agents
-    /// making long LLM calls. Omit to use the kernel default.
+    /// Optional per-hand heartbeat interval in seconds for autonomous agents.
+    /// When omitted (`None`), the kernel's `[heartbeat] default_timeout_secs` is used.
+    /// When set, the unresponsive timeout for this hand is `heartbeat_interval_secs * 2`.
     #[serde(default)]
     pub heartbeat_interval_secs: Option<u64>,
 }
