@@ -35,7 +35,7 @@ use wasmtime::*;
 pub struct SandboxConfig {
     /// Maximum fuel (CPU instruction budget). 0 = unlimited.
     pub fuel_limit: u64,
-    /// Maximum WASM linear memory in bytes (reserved for future enforcement).
+    /// Maximum size in bytes for each WASM linear memory.
     pub max_memory_bytes: usize,
     /// Capabilities granted to this sandbox instance.
     pub capabilities: Vec<Capability>,
@@ -183,6 +183,7 @@ impl WasmSandbox {
                 },
                 limits: StoreLimitsBuilder::new()
                     .memory_size(config.max_memory_bytes)
+                    .memories(1)
                     .build(),
             },
         );
@@ -488,6 +489,22 @@ mod tests {
         )
     "#;
 
+    /// A module with a second memory, which the sandbox must reject.
+    const MULTI_MEMORY_WAT: &str = r#"
+        (module
+            (memory (export "memory") 1)
+            (memory 1)
+
+            (func (export "alloc") (param $size i32) (result i32)
+                (i32.const 0)
+            )
+
+            (func (export "execute") (param $ptr i32) (param $len i32) (result i64)
+                (i64.const 0)
+            )
+        )
+    "#;
+
     /// Proxy module: forwards input to host_call and returns the response.
     const HOST_CALL_PROXY_WAT: &str = r#"
         (module
@@ -590,6 +607,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.output, serde_json::json!({"limited": true}));
+    }
+
+    #[tokio::test]
+    async fn test_memory_limit_rejects_multiple_memories() {
+        let sandbox = WasmSandbox::new().unwrap();
+
+        let result = sandbox
+            .execute(
+                MULTI_MEMORY_WAT.as_bytes(),
+                serde_json::json!({}),
+                SandboxConfig::default(),
+                None,
+                "test-agent",
+            )
+            .await;
+
+        assert!(result.is_err(), "the sandbox should reject a second memory");
     }
 
     #[tokio::test]
