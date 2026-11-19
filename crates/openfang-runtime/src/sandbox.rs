@@ -29,7 +29,7 @@ use openfang_types::capability::Capability;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::debug;
 use wasmtime::*;
 
@@ -155,6 +155,10 @@ impl Drop for EpochWatchdog {
     }
 }
 
+fn epoch_timeout_expired(started_at: Instant, timeout: Duration) -> bool {
+    started_at.elapsed() >= timeout
+}
+
 impl WasmSandbox {
     /// Create a new sandbox engine with fuel metering enabled.
     pub fn new() -> Result<Self, SandboxError> {
@@ -234,7 +238,19 @@ impl WasmSandbox {
         // Set epoch deadline (wall-clock metering)
         store.set_epoch_deadline(1);
         let timeout = config.timeout_secs.unwrap_or(30);
-        let _watchdog = EpochWatchdog::start(engine.clone(), Duration::from_secs(timeout))?;
+        let timeout = Duration::from_secs(timeout);
+        let execution_started_at = Instant::now();
+        store.epoch_deadline_callback(move |_| {
+            if epoch_timeout_expired(execution_started_at, timeout) {
+                Ok(UpdateDeadline::Interrupt)
+            } else {
+                // Engine epochs are shared by every store. Another execution's
+                // watchdog can advance the epoch first, so keep this store's
+                // deadline pending until its own wall-clock timeout expires.
+                Ok(UpdateDeadline::Continue(1))
+            }
+        });
+        let _watchdog = EpochWatchdog::start(engine.clone(), timeout)?;
 
         // Build linker with host function imports
         let mut linker = Linker::new(engine);
@@ -292,7 +308,7 @@ impl WasmSandbox {
                 if let Some(Trap::Interrupt) = e.downcast_ref::<Trap>() {
                     return Err(SandboxError::Execution(format!(
                         "WASM execution timed out after {}s (epoch interrupt)",
-                        timeout
+                        timeout.as_secs()
                     )));
                 }
                 return Err(SandboxError::Execution(e.to_string()));
@@ -555,6 +571,18 @@ mod tests {
         drop(watchdog);
 
         assert_eq!(timed_out.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_epoch_deadline_is_scoped_to_each_execution() {
+        let timeout = Duration::from_secs(1);
+        let older_execution = Instant::now()
+            .checked_sub(Duration::from_secs(2))
+            .expect("test instant supports two seconds of subtraction");
+        let newer_execution = Instant::now();
+
+        assert!(epoch_timeout_expired(older_execution, timeout));
+        assert!(!epoch_timeout_expired(newer_execution, timeout));
     }
 
     #[tokio::test]
