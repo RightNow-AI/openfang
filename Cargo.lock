@@ -2320,9 +2320,9 @@ dependencies = [
 
 [[package]]
 name = "gimli"
-version = "0.33.1"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19e16c5073773ccf057c282be832a59ee53ef5ff98db3aeff7f8314f52ffc196"
+checksum = "0bf7f043f89559805f8c7cacc432749b2fa0d0a0a9ee46ce47164ed5ba7f126c"
 dependencies = [
  "fnv",
  "hashbrown 0.16.1",
@@ -2461,7 +2461,7 @@ dependencies = [
  "parking_lot",
  "portable-atomic",
  "quanta",
- "rand 0.9.2",
+ "rand 0.9.3",
  "smallvec",
  "spinning_top",
  "web-time",
@@ -3981,7 +3981,7 @@ dependencies = [
  "openfang-skills",
  "openfang-types",
  "openfang-wire",
- "rand 0.8.5",
+ "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4104,7 +4104,7 @@ dependencies = [
  "dashmap",
  "dirs 6.0.0",
  "openfang-types",
- "rand 0.8.5",
+ "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4162,7 +4162,7 @@ dependencies = [
  "openfang-skills",
  "openfang-types",
  "openfang-wire",
- "rand 0.8.5",
+ "rand 0.8.6",
  "reqwest 0.12.28",
  "rustls",
  "serde",
@@ -4263,7 +4263,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "openfang-types",
- "rand 0.8.5",
+ "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4290,7 +4290,7 @@ dependencies = [
  "dirs 6.0.0",
  "ed25519-dalek",
  "hex",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -4310,7 +4310,7 @@ dependencies = [
  "hex",
  "hmac",
  "openfang-types",
- "rand 0.8.5",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "sha2",
@@ -4649,7 +4649,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d5285893bb5eb82e6aaf5d59ee909a06a16737a8970984dd7746ba9283498d6"
 dependencies = [
  "phf_shared 0.10.0",
- "rand 0.8.5",
+ "rand 0.8.6",
 ]
 
 [[package]]
@@ -4659,7 +4659,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
 dependencies = [
  "phf_shared 0.11.3",
- "rand 0.8.5",
+ "rand 0.8.6",
 ]
 
 [[package]]
@@ -5122,7 +5122,7 @@ dependencies = [
  "bytes",
  "getrandom 0.3.4",
  "lru-slab",
- "rand 0.9.2",
+ "rand 0.9.3",
  "ring",
  "rustc-hash",
  "rustls",
@@ -5191,9 +5191,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.8.5"
+version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
+checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
 dependencies = [
  "libc",
  "rand_chacha 0.3.1",
@@ -5202,9 +5202,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6db2770f06117d490610c7488547d543617b21bfa07796d7a12f6f1bd53850d1"
+checksum = "7ec095654a25171c2124e9e3393a930bddbffdc939556c914957a4c3e0a87166"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
@@ -6848,7 +6848,7 @@ checksum = "01fc2c5ff41105bd1f7242d8201fdf3efd70749b82fa013a17f2126357d194cc"
 dependencies = [
  "log",
  "notify-rust",
- "rand 0.9.2",
+ "rand 0.9.3",
  "serde",
  "serde_json",
  "serde_repr",
@@ -7571,7 +7571,7 @@ dependencies = [
  "http",
  "httparse",
  "log",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rustls",
  "rustls-pki-types",
  "sha1",
@@ -7590,7 +7590,7 @@ dependencies = [
  "http",
  "httparse",
  "log",
- "rand 0.9.2",
+ "rand 0.9.3",
  "sha1",
  "thiserror 2.0.18",
  "utf-8",
