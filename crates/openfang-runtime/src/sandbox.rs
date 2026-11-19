@@ -26,7 +26,10 @@
 use crate::host_functions;
 use crate::kernel_handle::KernelHandle;
 use openfang_types::capability::Capability;
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 use tracing::debug;
 use wasmtime::*;
 
@@ -103,6 +106,57 @@ pub enum SandboxError {
 /// is expensive to create but can compile/instantiate many modules.
 pub struct WasmSandbox {
     engine: Engine,
+}
+
+/// Stops and joins the per-execution epoch timer when guest execution ends.
+///
+/// Wasmtime's epoch is engine-wide, so each execution still needs its own
+/// deadline notification. The channel lets a completed execution wake its
+/// timer immediately instead of leaving a detached thread asleep until the
+/// timeout expires.
+struct EpochWatchdog {
+    cancel: Sender<()>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl EpochWatchdog {
+    fn start(engine: Engine, timeout: Duration) -> Result<Self, SandboxError> {
+        Self::start_with(timeout, move || engine.increment_epoch())
+    }
+
+    fn start_with(
+        timeout: Duration,
+        on_timeout: impl FnOnce() + Send + 'static,
+    ) -> Result<Self, SandboxError> {
+        let (cancel, cancelled) = mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("openfang-wasm-watchdog".into())
+            .spawn(move || match cancelled.recv_timeout(timeout) {
+                Err(RecvTimeoutError::Timeout) => on_timeout(),
+                Ok(()) | Err(RecvTimeoutError::Disconnected) => {}
+            })
+            .map_err(|error| {
+                SandboxError::Execution(format!("failed to start WASM watchdog: {error}"))
+            })?;
+
+        Ok(Self {
+            cancel,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for EpochWatchdog {
+    fn drop(&mut self) {
+        let _ = self.cancel.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn epoch_timeout_expired(started_at: Instant, timeout: Duration) -> bool {
+    started_at.elapsed() >= timeout
 }
 
 impl WasmSandbox {
@@ -183,12 +237,20 @@ impl WasmSandbox {
 
         // Set epoch deadline (wall-clock metering)
         store.set_epoch_deadline(1);
-        let engine_clone = engine.clone();
         let timeout = config.timeout_secs.unwrap_or(30);
-        let _watchdog = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(timeout));
-            engine_clone.increment_epoch();
+        let timeout = Duration::from_secs(timeout);
+        let execution_started_at = Instant::now();
+        store.epoch_deadline_callback(move |_| {
+            if epoch_timeout_expired(execution_started_at, timeout) {
+                Ok(UpdateDeadline::Interrupt)
+            } else {
+                // Engine epochs are shared by every store. Another execution's
+                // watchdog can advance the epoch first, so keep this store's
+                // deadline pending until its own wall-clock timeout expires.
+                Ok(UpdateDeadline::Continue(1))
+            }
         });
+        let _watchdog = EpochWatchdog::start(engine.clone(), timeout)?;
 
         // Build linker with host function imports
         let mut linker = Linker::new(engine);
@@ -246,7 +308,7 @@ impl WasmSandbox {
                 if let Some(Trap::Interrupt) = e.downcast_ref::<Trap>() {
                     return Err(SandboxError::Execution(format!(
                         "WASM execution timed out after {}s (epoch interrupt)",
-                        timeout
+                        timeout.as_secs()
                     )));
                 }
                 return Err(SandboxError::Execution(e.to_string()));
@@ -479,6 +541,48 @@ mod tests {
         let sandbox = WasmSandbox::new().unwrap();
         // Engine should be created successfully
         drop(sandbox);
+    }
+
+    #[test]
+    fn test_epoch_watchdog_cancellation_prevents_late_interrupt() {
+        let timed_out = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let timed_out_by_watchdog = Arc::clone(&timed_out);
+        let watchdog = EpochWatchdog::start_with(Duration::from_millis(50), move || {
+            timed_out_by_watchdog.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })
+        .unwrap();
+
+        drop(watchdog);
+        std::thread::sleep(Duration::from_millis(100));
+
+        assert_eq!(timed_out.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_epoch_watchdog_interrupts_after_timeout() {
+        let timed_out = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let timed_out_by_watchdog = Arc::clone(&timed_out);
+        let watchdog = EpochWatchdog::start_with(Duration::from_millis(50), move || {
+            timed_out_by_watchdog.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(100));
+        drop(watchdog);
+
+        assert_eq!(timed_out.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_epoch_deadline_is_scoped_to_each_execution() {
+        let timeout = Duration::from_secs(1);
+        let older_execution = Instant::now()
+            .checked_sub(Duration::from_secs(2))
+            .expect("test instant supports two seconds of subtraction");
+        let newer_execution = Instant::now();
+
+        assert!(epoch_timeout_expired(older_execution, timeout));
+        assert!(!epoch_timeout_expired(newer_execution, timeout));
     }
 
     #[tokio::test]
